@@ -1,0 +1,1392 @@
+<!DOCTYPE html>
+<!--
+  sonix_player -- Trasferimento Wi-Fi
+
+  TEMPLATE. This is not the page that gets served: tools/web_to_c.py assembles
+  it, replacing three placeholders, and writes both the finished page
+  (web/build/index.html, openable in a browser) and the C string the player
+  carries (src/system/webpage.h).
+
+  The placeholders are HTML comments named ICONS, LOGO and FAVICON. They are
+  spelled out below without their comment markers on purpose -- writing one of
+  them here in full would close THIS comment at that point and spill the rest
+  of it onto the page, which is exactly what happened the first time.
+
+      ICONS      every web/icons/*.svg, inlined as one <symbol> each,
+                 id = the filename without the "-web" suffix
+      LOGO       web/img/logo-web.png, as a data: URL
+      FAVICON    web/img/favicon-web.png, as a data: URL
+
+  Assembled rather than linked so the page itself stays a single file: the
+  player writes one file into thttpd's document root, and a page with no
+  stylesheet or script to fetch cannot half-load on a flaky link.
+
+  The one subresource is the typeface -- see the @font-face below. It is
+  deliberately not inlined: it is 6.5 MB, the page is perfectly readable
+  without it, and the browser caches it.
+
+  It talks to the firmware's own six CGI programs, whose paths and parameter
+  names are compiled into them and cannot be changed:
+
+    GET  list?path=<dir>      -> [{"path","name","ctime"[,"size"]}, ...]
+                                 no "size" means it is a directory, and its
+                                 "path" ends in "/"; "ctime" is a string
+    GET  download?path=<file> -> the file, as an attachment
+    POST upload               -> multipart: "path" + "files[]"
+    POST create               -> urlencoded: "path"
+    POST move                 -> urlencoded: "oldPath", "newPath"
+    POST delete               -> urlencoded: "path"
+    GET  hostname             -> the device name, as text
+-->
+<html lang="it">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="theme-color" content="#1e1e1e">
+<meta http-equiv="cache-control" content="no-cache">
+<title>{{Trasferimento Wi-Fi}}</title>
+<link rel="icon" type="image/png" href="<!--FAVICON-->">
+<style>
+/* ---------------------------------------------------------------------------
+   The device's own typeface.
+
+   /usr/resource/fonts holds the faces the player itself draws with -- the same
+   files src/gui/fonts/fonts.c opens. The player symlinks them into thttpd's
+   document root when it starts the server, so the page renders in the face of
+   the screen it came from.
+
+   Two names for each, because the container is not the same on every firmware:
+   some ship .ttf, some .otf. A `src` list is exactly the right tool for that --
+   the browser tries each in turn and keeps the first that loads and parses.
+
+   Not inlined: the regular face alone is 6.5 MB of full CJK coverage. `swap`
+   means the page draws immediately in the system font and changes over when the
+   file lands; if it never lands -- a firmware without it, or the page opened
+   from somewhere else -- the system font is simply what stays.
+
+   The bold is a family of its own rather than weight 700 of this one, and that
+   is deliberate. As weight 700 of "HiBy UI", a missing bold file would send
+   every heading to the system font while the body stayed in MiSans: half the
+   page in one face, half in another. As a separate family it just falls through
+   to the regular, and the browser synthesises the weight -- so the headings
+   look like headings either way.
+   --------------------------------------------------------------------------- */
+@font-face {
+  font-family: "HiBy UI";
+  src: url("fonts/default.ttf") format("truetype"),
+       url("fonts/default.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+@font-face {
+  font-family: "HiBy UI Bold";
+  src: url("fonts/bold.ttf") format("truetype"),
+       url("fonts/bold.otf") format("opentype");
+  font-weight: 400;
+  font-style: normal;
+  font-display: swap;
+}
+
+/* ---------------------------------------------------------------------------
+   The player's palette, straight out of src/gui/theme.c (Adwaita dark).
+   --------------------------------------------------------------------------- */
+:root {
+  --screen-bg: #242424;
+  --surface: #303030;
+  --surface-pressed: #404040;
+  --panel: #1e1e1e;
+  --text: #ffffff;
+  --text-dim: #a0a0a0;
+  /* These two are rewritten byte-for-byte by the player when it installs the
+     page (see install_page() in src/system/wifitransfer.c), so the browser
+     gets the accent colour the device is actually wearing. Both must stay
+     exactly seven characters of "#rrggbb" and appear exactly once. */
+  --accent: #3584e4;
+  --accent-pressed: #2b6fc4;
+  --danger: #e01b24;
+  --success: #2ec27e;
+  --line: #3a3a3a;
+  --radius-card: 12px;
+  --radius-panel: 16px;
+
+  /* The device's face first, then whatever this system calls its own. Nothing
+     is fetched from the internet: a page served off a player on a local network
+     has no business waiting for a webfont from somewhere else. */
+  --font-ui: "HiBy UI", system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI",
+             Roboto, Ubuntu, Cantarell, "Noto Sans", "Helvetica Neue", Arial, sans-serif;
+  --font-ui-bold: "HiBy UI Bold", var(--font-ui);
+}
+
+* { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+
+html, body {
+  margin: 0;
+  padding: 0;
+  background: var(--screen-bg);
+  color: var(--text);
+  font-family: var(--font-ui);
+  font-size: 16px;
+  line-height: 1.4;
+  -webkit-font-smoothing: antialiased;
+}
+
+body.dragging { outline: 3px solid var(--accent); outline-offset: -3px; }
+
+/* ---------------------------------------------------------------------------
+   Layout
+   Phone: one column, big rows, buttons collapse to their glyphs.
+   Desktop (>= 900px): the same column, wider, with size and date columns and
+   tighter rows -- a file list, rather than a phone page stretched sideways.
+   --------------------------------------------------------------------------- */
+
+.masthead {
+  position: sticky;
+  top: 0;
+  z-index: 20;
+  background: var(--panel);
+  border-bottom: 1px solid var(--line);
+  padding: 10px 16px;
+  padding-top: max(10px, env(safe-area-inset-top));
+  display: flex;
+  align-items: center;
+  gap: 12px;
+}
+.masthead b {
+  font-family: var(--font-ui-bold);
+  font-size: 17px;
+  font-weight: 600;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.masthead .logo { margin-left: auto; height: 26px; width: auto; display: block; flex: 0 0 auto; }
+
+.shell { max-width: 1000px; margin: 0 auto; padding: 18px 16px 90px; }
+
+.head { display: flex; align-items: center; gap: 10px; margin-bottom: 12px; }
+.head .where { min-width: 0; }
+.head .where h1 {
+  margin: 0;
+  font-family: var(--font-ui-bold);
+  font-size: 22px;
+  font-weight: 600;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.head .count { color: var(--text-dim); font-size: 13px; }
+.head .tools { margin-left: auto; display: flex; gap: 8px; flex: 0 0 auto; }
+
+.crumbs {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  margin: 0 0 12px;
+  color: var(--text-dim);
+  font-size: 13px;
+}
+.crumbs:empty { display: none; }
+.crumbs a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.crumbs a:hover { text-decoration: underline; }
+.crumbs .sep { opacity: .45; display: inline-flex; }
+.crumbs .sep .svgicon { width: 13px; height: 13px; }
+.crumbs .here { color: var(--text); }
+
+/* --- buttons --- */
+.btn {
+  appearance: none;
+  border: 0;
+  background: var(--surface);
+  color: var(--text);
+  font: inherit;
+  font-size: 15px;
+  border-radius: 10px;
+  padding: 11px 15px;
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  cursor: pointer;
+  transition: background .12s;
+  white-space: nowrap;
+}
+.btn:hover { background: var(--surface-pressed); }
+.btn:active { transform: translateY(1px); }
+.btn.accent { background: var(--accent); }
+.btn.accent:hover { background: var(--accent-pressed); }
+.btn.danger { background: var(--danger); }
+.btn:disabled { opacity: .4; cursor: default; }
+.btn:disabled:hover { background: var(--surface); }
+
+.btn-icon {
+  width: 44px;
+  height: 44px;
+  padding: 0;
+  justify-content: center;
+  border-radius: 12px;
+  background: transparent;
+}
+.btn-icon:hover { background: var(--surface); }
+
+.svgicon {
+  width: 20px;
+  height: 20px;
+  flex: 0 0 auto;
+  display: block;
+  /* The glyphs are Lucide: outlines, not filled shapes. These properties are
+     inheritable, so setting them here reaches into the <use> content -- which
+     is why the symbols carry no presentation attributes and one rule dresses
+     all of them. */
+  fill: none;
+  stroke: currentColor;
+  stroke-width: 2;
+  stroke-linecap: round;
+  stroke-linejoin: round;
+}
+.svgicon.big { width: 24px; height: 24px; }
+
+.hidden-input { display: none; }
+
+/* --- the listing --- */
+.list { display: flex; flex-direction: column; gap: 8px; }
+
+.row {
+  background: var(--surface);
+  border-radius: var(--radius-card);
+  min-height: 66px;
+  display: grid;
+  grid-template-columns: 24px minmax(0, 1fr) auto 44px;
+  align-items: center;
+  gap: 14px;
+  padding: 0 8px 0 18px;
+}
+.row.tappable { cursor: pointer; }
+.row.tappable:hover { background: var(--surface-pressed); }
+
+.row .glyph { color: var(--text-dim); display: flex; }
+.row .glyph.folder { color: var(--accent); }
+
+.row .name { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 17px; }
+.row .size { color: var(--text-dim); font-size: 13px; white-space: nowrap; text-align: right; }
+.row .date { display: none; }
+.row .menu { position: relative; }
+
+.empty, .loading { color: var(--text-dim); text-align: center; padding: 44px 10px; font-size: 16px; }
+.loading .svgicon { margin: 0 auto; }
+
+/* --- the row menu, the player's popover --- */
+.popover {
+  position: absolute;
+  right: 0;
+  top: 46px;
+  z-index: 40;
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 6px;
+  min-width: 196px;
+  display: flex;
+  flex-direction: column;
+}
+.popover.up { top: auto; bottom: 46px; }
+.popover button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  padding: 12px 14px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+}
+.popover button:hover { background: var(--surface); }
+.popover button.danger { color: #ff7b7b; }
+
+/* --- uploads --- */
+.uploads { display: flex; flex-direction: column; gap: 8px; margin-bottom: 14px; }
+.uploads:empty { display: none; }
+.upload { background: var(--surface); border-radius: var(--radius-card); padding: 12px 8px 14px 18px; }
+.upload .head2 { display: flex; align-items: center; gap: 12px; }
+.upload .head2 .name { flex: 1 1 auto; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-size: 15px; }
+.upload .head2 .pct { color: var(--text-dim); font-size: 13px; font-variant-numeric: tabular-nums; }
+.bar { height: 6px; border-radius: 3px; background: var(--panel); margin-top: 10px; overflow: hidden; }
+.bar > span { display: block; height: 100%; width: 0; background: var(--accent); transition: width .15s linear; }
+
+/* --- veil, cards, toasts: the same shapes as the player's own --- */
+.veil {
+  position: fixed;
+  inset: 0;
+  z-index: 100;
+  background: rgba(0, 0, 0, .6);
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  padding: 20px;
+}
+.veil[hidden] { display: none; }
+
+.card {
+  background: var(--surface);
+  border-radius: var(--radius-panel);
+  padding: 24px;
+  width: 100%;
+  max-width: 430px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.card h2 { margin: 0; font-family: var(--font-ui-bold); font-size: 20px; font-weight: 600; text-align: center; }
+.card p { margin: 0; color: var(--text-dim); font-size: 15px; text-align: center; word-break: break-all; }
+.card input[type=text] {
+  appearance: none;
+  border: 0;
+  background: var(--panel);
+  color: var(--text);
+  font: inherit;
+  font-size: 17px;
+  border-radius: 10px;
+  padding: 14px;
+  width: 100%;
+}
+.card input[type=text]:focus { outline: 2px solid var(--accent); }
+.card .actions { display: flex; gap: 10px; margin-top: 4px; }
+.card .actions .btn { flex: 1 1 0; justify-content: center; }
+.card.wide { max-width: 540px; }
+
+/* --- the folder picker ---------------------------------------------------
+   Where a move goes is a place, and places are chosen by looking at them. The
+   list below is the same shape as the page's own rows, one step in per tap.
+   ------------------------------------------------------------------------- */
+.pickhere {
+  display: flex;
+  align-items: center;
+  flex-wrap: wrap;
+  gap: 2px;
+  color: var(--text-dim);
+  font-size: 13px;
+  min-height: 20px;
+}
+.pickhere a { color: var(--accent); text-decoration: none; cursor: pointer; }
+.pickhere a:hover { text-decoration: underline; }
+.pickhere .sep { opacity: .45; display: inline-flex; }
+.pickhere .sep .svgicon { width: 13px; height: 13px; }
+.pickhere .here { color: var(--text); }
+
+.picker {
+  background: var(--panel);
+  border-radius: 10px;
+  padding: 6px;
+  max-height: min(46vh, 320px);
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 4px;
+}
+.picker button {
+  appearance: none;
+  border: 0;
+  background: transparent;
+  color: var(--text);
+  font: inherit;
+  font-size: 16px;
+  text-align: left;
+  padding: 12px 12px;
+  border-radius: 8px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  cursor: pointer;
+  min-width: 0;
+}
+.picker button:hover { background: var(--surface); }
+.picker button .svgicon { color: var(--accent); }
+.picker button span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.picker .none { color: var(--text-dim); font-size: 14px; padding: 16px 12px; text-align: center; }
+
+.toasts {
+  position: fixed;
+  left: 0; right: 0;
+  bottom: max(16px, env(safe-area-inset-bottom));
+  z-index: 200;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 0 14px;
+  pointer-events: none;
+}
+.toast {
+  background: var(--panel);
+  border: 1px solid var(--line);
+  border-radius: var(--radius-card);
+  padding: 14px 18px;
+  max-width: 560px;
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  font-size: 15px;
+  pointer-events: auto;
+}
+.toast.error .svgicon { color: var(--danger); }
+.toast.ok .svgicon { color: var(--success); }
+
+.spin { animation: spin 1s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+
+/* --- phone --- */
+@media (max-width: 460px) {
+  .row { padding-left: 14px; gap: 10px; grid-template-columns: 24px minmax(0, 1fr) auto 40px; }
+  .row .name { font-size: 16px; }
+  .btn .label { display: none; }
+  .btn { padding: 11px 13px; }
+  .head .where h1 { font-size: 20px; }
+}
+
+/* --- desktop: columns and tighter rows --- */
+@media (min-width: 900px) {
+  .shell { padding-top: 24px; }
+  .masthead { padding: 12px 24px; }
+  .masthead .logo { height: 30px; }
+
+  .list { gap: 6px; }
+  .row {
+    min-height: 54px;
+    grid-template-columns: 24px minmax(0, 1fr) 110px 170px 44px;
+    border-radius: 10px;
+  }
+  .row .name { font-size: 16px; }
+  .row .date {
+    display: block;
+    color: var(--text-dim);
+    font-size: 13px;
+    white-space: nowrap;
+    font-variant-numeric: tabular-nums;
+  }
+
+  /* A header line over the columns, so the two numbers on the right are
+     labelled rather than left to be guessed at. */
+  .colhead {
+    display: grid;
+    grid-template-columns: 24px minmax(0, 1fr) 110px 170px 44px;
+    gap: 14px;
+    padding: 0 8px 8px 18px;
+    color: var(--text-dim);
+    font-size: 12px;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  .colhead .size { text-align: right; }
+}
+@media (max-width: 899px) {
+  .colhead { display: none; }
+}
+</style>
+</head>
+<body>
+
+<!-- Lucide, one <symbol> each, inlined from web/icons/ by tools/web_to_c.py. -->
+<svg width="0" height="0" style="position:absolute" aria-hidden="true">
+<!--ICONS-->
+</svg>
+
+<!-- No back arrow here. Going up is what the trail over the list is for, and two
+     ways to do the same thing in the same corner is one too many. -->
+<header class="masthead">
+  <b>{{Trasferimento Wi-Fi}}</b>
+  <img class="logo" src="<!--LOGO-->" alt="Sonix">
+</header>
+
+<div class="shell">
+
+  <div class="head">
+    <div class="where">
+      <h1 id="title">{{Trasferimento}}</h1>
+      <div class="count" id="count"></div>
+    </div>
+    <div class="tools">
+      <button class="btn accent" id="pick">
+        <svg class="svgicon"><use href="#upload"/></svg><span class="label">{{Carica file}}</span>
+      </button>
+      <button class="btn" id="pick-folder">
+        <svg class="svgicon"><use href="#folder"/></svg><span class="label">{{Carica cartella}}</span>
+      </button>
+      <button class="btn" id="mkdir">
+        <svg class="svgicon"><use href="#folder-new"/></svg><span class="label">{{Nuova cartella}}</span>
+      </button>
+      <button class="btn btn-icon" id="hidden" title="{{Mostra file nascosti}}" aria-label="{{Mostra file nascosti}}">
+        <svg class="svgicon big"><use href="#eye-off"/></svg>
+      </button>
+      <button class="btn btn-icon" id="reload" title="{{Aggiorna}}" aria-label="{{Aggiorna}}">
+        <svg class="svgicon big"><use href="#refresh"/></svg>
+      </button>
+    </div>
+  </div>
+
+  <nav class="crumbs" id="crumbs"></nav>
+
+  <input class="hidden-input" type="file" id="files" multiple>
+  <!-- The folder picker. `webkitdirectory` is the only way a browser will hand
+       over a whole tree, and it is what the stock page uses too; `directory`
+       is the standardised spelling nothing implements yet. Every file then
+       carries a webkitRelativePath, which is how the structure survives the
+       trip. -->
+  <input class="hidden-input" type="file" id="folders" webkitdirectory directory multiple>
+
+  <div class="uploads" id="uploads"></div>
+
+  <div class="colhead">
+    <span></span><span>{{Nome}}</span><span class="size">{{Dimensione}}</span><span>{{Modificato}}</span><span></span>
+  </div>
+  <div class="list" id="list"><div class="loading">{{Caricamento...}}</div></div>
+</div>
+
+<!-- prompt: create folder, rename, move -->
+<div class="veil" id="prompt-veil" hidden>
+  <div class="card">
+    <h2 id="prompt-title"></h2>
+    <p id="prompt-note" hidden></p>
+    <input type="text" id="prompt-input" autocomplete="off" spellcheck="false">
+    <div class="actions">
+      <button class="btn" data-close="prompt">{{Annulla}}</button>
+      <button class="btn accent" id="prompt-ok">{{OK}}</button>
+    </div>
+  </div>
+</div>
+
+<!-- the folder picker: where a move goes -->
+<div class="veil" id="picker-veil" hidden>
+  <div class="card wide">
+    <h2>{{Sposta}}</h2>
+    <p id="picker-note"></p>
+    <div class="pickhere" id="picker-crumbs"></div>
+    <div class="picker" id="picker-list"></div>
+    <div class="actions">
+      <button class="btn" data-close="picker">{{Annulla}}</button>
+      <button class="btn accent" id="picker-ok">{{Sposta qui}}</button>
+    </div>
+  </div>
+</div>
+
+<!-- confirm: delete -->
+<div class="veil" id="confirm-veil" hidden>
+  <div class="card">
+    <h2 id="confirm-title"></h2>
+    <p id="confirm-note"></p>
+    <div class="actions">
+      <button class="btn" data-close="confirm">{{Annulla}}</button>
+      <button class="btn danger" id="confirm-ok">{{Elimina}}</button>
+    </div>
+  </div>
+</div>
+
+<div class="toasts" id="toasts"></div>
+
+<script>
+"use strict";
+
+/* ---------------------------------------------------------------------------
+   The card, and the top of everything this page can see.
+
+   The CGI programs know four paths -- /data/mnt/sd_0, sd_1, udisk_0, udisk_1 --
+   compiled in, unchangeable. This device has one card slot, and the player only
+   binds the card onto sd_0, so sd_0 is the whole world here: there is no storage
+   picker, because a list of one thing is furniture.
+   --------------------------------------------------------------------------- */
+var CARD = "/data/mnt/sd_0/";
+
+/* What the player can do something with. Only used to warn: the CGIs take
+   anything, and a .exe on a music player is a mistake worth catching before it
+   has spent four minutes uploading. */
+var AUDIO     = ["ISO","DFF","DSF","DTS","APE","FLAC","AIF","AIFF","WAV","M4A","AAC",
+                 "MP2","MP3","OGG","OGA","WMA","OPUS","DSD","WV","MPC","TAK","TTA"];
+var AUDIOBOOK = ["M4B","AA","AAX"];
+var PLAYLIST  = ["M3U","M3U8","CUE"];
+var IMAGE     = ["BMP","PNG","JPG","JPEG","GIF","WEBP"];
+var TEXT      = ["LRC","TXT","T","INI","NFO"];
+var FIRMWARE  = ["UPT"];
+/* Le rom del Game Boy e i loro salvataggi, i libri, e i caratteri che il
+   lettore di EPUB prende da .local/fonts: roba che il player usa davvero, e
+   che finiva sotto l'avviso "non e' un formato che il player legge". */
+var GAME      = ["GB","GBC","SAV"];
+var EBOOK     = ["EPUB"];
+var FONT      = ["TTF","OTF"];
+
+var path = CARD;
+var entries = [];
+var openMenu = null;
+
+// Whether the listing includes names beginning with a dot. Off by default: on a
+// card that has been near a Mac, the interesting files are outnumbered by
+// .Spotlight-V100 and a ._ twin for every track.
+var showHidden = false;
+
+// The firmware's list.cgi cannot show hidden entries -- it drops any name whose
+// first character is a dot, in compiled code -- so the player publishes its own
+// listing at sonix-list and that is what this asks first. If it is not there (an
+// older player, a document root the symlink could not be made in), the stock one
+// answers and the eye simply has nothing to reveal.
+var lister = "sonix-list";
+var deviceName = "";
+
+var $ = function (id) { return document.getElementById(id); };
+
+/* --- small helpers ------------------------------------------------------- */
+
+function ext(name) {
+  var dot = name.lastIndexOf(".");
+  return dot < 0 ? "" : name.slice(dot + 1).toUpperCase();
+}
+
+function glyphFor(entry) {
+  if (entry.dir) { return "folder"; }
+  var e = ext(entry.name);
+  if (AUDIO.indexOf(e) >= 0)     { return "music"; }
+  if (AUDIOBOOK.indexOf(e) >= 0) { return "audiobook"; }
+  if (PLAYLIST.indexOf(e) >= 0)  { return "file-playlist"; }
+  if (IMAGE.indexOf(e) >= 0)     { return "image"; }
+  if (TEXT.indexOf(e) >= 0)      { return "file-text"; }
+  if (FIRMWARE.indexOf(e) >= 0)  { return "update-file"; }
+  if (GAME.indexOf(e) >= 0)      { return "gamepad"; }
+  if (EBOOK.indexOf(e) >= 0)     { return "book"; }
+  return "file";
+}
+
+function isKnown(name) {
+  var e = ext(name);
+  return AUDIO.concat(AUDIOBOOK, PLAYLIST, IMAGE, TEXT, FIRMWARE, GAME, EBOOK, FONT).indexOf(e) >= 0;
+}
+
+/* The player's own way of putting a size on screen. */
+function humanSize(bytes) {
+  if (bytes >= 1073741824) { return (bytes / 1073741824).toFixed(2) + " GB"; }
+  if (bytes >= 1048576)    { return (bytes / 1048576).toFixed(1) + " MB"; }
+  if (bytes >= 1024)       { return (bytes / 1024).toFixed(0) + " KB"; }
+  return bytes + " B";
+}
+
+function humanDate(secs) {
+  if (!secs) { return ""; }
+  var d = new Date(secs * 1000);
+  var two = function (n) { return (n < 10 ? "0" : "") + n; };
+  return two(d.getDate()) + "/" + two(d.getMonth() + 1) + "/" + d.getFullYear() +
+         " " + two(d.getHours()) + ":" + two(d.getMinutes());
+}
+
+function isCard(p) { return p === CARD; }
+function normalise(p) { return p.replace(/\/+/g, "/"); }
+
+/* The name of the card's own level: the device, if it told us what it is. */
+function rootLabel() { return deviceName || "{{js|Trasferimento}}"; }
+
+/* The two markers, and why there are two.
+
+   A doubled-brace marker is replaced by the player when it writes this page out
+   (install_page in src/system/wifitransfer.c). A plain one is escaped as HTML,
+   which is right for the markup and for the fragments built below with
+   innerHTML -- and, because HTML escaping leaves no quotes and no backslashes
+   behind, it is safe inside a JavaScript string literal as well. One prefixed
+   with "js|" is escaped for JavaScript instead, and is for text that reaches
+   the page through textContent or a DOM property, where an escaped entity
+   would be shown literally.
+
+   Getting that the wrong way round is not cosmetic. The French for "is not"
+   carries an apostrophe, and an apostrophe closes a string: the page would not
+   parse at all.
+
+   fill() puts {1}, {2}... back into a translated string. Numbered rather than
+   taken in order, because a translation is allowed to want the pieces
+   somewhere else in the sentence than the Italian puts them, and a sentence
+   that has been reordered would otherwise take the wrong values. */
+function fill(s) {
+  var args = arguments;
+  return s.replace(/\{(\d)\}/g, function (whole, n) {
+    var v = args[Number(n)];
+    return v === undefined ? whole : v;
+  });
+}
+
+function icon(name, cls) {
+  return '<svg class="svgicon' + (cls ? " " + cls : "") + '"><use href="#' + name + '"/></svg>';
+}
+
+/* --- toasts -------------------------------------------------------------- */
+
+function toast(message, kind) {
+  var el = document.createElement("div");
+  el.className = "toast " + (kind || "error");
+  el.innerHTML = icon(kind === "ok" ? "check" : "alert") + "<span></span>";
+  el.lastChild.textContent = message;
+  $("toasts").appendChild(el);
+  setTimeout(function () { el.remove(); }, kind === "ok" ? 2200 : 5000);
+}
+
+/* --- the dialogs -------------------------------------------------------- */
+
+function askText(title, note, value, okLabel, done) {
+  $("prompt-title").textContent = title;
+  var noteEl = $("prompt-note");
+  if (note) { noteEl.textContent = note; noteEl.hidden = false; } else { noteEl.hidden = true; }
+  var input = $("prompt-input");
+  input.value = value || "";
+  $("prompt-ok").textContent = okLabel || "{{js|OK}}";
+  $("prompt-veil").hidden = false;
+  input.focus();
+  input.select();
+
+  $("prompt-ok").onclick = function () {
+    var v = input.value.trim();
+    $("prompt-veil").hidden = true;
+    if (v) { done(v); }
+  };
+}
+
+function askConfirm(title, note, okLabel, done) {
+  $("confirm-title").textContent = title;
+  $("confirm-note").textContent = note || "";
+  $("confirm-ok").textContent = okLabel || "{{js|Elimina}}";
+  $("confirm-veil").hidden = false;
+  $("confirm-ok").onclick = function () {
+    $("confirm-veil").hidden = true;
+    done();
+  };
+}
+
+document.addEventListener("click", function (e) {
+  var close = e.target.closest ? e.target.closest("[data-close]") : null;
+  if (close) { $(close.dataset.close + "-veil").hidden = true; }
+});
+
+/* ---------------------------------------------------------------------------
+   The folder picker.
+
+   `forbidden` is the folder being moved: you cannot move something into itself,
+   and since the only way down is through this list, refusing to show it also
+   refuses every path underneath it.
+   --------------------------------------------------------------------------- */
+function askFolder(note, start, forbidden, done) {
+  var here = start;
+
+  var drawHere = function () {
+    var el = $("picker-crumbs");
+    el.innerHTML = "";
+
+    var add = function (label, target) {
+      if (el.childNodes.length) {
+        var sep = document.createElement("span");
+        sep.className = "sep";
+        sep.innerHTML = icon("chevron-right");
+        el.appendChild(sep);
+      }
+      if (target === null) {
+        var span = document.createElement("span");
+        span.className = "here";
+        span.textContent = label;
+        el.appendChild(span);
+      } else {
+        var a = document.createElement("a");
+        a.textContent = label;
+        a.onclick = function () { go(target); };
+        el.appendChild(a);
+      }
+    };
+
+    var rest = here.slice(CARD.length).replace(/\/$/, "");
+    var parts = rest ? rest.split("/") : [];
+
+    add(rootLabel(), parts.length ? CARD : null);
+    parts.forEach(function (part, i) {
+      var target = CARD + parts.slice(0, i + 1).join("/") + "/";
+      add(part, i === parts.length - 1 ? null : target);
+    });
+  };
+
+  var go = function (target) {
+    here = normalise(target);
+    drawHere();
+
+    var box = $("picker-list");
+    box.innerHTML = '<div class="none">' + icon("loader", "big spin") + "</div>";
+
+    listing(here)
+      .then(function (data) {
+        var dirs = (data || []).filter(function (f) {
+          var isDir = f.size === undefined || f.size === null;
+          return isDir && f.path !== forbidden;
+        }).sort(function (a, b) {
+          return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+        });
+
+        box.innerHTML = "";
+        if (!dirs.length) {
+          box.innerHTML = '<div class="none">{{Nessuna sottocartella. Premi "Sposta qui".}}</div>';
+          return;
+        }
+
+        dirs.forEach(function (f) {
+          var b = document.createElement("button");
+          b.innerHTML = icon("folder", "big") + "<span></span>";
+          b.lastChild.textContent = f.name;
+          b.onclick = function () { go(f.path); };
+          box.appendChild(b);
+        });
+      })
+      .catch(function (err) {
+        box.innerHTML = '<div class="none">{{Impossibile leggere questa cartella.}}</div>';
+        toast(fill("{{js|Lettura di {1} non riuscita ({2})}}", here, err.message));
+      });
+  };
+
+  $("picker-note").textContent = note || "";
+  $("picker-veil").hidden = false;
+  go(start);
+
+  $("picker-ok").onclick = function () {
+    $("picker-veil").hidden = true;
+    done(here);
+  };
+}
+
+$("prompt-input").addEventListener("keydown", function (e) {
+  if (e.key === "Enter") { $("prompt-ok").click(); }
+  if (e.key === "Escape") { $("prompt-veil").hidden = true; }
+});
+
+document.addEventListener("keydown", function (e) {
+  if (e.key !== "Escape") { return; }
+  closeMenu();
+  $("confirm-veil").hidden = true;
+  $("picker-veil").hidden = true;
+});
+
+/* --- talking to the CGIs ------------------------------------------------- */
+
+function post(endpoint, fields) {
+  var body = Object.keys(fields).map(function (k) {
+    return encodeURIComponent(k) + "=" + encodeURIComponent(fields[k]);
+  }).join("&");
+
+  return fetch(endpoint, {
+    method: "POST",
+    headers: { "Content-Type": "application/x-www-form-urlencoded" },
+    body: body
+  }).then(function (res) {
+    if (!res.ok) { throw new Error("HTTP " + res.status); }
+    return res;
+  });
+}
+
+// One directory, from whichever lister is answering. The first failure of
+// sonix-list is taken as "this player does not have it" and the firmware's own is
+// used from then on -- one probe, not one per navigation.
+function listing(target) {
+  var url = lister + "?path=" + encodeURIComponent(target) +
+            (lister === "sonix-list" && showHidden ? "&hidden=1" : "");
+
+  return fetch(url, { cache: "no-store" }).then(function (res) {
+    if (res.ok) { return res.json(); }
+    if (lister === "sonix-list") {
+      lister = "list";
+      updateHiddenButton();
+      return listing(target);
+    }
+    throw new Error("HTTP " + res.status);
+  });
+}
+
+function load(target) {
+  path = normalise(target);
+  closeMenu();
+  $("list").innerHTML = '<div class="loading">' + icon("loader", "big spin") + "</div>";
+
+  listing(path)
+    .then(function (data) {
+      entries = (data || []).map(function (f) {
+        return {
+          name: f.name,
+          path: f.path,
+          dir: f.size === undefined || f.size === null,
+          size: f.size,
+          ctime: parseInt(f.ctime, 10) || 0
+        };
+      });
+
+      // Folders first, then by name: a music card is browsed, not audited, and
+      // newest-first put the same album somewhere different every time.
+      entries.sort(function (a, b) {
+        if (a.dir !== b.dir) { return a.dir ? -1 : 1; }
+        return a.name.localeCompare(b.name, undefined, { numeric: true, sensitivity: "base" });
+      });
+
+      draw();
+    })
+    .catch(function (err) {
+      entries = [];
+      $("list").innerHTML = '<div class="empty">{{Impossibile leggere questa cartella.}}</div>';
+      drawCrumbs();
+      toast(fill("{{js|Lettura di {1} non riuscita ({2})}}", path, err.message));
+    });
+}
+
+/* --- drawing ------------------------------------------------------------ */
+
+function drawCrumbs() {
+  var el = $("crumbs");
+  el.innerHTML = "";
+
+  // At the top there is nothing to walk back through, so there is no trail.
+  if (isCard(path)) { return; }
+
+  var add = function (label, target) {
+    if (el.childNodes.length) {
+      var sep = document.createElement("span");
+      sep.className = "sep";
+      sep.innerHTML = icon("chevron-right");
+      el.appendChild(sep);
+    }
+    if (target === null) {
+      var here = document.createElement("span");
+      here.className = "here";
+      here.textContent = label;
+      el.appendChild(here);
+    } else {
+      var a = document.createElement("a");
+      a.textContent = label;
+      a.onclick = function () { load(target); };
+      el.appendChild(a);
+    }
+  };
+
+  add(rootLabel(), CARD);
+
+  var rest = path.slice(CARD.length).replace(/\/$/, "");
+  var parts = rest ? rest.split("/") : [];
+
+  parts.forEach(function (part, i) {
+    var target = CARD + parts.slice(0, i + 1).join("/") + "/";
+    add(part, i === parts.length - 1 ? null : target);
+  });
+}
+
+function draw() {
+  drawCrumbs();
+
+  $("title").textContent = isCard(path)
+    ? rootLabel()
+    : (path.replace(/\/$/, "").split("/").pop() || rootLabel());
+
+  var dirs = entries.filter(function (e) { return e.dir; }).length;
+  var files = entries.length - dirs;
+  var bits = [];
+  if (dirs)  { bits.push(fill(dirs === 1 ? "{{js|{1} cartella}}" : "{{js|{1} cartelle}}", dirs)); }
+  // "1 file" spelled out rather than filled in: Italian does not inflect
+  // "file", but German, French and Spanish do, and one key cannot be both
+  // "1 Datei" and "12 Dateien". When the count is one it IS one, so the
+  // singular can be a string of its own with nothing to fill.
+  if (files) { bits.push(files === 1 ? "{{js|1 file}}" : fill("{{js|{1} file}}", files)); }
+  $("count").textContent = bits.join(", ");
+
+
+  var list = $("list");
+  list.innerHTML = "";
+
+  if (!entries.length) {
+    list.innerHTML = '<div class="empty">{{Cartella vuota.}}</div>';
+    return;
+  }
+
+  entries.forEach(function (entry) {
+    var row = document.createElement("div");
+    row.className = "row" + (entry.dir ? " tappable" : "");
+
+    row.innerHTML =
+      '<span class="glyph' + (entry.dir ? " folder" : "") + '">' + icon(glyphFor(entry), "big") + "</span>" +
+      '<span class="name"></span>' +
+      '<span class="size">' + (entry.dir ? "" : humanSize(entry.size)) + "</span>" +
+      '<span class="date">' + humanDate(entry.ctime) + "</span>" +
+      '<span class="menu">' +
+        '<button class="btn btn-icon" aria-label="{{Azioni}}">' + icon("dots", "big") + "</button>" +
+      "</span>";
+
+    row.querySelector(".name").textContent = entry.name;
+
+    if (entry.dir) {
+      row.onclick = function (e) {
+        if (e.target.closest(".menu")) { return; }
+        load(entry.path);
+      };
+    }
+
+    row.querySelector(".menu button").onclick = function (e) {
+      e.stopPropagation();
+      showMenu(row.querySelector(".menu"), entry);
+    };
+
+    list.appendChild(row);
+  });
+}
+
+/* --- the row menu ------------------------------------------------------- */
+
+function closeMenu() {
+  if (openMenu) { openMenu.remove(); openMenu = null; }
+}
+
+document.addEventListener("click", function (e) {
+  if (openMenu && !e.target.closest(".menu")) { closeMenu(); }
+});
+
+function showMenu(anchor, entry) {
+  var wasMine = openMenu && openMenu.parentNode === anchor;
+  closeMenu();
+  if (wasMine) { return; }
+
+  var box = document.createElement("div");
+  box.className = "popover";
+
+  var item = function (glyph, label, cls, action) {
+    var b = document.createElement("button");
+    if (cls) { b.className = cls; }
+    b.innerHTML = icon(glyph) + "<span></span>";
+    b.lastChild.textContent = label;
+    b.onclick = function (e) { e.stopPropagation(); closeMenu(); action(); };
+    box.appendChild(b);
+  };
+
+  if (entry.dir) {
+    item("open", "{{js|Apri}}", null, function () { load(entry.path); });
+  } else {
+    item("download", "{{js|Scarica}}", null, function () {
+      window.location = "download?path=" + encodeURIComponent(entry.path);
+    });
+  }
+
+  item("rename", "{{js|Rinomina}}", null, function () { rename(entry); });
+  item("move", "{{js|Sposta}}", null, function () { move(entry); });
+  item("delete", "{{js|Elimina}}", "danger", function () { remove(entry); });
+
+  anchor.appendChild(box);
+  openMenu = box;
+
+  // Which way it opens is a question about where the row actually is, not about
+  // where it is in the list: measure, and flip up only when opening down would
+  // run off the bottom AND there is room above. Guessing from the row index
+  // sent the first row's menu straight over the masthead.
+  var rect = box.getBoundingClientRect();
+  if (rect.bottom > window.innerHeight - 8 && rect.height + 60 < anchor.getBoundingClientRect().top) {
+    box.classList.add("up");
+  }
+}
+
+/* --- the actions -------------------------------------------------------- */
+
+function rename(entry) {
+  askText("{{js|Rinomina}}", entry.name, entry.name, "{{js|Rinomina}}", function (value) {
+    if (value === entry.name) { return; }
+    var from = entry.path.replace(/\/$/, "");
+    post("move", { oldPath: from, newPath: path + value })
+      .then(function () { toast("{{js|Rinominato}}", "ok"); })
+      .catch(function (err) { toast(fill("{{js|Rinomina non riuscita ({1})}}", err.message)); })
+      .then(function () { load(path); });
+  });
+}
+
+function move(entry) {
+  var from = entry.path.replace(/\/$/, "");
+
+  askFolder(entry.name, path, entry.dir ? entry.path : null, function (dest) {
+    if (dest === path) {
+      return; // already where it is
+    }
+
+    post("move", { oldPath: from, newPath: dest + entry.name })
+      .then(function () { toast("{{js|Spostato}}", "ok"); })
+      .catch(function (err) { toast(fill("{{js|Spostamento non riuscito ({1})}}", err.message)); })
+      .then(function () { load(path); });
+  });
+}
+
+function remove(entry) {
+  askConfirm(entry.dir ? "{{js|Eliminare la cartella?}}" : "{{js|Eliminare il file?}}",
+             entry.dir ? fill("{{js|{1} e tutto il suo contenuto.}}", entry.name) : entry.name,
+             "{{js|Elimina}}", function () {
+    post("delete", { path: entry.path })
+      .then(function () { toast("{{js|Eliminato}}", "ok"); })
+      .catch(function (err) { toast(fill("{{js|Eliminazione non riuscita ({1})}}", err.message)); })
+      .then(function () { load(path); });
+  });
+}
+
+$("mkdir").onclick = function () {
+  askText("{{js|Nuova cartella}}", null, "{{js|Nuova cartella}}", "{{js|Crea}}", function (name) {
+    post("create", { path: path + name })
+      .then(function () { toast("{{js|Cartella creata}}", "ok"); })
+      .catch(function (err) { toast(fill("{{js|Creazione non riuscita ({1})}}", err.message)); })
+      .then(function () { load(path); });
+  });
+};
+
+// The eye. Off shows what the card looks like to anything else; on shows the
+// dot-files too -- .Trashes, ._ twins, whatever a computer left behind.
+function updateHiddenButton() {
+  var button = $("hidden");
+  var can = lister === "sonix-list";
+
+  button.disabled = !can;
+  button.title = !can
+    ? "{{js|Il firmware di questo player non può mostrare i file nascosti}}"
+    : (showHidden ? "{{js|Nascondi i file nascosti}}" : "{{js|Mostra i file nascosti}}");
+
+  button.querySelector("use").setAttribute("href", showHidden ? "#eye-on" : "#eye-off");
+  button.querySelector(".svgicon").style.color = showHidden ? "var(--accent)" : "";
+}
+
+$("hidden").onclick = function () {
+  showHidden = !showHidden;
+  updateHiddenButton();
+  load(path);
+};
+
+$("reload").onclick = function () { load(path); };
+
+/* --- uploading ---------------------------------------------------------- */
+
+var queue = [];
+var uploading = false;
+
+/* Folders that have been created (or found already there) during this run, so
+   a hundred files out of one album cost one `create` and not a hundred. */
+var madeDirs = {};
+
+/* Where a job's file has to land. For a plain pick that is the folder on
+   screen; for a folder pick the relative path carries the structure and the
+   last component of it is the file itself. */
+function jobDir(job) {
+  if (!job.rel) { return job.dir; }
+  var parts = job.rel.split("/").filter(Boolean);
+  parts.pop();
+  return parts.length ? job.dir + parts.join("/") + "/" : job.dir;
+}
+
+/* Creates the folders a relative path needs, outermost first, one at a time.
+   A `create` that fails is almost always "it is already there" -- the stock
+   page reads a 409 for exactly that -- and a genuinely broken one shows up a
+   moment later as a failed upload with a message of its own, so there is
+   nothing useful to say here. */
+function ensureDirs(job) {
+  var parts = job.rel ? job.rel.split("/").filter(Boolean) : [];
+  parts.pop();
+
+  var here = job.dir;
+  var chain = Promise.resolve();
+
+  parts.forEach(function (part) {
+    here += part + "/";
+    var target = here;
+    chain = chain.then(function () {
+      if (madeDirs[target]) { return; }
+      madeDirs[target] = true;
+      return post("create", { path: target }).catch(function () {});
+    });
+  });
+
+  return chain;
+}
+
+function enqueue(files, fromFolder) {
+  var unknown = 0;
+
+  Array.prototype.forEach.call(files, function (file) {
+    var rel = file.webkitRelativePath || file.sonixRelativePath || "";
+    if (!isKnown(file.name)) {
+      unknown++;
+      // One file at a time is worth naming. A folder of two hundred is not:
+      // it would be two hundred notices for one decision.
+      if (!fromFolder) {
+        toast(fill('{{js|"{1}" non è un formato che il player legge; lo carico comunque.}}', file.name));
+      }
+    }
+    queue.push({ file: file, dir: path, rel: rel });
+  });
+
+  if (fromFolder && unknown) {
+    toast(fill(unknown === 1
+               ? "{{js|{1} file non è in un formato che il player legge; lo carico comunque.}}"
+               : "{{js|{1} file non sono in un formato che il player legge; li carico comunque.}}", unknown));
+  }
+
+  pump();
+}
+
+function pump() {
+  if (uploading) { return; }
+  var job = queue.shift();
+  if (!job) { madeDirs = {}; load(path); return; }
+
+  uploading = true;
+
+  var card = document.createElement("div");
+  card.className = "upload";
+  card.innerHTML =
+    '<div class="head2">' +
+      icon("upload", "big") +
+      '<span class="name"></span>' +
+      '<span class="pct">0%</span>' +
+      '<button class="btn btn-icon" aria-label="{{Annulla}}">' + icon("close", "big") + "</button>" +
+    "</div>" +
+    '<div class="bar"><span></span></div>';
+  // The relative path, when there is one: with a folder on the way up, "03.mp3"
+  // on its own does not say which of the four "03.mp3" is being sent.
+  card.querySelector(".name").textContent = job.rel || job.file.name;
+  $("uploads").appendChild(card);
+
+  ensureDirs(job).then(function () { send(job, card); });
+}
+
+function send(job, card) {
+  var form = new FormData();
+  form.append("path", jobDir(job));
+  form.append("files[]", job.file, job.file.name);
+
+  var xhr = new XMLHttpRequest();
+  xhr.open("POST", "upload", true);
+
+  xhr.upload.onprogress = function (e) {
+    if (!e.lengthComputable) { return; }
+    var pct = Math.round(e.loaded / e.total * 100);
+    card.querySelector(".bar > span").style.width = pct + "%";
+    card.querySelector(".pct").textContent = pct + "%";
+  };
+
+  var finish = function (ok, why) {
+    card.remove();
+    uploading = false;
+    if (ok) {
+      toast(fill("{{js|{1} caricato}}", job.file.name), "ok");
+    } else if (why !== "abort") {
+      toast(why ? fill("{{js|Caricamento di {1} non riuscito ({2})}}", job.file.name, why)
+                : fill("{{js|Caricamento di {1} non riuscito}}", job.file.name));
+    }
+    pump();
+  };
+
+  xhr.onload = function () { finish(xhr.status >= 200 && xhr.status < 300, "HTTP " + xhr.status); };
+  xhr.onerror = function () { finish(false, "{{js|rete}}"); };
+  xhr.onabort = function () { finish(false, "abort"); };
+
+  card.querySelector(".head2 button").onclick = function () { xhr.abort(); };
+
+  xhr.send(form);
+}
+
+$("pick").onclick = function () { $("files").click(); };
+$("files").onchange = function () { enqueue(this.files, false); this.value = ""; };
+
+$("pick-folder").onclick = function () { $("folders").click(); };
+$("folders").onchange = function () { enqueue(this.files, true); this.value = ""; };
+
+/* Drag and drop over the whole page, which is how a desktop actually wants to
+   do this. */
+["dragenter", "dragover"].forEach(function (name) {
+  document.addEventListener(name, function (e) {
+    e.preventDefault();
+    document.body.classList.add("dragging");
+  });
+});
+["dragleave", "drop"].forEach(function (name) {
+  document.addEventListener(name, function (e) {
+    e.preventDefault();
+    if (name === "dragleave" && e.relatedTarget) { return; }
+    document.body.classList.remove("dragging");
+  });
+});
+/* A dropped folder does NOT arrive in dataTransfer.files -- that list holds
+   only files, and a dropped directory shows up there as an unreadable
+   zero-byte entry. The tree is reachable only through the entry API, so walk
+   it, and fall back to the flat list when the browser has no entry API. */
+function walkEntry(entry, prefix, out) {
+  if (entry.isFile) {
+    return new Promise(function (resolve) {
+      entry.file(function (file) {
+        if (prefix) { file.sonixRelativePath = prefix + file.name; }
+        out.push(file);
+        resolve();
+      }, resolve);
+    });
+  }
+
+  if (!entry.isDirectory) { return Promise.resolve(); }
+
+  var reader = entry.createReader();
+  var here = prefix + entry.name + "/";
+
+  // readEntries hands back at most a hundred at a time and signals the end
+  // with an empty batch, so it has to be called until it does.
+  var readBatch = function () {
+    return new Promise(function (resolve) {
+      reader.readEntries(function (entries) {
+        if (!entries.length) { resolve(); return; }
+        var chain = Promise.resolve();
+        entries.forEach(function (child) {
+          chain = chain.then(function () { return walkEntry(child, here, out); });
+        });
+        chain.then(readBatch).then(resolve);
+      }, resolve);
+    });
+  };
+
+  return readBatch();
+}
+
+document.addEventListener("drop", function (e) {
+  var items = e.dataTransfer && e.dataTransfer.items;
+  var canWalk = items && items.length && typeof items[0].webkitGetAsEntry === "function";
+
+  if (!canWalk) {
+    if (e.dataTransfer && e.dataTransfer.files && e.dataTransfer.files.length) {
+      enqueue(e.dataTransfer.files, false);
+    }
+    return;
+  }
+
+  var entries = [];
+  for (var i = 0; i < items.length; i++) {
+    var entry = items[i].webkitGetAsEntry();
+    if (entry) { entries.push(entry); }
+  }
+  if (!entries.length) { return; }
+
+  var files = [];
+  var anyFolder = entries.some(function (entry) { return entry.isDirectory; });
+  var chain = Promise.resolve();
+
+  entries.forEach(function (entry) {
+    chain = chain.then(function () { return walkEntry(entry, "", files); });
+  });
+
+  chain.then(function () {
+    if (files.length) { enqueue(files, anyFolder); }
+  });
+});
+
+/* --- go ----------------------------------------------------------------- */
+
+fetch("hostname", { cache: "no-store" })
+  .then(function (res) { return res.ok ? res.text() : ""; })
+  .then(function (name) {
+    deviceName = (name || "").trim().toUpperCase();
+    if (deviceName) { draw(); } // the title and the first crumb are its name
+  })
+  .catch(function () { /* the name is decoration; the page works without it */ });
+
+updateHiddenButton();
+load(CARD);
+</script>
+</body>
+</html>
