@@ -333,3 +333,12 @@ sonix-player/
 ├── PATCHES.md                       
 └── README.md
 ```
+
+
+
+## Special thanks to:
+[@Tartarus6](https://github.com/Tartarus6)
+
+[@noisetta](https://github.com/noisetta)
+
+and all the members of this fantastic community!!
