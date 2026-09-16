@@ -32,30 +32,28 @@ import io
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICON_DIR = os.path.join(REPO_ROOT, "assets", "icons")
-# src/gui/shell/ e non src/gui/: le icone sono passate li' quando src e' stato
-# diviso per funzione, e questo percorso e' rimasto indietro -- rigenerare
-# scriveva un file nuovo accanto a quello vero, che nessuno compila.
 OUT_C = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons.c")
 OUT_H = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons.h")
 
-# (svg file, C identifier, pixel size). Sizes are chosen for the R3 Pro II's
-# 480x720 panel; they are drawn 1:1, LVGL does not scale them.
+# (svg file, C identifier, pixel size).
+#
+# LVGL does not scale these: the size here is the size on the 480x720 panel, so
+# the same drawing needed at two sizes appears twice under two names.
+#
+# The recurring sizes: 26-30 px for a status bar or a row, 34 px for a corner
+# button, 46 px inside the control centre's 88 px circles, 56 px for a dialog
+# glyph, 96-160 px for a placeholder standing in for missing artwork.
 ICONS = [
     ("chevron-left.svg", "chevron_left", 36),
-    ("chevron-right.svg", "chevron_right", 36), # list rows: same size as the back chevron
-    # The tick that marks the chosen row in a single-choice list (the language
-    # page). Same size as the chevron it stands in place of, so rows that have
-    # one and rows that do not line up.
+    ("chevron-right.svg", "chevron_right", 36),
+    # Marks the chosen row in a single-choice list, in place of the chevron.
     ("check.svg", "check", 36),
     ("close.svg", "close", 36),
     ("x.svg", "clear", 30),                 # clears the search field
-    ("eye.svg", "eye", 30),                 # mostra la password in chiaro
-    ("eye-off.svg", "eye_off", 30),         # e la rinasconde -- stessa misura della x
+    ("eye.svg", "eye", 30),                 # shows the password in clear
+    ("eye-off.svg", "eye_off", 30),
     ("folder.svg", "folder", 32),
-    # Il pulsante in alto a destra nel browser: riporta alla radice della
-    # scheda. Misura da pulsante d'angolo (56 px di bottone), come le altre
-    # icone che stanno li'.
-    ("folder-root.svg", "folder_root", 34),
+    ("folder-root.svg", "folder_root", 34), # browser corner: back to the card root
     ("file.svg", "file", 32),
     ("music-settings.svg", "music_settings", 34),
     ("repeat.svg", "repeat_all", 30),
@@ -63,177 +61,121 @@ ICONS = [
     ("repeat-off.svg", "repeat_off", 30),
     ("play.svg", "play", 40),
     ("pause.svg", "pause", 40),
-    # A live stream cannot be paused -- there is no position to come back
-    # to -- so on a radio the same button stops instead, and says so.
-    # Drawn a touch smaller than play/pause: a solid square of the same
-    # side reads heavier than either of them.
+    # A live stream has no position to come back to, so on a radio the same
+    # button stops. Smaller than play/pause: a solid square of the same side
+    # reads heavier than either of them.
     ("stop.svg", "stop", 34),
-    # The status bar's playback indicator, drawn at bar size from its own
-    # outlined glyphs (the player's filled play/pause are too heavy up there).
+    # The status bar's playback indicator, from its own outlined glyphs: the
+    # player's filled play/pause are too heavy at bar size.
     ("play-status.svg", "play_status", 26),
     ("pause-status.svg", "pause_status", 26),
-    # Lo stesso posto, quando a suonare non e' il player ma un telefono: si
-    # sostituisce a play/pause invece di aggiungersi, perche' quello che sta
-    # uscendo dal DAC e' una cosa sola e il simbolo che la nomina deve essere
-    # uno solo. Stessa misura degli altri due, se no il cambio si vede come
-    # uno scatto della barra.
+    # The same place when a phone is playing rather than the player. It
+    # replaces play/pause instead of joining them, and shares their size.
     ("airplay-status.svg", "airplay_status", 26),
-    # Il logo di SonixLink, subito a destra di play/pausa: c'e' quando un
-    # telefono e' collegato. Stessa misura degli altri glifi della barra.
     ("sonixlink-status.svg", "sonixlink_status", 26),
     ("skip-back.svg", "skip_back", 34),
     ("skip-forward.svg", "skip_forward", 34),
-    # The control centre's transport, a size up from the player's: it is
-    # reached by feel, with the sheet half-covering whatever was on screen, so
-    # the targets there want to be bigger than the ones on a page being looked
-    # at directly.
+    # The control centre's transport, a size up from the player's: the sheet is
+    # reached by feel over whatever was on screen.
     ("play.svg", "play_large", 48),
     ("pause.svg", "pause_large", 48),
     ("skip-back.svg", "skip_back_large", 42),
     ("skip-forward.svg", "skip_forward_large", 42),
     ("music-note.svg", "music_note", 128),
-    # The same placeholder for a radio station with no artwork: a note
-    # would say "track", and a live stream is not one. Drawn at the music
-    # note's size so the two swap in place, in the player and in the
-    # screensaver alike.
+    # Placeholders that swap in for the music note in the same box: a radio
+    # station, an AirPlay sender and a DLNA renderer are not tracks.
     ("radio-player.svg", "radio_player", 128),
-    # The AirPlay page's placeholder, where the artwork goes before a sender
-    # has sent any. Lucide's own airplay glyph, drawn at the same size as the
-    # player's music note, which is the other picture-shaped placeholder.
     ("airplay-page-icon.svg", "airplay_page", 128),
-    # Lo stesso, per la pagina DLNA: il glifo "cast" di Lucide, alla stessa
-    # misura, nel posto dove AirPlay mette il suo.
     ("dlna-page-icon.svg", "dlna_page", 128),
     # Status bar. The charging shell and its bolt are separate bitmaps so the
     # bolt can be yellow while the shell stays white.
     ("battery.svg", "battery", 38),
     ("battery-charging-body.svg", "battery_charging_body", 38),
     ("battery-charging-bolt.svg", "battery_charging_bolt", 38),
-    # La stessa pila, piccola, per la striscia in fondo alla pagina di un libro.
-    # Li' il testo e' a 16 e non a 24, e la pila della barra di stato accanto
-    # sarebbe alta il doppio della riga su cui sta.
+    # The same cell for the ebook reader's footer strip, where the text is 16
+    # and the status bar's cell would be twice the height of its line.
     ("battery.svg", "battery_small", 26),
     # Volume: three states of the same glyph, picked by level.
     ("volume.svg", "volume_mute", 30),
     ("headphones.svg", "headphones", 26), # jack indicator beside the volume
-    # ...e quella che prende il suo posto quando il suono esce dalla porta
-    # USB-C: la porta stessa, non il connettore ottico che il round precedente
-    # aveva scambiato per la funzione giusta.
-    ("usb-audio-out.svg", "usbaudioout", 26),
+    ("usb-audio-out.svg", "usbaudioout", 26), # and when the sound leaves over USB-C
     ("volume-1.svg", "volume_low", 30),
     ("volume-2.svg", "volume_high", 30),
     # Power menu.
     ("power-off.svg", "power_off", 56),
     ("reboot.svg", "reboot", 56),
-    # Library pages.
+    # Library pages. One glyph per index, and the stand-in for artwork that is
+    # not there: they ride inside the 72 px thumbnail box on a library row and
+    # the 56 px one on a search hit.
     ("music-2.svg", "music2", 32),
-    # One glyph per index, so a list of names says what kind of names they
-    # are without reading the title: a folder for everything was accurate and
-    # told you nothing. Same 32 px as the folder they replace -- these ride
-    # inside the 72 px thumbnail box on a library row and the 56 px one on a
-    # search hit, in both cases as the stand-in for artwork that is not there.
     ("artist.svg", "artist", 32),
-    # Il microfono che tiene il posto della copertina nelle liste dei podcast:
-    # una nota musicale li' diceva la cosa sbagliata. E' l'icona mandata
-    # dall'utente (Lucide "mic"), resa a 40 px per stare nella casella da
-    # 60 px delle righe come fanno le altre icone segnaposto.
-    ("podcast-list.svg", "podcast_list", 40),
+    ("podcast-list.svg", "podcast_list", 40), # 40 px for the 60 px podcast rows
     ("artist-album.svg", "artist_album", 32),
     ("genre.svg", "genre", 32),
     ("album.svg", "album", 32),
-    # The corner buttons on the index pages: the sort direction, and the
-    # "group this artist's tracks by album" switch.
+    # Corner buttons on the index pages: the sort direction, and the menu of
+    # ways to start an artist.
     ("list-a-z.svg", "sort_az", 34),
     ("list-z-a.svg", "sort_za", 34),
-    # Left in place, and left unused since the artist pages traded the album
-    # grouping switch for the circle-play menu below.
-    ("album.svg", "album_corner", 34),
-    # Lo stesso disco alla misura che serve in Cover Flow, dove sta in mezzo a
-    # un quadrato da 210 px al posto della copertina che manca. Prima veniva
-    # ingrandito tre volte partendo da 32 px: un disegno di 96 px reso a 96 px
-    # non ha i gradini che aveva quello.
+    ("album.svg", "album_corner", 34),  # built, and currently unused
+    # Cover Flow draws this in a 210 px square where a cover is missing.
     ("album.svg", "album_big", 96),
-    # Il pannello laterale di Now Playing: il quadrante che porta ai VU-meter,
-    # e il disco che riporta alla copertina. Stessa misura tutti e due, perche'
-    # nel pannello si scambiano di posto.
-    # The corner button that replaced it: one tap opens a small menu of ways to
-    # start this artist, instead of toggling one setting.
     ("circle-play.svg", "circle_play", 34),
     ("ellipsis-vertical.svg", "ellipsis_vertical", 30),
     ("list-music.svg", "list_music", 34),
-    ("search.svg", "search", 34),           # Musica corner + search page
-    ("wifi.svg", "wifi", 46),               # quick panel: inside the 88 px circles
+    ("search.svg", "search", 34),
+    ("wifi.svg", "wifi", 46),
     ("bluetooth.svg", "bluetooth", 46),
-    # Status bar radios. The wifi glyph is the same arc drawn with none, one,
-    # two or three bars, picked by signal strength; bluetooth has the one rune.
-    # Both are drawn at reduced opacity while their radio is on but not
-    # connected to anything, so "acceso" and "collegato" read apart without
-    # needing a second colour.
+    # Status bar radios. The wifi glyph is the same arc with none, one, two or
+    # three bars, picked by signal strength. Both are drawn at reduced opacity
+    # while the radio is on but connected to nothing.
     ("wifi-zero.svg", "wifi_zero", 34),
     ("wifi-low.svg", "wifi_low", 34),
     ("wifi-high.svg", "wifi_high", 34),
     ("wifi-max.svg", "wifi_max", 34),
     ("bluetooth-status.svg", "bluetooth_status", 30),
-    # The two "look for something" glyphs, in the corner of the Wi-Fi and
-    # Bluetooth pages: the same arc and rune with the search motion added.
+    # The corner buttons of the Wi-Fi and Bluetooth pages: the same arc and
+    # rune with the search motion added, and the receiver, which is waves
+    # arriving rather than a rune because there the sound comes in.
     ("wifi-search.svg", "wifi_search", 36),
     ("bluetooth-search.svg", "bluetooth_search", 36),
-    # Il Ricevitore Bluetooth, accanto agli altri due nell'angolo della pagina
-    # Bluetooth. Non e' una rune ma le onde che le arrivano addosso: qui il
-    # suono entra invece di uscire, ed e' l'unica cosa che distingue questa
-    # pagina da tutto il resto della sezione.
     ("bluetooth-receiver.svg", "bluetooth_receiver", 36),
-    # The two glyphs the modal popups are built around, at the size a dialog
-    # wants rather than a status bar's: the rune with its two link marks while
-    # a pairing is in flight, and the headphones for "the volume is over
-    # there, not here".
+    # Dialog glyphs: a pairing in flight, and "the volume is over there".
     ("bluetooth-connecting.svg", "bluetooth_connecting", 56),
     ("headphones.svg", "headphones_big", 56),
     ("sun.svg", "sun", 30),
-    ("shift.svg", "shift", 30),           # keyboard
-    # Il caps lock: stessa misura dello shift, perche' i due si scambiano
-    # sullo stesso tasto (doppio tocco veloce dello shift).
+    # Keyboard. Shift and caps lock share one key, so they share a size.
+    ("shift.svg", "shift", 30),
     ("caps-lock.svg", "caps_lock", 30),
     ("delete.svg", "delete", 30),
     ("space.svg", "space", 34),
-    ("chevron-up.svg", "chevron_up", 32), # (unused: the control centre's hint
-                                          #  is the iOS-style line below)
-    # The control centre's close hint: a single short bar, the way iOS draws
-    # its home indicator. Big, because the glyph's line only spans the middle
-    # 14 of its 24 units -- 56 px of bitmap is a ~33 px bar.
+    ("chevron-up.svg", "chevron_up", 32), # built, and currently unused
+    # The control centre's close hint, drawn the way iOS draws its home
+    # indicator. Big because the glyph's line spans only the middle 14 of its
+    # 24 units, so 56 px of bitmap is a ~33 px bar.
     ("control-center-line.svg", "control_center_line", 56),
-    ("mseb.svg", "mseb", 46),               # control centre quick toggles
+    # The control centre's round toggles.
+    ("mseb.svg", "mseb", 46),
     ("equalizer.svg", "equalizer", 46),
-    # Line out, in the same row of round toggles: a cable, because that is what
-    # the mode is for -- the player feeding an amplifier instead of a pair of
-    # headphones.
     ("lineout.svg", "lineout", 46),
     ("fade-track.svg", "fade_track", 46),
     ("low-gain.svg", "low_gain", 46),
     ("high-gain.svg", "high_gain", 46),
-    # AirPlay fra i comandi rapidi, alla misura dei cerchi da 88. Lo stesso
-    # disegno della barra di stato a un'altra misura, non un secondo disegno:
-    # il tondo che lo accende e il simbolo che compare in alto devono essere
-    # riconoscibilmente la stessa cosa.
+    # AirPlay and SonixLink carry the same drawing as their status bar glyph at
+    # circle size: the toggle and the symbol it raises must read as one thing.
     ("airplay-status.svg", "airplay_quick", 46),
-    # Il parametrico fra i comandi rapidi, alla misura degli altri tondi.
     ("peq.svg", "peq_quick", 46),
-    # Lo stesso ragionamento per SonixLink: il tondo che lo accende porta il
-    # logo che compare nella barra di stato quando un telefono si collega.
     ("sonixlink-status.svg", "sonixlink_quick", 46),
-    # E DLNA, che fra i tondi ci e' arrivato dopo. Qui il disegno e' un altro
-    # dalla tessera del menu, che e' una piastrella colorata e ingrandita
-    # sarebbe una piastrella finita nel posto sbagliato: questo e' il logo DLNA
-    # a tratto, come gli altri tondi.
+    # DLNA's menu tile is a coloured square, so the circle carries the line
+    # drawing of the logo instead.
     ("dlna-quick.svg", "dlna_quick", 46),
-    # I tre timer sonno fra i tondi: uno per tipo di ascolto, perche' i timer
-    # sono tre e spegnerne uno dal control center non deve poter spegnere
-    # quello di qualcun altro. Stessa misura degli altri tondi.
+    # One sleep timer per kind of listening: there are three of them, and
+    # stopping one from the control centre must not stop another.
     ("sleep-timer-music.svg", "sleep_music_quick", 46),
     ("sleep-timer-audiobook.svg", "sleep_audiobook_quick", 46),
     ("sleep-timer-podcast.svg", "sleep_podcast_quick", 46),
-    # I tipi di file di Gestione file e della pagina web: un glifo per famiglia,
-    # alla misura della cartella che gli sta accanto nella stessa riga.
+    # File types, in the file manager and on the web page: one glyph per
+    # family, at the size of the folder beside them.
     ("files-music.svg", "files_music", 32),
     ("files-audiobook.svg", "files_audiobook", 32),
     ("files-playlist.svg", "files_playlist", 32),
@@ -242,57 +184,37 @@ ICONS = [
     ("files-update.svg", "files_update", 32),
     ("files-gamepad.svg", "files_game", 32),
     ("files-book.svg", "files_book", 32),
-    # Il cestino delle azioni su un file. Non icon_delete, che malgrado il nome
-    # e' la freccia del tasto cancella della tastiera.
+    # The bin in a file's action menu. Not icon_delete, which despite the name
+    # is the keyboard's backspace arrow.
     ("trash.svg", "trash", 34),
-    # Il tasto d'angolo di Gestione file. Misura d'angolo come gli altri.
     ("folder-new.svg", "folder_new", 34),
-    # L'appiglio a destra di una riga che si trascina: la pagina della lingua
-    # della tastiera lo usa per spostare un layout fra "In uso" e "Altri".
+    # The grip at the right of a draggable row, in the keyboard layout page.
     ("grip-horizontal.svg", "grip", 36),
-    # Il tasto d'angolo che accende il riordino nei brani di una playlist.
-    # Misura d'angolo come circle-play, che gli sta subito a destra.
-    ("move-vertical.svg", "reorder", 34),
+    ("move-vertical.svg", "reorder", 34), # turns on reordering in a playlist
     ("now-playing.svg", "now_playing", 32), # the playing row in the queue
-    ("plus.svg", "plus", 36),               # "Nuova playlist"
-    # The playlists page's corner button: bringing an .m3u dropped on the card
-    # into the player's own folder. Corner-button size, like the rest of them.
-    ("import.svg", "import", 34),
+    ("plus.svg", "plus", 36),
+    ("import.svg", "import", 34), # brings an .m3u from the card into the player's folder
     ("reset.svg", "reset", 36),             # MSEB / equalizer: back to flat
-    ("circle-check.svg", "circle_check", 64), # the "brano aggiunto" confirmation
+    ("circle-check.svg", "circle_check", 64), # the confirmation popup
     ("circle-alert.svg", "circle_alert", 64), # ...and what a failure shows instead
     ("book-headphones.svg", "book_headphones", 128),
-    # The same book at thumbnail size, for the rows of the Audiolibri list
-    # whose file carries no cover art.
-    ("book-headphones.svg", "book_headphones_row", 64),
-    # Player extras.
+    ("book-headphones.svg", "book_headphones_row", 64), # audiobook rows with no cover
+    # Player extras. Shuffle and shuffle-repeat share a button.
     ("shuffle.svg", "shuffle", 30),
-    # Shuffle that comes round again: the mode after shuffle in the player's
-    # cycle. Same size, since the two share a button.
     ("shuffle-repeat.svg", "shuffle_repeat", 30),
-    # Preferiti: l'inverti-ordine, tasto d'angolo. Non e' la misura dello
-    # shuffle che gli sta di fianco ma quella di list-a-z, che e' il tasto
-    # d'angolo che fa la stessa identica cosa nella pagina Tutti i brani: due
-    # tasti che ordinano una lista devono pesare uguale, e a 30 px questo si
-    # vedeva piu' piccolo dell'altro.
+    # The favourites page's reverse-order button. 34 px and not shuffle's 30:
+    # it does the same job as list-a-z on the all-tracks page, and two buttons
+    # that sort a list should weigh the same.
     ("arrow-down-up.svg", "arrow_down_up", 34),
     ("star.svg", "star", 32),
     ("star-filled.svg", "star_filled", 32),
-    ("star.svg", "star_corner", 34), # corner button size, beside list-music
-    # The Radio page's own corner button: a clock turning back, for the
-    # stations played most recently. Same 34 px as the star it sits beside.
-    ("radio-recent.svg", "radio_recent", 34),
-    # E quello accanto alla ricerca: le stazioni scritte a mano in radio.txt.
-    # Stessa misura degli altri tasti d'angolo della stessa riga.
-    ("custom-radio.svg", "radio_custom", 34),
-    # L'aggiorna-a-comando della pagina Processi: stesso 34 px degli altri
-    # tasti d'angolo.
-    ("refresh.svg", "refresh", 34),
-
-    # The DAC page: the charging toggle in the corner, and its own big glyph.
-    # Audiobook transport: the four jumps the two buttons can be set to, and
-    # the chapter list. Which pair is on screen follows Impostazioni ->
-    # Audiolibri -> Cambia controlli, so all four are always built.
+    ("star.svg", "star_corner", 34),
+    ("radio-recent.svg", "radio_recent", 34), # stations played most recently
+    ("custom-radio.svg", "radio_custom", 34), # the stations written into radio.txt
+    ("refresh.svg", "refresh", 34), # the Processes page's refresh
+    # Audiobook transport: the four jumps the two buttons can be set to, plus
+    # the chapter list. Which pair is on screen follows Settings -> Audiobooks
+    # -> Change controls, so all of them are built.
     ("prev_10.svg", "prev_10", 50),
     ("next_10.svg", "next_10", 50),
     ("prev_30.svg", "prev_30", 50),
@@ -300,32 +222,22 @@ ICONS = [
     ("prev_60.svg", "prev_60", 50),
     ("next_60.svg", "next_60", 50),
     ("chapter.svg", "chapter", 34),
-    # Lo stesso posto, quando a suonare e' un podcast: apre la coda, che su un
-    # podcast E' l'elenco degli episodi. Stessi 34 px del glifo dei capitoli
-    # che sostituisce, cosi' passare da un libro a un podcast non fa ballare la
-    # riga dei tasti.
+    # The same place on a podcast, where the queue is the episode list.
     ("podcast-episodes.svg", "podcast_episodes", 34),
-    # The playback-speed gauge, in the repeat button's place while a book is
-    # loaded. Same 34 px as the repeat glyph it stands in for.
+    # The playback-speed gauge, in the repeat button's place while a book plays.
     ("play-speed.svg", "play_speed", 34),
-
+    # The DAC page's charging toggle.
     ("zap.svg", "zap", 34),
     ("zap-off.svg", "zap_off", 34),
-
-    # I due tasti d'angolo della pagina Qobuz: la qualita' audio e l'uscita
-    # dall'account. Stessi 34 px degli altri tasti d'angolo, cosi' stanno in
-    # riga con l'ingranaggio di Musica.
+    # Corner buttons: Qobuz quality and sign-out, the remap page's side swap,
+    # and Gearboy's two save states.
     ("qobuz-quality.svg", "qobuz_quality", 34),
     ("log-out.svg", "log_out", 34),
-    # Lo scambio fra i due fianchi nella pagina di rimappatura: stessi 34 px
-    # degli altri tasti d'angolo.
     ("swap-remap.svg", "swap_remap", 34),
-    # I due stati salvati di Gearboy, sul bollo tondo in alto a destra.
     ("save-state.svg", "save_state", 34),
     ("load-state.svg", "load_state", 34),
-    # La rotella che gira: le liste che stanno cercando, e Qobuz che carica.
-    # Due misure, perche' accanto a una riga e' un dettaglio e in mezzo allo
-    # schermo e' la sola cosa che si guarda.
+    # The turning wheel, at two sizes: beside a row it is a detail, in the
+    # middle of the screen it is the only thing being looked at.
     ("loader-circle.svg", "loader_small", 26),
     ("loader-circle.svg", "loader_big", 56),
     # --- AirPods ---------------------------------------------------------
@@ -357,8 +269,8 @@ ICONS = [
     ("airpods-pro-right.svg", "airpod_pro_right", (55, 72)),
 
     # The first two generations came with either case, and nothing the
-    # headphones say tells us which one is in the room -- so the wireless one
-    # is an option the user sets, and both have to be here.
+    # headphones say tells which one is in the room, so the wireless one is an
+    # option the user sets and both have to be here.
     ("airpods-chargingcase-fill.svg", "airpods_case", (59, 72)),
     ("airpods-chargingcase-wireless-fill.svg", "airpods_case_wireless", (59, 72)),
     ("airpods-gen3-chargingcase-wireless-fill.svg", "airpods_gen3_case", (85, 72)),
@@ -377,65 +289,49 @@ ICONS = [
     ("transparency.svg", "airpods_transparency", 32),
     ("adaptive.svg", "airpods_adaptive", 32),
 
-    # Il lettore di EPUB. Le prime tre sono la barra che si apre tenendo premuto
-    # al centro della pagina: 44 px perche' sono bersagli da dito e non decori.
-    # Le tre dopo sono i modi di girare pagina, dentro le impostazioni del tema,
-    # e stanno accanto a un nome: 34 px, la misura di una riga di testo.
-    # chapter.svg e' gia' sopra a 34 px per la lista dei capitoli degli
-    # audiolibri; qui serve alla misura degli altri due della barra, e una barra
-    # con un'icona piu' piccola delle sue vicine si vede.
+    # The EPUB reader. The first three are the bar that opens on a long press
+    # in the middle of the page, at 44 px because they are finger targets. The
+    # three after are the page-turn styles in the theme settings, beside a name
+    # at the size of a line of text.
     ("chapter.svg", "ebook_chapter", 44),
     ("font-settings.svg", "ebook_font", 44),
     ("book-theme.svg", "ebook_theme", 44),
     ("fast-turn.svg", "ebook_turn_fast", 34),
     ("scroll-turn.svg", "ebook_turn_slide", 34),
     ("vertical-turn.svg", "ebook_turn_vertical", 34),
-    # Il segnaposto delle caselle dello scaffale finche' la copertina non
-    # arriva, e per i libri che non ne hanno una: grande, perche' riempie una
-    # casella alta trecento pixel.
+    # The shelf's placeholder, in a 300 px tall tile and beside a row.
     ("ebook-cover.svg", "ebook_cover", 96),
-    # Lo stesso segnaposto accanto a una riga invece che dentro una casella
-    # della griglia. Una seconda misura e non lo stesso disegno rimpicciolito:
-    # LVGL non scala le icone, quindi quello da 96 px in una casella da 56x84
-    # veniva semplicemente tagliato.
     ("ebook-cover.svg", "ebook_cover_small", 40),
-    # I segnalibri. Il primo e' il pulsante nell'angolo della pagina Libri,
-    # alla misura degli altri pulsanti d'angolo; il secondo sta dentro il
-    # pop-up che conferma il salvataggio, alla misura dei glifi dei pop-up.
+    # Bookmarks: the Books page's corner button, and the glyph in the popup
+    # that confirms a save.
     ("bookmark.svg", "bookmark", 36),
     ("bookmark-check.svg", "bookmark_check", 64),
-    # Il cuore che salta fuori quando si chiude il codice QR del caffe'. Grande
-    # perche' l'animazione lo ingrandisce fino a 1:1 e non oltre: LVGL disegna
-    # le icone alla loro misura, quindi questa e' la misura a cui si vede.
+    # The heart that jumps out when the coffee QR code is closed. 160 px
+    # because the animation grows it to 1:1 and no further.
     ("heart.svg", "heart", 160),
 ]
 
-# Main menu tiles. These keep their own colours, so they are listed separately
-# from the recolourable glyphs above. 96 px is what the 2x3 grid draws them at;
-# they are stored at exactly that size because LVGL does not scale them and a
-# larger bitmap would be pure weight in the binary.
-# Two tile sizes: the main menu's six tiles grew to 128 px; the Musica
-# section's own grid keeps the original 112 px.
+# Main menu and section tiles, which keep their own colours and are therefore
+# listed separately from the recolourable glyphs above. Stored at exactly the
+# size they are drawn at: LVGL does not scale them, so a larger bitmap would be
+# weight in the binary and nothing else.
 MAIN_MENU_ICON_SIZE = 128
 SECTION_ICON_SIZE = 112
 
 COLOR_ICONS = [
-    # The quality badges under a track's title, when Musica > Opzioni di
-    # visualizzazione asks for them. Small: they sit under the title and are a
-    # glance, not a label. Here rather than above because the four are the same
-    # shape in four colours -- teal, olive, amber, magenta -- and the white
-    # rendering above would make them one icon repeated.
+    # The quality badges under a track's title. Here rather than above because
+    # the four are one shape in four colours -- teal, olive, amber, magenta --
+    # and the white rendering would make them one icon repeated.
     ("lossy-quality.svg", "quality_lossy", 26),
     ("cd-quality.svg", "quality_cd", 26),
     ("hifi-quality.svg", "quality_hifi", 26),
     ("dsd-quality.svg", "quality_dsd", 26),
 
+    # The three pages where the player stops being a player.
     ("dac-icon-page.png", "dac_page", 200),
     ("sonixlink-icon-page.png", "sonixlink_page", 200),
-    # Stessa misura e stessa costruzione delle altre due immagini grandi: la
-    # pagina del Ricevitore Bluetooth ha la stessa forma di quella del DAC,
-    # cioe' un modo in cui il lettore smette di essere un lettore.
     ("bluetooth-receiver-icon-page.png", "bluetooth_receiver_page", 200),
+
     ("music.png", "menu_music", MAIN_MENU_ICON_SIZE),
     # The Musica section's own grid.
     ("all.png", "menu_all", SECTION_ICON_SIZE),
@@ -446,62 +342,42 @@ COLOR_ICONS = [
     ("explorer.png", "menu_explorer", SECTION_ICON_SIZE),
     ("streaming.png", "menu_streaming", MAIN_MENU_ICON_SIZE),
     ("wireless.png", "menu_wireless", MAIN_MENU_ICON_SIZE),
-    # The Wireless section's own grid, same size as the Musica one.
+    # The Wireless section's own grid.
     ("wifi-settings.png", "menu_wifi_settings", SECTION_ICON_SIZE),
     ("bluetooth.png", "menu_bluetooth", SECTION_ICON_SIZE),
     ("airplay.png", "menu_airplay", SECTION_ICON_SIZE),
     ("wifi-transfer.png", "menu_wifi_transfer", SECTION_ICON_SIZE),
     ("sonixlink.png", "menu_sonixlink", SECTION_ICON_SIZE),
     ("dlna.png", "menu_dlna", SECTION_ICON_SIZE),
-    # The Streaming section's own grid, same size as the others.
+    # The Streaming section's own grid.
     ("tidal.png", "menu_tidal", SECTION_ICON_SIZE),
     ("qobuz.png", "menu_qobuz", SECTION_ICON_SIZE),
     ("radio.png", "menu_radio", SECTION_ICON_SIZE),
     ("podcast.png", "menu_podcast", SECTION_ICON_SIZE),
     ("audiobooks.png", "menu_audiobooks", MAIN_MENU_ICON_SIZE),
     ("settings.png", "menu_settings", MAIN_MENU_ICON_SIZE),
-    # "Altro": la casella del menu principale che era del DAC. Stessa
-    # costruzione delle altre -- due quadrati arrotondati, uno ruotato dietro e
-    # uno smerigliato davanti, con la sfumatura di un colore solo -- e i tre
-    # puntini che ovunque vogliono dire "c'e' dell'altro qui sotto".
     ("more.png", "menu_more", MAIN_MENU_ICON_SIZE),
-    # Il DAC adesso e' una voce DENTRO Altro, quindi gli serve anche la misura
-    # delle griglie di sezione, non solo quella del menu principale.
+    # What lives inside "More", at section size.
     ("dac.png", "menu_dac", SECTION_ICON_SIZE),
-    # L'emulatore Game Boy, dentro "Altro" come il DAC.
     ("gearboy.png", "menu_gearboy", SECTION_ICON_SIZE),
-    # I libri, terza voce di "Altro": stessa costruzione e stessa misura delle
-    # altre caselle di sezione.
     ("ebook.png", "menu_books", SECTION_ICON_SIZE),
-    # Il gestore file, quarta voce di "Altro". Per ora la casella c'e' e basta:
-    # e' disegnata spenta finche' non ha una pagina dove portare.
     ("file-explorer.png", "menu_file_explorer", SECTION_ICON_SIZE),
 
-    # Il marchio Qobuz in alto a destra del player, dove la radio mette
-    # "DIRETTA". Sta SOPRA la copertina, cioe' sopra qualunque colore: per
-    # questo e' quello con il contorno bianco e non quello del menu, che su una
-    # copertina scura sparirebbe. Colori suoi, niente ricolorazione.
+    # The service badges in the player's top right corner, where the radio puts
+    # its LIVE mark. They sit over the cover art, so these are the outlined
+    # versions rather than the menu ones, which would vanish on a dark cover.
+    # One size for all three: they replace each other in the same place.
     ("qobuz-badge.png", "qobuz_badge", 52),
-
-    # E quello di Tidal, stessa misura e stesso angolo: i due marchi si
-    # sostituiscono nello stesso posto, quindi devono occupare lo stesso
-    # spazio -- se no cambiare servizio sposta la copertina sotto.
     ("tidal-badge.png", "tidal_badge", 52),
-
-    # E quello dei podcast, che sta nello stesso angolo degli altri due.
     ("podcast-badge.png", "podcast_badge", 52),
-
 ]
 
 
 def render(svg_path, size):
     """SVG -> list of BGRA bytes, forced to white so recolouring works.
 
-    `size` is a side in pixels for the square glyphs, which is what almost
-    every icon here is. The AirPods artwork is not square -- an earbud is
-    twice as tall as it is wide, a charging case is wider than it is tall --
-    so those entries give an explicit (width, height) instead, and stretching
-    them into a square would be the difference between an AirPod and a bean.
+    `size` is a side in pixels for the square glyphs, or an explicit
+    (width, height) for the AirPods artwork, which is not square.
     """
     width, height = size if isinstance(size, tuple) else (size, size)
     png = cairosvg.svg2png(url=svg_path, output_width=width, output_height=height)

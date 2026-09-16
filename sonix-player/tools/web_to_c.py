@@ -8,7 +8,7 @@ write out at runtime.
     web/img/*.png       the logo and the favicon
         |
         v
-    web/build/index.html    the finished page -- open this in a browser
+    web/build/index.html        the finished page -- open this in a browser
     src/system/net/webpage.h    the same bytes, as a C string literal
 
 Assembled rather than linked because the served page has to be ONE file: the
@@ -33,7 +33,7 @@ TEMPLATE = os.path.join(WEB, "index.html")
 ICON_DIR = os.path.join(WEB, "icons")
 IMG_DIR = os.path.join(WEB, "img")
 BUILD = os.path.join(WEB, "build", "index.html")
-OUT_H = os.path.join(REPO_ROOT, "src", "system", "webpage.h")
+OUT_H = os.path.join(REPO_ROOT, "src", "system", "net", "webpage.h")
 
 # Long string literals are legal C, but a single 70 KB one is a pain to read in
 # a diff. Chopped into lines, which the compiler concatenates back at no cost.
@@ -43,8 +43,8 @@ CHUNK = 100
 def symbol_id(filename: str) -> str:
     """upload-web.svg -> upload, chevron-left.svg -> chevron-left.
 
-    The "-web" suffix is how the icons arrived; it says where they are used, not
-    what they are, so it does not belong in the id the page refers to.
+    The "-web" suffix says where an icon is used, not what it is, so it does
+    not belong in the id the page refers to.
     """
     name = os.path.splitext(filename)[0]
     return name[:-4] if name.endswith("-web") else name
@@ -53,10 +53,9 @@ def symbol_id(filename: str) -> str:
 def inline_icons() -> str:
     """Every icon as a <symbol>, presentation attributes stripped.
 
-    The stroke/fill properties live in one CSS rule on .svgicon instead: they
-    are inheritable, so they reach into the <use> content, and the glyphs then
-    take their colour from whatever they sit in -- the accent on a folder, dim
-    grey on a file, red on "Elimina".
+    The stroke and fill live in one CSS rule on .svgicon instead. They are
+    inheritable, so they reach into the <use> content and each glyph takes the
+    colour of whatever it sits in.
     """
     out = []
     for filename in sorted(os.listdir(ICON_DIR)):
@@ -110,14 +109,13 @@ def escape(chunk: bytes) -> str:
         elif c == "\t":
             out.append("\\t")
         elif c == "?":
-            # "??" starts a trigraph in strict C. Nothing in the page needs one.
-            out.append("\\?")
+            out.append("\\?")  # "??" starts a trigraph in strict C
         elif 32 <= b < 127:
             out.append(c)
         else:
             # A UTF-8 byte. Octal, not hex: "\xNN" swallows the hex digits that
-            # follow it, and this page is full of accented letters next to
-            # ordinary ones.
+            # follow it, and this page has accented letters next to ordinary
+            # ones.
             out.append("\\%03o" % b)
     return "".join(out)
 
@@ -129,9 +127,8 @@ def main() -> None:
     for placeholder, value in (("<!--ICONS-->", inline_icons()),
                                ("<!--LOGO-->", data_url("logo-web.png")),
                                ("<!--FAVICON-->", data_url("favicon-web.png"))):
-        # Exactly one of each. The template's own header explains them without
-        # writing them out, because a comment containing "-->" ends there and
-        # the rest of it lands on the page as text.
+        # Exactly one of each, or the page silently loses an icon set or an
+        # image.
         if page.count(placeholder) != 1:
             sys.exit("template has %d x %s, want exactly 1" % (page.count(placeholder), placeholder))
         page = page.replace(placeholder, value)
