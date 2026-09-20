@@ -56,6 +56,8 @@ static lv_obj_t *screensettings_screen;
 static lv_obj_t *othersettings_screen;
 static lv_obj_t *brightness_slider;
 static lv_obj_t *brightness_value;
+static lv_obj_t *screen_off_value;
+static lv_obj_t *screen_off_slider;
 static lv_obj_t *doubletap_switch;
 static lv_obj_t *screensaver_switch;
 static lv_obj_t *screensaver_pills;
@@ -137,6 +139,47 @@ static void rotate_toggle_cb(lv_event_t *e) {
 }
 
 // The lowest level offered. The stock player never writes below 5 of its
+// Blanking this panel powers its touch controller down with it, so the only
+// way back is the power key. Thirty seconds is the default; "never" is there
+// for anyone who would rather not be caught out by it.
+//
+// The setting is written under [power], where it has always lived: it is read
+// by power.c, and moving the key would lose everybody's choice.
+static const struct {
+	int seconds;
+	const char *label;
+} SCREEN_OFF[] = {
+	{0, "power_never"},		 {15, "power_15_seconds"}, {30, "power_30_seconds"},
+	{60, "power_1_minute"},	 {120, "power_2_minutes"}, {300, "power_5_minutes"},
+};
+#define SCREEN_OFF_COUNT ((int)(sizeof(SCREEN_OFF) / sizeof(SCREEN_OFF[0])))
+#define SCREEN_OFF_DEFAULT 30
+
+static int screen_off_index(void) {
+	int seconds = (int)config_get_int("power", "screen_off_seconds", SCREEN_OFF_DEFAULT);
+	for (int i = 0; i < SCREEN_OFF_COUNT; i++) {
+		if (SCREEN_OFF[i].seconds == seconds) {
+			return i;
+		}
+	}
+	return 2; // the 30 second default
+}
+
+void settings_apply_screen_off(void) {
+	int seconds = SCREEN_OFF[screen_off_index()].seconds;
+	power_set_screen_off_timeout((uint32_t)seconds * 1000);
+	power_set_screen_off_enabled(seconds > 0);
+}
+
+static void screen_off_changed_cb(lv_event_t *e) {
+	(void)e;
+	int index = (int)lv_slider_get_value(screen_off_slider);
+	config_set_int("power", "screen_off_seconds", SCREEN_OFF[index].seconds);
+	config_save();
+	settings_apply_screen_off();
+	lv_label_set_text(screen_off_value, tr(SCREEN_OFF[index].label));
+}
+
 // 0..100 scale -- anything under that is indistinguishable from off.
 static long brightness_floor(long max) {
 	long floor = max / 20;
@@ -248,6 +291,14 @@ static void build_screen_page(gui_config_t *cfg) {
 
 	lv_obj_add_event_cb(brightness_slider, brightness_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 	lv_obj_add_event_cb(brightness_slider, brightness_released_cb, LV_EVENT_RELEASED, NULL);
+
+	// How long the panel waits before it goes dark. Straight under the
+	// brightness: both are about the panel, and the one that switches it off is
+	// the first thing looked for after the one that sets how bright it is.
+	settingsrow_slider(container, "power_screen_off", SCREEN_OFF_COUNT, &screen_off_value, &screen_off_slider,
+					   screen_off_changed_cb);
+	lv_slider_set_value(screen_off_slider, screen_off_index(), LV_ANIM_OFF);
+	lv_label_set_text(screen_off_value, tr(SCREEN_OFF[screen_off_index()].label));
 
 	// Double-tap to wake: the touch controller's gesture mode. With the
 	// screen off, two taps light it back up -- the way the stock player's
