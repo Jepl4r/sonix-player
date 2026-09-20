@@ -24,6 +24,7 @@
 // M3U side of it: reading one, writing one, and deciding what a line of text
 // points at.
 
+static char playlist_data_path[512];  // path used by the original firmware. used here for importing playlists into the new location
 static char dir_path[512];
 static char card_root[512];
 
@@ -40,6 +41,7 @@ void playlists_init(const char *sd_root) {
 	}
 	snprintf(card_root, sizeof(card_root), "%s", sd_root);
 	snprintf(dir_path, sizeof(dir_path), "%s/Playlist", sd_root);
+	snprintf(playlist_data_path, sizeof(dir_path), "%s/playlist_data", sd_root);
 }
 
 const char *playlists_dir(void) { return dir_path; }
@@ -811,7 +813,7 @@ static int candidate_cmp(const void *a, const void *b) {
 	return strcasecmp(x->name, y->name);
 }
 
-static void consider_candidate(const char *folder, const char *file_name, bool in_folder, playlists_candidate_t *out,
+static void consider_candidate(const char *folder, const char *file_name, enum PlaylistLocation playlist_location, playlists_candidate_t *out,
 							   int max, int *count) {
 	if (*count >= max || !has_playlist_extension(file_name)) {
 		return;
@@ -832,11 +834,11 @@ static void consider_candidate(const char *folder, const char *file_name, bool i
 	// the folder holds backups, and a backup of a playlist that is still there
 	// would be a second copy of it. What is left is the useful case -- the
 	// backup of one that was deleted, and anybody else's file.
-	if (in_folder && library_playlist_exists(slot->name)) {
+	if (playlist_location && library_playlist_exists(slot->name)) {
 		return;
 	}
 	copy_capped(slot->path, sizeof(slot->path), full);
-	slot->in_folder = in_folder;
+	slot->playlist_location = playlist_location;
 	(*count)++;
 }
 
@@ -854,7 +856,7 @@ int playlists_importable(playlists_candidate_t *out, int max) {
 	if (dir) {
 		struct dirent *de;
 		while (count < max && (de = readdir(dir)) != NULL) {
-			consider_candidate(card_root, de->d_name, false, out, max, &count);
+			consider_candidate(card_root, de->d_name, PLAYLIST_LOCATION_SD_ROOT, out, max, &count);
 		}
 		closedir(dir);
 	}
@@ -867,7 +869,20 @@ int playlists_importable(playlists_candidate_t *out, int max) {
 		if (dir) {
 			struct dirent *de;
 			while (count < max && (de = readdir(dir)) != NULL) {
-				consider_candidate(dir_path, de->d_name, true, out, max, &count);
+				consider_candidate(dir_path, de->d_name, PLAYLIST_LOCATION_PLAYLIST, out, max, &count);
+			}
+			closedir(dir);
+		}
+	}
+
+	// And the playlist_data folder, which is where the original firmware stores its
+	// m3u playlist files
+	if (playlist_data_path[0]) {
+		dir = opendir(playlist_data_path);
+		if (dir) {
+			struct dirent *de;
+			while (count < max && (de = readdir(dir)) != NULL) {
+				consider_candidate(playlist_data_path, de->d_name, PLAYLIST_LOCATION_PLAYLIST_DATA, out, max, &count);
 			}
 			closedir(dir);
 		}
