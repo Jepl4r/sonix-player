@@ -62,7 +62,7 @@ sonix_player_host
 usr/
 └── resource/
     └── sonix/
-        ├── language/                    the 6 .ini files
+        ├── language/                    the 7 .ini files
         ├── components/
         │   └── streaming-keys.ini       Tidal / Qobuz / Podcast Index keys - Need to provide your own.
         └── gui/                         some of the .png assets the UI loads at runtime - the rest are inside the binary.
@@ -175,7 +175,7 @@ assets/
 ├── usr/
 │   ├── resource/
 │   │   └── sonix/
-│   │       ├── language/          the 6 .ini files
+│   │       ├── language/          the 7 .ini files
 │   │       ├── components/
 │   │       │   ├── streaming-keys.ini	 Tidal / Qobuz / Podcast Index keys - Need to provide your own.
 │   │       │   └── system-info.json     required: the packer writes to it
