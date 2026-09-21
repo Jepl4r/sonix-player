@@ -116,10 +116,16 @@ bool playlists_backup(const char *name, char *path_out, size_t path_size);
 // title beside each. What comes out opens without touching the card at all.
 // ---------------------------------------------------------------------------
 
+enum PlaylistLocation {
+	PLAYLIST_LOCATION_SD_ROOT,
+	PLAYLIST_LOCATION_PLAYLIST,
+	PLAYLIST_LOCATION_PLAYLIST_DATA,
+};
+
 typedef struct {
 	char name[201]; // what it would be called: the file name, without extension
 	char path[512]; // the file itself
-	bool in_folder; // a backup, rather than a loose file at the root
+	enum PlaylistLocation playlist_location; // a backup, rather than a loose file at the root
 } playlists_candidate_t;
 
 // Fills `out` with at most `max` importable playlists, by name. Returns how

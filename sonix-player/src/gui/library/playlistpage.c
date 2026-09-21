@@ -675,6 +675,17 @@ static void import_close_cb(lv_event_t *e) {
 	import_layer_hide();
 }
 
+char* get_playlist_location_tr(playlists_candidate_t candidate) {
+	switch (candidate.playlist_location) {
+	case PLAYLIST_LOCATION_SD_ROOT:
+		return "playlist_in_the_root_of_the_card";
+	case PLAYLIST_LOCATION_PLAYLIST:
+		return "playlist_in_the_playlist_folder";
+	case PLAYLIST_LOCATION_PLAYLIST_DATA:
+		return "playlist_in_the_playlist_data_folder";
+	}
+}
+
 static void import_add_candidate_row(int index) {
 	lv_obj_t *row = lv_btn_create(import_body);
 	lv_obj_set_size(row, lv_pct(100), ROW_HEIGHT);
@@ -716,8 +727,7 @@ static void import_add_candidate_row(int index) {
 	lv_obj_set_style_text_font(name, &font_ui_24, 0);
 
 	lv_obj_t *where = lv_label_create(texts);
-	lv_label_set_text(where,
-					  tr(import_candidates[index].in_folder ? "playlist_in_the_playlist_folder" : "playlist_in_the_root_of_the_card"));
+	lv_label_set_text(where,tr(get_playlist_location_tr(import_candidates[index])));
 	lv_obj_add_style(where, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(where, &font_ui_16, 0);
 }
