@@ -1352,7 +1352,7 @@ static void build_playback_page(gui_config_t *cfg) {
 	// audio.h): it works only for music on the card, and only between tracks of
 	// the same format.
 	settingsrow_toggle(container, "musicsettings_gapless_playback", &gapless_switch, gapless_toggle_cb);
-	if (config_get_int("audio", "gapless", 0)) {
+	if (config_get_int("audio", "gapless", 1)) {
 		lv_obj_add_state(gapless_switch, LV_STATE_CHECKED);
 	}
 
