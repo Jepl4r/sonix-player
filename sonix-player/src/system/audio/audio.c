@@ -1950,10 +1950,13 @@ static void play_wav_file(const char *filepath) {
 		}
 
 		snd_pcm_uframes_t frames_to_write = read_bytes / frame_bytes;
-		if (fade_enabled) {
+		// 16 and 32 bit only, on the same grounds as the filters above: the
+		// fade has no in-place form for packed 24-bit or for unsigned 8-bit,
+		// and those two play untouched rather than mangled.
+		if (fade_enabled && (info.bits_per_sample == 16 || info.bits_per_sample == 32)) {
 			int gain = fade_gain_q10((double)bytes_played / bytes_per_sec, (double)info.data_size / bytes_per_sec);
 			int samples = (int)frames_to_write * info.channels;
-			if (info.bits_per_sample > 16) {
+			if (info.bits_per_sample == 32) {
 				fade_apply_s32((int32_t *)buffer, samples, gain);
 			} else {
 				fade_apply_s16((short *)buffer, samples, gain);
@@ -1963,12 +1966,26 @@ static void play_wav_file(const char *filepath) {
 		// The volume, when it is this side of the cable and not in a register:
 		// a device on the USB-C port with no control of its own. A no-op, one
 		// comparison deep, on every other route.
+		//
+		// By the width the device was OPENED with, and not by "more than 16
+		// bits". A 24-bit WAV is playing as S24_3LE -- three bytes a sample --
+		// and the 32-bit routine walking that buffer reads each sample out of
+		// the wrong three bytes and writes one byte past the last frame.
 		if (swvolume_active()) {
 			int samples = (int)frames_to_write * info.channels;
-			if (info.bits_per_sample > 16) {
-				swvolume_apply_s32((int32_t *)buffer, samples);
-			} else {
+			switch (info.bits_per_sample) {
+			case 8:
+				swvolume_apply_u8((unsigned char *)buffer, samples);
+				break;
+			case 16:
 				swvolume_apply_s16((short *)buffer, samples);
+				break;
+			case 24:
+				swvolume_apply_s24_3le((unsigned char *)buffer, samples);
+				break;
+			default:
+				swvolume_apply_s32((int32_t *)buffer, samples);
+				break;
 			}
 		}
 
