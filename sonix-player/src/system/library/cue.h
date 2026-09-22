@@ -43,6 +43,7 @@ typedef struct {
 	char performer[160];	// the sheet's PERFORMER
 	char genre[96];			// from REM GENRE, empty if absent
 	int year;				// from REM DATE, 0 if absent
+	int disc;				// from REM DISCNUMBER, 0 if absent
 	int track_count;
 	cue_track_t tracks[CUE_MAX_TRACKS];
 } cue_sheet_t;

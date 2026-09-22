@@ -30,6 +30,7 @@
 #include "src/system/device/system.h"
 #include "src/system/core/utils.h"
 #include "src/system/net/wifi.h"
+#include "src/system/net/wifitransfer.h"
 
 // ---------------------------------------------------------------------------
 // Podcasts, up front.
@@ -1217,6 +1218,11 @@ static bool episode_is_playable(const char *path) {
 static void resume_if_waiting_async(void *user) {
 	(void)user;
 	if (!waiting_for_episode) {
+		return;
+	}
+	// The Wi-Fi transfer is a file server running as root on the card this
+	// episode was just written to. Nothing starts playing under it.
+	if (wifitransfer_get_enabled()) {
 		return;
 	}
 	int index = playlist_current_index();
@@ -2558,7 +2564,16 @@ static void queue_watch_cb(lv_timer_t *timer) {
 		}
 	}
 
+	// Nothing further is asked of the network while the Wi-Fi transfer is on:
+	// the episode would land on a card a server outside this process is
+	// writing, and the wait it feeds is a wait to start playing, which is what
+	// switching the transfer on put a stop to. The queued files stay protected
+	// above either way -- they are still the queue.
 	pthread_mutex_lock(&fetch_lock);
+	if (wifitransfer_get_enabled()) {
+		waiting_for_episode = false;
+		fetch_want_id = 0;
+	}
 	bool downloading = fetch_want_id != 0;
 	pthread_mutex_unlock(&fetch_lock);
 	podcastcache_set_network_wanted(downloading || waiting_for_episode);

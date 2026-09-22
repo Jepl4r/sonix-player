@@ -126,6 +126,15 @@ static void apply_vorbis_comment(song_metadata_t *out, const char *comment, size
 		num_buf[n] = '\0';
 		out->track_number = (int)strtol(num_buf, NULL, 10);
 		return;
+	} else if (strcmp(key, "DISCNUMBER") == 0 || strcmp(key, "DISC") == 0) {
+		// DISC is what some older taggers write instead; both carry "2" or
+		// "2/3", and strtol stops at the slash either way.
+		char num_buf[16];
+		size_t n = value_len < sizeof(num_buf) - 1 ? value_len : sizeof(num_buf) - 1;
+		memcpy(num_buf, value, n);
+		num_buf[n] = '\0';
+		out->disc_number = (int)strtol(num_buf, NULL, 10);
+		return;
 	} else if (strcmp(key, "DATE") == 0) {
 		char num_buf[16];
 		size_t n = value_len < sizeof(num_buf) - 1 ? value_len : sizeof(num_buf) - 1;
@@ -521,7 +530,7 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 		if (v22) {
 			static const char *const V22_MAP[][2] = {{"TT2", "TIT2"}, {"TP1", "TPE1"}, {"TP2", "TPE2"},
 													 {"TAL", "TALB"}, {"TCO", "TCON"}, {"TRK", "TRCK"},
-													 {"TYE", "TYER"}, {"TXX", "TXXX"}};
+													 {"TPA", "TPOS"}, {"TYE", "TYER"}, {"TXX", "TXXX"}};
 			for (size_t i = 0; i < sizeof(V22_MAP) / sizeof(V22_MAP[0]); i++) {
 				if (strcmp(frame_id, V22_MAP[i][0]) == 0) {
 					snprintf(frame_id, sizeof(frame_id), "%s", V22_MAP[i][1]);
@@ -532,8 +541,9 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 
 		bool wanted = strcmp(frame_id, "TIT2") == 0 || strcmp(frame_id, "TPE1") == 0 ||
 					  strcmp(frame_id, "TPE2") == 0 || strcmp(frame_id, "TALB") == 0 || strcmp(frame_id, "TCON") == 0 ||
-					  strcmp(frame_id, "TRCK") == 0 || strcmp(frame_id, "TYER") == 0 ||
-					  strcmp(frame_id, "TDRC") == 0 || strcmp(frame_id, "TXXX") == 0;
+					  strcmp(frame_id, "TRCK") == 0 || strcmp(frame_id, "TPOS") == 0 ||
+					  strcmp(frame_id, "TYER") == 0 || strcmp(frame_id, "TDRC") == 0 ||
+					  strcmp(frame_id, "TXXX") == 0;
 
 		if (!wanted) {
 			fseek(f, next_frame, SEEK_SET);
@@ -591,6 +601,9 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 			resolve_tcon_genre(decoded, out->genre, sizeof(out->genre));
 		} else if (strcmp(frame_id, "TRCK") == 0) {
 			out->track_number = (int)strtol(decoded, NULL, 10);
+		} else if (strcmp(frame_id, "TPOS") == 0) {
+			// "2" or "2/3"; strtol stops at the slash.
+			out->disc_number = (int)strtol(decoded, NULL, 10);
 		} else if (strcmp(frame_id, "TYER") == 0 || strcmp(frame_id, "TDRC") == 0) {
 			if (out->year == 0)
 				out->year = (int)strtol(decoded, NULL, 10);
@@ -915,6 +928,7 @@ static void read_mp4_metadata(const char *filepath, song_metadata_t *out) {
 	snprintf(out->genre, sizeof(out->genre), "%s", mp4_tag_genre(m));
 	out->year = mp4_tag_year(m);
 	out->track_number = mp4_tag_track_number(m);
+	out->disc_number = mp4_tag_disc_number(m);
 
 	// The freeform "----" atoms, where iTunes-style ReplayGain lives.
 	const char *value;
@@ -1049,6 +1063,8 @@ static void read_sidecar_tags(const char *filepath, song_metadata_t *out) {
 			snprintf(out->album_artist, sizeof(out->album_artist), "%s", value);
 		} else if (strcmp(key, "track") == 0) {
 			out->track_number = atoi(value);
+		} else if (strcmp(key, "disc") == 0) {
+			out->disc_number = atoi(value);
 		} else if (strcmp(key, "year") == 0) {
 			out->year = atoi(value);
 		}
@@ -1084,6 +1100,7 @@ static bool read_cue_metadata(const char *filepath, song_metadata_t *out) {
 	copy_bounded(out->genre, sizeof(out->genre), cue->genre);
 	out->year = cue->year;
 	out->track_number = t->number;
+	out->disc_number = cue->disc;
 	out->has_tags = out->title[0] || out->artist[0] || out->album[0] || out->genre[0];
 	free(cue);
 	return true;

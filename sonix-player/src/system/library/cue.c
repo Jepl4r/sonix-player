@@ -279,6 +279,13 @@ static void parse_rem(const char *args, cue_sheet_t *out) {
 
 	if (strcmp(key, "GENRE") == 0) {
 		read_value(rest, out->genre, sizeof(out->genre), false);
+	} else if (strcmp(key, "DISCNUMBER") == 0) {
+		char value[32];
+		read_value(rest, value, sizeof(value), false);
+		long disc = strtol(value, NULL, 10);
+		if (disc >= 1 && disc <= 999) {
+			out->disc = (int)disc;
+		}
 	} else if (strcmp(key, "DATE") == 0 || strcmp(key, "YEAR") == 0) {
 		char value[32];
 		read_value(rest, value, sizeof(value), false);

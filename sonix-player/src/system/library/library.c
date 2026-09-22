@@ -50,7 +50,7 @@ static const char *const SCHEMA[] = {
 	"has_child_file INT,begin_time INT,end_time INT,cue_id INT,character TEXT COLLATE NOCASE,size INT,"
 	"sample_rate INT,bit_rate INT,bit INT,channel INT,format INT,quality TEXT COLLATE NOCASE,"
 	"album_pic_path TEXT COLLATE NOCASE,lrc_path TEXT COLLATE NOCASE,track_gain REAL,track_peak REAL,"
-	"album_artist TEXT COLLATE NOCASE,ctime INT,mtime INT,sortkey TEXT,PRIMARY KEY(id, path, cue_id))",
+	"album_artist TEXT COLLATE NOCASE,ctime INT,mtime INT,sortkey TEXT,disc INT,PRIMARY KEY(id, path, cue_id))",
 
 	"CREATE TABLE IF NOT EXISTS ALBUM_TABLE(id INT, album TEXT COLLATE NOCASE,character TEXT COLLATE NOCASE,"
 	" cn INT, sortkey TEXT, PRIMARY KEY(album))",
@@ -130,6 +130,11 @@ static const char *const SCHEMA[] = {
 // column is already there.
 static const char *const SCHEMA_COLUMNS[] = {
 	"ALTER TABLE MEDIA_TABLE ADD COLUMN sortkey TEXT",
+	// Unlike the sort keys, this one cannot be worked out from anything already
+	// in the table: it is in the file's tags and nowhere else. An index written
+	// before the column existed therefore carries NULL until the card is
+	// scanned again. See TRACK_ORDER_IN_ALBUM.
+	"ALTER TABLE MEDIA_TABLE ADD COLUMN disc INT",
 	"ALTER TABLE ALBUM_TABLE ADD COLUMN sortkey TEXT",
 	"ALTER TABLE ARTIST_TABLE ADD COLUMN sortkey TEXT",
 	"ALTER TABLE ALBUM_ARTIST_TABLE ADD COLUMN sortkey TEXT",
@@ -188,6 +193,17 @@ static const char *const SORT_INDEXES[] = {
 	"CREATE INDEX IF NOT EXISTS album_artist_sort_idx ON ALBUM_ARTIST_TABLE(sortkey, album_artist)",
 	"CREATE INDEX IF NOT EXISTS genre_sort_idx ON GENRE_TABLE(sortkey, genre)",
 };
+
+// A record's running order: the disc, then the track number inside it, so a
+// two-disc album gives 1-1, 1-2, ... then 2-1, 2-2, and not the two track
+// ones together.
+//
+// COALESCE because `disc` is NULL on every row of an index written before the
+// column existed, and in SQLite NULL sorts ahead of every number: a table
+// where some rows have been scanned since and some have not would otherwise
+// deal each record out in two. NULL means disc one here, which is the order
+// those rows had anyway.
+#define TRACK_ORDER_IN_ALBUM "COALESCE(disc,1), dis_id"
 
 // Rows are committed in small batches. This is not a tuning knob: an open
 // transaction holds its dirty pages in memory, and on a device with ten
@@ -1575,9 +1591,9 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 		// of titles presents it.
 		char order_sql[128];
 		if (order == LIBRARY_ORDER_ALBUM) {
-			snprintf(order_sql, sizeof(order_sql), "album COLLATE listorder, dis_id, %s", by_name);
+			snprintf(order_sql, sizeof(order_sql), "album COLLATE listorder, " TRACK_ORDER_IN_ALBUM ", %s", by_name);
 		} else if (col && value && filter == LIBRARY_FILTER_ALBUM) {
-			snprintf(order_sql, sizeof(order_sql), "dis_id, %s", by_name);
+			snprintf(order_sql, sizeof(order_sql), TRACK_ORDER_IN_ALBUM ", %s", by_name);
 		} else {
 			snprintf(order_sql, sizeof(order_sql), "%s", by_name);
 		}
@@ -1606,7 +1622,7 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 			// caller one representative track per album to load the art from.
 			snprintf(sql, sizeof(sql),
 					 "SELECT album, (SELECT path FROM MEDIA_TABLE m WHERE m.album = ALBUM_TABLE.album"
-					 " ORDER BY m.dis_id LIMIT 1), NULL FROM ALBUM_TABLE WHERE album <> '' ORDER BY %s",
+					 " ORDER BY COALESCE(m.disc,1), m.dis_id LIMIT 1), NULL FROM ALBUM_TABLE WHERE album <> '' ORDER BY %s",
 					 list_uses_sortkey(kind) ? "sortkey" : "album COLLATE listorder");
 		} else if (list_uses_sortkey(kind)) {
 			snprintf(sql, sizeof(sql), "SELECT %s, NULL, NULL FROM %s WHERE %s <> '' ORDER BY sortkey",
@@ -1760,9 +1776,9 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 		// own running order.
 		char order_sql[128];
 		if (order == LIBRARY_ORDER_ALBUM) {
-			snprintf(order_sql, sizeof(order_sql), "album COLLATE listorder, dis_id, %s", by_name);
+			snprintf(order_sql, sizeof(order_sql), "album COLLATE listorder, " TRACK_ORDER_IN_ALBUM ", %s", by_name);
 		} else if (col && value && filter == LIBRARY_FILTER_ALBUM) {
-			snprintf(order_sql, sizeof(order_sql), "dis_id, %s", by_name);
+			snprintf(order_sql, sizeof(order_sql), TRACK_ORDER_IN_ALBUM ", %s", by_name);
 		} else {
 			snprintf(order_sql, sizeof(order_sql), "%s", by_name);
 		}
@@ -1850,7 +1866,7 @@ static const char *row_by_id_sql(library_list_t kind, const char *value, char *o
 		// is why it is not in the ordered pass -- there it would run the
 		// subquery for every album on the card, to be thrown away.
 		return "SELECT album, (SELECT path FROM MEDIA_TABLE m WHERE m.album = ALBUM_TABLE.album"
-			   " ORDER BY m.dis_id LIMIT 1), NULL FROM ALBUM_TABLE WHERE rowid=?";
+			   " ORDER BY COALESCE(m.disc,1), m.dis_id LIMIT 1), NULL FROM ALBUM_TABLE WHERE rowid=?";
 	case LIBRARY_LIST_ARTISTS:
 		return "SELECT artist, NULL, NULL FROM ARTIST_TABLE WHERE rowid=?";
 	case LIBRARY_LIST_ALBUM_ARTISTS:
@@ -2554,8 +2570,8 @@ static bool prepare_statements(void) {
 						   "INSERT OR REPLACE INTO MEDIA_TABLE"
 						   "(id,path,name,album,artist,genre,year,dis_id,ck_id,has_child_file,begin_time,end_time,"
 						   "cue_id,character,size,sample_rate,bit_rate,bit,channel,format,quality,album_pic_path,"
-						   "lrc_path,track_gain,track_peak,album_artist,ctime,mtime,sortkey)"
-						   " VALUES(?,?,?,?,?,?,?,?,0,0,0,0,0,?,?,?,0,?,0,?,\'\',NULL,NULL,0,0,?,?,?,?)",
+						   "lrc_path,track_gain,track_peak,album_artist,ctime,mtime,sortkey,disc)"
+						   " VALUES(?,?,?,?,?,?,?,?,0,0,0,0,0,?,?,?,0,?,0,?,\'\',NULL,NULL,0,0,?,?,?,?,?)",
 						   -1, &stmt_track, NULL) != SQLITE_OK) {
 		fprintf(stderr, "library: prepare failed: %s\n", sqlite3_errmsg(db));
 		return false;
@@ -2643,6 +2659,12 @@ static void insert_track(const char *path, const char *filename, const song_meta
 	char key[LIBRARY_SORT_KEY_MAX];
 	library_sort_key(title, key, sizeof(key));
 	sqlite3_bind_text(stmt_track, column++, key, -1, SQLITE_TRANSIENT); // sortkey
+
+	// A file with no disc tag is disc one. A record where the tagger wrote the
+	// number on some files and not on others is the common case, and writing 0
+	// for those would put them on a shelf of their own, ahead of the disc they
+	// belong to.
+	sqlite3_bind_int(stmt_track, column++, tags->disc_number > 0 ? tags->disc_number : 1); // disc
 
 	if (sqlite3_step(stmt_track) != SQLITE_DONE) {
 		fprintf(stderr, "library: insert failed: %s\n", sqlite3_errmsg(db));
@@ -4326,7 +4348,7 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 		// can load its artwork the same way the album list does.
 		if (sqlite3_prepare_v2(db,
 							   "SELECT album, (SELECT path FROM MEDIA_TABLE m WHERE m.album = ALBUM_TABLE.album"
-							   " ORDER BY m.dis_id LIMIT 1) FROM ALBUM_TABLE WHERE foldcase(album) LIKE ?"
+							   " ORDER BY COALESCE(m.disc,1), m.dis_id LIMIT 1) FROM ALBUM_TABLE WHERE foldcase(album) LIKE ?"
 							   " ESCAPE '\\' ORDER BY album LIMIT ?",
 							   -1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_text(stmt, 1, like, -1, SQLITE_TRANSIENT);

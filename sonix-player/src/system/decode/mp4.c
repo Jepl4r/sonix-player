@@ -95,6 +95,7 @@ struct mp4_file {
 	char genre[128];
 	int year;
 	int track_number;
+	int disc_number;
 
 	uint64_t cover_off;
 	uint32_t cover_size;
@@ -635,6 +636,13 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 		case FOURCC('t', 'r', 'k', 'n'):
 			if (value_len >= 4) {
 				m->track_number = be16(value + 2);
+			}
+			break;
+		// The disc pair has the same layout as trkn: a 16-bit pad, the number,
+		// then the total.
+		case FOURCC('d', 'i', 's', 'k'):
+			if (value_len >= 4) {
+				m->disc_number = be16(value + 2);
 			}
 			break;
 		default:
@@ -1462,6 +1470,7 @@ const char *mp4_tag_freeform(const mp4_file_t *m, const char *name) {
 	return NULL;
 }
 int mp4_tag_track_number(const mp4_file_t *m) { return m ? m->track_number : 0; }
+int mp4_tag_disc_number(const mp4_file_t *m) { return m ? m->disc_number : 0; }
 
 bool mp4_cover_art(const mp4_file_t *m, uint64_t *offset, uint32_t *size, bool *is_png) {
 	if (!m || m->cover_size == 0) {

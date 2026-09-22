@@ -20,6 +20,8 @@
 #include "src/system/net/wifi.h"
 #include "src/system/device/led.h"
 #include "src/system/net/wifitransfer.h"
+#include "src/system/streaming/radio.h"
+#include "src/system/streaming/streamturn.h"
 
 lv_obj_t *wifitransfer_screen;
 
@@ -227,12 +229,24 @@ static void refresh(void) {
 //
 // It happens at all because the browser can delete or overwrite the file being
 // played: the card is about to be written by a root process outside this one.
-static void pause_playback_and_warn(void) {
-	if (audio_get_status() != AUDIO_STATUS_PLAYING) {
+//
+// A station is stopped rather than paused: a live stream has no position to
+// come back to, and play afterwards reconnects to it. Which is also why
+// audio_get_status() cannot answer for one -- the stream goes out through
+// audio_external_*(), which the decoder's status knows nothing about.
+static void stop_playback_and_warn(void) {
+	if (radio_is_active()) {
+		if (!radio_is_playing()) {
+			return;
+		}
+		radio_stop();
+		player_refresh_now_playing();
+	} else if (audio_get_status() == AUDIO_STATUS_PLAYING) {
+		player_key_play_pause(); // through the player, so the sheet and the bar follow
+	} else {
 		return;
 	}
 
-	player_key_play_pause(); // through the player, so the sheet and the bar follow
 	gui_notify_popup(WT_STOP_PLAY);
 }
 
@@ -258,7 +272,14 @@ static void set_transfer(bool on) {
 	wifi_set_status_poll_slow(on);
 
 	if (on) {
-		pause_playback_and_warn();
+		stop_playback_and_warn();
+
+		// A Qobuz or Tidal track, or a podcast episode, can be stopped only
+		// because its file has not arrived yet: the download carries on and the
+		// page that owns it starts playing the moment it lands. What is in
+		// flight is dropped here, and while the server is up those three pages
+		// ask for nothing further and resume nothing.
+		streamturn_abandon_all();
 	}
 	refresh();
 }

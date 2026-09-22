@@ -29,6 +29,7 @@
 #include "src/system/device/system.h"
 #include "src/system/core/utils.h"
 #include "src/system/net/wifi.h"
+#include "src/system/net/wifitransfer.h"
 
 // ---------------------------------------------------------------------------
 // Qobuz front end.
@@ -931,6 +932,11 @@ static void resume_if_waiting_async(void *user) {
 	if (!waiting_for_track) {
 		return;
 	}
+	// The Wi-Fi transfer is a file server running as root on the card this
+	// track was just written to. Nothing starts playing under it.
+	if (wifitransfer_get_enabled()) {
+		return;
+	}
 	int index = playlist_current_index();
 	char path[512];
 	if (index < 0 || !playlist_path_at(index, path, sizeof(path))) {
@@ -1323,6 +1329,16 @@ static void queue_watch_cb(lv_timer_t *timer) {
 		waiting_for_track = false;
 	}
 
+	// Nothing further is asked of the network while the Wi-Fi transfer is on:
+	// the track would land on a card a server outside this process is writing,
+	// and the wait it feeds is a wait to start playing, which is what
+	// switching the transfer on put a stop to. The queued files stay protected
+	// below either way -- they are still the queue.
+	bool transfer_on = wifitransfer_get_enabled();
+	if (transfer_on) {
+		waiting_for_track = false;
+	}
+
 	int count = playlist_count();
 	int current = playlist_current_index();
 
@@ -1346,7 +1362,7 @@ static void queue_watch_cb(lv_timer_t *timer) {
 	// the queue is what knows its own order, shuffle included.
 	// `queued_tracks[i]` for the same `i` may be an entirely different track.
 	long want_id = 0;
-	if (!library_queue && current >= 0 && queued_count > 0) {
+	if (!library_queue && !transfer_on && current >= 0 && queued_count > 0) {
 		for (int i = current; i <= current + PREFETCH_AHEAD && i < count && want_id == 0; i++) {
 			char path[512];
 			if (!playlist_path_at(i, path, sizeof(path)) || !qobuzcache_owns(path)) {

@@ -10,6 +10,7 @@ typedef struct {
 	char album[256];
 	char genre[128];
 	int track_number; // 0 if unknown
+	int disc_number;  // 0 if unknown, which is read as disc one; see below
 	int year;		  // 0 if unknown
 	bool has_tags;	  // true if any tag field was found
 
@@ -32,6 +33,11 @@ typedef struct {
 // Vorbis comments for FLAC/OGG, LIST/INFO chunk for WAV). Always fills every
 // field of `out` (empty string / 0 if not found). Does not touch playback
 // state or decode any audio samples.
+//
+// disc_number is 0 when the file carries no disc tag, which is what a
+// single-disc release looks like. Whoever orders by it treats that as disc
+// one: a record where only some of the files carry the tag must not split
+// into two shelves.
 void metadata_read(const char *filepath, song_metadata_t *out);
 
 #endif // METADATA_H

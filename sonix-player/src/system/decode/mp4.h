@@ -107,6 +107,9 @@ int mp4_tag_year(const mp4_file_t *m);
 const char *mp4_tag_freeform(const mp4_file_t *m, const char *name);
 int mp4_tag_track_number(const mp4_file_t *m);
 
+// The `disk` atom's first half. 0 when the file carries no disc tag.
+int mp4_tag_disc_number(const mp4_file_t *m);
+
 // Cover art: where it is in the file and how big, so the caller can read it
 // without this module allocating a megabyte it does not own. `is_png` tells
 // the two encodings apart. False when the file carries no artwork.
