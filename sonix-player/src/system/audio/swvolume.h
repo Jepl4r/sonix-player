@@ -5,67 +5,48 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// The stock player's software volume: the SW/HDB curve out of ot_devices.json,
-// applied to the samples themselves.
+// The SW/HDB curve out of the stock ot_devices.json, applied to the samples
+// themselves, for the one route that has nowhere else to put the volume: a
+// device on the USB-C port with no volume control of its own.
 //
-// It is not an alternative to the CS43198's attenuation but the other half of
-// it. The stock configuration says so in its first line -- "SET_HW_SW_VOL_BOTH":
-// 1 -- and the two tables confirm it: added together they step exactly 0.8 dB
-// per index from 100 down to 45, which neither of them does alone. The volume
-// law of this player is a converter register and a multiply on the stream.
+// It is NOT part of the volume law on the jacks. There the CS43198's own
+// attenuation is the whole of it, and the hardware tables say so on their own:
+// each steps 0.5 dB per index from 100 down to 45, 1 dB down to 10, then 2 and
+// 5 -- a complete taper, fine at the top and coarse at the bottom -- and MDB
+// sits exactly 6.0 dB under HDB at every single index. Adding this curve on
+// top gives 0.8 dB per index over the first stretch and 1.3, 1.5, 1.7, 2.2,
+// 3.4 below it, which is neither the stock scale nor an even one.
 //
 // The curve, and the arithmetic, are HiBy's (routine 0x730c20 in the stock
-// binary): 101 attenuations in tenths of a dB, plus an offset that depends on
-// which gain table the converter is using, turned into a linear gain by
+// binary): 101 attenuations in tenths of a dB, turned into a linear gain by
 //
-//     gain = 10 ^ ((SW[index] + offset) / 200)
+//     gain = 10 ^ (SW[index] / 200)
 //
 // and then into a Q31 fixed-point coefficient by multiplying by 2^31. The
 // division by 200 rather than 20 is the tenths: SW[index] = dB x 10.
 //
-// The offset is the part that is easy to miss, because there is only one
-// software curve in the file and three hardware ones. The stock engine carries
-// it separately -- LDB -12 dB, MDB -6 dB, HDB 0 -- gated on SW_MIX_GAIN_ENABLE,
-// which the R3 Pro II's configuration does not mention and whose parser default
-// is 1. So on this device Low Gain is MDB on the converter AND -6 dB more on
-// the samples, and the two gains are 12 dB apart at the same index, not 6.
-//
-// It also answers the case the converter cannot reach at all: playback leaving
-// as USB packets to a headset or a DAC on the USB-C port, where that register
-// is out of the circuit and nothing is left between the file and the plug.
-// There the gain offset does not apply: High/Low is a setting on a converter
-// that is not in that path, and the hardware half it pairs with is missing too.
+// The stock engine also carries an offset per hardware table -- LDB -12 dB,
+// MDB -6 dB, HDB 0 -- under SW_MIX_GAIN_ENABLE. It is not applied here and
+// there is nowhere it could be: it is the software share of the difference
+// between two CONVERTER tables, and this curve only ever runs where the
+// converter is out of the circuit and the gain switch moves nothing.
 
 // The UI volume index, 0..100. Cheap -- it stores an int; the coefficients were
 // worked out once at startup.
 void swvolume_set_index(int percent);
 
-// Whether the attenuation is being applied to the stream right now. False over
-// Bluetooth, where the headphones hold the level, and on a USB device that has
-// a volume control of its own.
+// Whether the attenuation is being applied to the stream right now. True only
+// on the USB-C port to a device with no volume control of its own: on the jacks
+// the converter holds the level, over Bluetooth the headphones do, and a USB
+// device with a control of its own is written directly.
 bool swvolume_active(void);
 
-// Takes the software half out of the volume law, leaving the converter's
-// register alone on the samples. It is a trade, not a free "more bit-perfect"
-// switch: the hardware curve alone is irregular -- 0.5 dB between one pair of
-// indices and 1 dB between the next -- so the scale stops being even and the
-// same number on the dial means a different level.
-//
-// It has no effect on the one path where this curve is all there is: a USB
-// device with no volume control of its own has no converter register behind it,
-// and switching the attenuation off there would leave the stream at full scale
-// with the volume keys doing nothing at all.
-void swvolume_set_disabled(bool disabled);
-bool swvolume_disabled(void);
-
-// The attenuation for an index, in tenths of a dB, straight off the curve and
-// without the gain offset.
+// The attenuation for an index, in tenths of a dB, straight off the curve.
 int swvolume_millibel(int percent);
 
-// The Q31 coefficient for an index, as the stock binary computes it. `high_gain`
-// picks the offset: 0 for HDB, -6 dB for MDB. Index 0 is 0 -- silence, and not
-// the -150 dB entry the curve carries there.
-int64_t swvolume_coefficient(int percent, bool high_gain);
+// The Q31 coefficient for an index: the number the stock binary computes. Index
+// 0 is 0 -- silence, and not the -150 dB entry the curve carries there.
+int64_t swvolume_coefficient(int percent);
 
 // The scaling itself, applied in place to interleaved samples. `count` is
 // samples, not frames.

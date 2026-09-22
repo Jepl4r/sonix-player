@@ -11,7 +11,6 @@
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
-#include "src/system/audio/swvolume.h"
 #include "src/system/core/config.h"
 #include "src/system/device/screenshot.h"
 
@@ -21,7 +20,6 @@ static lv_obj_t *adb_switch;
 static lv_obj_t *screenshot_switch;
 static lv_obj_t *log_switch;
 static lv_obj_t *db_log_switch;
-static lv_obj_t *swvolume_off_switch;
 static lv_obj_t *log_name_label; // rises to make room for the path when logging
 static lv_obj_t *log_path_label;
 static lv_timer_t *adb_poll_timer;
@@ -113,14 +111,6 @@ static void log_toggled_cb(lv_event_t *e) {
 	update_log_row();
 }
 
-static void swvolume_off_cb(lv_event_t *e) {
-	(void)e;
-	bool off = lv_obj_has_state(swvolume_off_switch, LV_STATE_CHECKED);
-	config_set_int("audio", "swvolume_off", off ? 1 : 0);
-	config_save();
-	swvolume_set_disabled(off);
-}
-
 static void db_log_toggled_cb(lv_event_t *e) {
 	(void)e;
 	library_set_log_database(lv_obj_has_state(db_log_switch, LV_STATE_CHECKED));
@@ -145,9 +135,6 @@ static void screen_unloaded_cb(lv_event_t *e) {
 
 void devoptions_init(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(devoptions_screen, cfg, "developer_options");
-
-	// What was chosen last time, before the switch below is painted from it.
-	swvolume_set_disabled(config_get_int("audio", "swvolume_off", 0) != 0);
 
 	settingsrow_toggle(container, "devoptions_adb", &adb_switch, adb_toggled_cb);
 
@@ -197,24 +184,6 @@ void devoptions_init(gui_config_t *cfg) {
 	lv_obj_add_style(db_note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(db_note, &font_ui_22, 0);
 	lv_label_set_text(db_note, tr("devoptions_dbtrace_note"));
-
-	// The software half of the volume law, out of circuit. Here and not among
-	// the playback options because of what it is: the stock player's volume is
-	// a converter register and a multiply on the samples, drawn as one curve,
-	// and taking half of it away is a thing to try and measure rather than a
-	// preference to set.
-	settingsrow_toggle(container, "devoptions_swvolume_off", &swvolume_off_switch, swvolume_off_cb);
-	if (swvolume_disabled()) {
-		lv_obj_add_state(swvolume_off_switch, LV_STATE_CHECKED);
-	}
-
-	// Its warning, under the card for the same reason the database log's is.
-	lv_obj_t *sw_note = lv_label_create(container);
-	lv_label_set_long_mode(sw_note, LV_LABEL_LONG_WRAP);
-	lv_obj_set_width(sw_note, lv_pct(100));
-	lv_obj_add_style(sw_note, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(sw_note, &font_ui_22, 0);
-	lv_label_set_text(sw_note, tr("devoptions_swvolume_off_note"));
 
 	// Opens the page showing RAM and running processes. A navigation row with a
 	// chevron, like the developer options entry on the previous page.

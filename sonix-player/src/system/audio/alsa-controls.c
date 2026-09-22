@@ -138,10 +138,11 @@ static int high_gain; // 0 = low gain (default, like the stock player)
 // boolean is 0 and "HDB" when it is 1. The HiBy engine's third curve, LDB,
 // exists but is not the R3 Pro II's low gain and must not be used here.
 //
-// These two tables carry about 6 dB of the difference between the gains. The
-// other 6 dB are on the samples: the stock engine adds -6 dB to the software
-// curve whenever the hardware one is MDB, so the two gains are 12 dB apart at
-// the same index and not 6. See SW_OFFSET_MDB in swvolume.c.
+// These two tables are the whole volume law on the jacks -- nothing is done to
+// the samples on this route -- and they are drawn as one. Each steps 0.5 dB per
+// index from 100 down to 45, 1 dB down to 10, then 2 and 5: fine adjustment at
+// the top of the scale and coarse at the bottom. And MDB sits exactly 6.0 dB
+// under HDB at every index, which is the gain switch and all of it.
 //
 // index 0 = 255 in both: zero volume is an explicit mute, not interpolated.
 static const int HIBY_HW_MDB[101] = {
