@@ -4,6 +4,14 @@
 HOST_BIN = sonix_player_host
 TARGET_BIN = sonix_player
 
+# The unstripped copy of the target binary, kept beside the stripped one.
+#
+# It is what a backtrace, addr2line or gdb need: the stripped binary that goes
+# on the device carries no symbol table and no DWARF, so an address out of a
+# crash log means nothing without this file. The two are the same build, so an
+# address from one resolves in the other.
+TARGET_DEBUG_BIN = sonix_player_debug
+
 LVGL_DIR = $(CURDIR)/lvgl
 ROCKBOX_TOOLCHAIN_DIR = $(CURDIR)/rockbox-toolchain
 
@@ -193,7 +201,35 @@ target: $(TARGET_BIN) compile_commands.json
 $(TARGET_BIN): $(TARGET_OBJS)
 	$(TARGET_LD) -o $@ $(TARGET_OBJS) $(TARGET_LDFLAGS)
 	@$(MAKE) --no-print-directory check-abi
+	@$(MAKE) --no-print-directory strip-target
 	@echo "Target build complete: File ready at '$(TARGET_BIN)'"
+
+# ---------------------------------------------------------------------------
+# Splitting the link output in two
+#
+# Runs after check-abi, which deletes both files when it fails: there is then
+# nothing to copy, and no debug binary left claiming to match a build that was
+# refused.
+#
+# The cross strip and not the host one. /usr/bin/strip is built for x86-64 and
+# answers "file format not recognized" on a MIPS binary -- and it says so on
+# stderr while exiting non-zero, which would take the whole build down.
+# ---------------------------------------------------------------------------
+
+CROSS_STRIP ?= $(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-strip
+
+.PHONY: strip-target
+strip-target:
+	@if [ ! -f "$(TARGET_BIN)" ]; then \
+		exit 0; \
+	fi; \
+	if [ ! -x "$(CROSS_STRIP)" ]; then \
+		echo "strip-target: $(CROSS_STRIP) is not there, '$(TARGET_BIN)' left unstripped"; \
+		exit 0; \
+	fi; \
+	cp -f $(TARGET_BIN) $(TARGET_DEBUG_BIN); \
+	$(CROSS_STRIP) $(TARGET_BIN); \
+	echo "strip-target: symbols in '$(TARGET_DEBUG_BIN)' ($$(du -h $(TARGET_DEBUG_BIN) | cut -f1)), stripped '$(TARGET_BIN)' ($$(du -h $(TARGET_BIN) | cut -f1))"
 
 # ---------------------------------------------------------------------------
 # The check the linker does not do
@@ -232,7 +268,7 @@ check-abi:
 		echo "*** As it stands the binary DOES NOT START, and the device boot loops."; \
 		echo "*** Add a .symver in src/system/core/glibc_compat.h, which explains how."; \
 		echo ""; \
-		rm -f $(TARGET_BIN); \
+		rm -f $(TARGET_BIN) $(TARGET_DEBUG_BIN); \
 		exit 1; \
 	fi; \
 	echo "check-abi: no symbol beyond glibc $(DEVICE_GLIBC_MAJOR).$(DEVICE_GLIBC_MINOR)."
@@ -254,7 +290,7 @@ compile_commands.json:
 	@python3 generate_compile_commands.py
 
 clean:
-	rm -rf build_host build_target $(HOST_BIN) $(TARGET_BIN) compile_commands.json compile_flags.txt
+	rm -rf build_host build_target $(HOST_BIN) $(TARGET_BIN) $(TARGET_DEBUG_BIN) compile_commands.json compile_flags.txt
 
 # Make sure the cross compiler is built before trying to make any of the target
 # objects with it.
