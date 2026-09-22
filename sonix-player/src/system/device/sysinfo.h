@@ -16,28 +16,76 @@
 // text file next to the language directory:
 //
 //     {
+//         "device-name": "HiBy R3 Pro II",
+//         "dac-info": "Dual Cirrus Logic CS43198",
 //         "OS_version": "1.0",
 //         "Build_version": "182"
 //     }
 //
 // This way updating the build number does not mean rebuilding, and whoever
 // assembles a firmware image can write it from the build script. A missing or
-// unreadable file is not an error: both entries show a dash.
+// unreadable file is not an error: the entries show a dash.
+//
+// "device-name" is what tells one player from another. The firmware packer
+// writes a different one into each image, and it is the whole of what this
+// binary knows about which machine it woke up on -- see sysinfo_model().
 
-// Rereads the file. Called once at startup; the two functions below do not
-// touch the disk.
+// Rereads the file. Called once at startup; the functions below do not touch
+// the disk.
 void sysinfo_load(void);
 
 // "" when the file is missing or does not carry the key.
 const char *sysinfo_os_version(void);
 const char *sysinfo_build_version(void);
 
-// The device serial number: "R3PII" plus the first eight hex digits (upper
-// case) of the SoC efuse chip id (/proc/jz/efuse/efuse_chip_id, line
+// The name of the player, verbatim from the file: "HiBy R3 Pro II", "HiBy R1".
+// "" when the file does not say.
+const char *sysinfo_device_name(void);
+
+// The converter, verbatim from the file, for the information page to print.
+// The player never decides anything by it.
+const char *sysinfo_dac_info(void);
+
+// ---------------------------------------------------------------------------
+// the models, and what differs between them
+// ---------------------------------------------------------------------------
+//
+// One table, because the alternative is the same `if` written out in four
+// places that then disagree. Everything in here is keyed on device-name.
+//
+// The panel is in here rather than read off the framebuffer, and that is
+// deliberate. screen_width and screen_height in gui_config_t are unsigned, and
+// the interface is full of lines shaped like `cfg->screen_height - top`: a
+// number that does not suit a tall portrait panel does not make the layout
+// slightly wrong, it makes that subtraction wrap to four thousand million,
+// which LVGL then tries to allocate. A failed allocation inside LVGL ends in
+// its assert handler and the interface stops before it has drawn anything.
+//
+// The framebuffer is not a safe source for that number. LVGL's own fbdev
+// driver creates its display at 800x480 and only corrects it afterwards, so a
+// display that is asked its size at the wrong moment answers with a landscape
+// panel that exists nowhere. Here the two numbers are written down per model
+// and cannot surprise anyone. What the framebuffer says is still printed at
+// startup, which is where to look if a panel ever disagrees with this table.
+typedef struct {
+	const char *name;		 // as written in system-info.json
+	int panel_width;		 // the panel, on the device and on the simulator alike
+	int panel_height;
+	const char *update_stem; // "<stem>.upt" is the update file this player accepts
+	const char *serial_prefix; // what the number on the box starts with
+} sysinfo_model_t;
+
+// The entry for the name in the file, or NULL when the file says nothing or
+// names a player this binary does not know. NULL is not a failure to paper
+// over: see firmware_update_file_find().
+const sysinfo_model_t *sysinfo_model(void);
+
+// The device serial number: the model's prefix plus the first eight hex digits
+// (upper case) of the SoC efuse chip id (/proc/jz/efuse/efuse_chip_id, line
 // "CHIP_ID: <32 hex>"). It is exactly the number printed on the box, verified
-// on a real device (chip id 90a70a42... -> box R3PII90A70A42). "" when the node
-// is absent (the host build, or a firmware without the efuse module). Read once
-// and kept: efuses do not change.
+// on an R3 Pro II (chip id 90a70a42... -> box R3PII90A70A42). "" when the node
+// is absent (the host build, or a firmware without the efuse module) or the
+// model is unknown. Read once and kept: efuses do not change.
 const char *sysinfo_serial_number(void);
 
 // ---------------------------------------------------------------------------

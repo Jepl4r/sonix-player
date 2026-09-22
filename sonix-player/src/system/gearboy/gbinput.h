@@ -39,6 +39,13 @@ typedef struct {
 // finger more than needed.
 #define GBINPUT_MAX_CONTACTS 5
 
+// The panel, so raw touchscreen readings can be scaled onto it. The zones this
+// file is given are in screen coordinates, and this is the only thing that says
+// how big the screen is: nothing in this path goes through LVGL, which is where
+// everything else gets the answer. Call it before gbinput_start(); left unset
+// it assumes 480x720.
+void gbinput_set_glass(int width, int height);
+
 // Takes the screen. `zones` is copied, so the caller may free it. False when
 // the evdev node does not open: play then has no controls, which is useless but
 // not a crash, and the caller tells the user.

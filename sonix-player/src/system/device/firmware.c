@@ -16,12 +16,9 @@
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/remote/dlna.h"
+#include "src/system/device/sysinfo.h"
 #include "src/system/device/system.h"
 
-// The card's own name for itself when the config carries no firmware_name.
-// The stock player reads it from key 7 ("device"); on this hardware that is
-// always R3PROII, so it is the fallback rather than a lookup.
-#define FIRMWARE_DEFAULT_DEVICE "R3PROII"
 
 // The card is scanned once and every name compared case-insensitively,
 // rather than guessing at spellings: FAT is case-insensitive but exFAT and
@@ -69,7 +66,7 @@ bool firmware_update_file_find(char *out, size_t out_size) {
 		return false;
 	}
 
-	// ONLY the device's own name -- deliberately NOT the stock binary's
+	// ONLY the name of THIS model -- deliberately NOT the stock binary's
 	// "update.upt" fallback.
 	//
 	// The recovery kernel does not check what it is given: a .upt built for
@@ -78,9 +75,22 @@ bool firmware_update_file_find(char *out, size_t out_size) {
 	// back. "update.upt" is a name anyone might use for anything; "r3proii.upt"
 	// is a claim about which player the file is for. Losing the convenience of
 	// the generic name is a fair price for that.
+	//
+	// Which is also why an unrecognised player offers no update at all rather
+	// than falling back to a name. The same reasoning applies with more force
+	// now that there are two models: a fallback would hand an R1 the R3 Pro II's
+	// image, which is the exact accident the paragraph above is about. The
+	// config key stays as the way out for anyone who knows what they are doing.
 	const char *name = config_get("firmware", "name", "");
 	if (!name || !*name) {
-		name = FIRMWARE_DEFAULT_DEVICE;
+		const sysinfo_model_t *model = sysinfo_model();
+		if (!model) {
+			fprintf(stderr, "firmware: device-name in system-info.json names no player this build knows"
+							" ('%s'); no update file will be looked for\n",
+					sysinfo_device_name());
+			return false;
+		}
+		name = model->update_stem;
 	}
 	return find_in_dir(root, name, out, out_size);
 }

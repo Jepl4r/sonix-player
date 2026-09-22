@@ -3,6 +3,7 @@
 | patch | script | what it fixes |
 |---|---|---|
 | Touchscreen multitouch | `tools/gt9xx_multitouch_patch.py` | the panel reports five fingers, the driver lets one out |
+| Touchscreen multitouch, R1 | `tools/cst8xx_multitouch_patch.py` | the panel reports two fingers, the driver lets one out |
 
 
 ## Touchscreen multitouch
@@ -150,3 +151,132 @@ gearboyplay: single-finger controls (multitouch not available)
 
 Everything else in the player is single-touch by design and is unaffected
 either way.
+
+## Touchscreen multitouch, R1
+
+
+### What the hardware actually does
+
+The R1's panel is a **Hynitron CST8xx**, and it reports **two** contacts. Two
+is measured, not assumed: with the immediate below set to `5` instead, a
+three-finger test still only ever produced tracking ids 0 and 1.
+
+So asking for five here would be asking for something the glass does not have.
+The patch asks for two.
+
+### Not the cause: `cst_max_touch_number`
+
+`cst8xx_touch.sh` loads the module with `cst_max_touch_number=1`, which looks
+exactly like the R3 Pro II's problem and is not it. The parameter is declared,
+it has its `__param` entry, it lands in `.bss` - and **no instruction in the
+module ever reads it**. Every relocation in `.text`, `.init.text`,
+`.text.unlikely` and `.exit.text` was checked; the symbol is referenced by the
+parameter table and by nothing else.
+
+Changing that line alone therefore does nothing at all.
+
+### The cause: one immediate in `hyn_ts_init`
+
+The driver does not consult the parameter, it writes its own number into the
+field the rest of the module reads, at file offset `0x171C`
+(`.init.text + 0x128`):
+
+```
+ 0128:  24020001   addiu v0,zero,1
+ 012c:  ae220058   sw    v0,0x58(s1)      # pdata->max_touch_number = 1
+```
+
+That field is written once, there, and read back in exactly two places. Between
+them it decides five things:
+
+```
+hyn_ts_init        read_len = 6 * n + 3
+                   buffer   = kmalloc(6 * n + 4)
+                   contacts = kmalloc(28 * n)
+hyn_irq_handler    if (n < (buf[2] & 0xf)) return;    drop a fuller frame
+                   for (i = 0; i < n; i++)            the parse loop
+```
+
+The frame test is the R3 Pro II's behaviour again - a second finger does not
+lose a contact, it loses the whole frame - but here the I2C read length, both
+allocations, the test and the loop all come off the same number. So raising it
+widens them together, and nothing is left inconsistent.
+
+`6*2+3 = 15` is exactly the two-contact frame. The header is `buf[0..2]` with
+the count in the low nibble of `buf[2]`, and each contact is six bytes from
+`buf[3]`:
+
+```
+buf[3] bits 3..0 : x high      buf[3] bits 7..6 : event
+buf[4]           : x low
+buf[5] bits 3..0 : y high      buf[5] bits 7..4 : finger id
+buf[6]           : y low
+buf[7]           : pressure
+buf[8] bits 7..4 : touch major
+```
+
+so the second contact ends at `buf[14]`, the fifteenth byte.
+
+### The fix
+
+One byte, the immediate:
+
+```
+ before   0128:  24020001   addiu v0,zero,1
+          012c:  ae220058   sw    v0,0x58(s1)
+
+ after    0128:  24020002   addiu v0,zero,2
+          012c:  ae220058   sw    v0,0x58(s1)
+```
+
+`li v0,1` on its own occurs eight times in this module, so it is not something
+to search for. The script anchors on the pair - the `addiu` together with the
+`sw` that consumes it - which occurs once, and refuses to touch a module where
+it is missing or appears more than once.
+
+**`cst8xx_touch.sh`** - `cst_max_touch_number` goes from 1 to 2 as well. It
+changes nothing, for the reason above; it is rewritten only so that the insmod
+line and the module do not tell the next reader two different stories.
+`--check` reports the number and never judges the patch by it.
+
+### Using it
+
+The same shape as the other one. With no argument it works on whatever sits in
+its own directory:
+
+```bash
+python3 tools/cst8xx_multitouch_patch.py --check
+python3 tools/cst8xx_multitouch_patch.py
+python3 tools/cst8xx_multitouch_patch.py --revert
+```
+
+and a directory can be named instead, to work straight on an unpacked rootfs or
+on the packer's assets:
+
+```bash
+python3 tools/cst8xx_multitouch_patch.py assets/R1/module_driver
+```
+
+Both files are copied to `*.orig` beside themselves before the first write, and
+running the script twice does nothing the second time.
+
+Note that the packer copies `module_driver/` as it finds it and does not run
+this script, so the patched module is what has to live in the assets tree.
+
+### What the player does with it
+
+The same `gbinput.c`, unchanged: this driver speaks protocol A too. Per contact
+it sends `ABS_MT_TRACKING_ID`, `ABS_MT_PRESSURE`, `ABS_MT_TOUCH_MAJOR`,
+`ABS_MT_POSITION_X`, `ABS_MT_POSITION_Y`, then `SYN_MT_REPORT`; `BTN_TOUCH` and
+`SYN_REPORT` close the packet.
+
+Two differences worth writing down, neither of which needed code:
+
+* there is no `ABS_MT_SLOT`, so the reader never switches to protocol B, and no
+  `ABS_X`/`ABS_Y` either;
+* `ABS_MT_TRACKING_ID` carries the real finger id and is **never** `-1`. A
+  finger lifting is said by a frame with fewer contacts and by `BTN_TOUCH 0`,
+  both of which the reader already treats as the last word.
+
+`GBINPUT_MAX_CONTACTS` stays 5 on both players. It is an array size, not a
+request, and a driver that reports two fills two slots.

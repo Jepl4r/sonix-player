@@ -234,15 +234,18 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(sysinfo_screen, cfg, "system_about");
 
 	// --- device and DAC: two read-only rows ---
-	// Neither value goes through tr(): a device name and a silicon part
-	// number are the same in every language.
+	// Both come from system-info.json, which is the one place that knows which
+	// player this is; neither goes through tr(), a device name and a silicon
+	// part number being the same in every language.
 	lv_obj_t *device_value = NULL;
 	info_row(container, "system_device", &device_value);
-	lv_label_set_text(device_value, "Hiby R3 Pro II");
+	const char *device = sysinfo_device_name();
+	lv_label_set_text(device_value, device[0] ? device : "\xE2\x80\x94");
 
 	lv_obj_t *dac_value = NULL;
 	info_row(container, "dac", &dac_value);
-	lv_label_set_text(dac_value, "Dual Cirrus Logic CS43198");
+	const char *dac = sysinfo_dac_info();
+	lv_label_set_text(dac_value, dac[0] ? dac : "\xE2\x80\x94");
 
 	// The serial number, from the SoC efuse: the same one printed on the box
 	// ("R3PII" plus the first eight hex digits of the chip id). Not translated,
@@ -309,10 +312,8 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 }
 
 void systempage_init(gui_config_t *cfg) {
-	// The versions are read once: the file does not change while the player
-	// runs.
-	sysinfo_load();
-
+	// system-info.json was read at startup, before the display: the simulator
+	// sizes its window from the model named in it.
 	build_sysinfo_page(cfg);
 
 	lv_obj_t *container = settingsrow_page(systempage_screen, cfg, "system");

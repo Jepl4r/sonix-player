@@ -11,6 +11,16 @@
 
 /* malloc, string and sprintf from the C library rather than LVGL's own. */
 #define LV_USE_STDLIB_MALLOC  LV_STDLIB_CLIB
+
+/* LVGL's log is off by default, and its assert handler is while(1). A failed
+ * allocation -- LV_USE_ASSERT_MALLOC is on -- therefore stops the interface
+ * dead without a word and without exiting, which on a device with no console
+ * cannot be told apart from a lock-up. Turning the log on leaves the halting
+ * as it is and gets the line that names it into the log the player already
+ * writes. Warnings and errors only. */
+#define LV_USE_LOG 1
+#define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
+#define LV_LOG_PRINTF 1
 #define LV_USE_STDLIB_STRING  LV_STDLIB_CLIB
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 

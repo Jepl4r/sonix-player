@@ -7,12 +7,22 @@
 #include <ctype.h>
 #include <stdio.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/statvfs.h>
 
 #define SYSINFO_FILE SONIX_RESOURCE_DIR "/components/system-info.json"
 
 static char os_version[64];
 static char build_version[64];
+static char device_name[64];
+static char dac_info[96];
+
+
+// The serial prefix in the information page
+static const sysinfo_model_t MODELS[] = {
+	{"HiBy R3 Pro II", 480, 720, "r3proii", "R3PII"},
+	{"HiBy R1", 480, 800, "r1", "R1"},
+};
 
 // ---------------------------------------------------------------------------
 // the version file
@@ -93,6 +103,8 @@ static bool json_string_field(const char *text, const char *key, char *out, size
 void sysinfo_load(void) {
 	os_version[0] = '\0';
 	build_version[0] = '\0';
+	device_name[0] = '\0';
+	dac_info[0] = '\0';
 
 	FILE *f = fopen(SYSINFO_FILE, "rb");
 	if (!f) {
@@ -100,8 +112,8 @@ void sysinfo_load(void) {
 		return;
 	}
 
-	// The file is two lines; anything longer is not the expected file and gets
-	// truncated without ceremony.
+	// The file is a handful of lines; anything longer is not the expected file
+	// and gets truncated without ceremony.
 	char buf[1024];
 	size_t n = fread(buf, 1, sizeof(buf) - 1, f);
 	fclose(f);
@@ -110,12 +122,33 @@ void sysinfo_load(void) {
 	// The names the file uses, matched case-insensitively by find_nocase.
 	json_string_field(buf, "OS_version", os_version, sizeof(os_version));
 	json_string_field(buf, "Build_version", build_version, sizeof(build_version));
+	json_string_field(buf, "device-name", device_name, sizeof(device_name));
+	json_string_field(buf, "dac-info", dac_info, sizeof(dac_info));
 
-	printf("sysinfo: system '%s', build '%s'\n", os_version, build_version);
+	const sysinfo_model_t *model = sysinfo_model();
+	printf("sysinfo: device '%s' (%s), system '%s', build '%s'\n", device_name,
+		   model ? "known" : "NOT a model this build knows", os_version, build_version);
 }
 
 const char *sysinfo_os_version(void) { return os_version; }
 const char *sysinfo_build_version(void) { return build_version; }
+const char *sysinfo_device_name(void) { return device_name; }
+const char *sysinfo_dac_info(void) { return dac_info; }
+
+// Matched without regard to case or to the spelling of "HiBy": the name is
+// typed by hand into a text file, and "Hiby R1" is the same player as
+// "HiBy R1".
+const sysinfo_model_t *sysinfo_model(void) {
+	if (!device_name[0]) {
+		return NULL;
+	}
+	for (size_t i = 0; i < sizeof(MODELS) / sizeof(MODELS[0]); i++) {
+		if (strcasecmp(device_name, MODELS[i].name) == 0) {
+			return &MODELS[i];
+		}
+	}
+	return NULL;
+}
 
 // ---------------------------------------------------------------------------
 // space on the card
@@ -195,6 +228,11 @@ const char *sysinfo_serial_number(void) {
 	tried = true;
 	serial[0] = '\0';
 
+	const sysinfo_model_t *model = sysinfo_model();
+	if (!model) {
+		return serial; // no prefix to build it from
+	}
+
 	FILE *f = fopen("/proc/jz/efuse/efuse_chip_id", "r");
 	if (!f) {
 		return serial; // build host, or firmware without the efuse module
@@ -207,8 +245,8 @@ const char *sysinfo_serial_number(void) {
 	fclose(f);
 
 	// "CHIP_ID: 90a70a428496c4012f146c0404000001" -- the serial printed on the
-	// box is "R3PII" plus the first eight hex digits, uppercased (verified on a
-	// real device).
+	// box is the model's prefix plus the first eight hex digits, uppercased
+	// (verified on a real R3 Pro II).
 	const char *hex = strchr(line, ':');
 	hex = hex ? hex + 1 : line;
 	while (*hex == ' ' || *hex == '\t') {
@@ -223,7 +261,7 @@ const char *sysinfo_serial_number(void) {
 	}
 	id[n] = '\0';
 	if (n == 8) {
-		snprintf(serial, sizeof(serial), "R3PII%s", id);
+		snprintf(serial, sizeof(serial), "%s%s", model->serial_prefix, id);
 	}
 	return serial;
 }

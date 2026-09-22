@@ -27,8 +27,9 @@ lv_obj_t *gearboyplay_screen;
 // the layout
 // ---------------------------------------------------------------------------
 //
-// The panel is 480x720. The game screen takes the first 432 rows at full width
-// (exactly 3x, no interpolation), the controls take the remaining 288.
+// The game screen takes the first 432 rows at full width (exactly 3x, no
+// interpolation) and the controls take whatever is left: 288 rows on a 720
+// panel, 368 on an 800 one.
 //
 // D-pad on the left, A/B on the right and diagonal with A higher, as on the
 // Game Boy itself. The measurements are in pixels rather than percentages on
@@ -39,8 +40,6 @@ lv_obj_t *gearboyplay_screen;
 #define SCREEN_TOP 0
 #define GAME_W GEARBOY_SCREEN_W // 480
 #define GAME_H GEARBOY_SCREEN_H // 432
-
-#define PANEL_H 720
 
 // The D-pad: a square split into nine cells. The corners give two directions
 // at once, the centre none. The diagonals are not a luxury -- without them a
@@ -54,7 +53,6 @@ lv_obj_t *gearboyplay_screen;
 #define DPAD_SIZE 220
 #define DPAD_CELL (DPAD_SIZE / 3)
 #define DPAD_CX (DPAD_X0 + DPAD_SIZE / 2)
-#define DPAD_CY (DPAD_Y0 + DPAD_SIZE / 2)
 
 // A and B, diagonal as on the real machine. The rectangle is both the drawing
 // and the touch area: 110 pixels, already wider than a fingertip, and growing
@@ -71,6 +69,35 @@ lv_obj_t *gearboyplay_screen;
 #define CORNER_W 110
 #define CORNER_H 60
 #define CORNER_Y (GAME_H - CORNER_H)
+
+// The rows above are measured on a 720-row panel. On a taller one every row
+// past 720 is extra room under the picture -- which is always 480x432, three
+// times the Game Boy's own 160x144, a fourth being wider than the panel -- and
+// the block of controls is centred in it rather than left hanging under the
+// picture. On 720 that is where it already sits: eighteen rows clear above the
+// A button and eighteen below the B button.
+//
+// The shift is applied through the three names below and nowhere else, because
+// the touch zones go to gbinput in screen coordinates without passing through
+// LVGL: the drawing and the zones have to move together or the buttons stop
+// being where they look.
+#define PANEL_H_REF 720
+
+static int panel_h = PANEL_H_REF;
+static int controls_dy;
+
+static void panel_set_height(int height) {
+	panel_h = height > 0 ? height : PANEL_H_REF;
+	controls_dy = (panel_h - PANEL_H_REF) / 2;
+	if (controls_dy < 0) {
+		controls_dy = 0; // a shorter panel than this layout was drawn for
+	}
+}
+
+#define DPAD_Y (DPAD_Y0 + controls_dy)
+#define DPAD_CENTRE_Y (DPAD_Y + DPAD_SIZE / 2)
+#define A_ROW (A_Y + controls_dy)
+#define B_ROW (B_Y + controls_dy)
 
 // The in-game menu: in the MIDDLE of the picture, not in a corner.
 //
@@ -196,7 +223,7 @@ static int build_zones(gbinput_zone_t *out, int max) {
 				continue;
 			}
 			out[n].x = DPAD_X0 + col * DPAD_CELL;
-			out[n].y = DPAD_Y0 + row * DPAD_CELL;
+			out[n].y = DPAD_Y + row * DPAD_CELL;
 			out[n].w = DPAD_CELL;
 			out[n].h = DPAD_CELL;
 			out[n].keys = DPAD[row][col];
@@ -205,10 +232,10 @@ static int build_zones(gbinput_zone_t *out, int max) {
 	}
 
 	if (n < max) {
-		out[n++] = (gbinput_zone_t){B_X, B_Y, BTN_SIZE, BTN_SIZE, GB_KEY_B};
+		out[n++] = (gbinput_zone_t){B_X, B_ROW, BTN_SIZE, BTN_SIZE, GB_KEY_B};
 	}
 	if (n < max) {
-		out[n++] = (gbinput_zone_t){A_X, A_Y, BTN_SIZE, BTN_SIZE, GB_KEY_A};
+		out[n++] = (gbinput_zone_t){A_X, A_ROW, BTN_SIZE, BTN_SIZE, GB_KEY_A};
 	}
 	// The menu BEFORE Select and Start: zones are tested in order and the first
 	// match wins, so whichever sits on top must be listed first. These do not
@@ -295,7 +322,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_t *v = lv_obj_create(parent);
 	lv_obj_remove_style_all(v);
 	lv_obj_set_size(v, DPAD_CELL, DPAD_SIZE);
-	lv_obj_set_pos(v, DPAD_CX - DPAD_CELL / 2, DPAD_Y0);
+	lv_obj_set_pos(v, DPAD_CX - DPAD_CELL / 2, DPAD_Y);
 	lv_obj_set_style_bg_color(v, body, 0);
 	lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(v, 16, 0);
@@ -303,7 +330,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_t *h = lv_obj_create(parent);
 	lv_obj_remove_style_all(h);
 	lv_obj_set_size(h, DPAD_SIZE, DPAD_CELL);
-	lv_obj_set_pos(h, DPAD_X0, DPAD_CY - DPAD_CELL / 2);
+	lv_obj_set_pos(h, DPAD_X0, DPAD_CENTRE_Y - DPAD_CELL / 2);
 	lv_obj_set_style_bg_color(h, body, 0);
 	lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(h, 16, 0);
@@ -313,7 +340,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_t *dot = lv_obj_create(parent);
 	lv_obj_remove_style_all(dot);
 	lv_obj_set_size(dot, hub, hub);
-	lv_obj_set_pos(dot, DPAD_CX - hub / 2, DPAD_CY - hub / 2);
+	lv_obj_set_pos(dot, DPAD_CX - hub / 2, DPAD_CENTRE_Y - hub / 2);
 	lv_obj_set_style_bg_color(dot, lv_color_make(38, 38, 42), 0);
 	lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
@@ -493,7 +520,7 @@ static lv_obj_t *menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb) 
 static void build_menu(void) {
 	menu_layer = lv_obj_create(gearboyplay_screen);
 	lv_obj_remove_style_all(menu_layer);
-	lv_obj_set_size(menu_layer, GAME_W, PANEL_H);
+	lv_obj_set_size(menu_layer, GAME_W, panel_h);
 	lv_obj_set_pos(menu_layer, 0, 0);
 	lv_obj_set_style_bg_color(menu_layer, lv_color_black(), 0);
 	lv_obj_set_style_bg_opa(menu_layer, LV_OPA_60, 0);
@@ -773,7 +800,10 @@ static void refresh_theme(void) {
 }
 
 void gearboyplay_init(gui_config_t *cfg) {
-	(void)cfg;
+	// Before anything is placed: every row below the picture is measured from
+	// this, and so are the touch zones handed to gbinput.
+	panel_set_height((int)cfg->screen_height);
+	gbinput_set_glass((int)cfg->screen_width, (int)cfg->screen_height);
 
 	lv_obj_add_style(gearboyplay_screen, &theme_style_screen, 0);
 	lv_obj_set_style_bg_color(gearboyplay_screen, lv_color_black(), 0);
@@ -786,7 +816,7 @@ void gearboyplay_init(gui_config_t *cfg) {
 	controls_bg = lv_obj_create(gearboyplay_screen);
 	lv_obj_remove_style_all(controls_bg);
 	lv_obj_set_pos(controls_bg, 0, SCREEN_TOP + GAME_H);
-	lv_obj_set_size(controls_bg, GAME_W, PANEL_H - (SCREEN_TOP + GAME_H));
+	lv_obj_set_size(controls_bg, GAME_W, panel_h - (SCREEN_TOP + GAME_H));
 	lv_obj_set_style_bg_color(controls_bg, theme()->screen_bg, 0);
 	lv_obj_set_style_bg_opa(controls_bg, LV_OPA_COVER, 0);
 
@@ -847,8 +877,8 @@ void gearboyplay_init(gui_config_t *cfg) {
 		}
 	}
 
-	build_button(gearboyplay_screen, B_X, B_Y, "B", GB_KEY_B);
-	build_button(gearboyplay_screen, A_X, A_Y, "A", GB_KEY_A);
+	build_button(gearboyplay_screen, B_X, B_ROW, "B", GB_KEY_B);
+	build_button(gearboyplay_screen, A_X, A_ROW, "A", GB_KEY_A);
 
 	// The menu and the badge last: they are the only two things that must sit
 	// above everything else on the page.

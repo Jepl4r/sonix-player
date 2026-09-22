@@ -1,17 +1,35 @@
 #!/bin/bash
 #
-# Builds a HiByOS firmware image that boots Sonix Player instead of the stock
-# music player.
+# Builds HiByOS firmware images that boot Sonix Player instead of the stock
+# music player -- one per model, from one binary and one set of assets.
 #
 # Everything it needs sits next to it:
 #
 #   sonix_firmware_packer.sh   this script
-#   r3proii_original.upt       the stock firmware to start from
-#   sonix_player               the binary to install
-#   assets/                    an overlay copied onto the root of the rootfs
+#   r3proii_original.upt       the stock firmware of the R3 Pro II
+#   r1_original.upt            the stock firmware of the R1
+#   sonix_player               the binary to install, the same one for both
+#   assets/
+#       R3PII/
+#       R1/
 #       |
 #       v
-#   r3proii.upt                the result
+#   r3proii.upt                one result per stock firmware present
+#   r1.upt
+#
+# A model whose stock firmware is not here is skipped with a warning, so
+# somebody who owns one of the two players can still run this and get theirs.
+#
+# One complete tree per model, and no shared layer: too much of what goes into
+# an image belongs to the machine it is going into -- the touch driver is built
+# against that kernel, the boot logos are drawn for that panel, and the audio
+# pieces answer to that hardware. The files that really are the same in both,
+# the language files and some of the images, are cheaper to copy than a rule
+# about which layer wins.
+#
+# What that costs is the two trees drifting apart, so before each image this
+# script lists the files the OTHER model has and this one does not. Usually
+# that is deliberate; the once it is not, it says so.
 #
 # No questions asked: run it and it does the lot.
 
@@ -38,9 +56,17 @@ die()  { echo -e "${RED}Error:${NC} $*" >&2; exit 1; }
 # ==========================================================================
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
-SOURCE_UPT="$SCRIPT_DIR/r3proii_original.upt"
 PLAYER_BIN="$SCRIPT_DIR/sonix_player"
-OUTPUT_UPT="$SCRIPT_DIR/r3proii.upt"
+
+# The models, one line each: the assets folder, the stock firmware to start
+# from, the image to write, and the device-name the player will read out of
+# system-info.json. The last one is not decoration -- it is checked against the
+# file the overlay actually landed, which is what stops an R1 image being built
+# with the R3 Pro II's name in it and offering that model's updates.
+MODELS=(
+	"R3PII|r3proii_original.upt|r3proii.upt|HiBy R3 Pro II"
+	"R1|r1_original.upt|r1.upt|HiBy R1"
+)
 
 WORK_DIR="$SCRIPT_DIR/temp"
 OTA_DIR="$WORK_DIR/ota_v0"
@@ -152,27 +178,31 @@ if [ -n "$MISSING" ]; then
   macOS:          brew install p7zip squashfs cdrtools"
 fi
 
-[ -f "$SOURCE_UPT" ] || die "$(basename "$SOURCE_UPT") is not next to this script."
 [ -f "$PLAYER_BIN" ] || die "sonix_player is not next to this script."
 
-# The overlay folder, whatever case it was created in.
-ASSETS_DIR=""
-ASSETS_SEEN=0
-while IFS= read -r candidate; do
-	ASSETS_SEEN=$((ASSETS_SEEN + 1))
-	[ -n "$ASSETS_DIR" ] || ASSETS_DIR="$candidate"
-done < <(find "$SCRIPT_DIR" -maxdepth 1 -type d -iname "assets" 2>/dev/null | sort)
+ASSETS_DIR="$SCRIPT_DIR/assets"
+[ -d "$ASSETS_DIR" ] || die "there is no assets folder next to this script."
 
-if [ "$ASSETS_SEEN" -gt 1 ]; then
-	die "there are $ASSETS_SEEN folders called assets next to this script, differing
-  only in case. Keep one: which of them should win is not obvious."
-fi
+# Which models can be built at all. A stock firmware that is not here is not an
+# error -- it is a model this person does not own.
+BUILDABLE=""
+for entry in "${MODELS[@]}"; do
+	IFS='|' read -r m_dir m_src m_out m_name <<< "$entry"
+	if [ ! -d "$ASSETS_DIR/$m_dir" ]; then
+		warn "assets/$m_dir is missing: $m_name will be skipped."
+		continue
+	fi
+	if [ ! -f "$SCRIPT_DIR/$m_src" ]; then
+		warn "$m_src is not next to this script: $m_name will be skipped."
+		continue
+	fi
+	BUILDABLE="$BUILDABLE$entry
+"
+	say "    $m_name: $m_src -> $m_out"
+done
 
-if [ -n "$ASSETS_DIR" ]; then
-	say "    assets:  $(basename "$ASSETS_DIR")/"
-else
-	warn "no assets folder next to the script: the image will carry the binary and nothing else."
-fi
+[ -n "$BUILDABLE" ] || die "no stock firmware to start from. Put at least one of
+  r3proii_original.upt / r1_original.upt next to this script."
 
 BUILD_STAMP="$(get_stamp "$PLAYER_BIN")"
 TODAY="$(date +%d%m%Y)"
@@ -183,218 +213,309 @@ fi
 say ""
 
 # ==========================================================================
-# 1. Unpack the stock firmware
+# One image, start to finish
 # ==========================================================================
-step "Unpacking $(basename "$SOURCE_UPT")"
+# Called once per model. Everything it touches -- the work folder, the unpacked
+# rootfs -- is torn down by cleanup() before the next model starts, so the two
+# builds cannot see each other's files.
+build_one() {
+	local MODEL_DIR="$1" MODEL_NAME="$2"
+	local SOURCE_UPT="$SCRIPT_DIR/$3" OUTPUT_UPT="$SCRIPT_DIR/$4"
 
-rm -rf "$WORK_DIR" "$SQUASH_DIR" "$MERGED_SQUASHFS"
-mkdir -p "$WORK_DIR"
+	say "${YELLOW}###############################################${NC}"
+	say "${YELLOW}###   $MODEL_NAME${NC}"
+	say "${YELLOW}###############################################${NC}"
+	say ""
 
-7z x "$SOURCE_UPT" -o"$WORK_DIR" -y > /dev/null
+	# ==========================================================================
+	# 1. Unpack the stock firmware
+	# ==========================================================================
+	step "[$MODEL_NAME] unpacking $(basename "$SOURCE_UPT")"
 
-[ -d "$OTA_DIR" ] || die "there is no ota_v0 folder inside the .upt: not a firmware of this kind."
+	rm -rf "$WORK_DIR" "$SQUASH_DIR" "$MERGED_SQUASHFS"
+	mkdir -p "$WORK_DIR"
 
-say "    Joining the rootfs chunks..."
-( cd "$OTA_DIR" && cat rootfs.squashfs.* ) > "$MERGED_SQUASHFS"
+	7z x "$SOURCE_UPT" -o"$WORK_DIR" -y > /dev/null
 
-say "    Extracting the filesystem..."
-unsquashfs -f -d "$SQUASH_DIR" "$MERGED_SQUASHFS" > /dev/null
-rm -f "$MERGED_SQUASHFS"
+	[ -d "$OTA_DIR" ] || die "there is no ota_v0 folder inside the .upt: not a firmware of this kind."
 
-# The old chunks go now: what gets written back must not sit next to what it
-# replaces, or the image ends up carrying both.
-rm -f "$OTA_DIR/ota_md5_rootfs.squashfs."* "$OTA_DIR/rootfs."*
+	say "    Joining the rootfs chunks..."
+	( cd "$OTA_DIR" && cat rootfs.squashfs.* ) > "$MERGED_SQUASHFS"
 
-[ -f "$SQUASH_DIR/$STOCK_LAUNCHER" ] || die "the rootfs has no $STOCK_LAUNCHER: unexpected firmware."
-[ -f "$SQUASH_DIR/$INIT_SCRIPT" ]    || die "the rootfs has no $INIT_SCRIPT: unexpected firmware."
-say ""
+	say "    Extracting the filesystem..."
+	unsquashfs -f -d "$SQUASH_DIR" "$MERGED_SQUASHFS" > /dev/null
+	rm -f "$MERGED_SQUASHFS"
 
-# ==========================================================================
-# 2. The binary
-# ==========================================================================
-step "Installing sonix_player"
+	# The old chunks go now: what gets written back must not sit next to what it
+	# replaces, or the image ends up carrying both.
+	rm -f "$OTA_DIR/ota_md5_rootfs.squashfs."* "$OTA_DIR/rootfs."*
 
-chmod 777 "$PLAYER_BIN"
+	[ -f "$SQUASH_DIR/$STOCK_LAUNCHER" ] || die "the rootfs has no $STOCK_LAUNCHER: unexpected firmware."
+	[ -f "$SQUASH_DIR/$INIT_SCRIPT" ]    || die "the rootfs has no $INIT_SCRIPT: unexpected firmware."
+	say ""
 
-if [ -e "$SQUASH_DIR/$STOCK_PLAYER" ]; then
-	rm -f "$SQUASH_DIR/$STOCK_PLAYER"
-	say "    $STOCK_PLAYER removed"
-else
-	warn "$STOCK_PLAYER was not there to begin with"
-fi
+	# ==========================================================================
+	# 2. The binary
+	# ==========================================================================
+	step "[$MODEL_NAME] installing sonix_player"
 
-cp -f "$PLAYER_BIN" "$SQUASH_DIR/usr/bin/sonix_player"
-chmod 777 "$SQUASH_DIR/usr/bin/sonix_player"
-say "    usr/bin/sonix_player installed (777)"
-say ""
+	chmod 777 "$PLAYER_BIN"
 
-# ==========================================================================
-# 3. The launcher script
-# ==========================================================================
-step "Renaming the launcher"
+	if [ -e "$SQUASH_DIR/$STOCK_PLAYER" ]; then
+		rm -f "$SQUASH_DIR/$STOCK_PLAYER"
+		say "    $STOCK_PLAYER removed"
+	else
+		warn "$STOCK_PLAYER was not there to begin with"
+	fi
 
-mv "$SQUASH_DIR/$STOCK_LAUNCHER" "$SQUASH_DIR/$NEW_LAUNCHER"
-say "    $STOCK_LAUNCHER -> $NEW_LAUNCHER"
-rename_player_in "$SQUASH_DIR/$NEW_LAUNCHER" "$NEW_LAUNCHER"
-chmod 755 "$SQUASH_DIR/$NEW_LAUNCHER"
-say ""
+	cp -f "$PLAYER_BIN" "$SQUASH_DIR/usr/bin/sonix_player"
+	chmod 777 "$SQUASH_DIR/usr/bin/sonix_player"
+	say "    usr/bin/sonix_player installed (777)"
+	say ""
 
-# ==========================================================================
-# 4. The init script
-# ==========================================================================
-step "Updating $INIT_SCRIPT"
+	# ==========================================================================
+	# 3. The launcher script
+	# ==========================================================================
+	step "[$MODEL_NAME] renaming the launcher"
 
-rename_player_in "$SQUASH_DIR/$INIT_SCRIPT" "$INIT_SCRIPT"
-chmod 755 "$SQUASH_DIR/$INIT_SCRIPT"
-say ""
+	mv "$SQUASH_DIR/$STOCK_LAUNCHER" "$SQUASH_DIR/$NEW_LAUNCHER"
+	say "    $STOCK_LAUNCHER -> $NEW_LAUNCHER"
+	rename_player_in "$SQUASH_DIR/$NEW_LAUNCHER" "$NEW_LAUNCHER"
+	# The mode is set after the overlay, not here: the overlay may carry its own
+	# copy of this file and would bring its own mode with it. See step 6.
+	say ""
 
-# ==========================================================================
-# 5. The overlay
-# ==========================================================================
-if [ -n "$ASSETS_DIR" ]; then
-	step "Copying $(basename "$ASSETS_DIR")/ onto the root of the rootfs"
+	# ==========================================================================
+	# 4. The init script
+	# ==========================================================================
+	step "[$MODEL_NAME] updating $INIT_SCRIPT"
+
+	rename_player_in "$SQUASH_DIR/$INIT_SCRIPT" "$INIT_SCRIPT"
+	say ""
+
+	# ==========================================================================
+	# 5. The overlay
+	# ==========================================================================
+	step "[$MODEL_NAME] copying the overlay onto the root of the rootfs"
 
 	# tar rather than cp: it merges into directories that already exist,
 	# overwrites the files that clash, carries the hidden ones, and behaves the
-	# same way on macOS and on Linux -- none of which is true of `cp -a` on
-	# both.
-	( cd "$ASSETS_DIR" && tar cf - . ) | ( cd "$SQUASH_DIR" && tar xf - )
+	# same way on macOS and on Linux -- none of which is true of `cp -a` on both.
+	( cd "$ASSETS_DIR/$MODEL_DIR" && tar cf - . ) | ( cd "$SQUASH_DIR" && tar xf - )
 
-	COPIED="$(cd "$ASSETS_DIR" && find . -type f | wc -l | tr -d ' ')"
-	say "    $COPIED files copied"
+	MODEL_N="$(cd "$ASSETS_DIR/$MODEL_DIR" && find . -type f | wc -l | tr -d ' ')"
+	say "    $MODEL_DIR/: $MODEL_N files"
+
+	# What the other model's tree carries and this one does not. Nothing is
+	# copied across and nothing fails: whatever the stock firmware had at that
+	# path is left alone, which for a boot logo is this model's own at its own
+	# size. It is listed because the other reason for the difference is having
+	# added a file to one tree and forgotten the other.
+	for other in "${MODELS[@]}"; do
+		IFS='|' read -r o_dir o_src o_out o_name <<< "$other"
+		[ "$o_dir" != "$MODEL_DIR" ] || continue
+		[ -d "$ASSETS_DIR/$o_dir" ] || continue
+		while IFS= read -r rel; do
+			[ -n "$rel" ] || continue
+			say "    only in $o_dir/: ${rel#./} -- the stock firmware's own is kept here"
+		done < <(comm -23 \
+			<(cd "$ASSETS_DIR/$o_dir" && find . -type f | sort) \
+			<(cd "$ASSETS_DIR/$MODEL_DIR" && find . -type f | sort))
+	done
 	say ""
-fi
+
+	# ==========================================================================
+	# 5b. The modes that decide whether any of this runs
+	# ==========================================================================
+	#
+	# After the overlay, because the overlay wins: it may carry its own copy of
+	# the launcher, and tar brings the mode along with the file.
+	#
+	# This is not housekeeping. The init script is
+	#
+	#     PL01=/usr/bin/sonix_player.sh
+	#     [ -f $PL01 ] && ( $PL01 & ) || echo "file <$PL01> don't exist."
+	#
+	# and `-f` asks whether the file EXISTS, not whether it can be run. A
+	# launcher that arrives without its execute bit passes that test, fails to
+	# start, takes the `&&` branch so the `||` message is never printed, and
+	# leaves a device sitting on its boot logo with nothing in any log and no
+	# reboot to hint at it. An assets folder that has been through a zip is
+	# enough to cause it, which is why this is checked rather than assumed.
+	step "[$MODEL_NAME] making the boot path executable"
+
+	for rel in "$NEW_LAUNCHER" "$INIT_SCRIPT" usr/bin/bluealsa usr/bin/shairport_on.sh etc/init.d/S80_bt_init; do
+		if [ -f "$SQUASH_DIR/$rel" ]; then
+			chmod 755 "$SQUASH_DIR/$rel"
+			say "    $rel is 755"
+		fi
+	done
+
+	# Anything else the overlay put in a directory of executables, and the
+	# kernel-module scripts with it.
+	for rel in $(cd "$ASSETS_DIR/$MODEL_DIR" && find usr/bin module_driver -type f 2>/dev/null); do
+		[ -f "$SQUASH_DIR/$rel" ] || continue
+		chmod 755 "$SQUASH_DIR/$rel"
+	done
+
+	# The two that decide whether the player is ever started at all.
+	for rel in "$NEW_LAUNCHER" "$INIT_SCRIPT"; do
+		[ -x "$SQUASH_DIR/$rel" ] || die "$rel is not executable in the image.
+	  Nothing would start the player and the device would sit on its boot logo."
+	done
+	say ""
+
+	# ==========================================================================
+	# 6. The stock interface's resources
+	# ==========================================================================
+	step "[$MODEL_NAME] removing the stock interface's folders"
+
+	for dir in "${STOCK_UI_DIRS[@]}"; do
+		if [ -e "$SQUASH_DIR/$dir" ]; then
+			rm -rf "$SQUASH_DIR/$dir"
+			[ -e "$SQUASH_DIR/$dir" ] && die "could not remove $dir."
+			say "    $dir removed"
+		else
+			say "    $dir was not there"
+		fi
+	done
+	say ""
+
+	# ==========================================================================
+	# 7. The build stamp
+	# ==========================================================================
+	step "[$MODEL_NAME] system-info.json"
+
+	JSON="$SQUASH_DIR/$SYSTEM_INFO"
+	[ -f "$JSON" ] || die "$SYSTEM_INFO is not in the rootfs.
+	  It should come from assets/$MODEL_DIR/$SYSTEM_INFO"
+
+	# The name in the file against the model being built. Everything the player
+	# decides by model -- the panel it opens the simulator at, the .upt it will
+	# accept, the converter and the serial it prints -- hangs off this one string,
+	# and an image carrying the other model's name would offer that model's update
+	# to a device that cannot survive it.
+	FOUND_NAME="$(tr -d '\r' < "$JSON" | tr ',' '\n' | grep -i '"device-name"' | head -1 | sed -E 's/.*"device-name"[[:space:]]*:[[:space:]]*"([^"]*)".*/\1/')"
+	[ -n "$FOUND_NAME" ] || die "$SYSTEM_INFO has no device-name."
+	[ "$FOUND_NAME" = "$MODEL_NAME" ] || die "$SYSTEM_INFO says device-name \"$FOUND_NAME\",
+	  but this is the $MODEL_NAME image. Check assets/$MODEL_DIR/$SYSTEM_INFO."
+	say "    device-name = $FOUND_NAME"
+
+	# Whatever case the key was written in. The player reads it case-insensitively
+	# (find_nocase in src/system/device/sysinfo.c), so "Build_version" and
+	# "build_version" are equally correct in the file and this has to accept the
+	# same. The spelling is read out first and then used literally in the
+	# substitution, because sed's case-insensitive flag is a GNU extension and this
+	# has to run on macOS too.
+	KEY="$(grep -oE '"[Bb][Uu][Ii][Ll][Dd]_[Vv][Ee][Rr][Ss][Ii][Oo][Nn]"' "$JSON" | head -1 || true)"
+	[ -n "$KEY" ] || die "$SYSTEM_INFO has no build_version key, in any case."
+
+	sed_file "s/($KEY[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\\1$BUILD_STAMP\\2/" "$JSON"
+
+	grep -q "\"$BUILD_STAMP\"" "$JSON" || die "$KEY was not rewritten."
+	say "    $KEY = $BUILD_STAMP"
+	say ""
+
+	# ==========================================================================
+	# 8. Repack
+	# ==========================================================================
+	say "${YELLOW}###############################${NC}"
+	say "${YELLOW}###   NEW FILESYSTEM        ###${NC}"
+	say "${YELLOW}###############################${NC}"
+	say ""
+
+	step "[$MODEL_NAME] clearing macOS clutter"
+	find "$SQUASH_DIR" -name '.DS_Store' -type f -delete 2>/dev/null || true
+	find "$SQUASH_DIR" -name '._*' -type f -delete 2>/dev/null || true
+
+	# Nothing this script writes belongs in the image.
+	find "$SQUASH_DIR" -name '*.packer.tmp' -type f -delete 2>/dev/null || true
+
+	ROOTFS_NEW="$OTA_DIR/rootfs.squashfs"
+
+	step "[$MODEL_NAME] building the filesystem"
+	mksquashfs "$SQUASH_DIR" "$ROOTFS_NEW" -comp lzo -all-root > /dev/null
+
+	ORIGINAL_SUM="$(get_md5 "$ROOTFS_NEW")"
+	SIZE="$(get_size "$ROOTFS_NEW")"
+	say "    rootfs.squashfs: $SIZE bytes, md5 $ORIGINAL_SUM"
+
+	step "[$MODEL_NAME] updating ota_update.in"
+	# The kernel is not touched, so its two lines are carried over exactly as they
+	# were: recomputing them from a file this script never writes would be a way of
+	# getting them wrong.
+	X_SIZE="$(grep -A 3 'img_name=xImage' "$OTA_DIR/ota_update.in" | grep 'img_size' | cut -d= -f2 | tr -d '\r ')"
+	X_MD5="$(grep -A 3 'img_name=xImage' "$OTA_DIR/ota_update.in" | grep 'img_md5' | cut -d= -f2 | tr -d '\r ')"
+
+	[ -n "$X_SIZE" ] && [ -n "$X_MD5" ] || die "cannot read the kernel entry from ota_update.in."
+
+	cat > "$OTA_DIR/ota_update.in" <<-EOF
+	ota_version=0
+
+	img_type=kernel
+	img_name=xImage
+	img_size=$X_SIZE
+	img_md5=$X_MD5
+
+	img_type=rootfs
+	img_name=rootfs.squashfs
+	img_size=$SIZE
+	img_md5=$ORIGINAL_SUM
+	EOF
+
+	step "[$MODEL_NAME] splitting into chunks and building the md5 chain"
+	split -b 524288 -a 4 "$ROOTFS_NEW" "$OTA_DIR/temp_chunk_"
+	rm -f "$ROOTFS_NEW"
+
+	MD5_FILE="$OTA_DIR/ota_md5_rootfs.squashfs.$ORIGINAL_SUM"
+	: > "$MD5_FILE"
+
+	count=0
+	CURRENT_SUM="$ORIGINAL_SUM"
+	for f in "$OTA_DIR/temp_chunk_"*; do
+		[ -e "$f" ] || continue
+		suffix="$(printf "%04d" $count)"
+		NEW_FILENAME="$OTA_DIR/rootfs.squashfs.$suffix.$CURRENT_SUM"
+		mv "$f" "$NEW_FILENAME"
+		CURRENT_SUM="$(get_md5 "$NEW_FILENAME")"
+		echo "$CURRENT_SUM" >> "$MD5_FILE"
+		count=$((count + 1))
+	done
+	say "    $count chunks"
+	say ""
+
+	# ==========================================================================
+	# 9. The image
+	# ==========================================================================
+	say "${YELLOW}###############################${NC}"
+	say "${YELLOW}###   FIRMWARE IMAGE        ###${NC}"
+	say "${YELLOW}###############################${NC}"
+	say ""
+
+	step "[$MODEL_NAME] writing $(basename "$OUTPUT_UPT")"
+	rm -f "$OUTPUT_UPT"
+	"$ISO_TOOL" -o "$OUTPUT_UPT" -J -r "$WORK_DIR" > /dev/null 2>&1
+
+	[ -f "$OUTPUT_UPT" ] || die "the image was not written."
+
+	cleanup
+
+	say "  $OUTPUT_UPT"
+	say "  $(get_size "$OUTPUT_UPT") bytes, build_version $BUILD_STAMP"
+	say ""
+}
 
 # ==========================================================================
-# 6. The stock interface's resources
+# Every model that can be built
 # ==========================================================================
-step "Removing the stock interface's folders"
+while IFS='|' read -r m_dir m_src m_out m_name; do
+	[ -n "$m_dir" ] || continue
+	build_one "$m_dir" "$m_name" "$m_src" "$m_out"
+done <<< "$BUILDABLE"
 
-for dir in "${STOCK_UI_DIRS[@]}"; do
-	if [ -e "$SQUASH_DIR/$dir" ]; then
-		rm -rf "$SQUASH_DIR/$dir"
-		[ -e "$SQUASH_DIR/$dir" ] && die "could not remove $dir."
-		say "    $dir removed"
-	else
-		say "    $dir was not there"
-	fi
-done
-say ""
-
-# ==========================================================================
-# 7. The build stamp
-# ==========================================================================
-step "build_version in $SYSTEM_INFO"
-
-JSON="$SQUASH_DIR/$SYSTEM_INFO"
-[ -f "$JSON" ] || die "$SYSTEM_INFO is not in the rootfs.
-  It should come from the assets folder: assets/$SYSTEM_INFO"
-
-# Whatever case the key was written in. The player reads it case-insensitively
-# (find_nocase in src/system/sysinfo.c), so "Build_version" and "build_version"
-# are equally correct in the file and this has to accept the same. The spelling
-# is read out first and then used literally in the substitution, because sed's
-# case-insensitive flag is a GNU extension and this has to run on macOS too.
-KEY="$(grep -oE '"[Bb][Uu][Ii][Ll][Dd]_[Vv][Ee][Rr][Ss][Ii][Oo][Nn]"' "$JSON" | head -1 || true)"
-[ -n "$KEY" ] || die "$SYSTEM_INFO has no build_version key, in any case."
-
-sed_file "s/($KEY[[:space:]]*:[[:space:]]*\")[^\"]*(\")/\1$BUILD_STAMP\2/" "$JSON"
-
-grep -q "\"$BUILD_STAMP\"" "$JSON" || die "$KEY was not rewritten."
-say "    $KEY = $BUILD_STAMP"
-say ""
-
-# ==========================================================================
-# 8. Repack
-# ==========================================================================
-say "${YELLOW}###############################${NC}"
-say "${YELLOW}###   NEW FILESYSTEM        ###${NC}"
-say "${YELLOW}###############################${NC}"
-say ""
-
-step "Clearing macOS clutter"
-find "$SQUASH_DIR" -name '.DS_Store' -type f -delete 2>/dev/null || true
-find "$SQUASH_DIR" -name '._*' -type f -delete 2>/dev/null || true
-
-# Nothing this script writes belongs in the image.
-find "$SQUASH_DIR" -name '*.packer.tmp' -type f -delete 2>/dev/null || true
-
-ROOTFS_NEW="$OTA_DIR/rootfs.squashfs"
-
-step "Building the filesystem"
-mksquashfs "$SQUASH_DIR" "$ROOTFS_NEW" -comp lzo -all-root > /dev/null
-
-ORIGINAL_SUM="$(get_md5 "$ROOTFS_NEW")"
-SIZE="$(get_size "$ROOTFS_NEW")"
-say "    rootfs.squashfs: $SIZE bytes, md5 $ORIGINAL_SUM"
-
-step "Updating ota_update.in"
-# The kernel is not touched, so its two lines are carried over exactly as they
-# were: recomputing them from a file this script never writes would be a way of
-# getting them wrong.
-X_SIZE="$(grep -A 3 'img_name=xImage' "$OTA_DIR/ota_update.in" | grep 'img_size' | cut -d= -f2 | tr -d '\r ')"
-X_MD5="$(grep -A 3 'img_name=xImage' "$OTA_DIR/ota_update.in" | grep 'img_md5' | cut -d= -f2 | tr -d '\r ')"
-
-[ -n "$X_SIZE" ] && [ -n "$X_MD5" ] || die "cannot read the kernel entry from ota_update.in."
-
-cat > "$OTA_DIR/ota_update.in" <<EOF
-ota_version=0
-
-img_type=kernel
-img_name=xImage
-img_size=$X_SIZE
-img_md5=$X_MD5
-
-img_type=rootfs
-img_name=rootfs.squashfs
-img_size=$SIZE
-img_md5=$ORIGINAL_SUM
-EOF
-
-step "Splitting into chunks and building the md5 chain"
-split -b 524288 -a 4 "$ROOTFS_NEW" "$OTA_DIR/temp_chunk_"
-rm -f "$ROOTFS_NEW"
-
-MD5_FILE="$OTA_DIR/ota_md5_rootfs.squashfs.$ORIGINAL_SUM"
-: > "$MD5_FILE"
-
-count=0
-CURRENT_SUM="$ORIGINAL_SUM"
-for f in "$OTA_DIR/temp_chunk_"*; do
-	[ -e "$f" ] || continue
-	suffix="$(printf "%04d" $count)"
-	NEW_FILENAME="$OTA_DIR/rootfs.squashfs.$suffix.$CURRENT_SUM"
-	mv "$f" "$NEW_FILENAME"
-	CURRENT_SUM="$(get_md5 "$NEW_FILENAME")"
-	echo "$CURRENT_SUM" >> "$MD5_FILE"
-	count=$((count + 1))
-done
-say "    $count chunks"
-say ""
-
-# ==========================================================================
-# 9. The image
-# ==========================================================================
-say "${YELLOW}###############################${NC}"
-say "${YELLOW}###   FIRMWARE IMAGE        ###${NC}"
-say "${YELLOW}###############################${NC}"
-say ""
-
-step "Writing $(basename "$OUTPUT_UPT")"
-rm -f "$OUTPUT_UPT"
-"$ISO_TOOL" -o "$OUTPUT_UPT" -J -r "$WORK_DIR" > /dev/null 2>&1
-
-[ -f "$OUTPUT_UPT" ] || die "the image was not written."
-
-cleanup
-
-say ""
 say "${GREEN}#############################${NC}"
 say "${GREEN}###   DONE                ###${NC}"
 say "${GREEN}#############################${NC}"
-say ""
-say "  $OUTPUT_UPT"
-say "  $(get_size "$OUTPUT_UPT") bytes, build_version $BUILD_STAMP"
 say ""
 say "${GREEN}  Ready to be copied to the SD card.${NC}"
 say ""

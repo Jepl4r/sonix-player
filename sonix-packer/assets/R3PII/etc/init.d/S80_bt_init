@@ -1,0 +1,26 @@
+#!/bin/sh
+#
+# Bluetooth: non fa piu' niente qui.
+#
+# L'originale di HiBy lanciava /usr/bin/bt_init in background a ogni avvio:
+# rfkill, brcm_patchram_plus, sleep 5, hciconfig hci0 up, bluetoothd,
+# hciconfig hci0 reset, bt-agent, bluealsa -- una decina di secondi di attese
+# fisse, un secondo dbus-daemon sopra quello di S30dbus, e alla fine
+# l'adattatore rimesso su Powered Off.
+#
+# Adesso lo stack lo tira su Sonix Player, in ordine e aspettando ogni pezzo
+# invece di dormire, e solo quando il Bluetooth serve davvero. Lasciare girare
+# anche questo script significherebbe due brcm_patchram_plus sulla stessa UART
+# e un agent di pairing che non e' il nostro.
+#
+# Per tornare allo stack di HiBy basta rimettere il file originale.
+
+case "$1" in
+  start|stop|restart|reload)
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+esac
+
+exit 0

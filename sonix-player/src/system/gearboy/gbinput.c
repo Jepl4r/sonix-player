@@ -17,6 +17,10 @@ bool gbinput_start(const gbinput_zone_t *zones, int count, void (*on_menu)(void)
 }
 void gbinput_stop(void) {}
 bool gbinput_active(void) { return false; }
+void gbinput_set_glass(int width, int height) {
+	(void)width;
+	(void)height;
+}
 
 #else
 
@@ -51,12 +55,26 @@ static int zone_count;
 static void (*menu_cb)(void);
 
 // Glass size, used to map raw coordinates onto screen ones. Same as the
-// display's, and constant here because this device has exactly one panel.
+// display's, and told to this file rather than asked of LVGL because this path
+// reads the touchscreen directly and never goes through it.
+//
+// It matters that it is the real panel: the zones are given in screen
+// coordinates, so a raw reading scaled into 720 rows on an 800-row panel puts
+// every touch progressively too high -- unnoticeable at the top of the picture
+// and an unreachable B button at the bottom.
 //
 // Named GLASS_ rather than PANEL_ because PANEL_H is already the include guard
 // of panel.h, which this file includes.
-#define GLASS_W 480
-#define GLASS_H 720
+#define GLASS_W_DEFAULT 480
+#define GLASS_H_DEFAULT 720
+
+static int glass_w = GLASS_W_DEFAULT;
+static int glass_h = GLASS_H_DEFAULT;
+
+void gbinput_set_glass(int width, int height) {
+	glass_w = width > 0 ? width : GLASS_W_DEFAULT;
+	glass_h = height > 0 ? height : GLASS_H_DEFAULT;
+}
 
 static int abs_min_x, abs_max_x, abs_min_y, abs_max_y;
 
@@ -69,9 +87,9 @@ static void read_abs_range(int fd) {
 	struct input_absinfo info;
 
 	abs_min_x = 0;
-	abs_max_x = GLASS_W - 1;
+	abs_max_x = glass_w - 1;
 	abs_min_y = 0;
-	abs_max_y = GLASS_H - 1;
+	abs_max_y = glass_h - 1;
 
 	if (ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &info) == 0 && info.maximum > info.minimum) {
 		abs_min_x = info.minimum;
@@ -102,12 +120,12 @@ static int scale(int value, int lo, int hi, int size) {
 // LVGL, which is not in this path: without it, on a flipped screen the D-pad
 // would answer to the A/B buttons.
 static void to_screen(int raw_x, int raw_y, int *out_x, int *out_y) {
-	int x = scale(raw_x, abs_min_x, abs_max_x, GLASS_W);
-	int y = scale(raw_y, abs_min_y, abs_max_y, GLASS_H);
+	int x = scale(raw_x, abs_min_x, abs_max_x, glass_w);
+	int y = scale(raw_y, abs_min_y, abs_max_y, glass_h);
 
 	if (display_get_rotated()) {
-		x = GLASS_W - 1 - x;
-		y = GLASS_H - 1 - y;
+		x = glass_w - 1 - x;
+		y = glass_h - 1 - y;
 	}
 
 	*out_x = x;
