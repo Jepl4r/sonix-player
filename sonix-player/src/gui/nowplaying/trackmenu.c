@@ -386,6 +386,10 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 		snprintf(buffer, sizeof(buffer), "%d", tags->track_number);
 		details_add_row("track", buffer);
 	}
+	if (tags->disc_number > 0) {
+		snprintf(buffer, sizeof(buffer), "%d", tags->disc_number);
+		details_add_row("trackmenu_disc_number", buffer);
+	}
 
 	// A lossy file is described by its bitrate, not by bits and kHz: those two
 	// numbers belong to the PCM leaving the decoder and are identical for a
