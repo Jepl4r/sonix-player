@@ -61,6 +61,9 @@ static int glass_h = 720;
 
 static int abs_min_x, abs_max_x, abs_min_y, abs_max_y;
 
+// Set for cst8xx_touch.ko (input device "hyn_ts"): see held_mask().
+static bool hold_missing;
+
 bool gbinput_active(void) { return active_flag; }
 
 void gbinput_set_glass(int width, int height) {
@@ -160,8 +163,23 @@ static uint16_t keys_at(int x, int y) {
 
 typedef struct {
 	int x, y;
+	int id; // ABS_MT_TRACKING_ID in type A, -1 when the driver sends none
 	bool used;
 } contact_t;
+
+// cst8xx_touch.ko reports each contact on every other scan only, by a counter
+// per contact. The input core drops the packets left empty, so one finger is
+// fine; two fingers out of step arrive one per packet, and each button would
+// be down half the time. With that driver a contact is kept by tracking id
+// until it is missing from two packets in a row, or BTN_TOUCH goes to 0. A
+// contact without an id counts for its packet alone.
+typedef struct {
+	int x, y;
+	int missed; // packets since this id was last reported
+	bool used;
+} held_t;
+
+static uint16_t held_mask(held_t *held, const contact_t *pending, int count);
 
 static void *reader_thread(void *arg) {
 	int fd = (int)(intptr_t)arg;
@@ -172,7 +190,11 @@ static void *reader_thread(void *arg) {
 	// Type A: the contacts of the packet being assembled.
 	contact_t pending[GBINPUT_MAX_CONTACTS];
 	int pending_count = 0;
-	int pending_x = -1, pending_y = -1;
+	int pending_x = -1, pending_y = -1, pending_id = -1;
+
+	// Contacts kept across packets, indexed by tracking id (hold_missing only).
+	held_t held[GBINPUT_MAX_CONTACTS];
+	memset(held, 0, sizeof(held));
 
 	// Type B: the current slot.
 	int cur_slot = 0;
@@ -228,6 +250,8 @@ static void *reader_thread(void *arg) {
 				case ABS_MT_TRACKING_ID:
 					if (protocol_b) {
 						slots[cur_slot].used = e->value >= 0;
+					} else {
+						pending_id = e->value;
 					}
 					break;
 				case ABS_MT_POSITION_X:
@@ -268,10 +292,11 @@ static void *reader_thread(void *arg) {
 				if (pending_x >= 0 && pending_y >= 0 && pending_count < GBINPUT_MAX_CONTACTS) {
 					pending[pending_count].x = pending_x;
 					pending[pending_count].y = pending_y;
+					pending[pending_count].id = pending_id;
 					pending[pending_count].used = true;
 					pending_count++;
 				}
-				pending_x = pending_y = -1;
+				pending_x = pending_y = pending_id = -1;
 				continue;
 			}
 
@@ -299,10 +324,14 @@ static void *reader_thread(void *arg) {
 				// reached by both driver conventions: an empty SYN_MT_REPORT
 				// followed by SYN_REPORT, or a bare SYN_REPORT. The gt9xx sends
 				// the latter.
-				for (int s = 0; s < pending_count; s++) {
-					int sx, sy;
-					to_screen(pending[s].x, pending[s].y, &sx, &sy);
-					mask |= keys_at(sx, sy);
+				if (hold_missing) {
+					mask = held_mask(held, pending, pending_count);
+				} else {
+					for (int s = 0; s < pending_count; s++) {
+						int sx, sy;
+						to_screen(pending[s].x, pending[s].y, &sx, &sy);
+						mask |= keys_at(sx, sy);
+					}
 				}
 			} else {
 				// The protocol is still unknown: no slot and no SYN_MT_REPORT
@@ -315,6 +344,7 @@ static void *reader_thread(void *arg) {
 			// whatever the contacts say.
 			if (saw_btn_touch && !btn_touch_down) {
 				mask = 0;
+				memset(held, 0, sizeof(held));
 			}
 
 			// Menu fires on the rising edge: a finger resting there counts once,
@@ -327,7 +357,7 @@ static void *reader_thread(void *arg) {
 			gearboy_set_keys((uint16_t)(mask & ~GBINPUT_KEY_MENU));
 
 			pending_count = 0;
-			pending_x = pending_y = -1;
+			pending_x = pending_y = pending_id = -1;
 		}
 	}
 
@@ -335,6 +365,37 @@ static void *reader_thread(void *arg) {
 	gearboy_set_keys(0);
 	active_flag = false;
 	return NULL;
+}
+
+static uint16_t held_mask(held_t *held, const contact_t *pending, int count) {
+	uint16_t mask = 0;
+	int sx, sy;
+
+	for (int h = 0; h < GBINPUT_MAX_CONTACTS; h++) {
+		held[h].missed++;
+	}
+	for (int s = 0; s < count; s++) {
+		int id = pending[s].id;
+		if (id < 0 || id >= GBINPUT_MAX_CONTACTS) {
+			to_screen(pending[s].x, pending[s].y, &sx, &sy);
+			mask |= keys_at(sx, sy);
+			continue;
+		}
+		held[id].x = pending[s].x;
+		held[id].y = pending[s].y;
+		held[id].missed = 0;
+		held[id].used = true;
+	}
+	for (int h = 0; h < GBINPUT_MAX_CONTACTS; h++) {
+		if (held[h].used && held[h].missed > 1) {
+			held[h].used = false;
+		}
+		if (held[h].used) {
+			to_screen(held[h].x, held[h].y, &sx, &sy);
+			mask |= keys_at(sx, sy);
+		}
+	}
+	return mask;
 }
 
 bool gbinput_start(const gbinput_zone_t *list, int count, void (*on_menu)(void)) {
@@ -368,6 +429,13 @@ bool gbinput_start(const gbinput_zone_t *list, int count, void (*on_menu)(void))
 		return false;
 	}
 	read_abs_range(fd);
+
+	char name[64] = "";
+	if (ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) < 0) {
+		name[0] = '\0';
+	}
+	hold_missing = strcmp(name, "hyn_ts") == 0;
+	printf("gbinput: touch device \"%s\"%s\n", name, hold_missing ? ", contacts held across one packet" : "");
 
 	// LVGL lets go of the glass before the thread starts reading: the other way
 	// round leaves a window where both interpret it, and the game's first touch
