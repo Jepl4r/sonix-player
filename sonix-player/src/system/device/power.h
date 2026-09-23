@@ -156,7 +156,8 @@ int power_get_charge_limit(void); // 100 when no limit is set
 bool power_charge_limit_supported(void);
 
 // True while the charger is being held off -- the battery is at the limit, or
-// DAC mode has forbidden charging. The cable is still in and the player still
+// DAC mode has forbidden charging, or on the R1 the charge has ended at the
+// lowered voltage (axpcharge.h). The cable is still in and the player still
 // runs off it; nothing is going into the battery. What the status bar and the
 // LED follow, so neither claims a charge that is not happening.
 bool power_charging_held(void);

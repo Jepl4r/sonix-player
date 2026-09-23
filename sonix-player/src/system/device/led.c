@@ -8,6 +8,11 @@
 #define PATTERN_NODE "/sys/class/leds/sgm31324-leds/led_pattern"
 #define RED_TRIGGER_NODE "/sys/class/leds/red/trigger"
 
+// The R1's blue LED (leds_pwm_add.ko, PC02, max_brightness 100). Its stock
+// player writes 50 for every lit state and 0 for off.
+#define BLUE_BRIGHTNESS_NODE "/sys/class/leds/blue/brightness"
+#define BLUE_ON "50"
+
 // Pattern numbers, as registered by leds_sgm31324_add.sh and used by the
 // stock binary (FUN_0047ce00's logical->pattern table). See led.h for the
 // full story.
@@ -45,6 +50,7 @@
 
 static bool have_pattern_node;
 static bool have_red_node;
+static bool have_blue_node; // the R1: no pattern node, a red and a blue LED
 
 static int current_pattern = -1;
 static int red_trigger_state = -1; // -1 unknown, 0 "none", 1 "breathing"
@@ -79,15 +85,24 @@ static void write_str(const char *path, const char *value) {
 	fclose(f);
 }
 
+// On the R1 the pattern only decides whether the blue LED is lit: off and the
+// charging red leave it dark, every colour of the RGB LED becomes blue. The
+// red is the trigger in apply().
 static void set_pattern(int pattern) {
-	if (!have_pattern_node || pattern == current_pattern) {
+	if (pattern == current_pattern) {
+		return;
+	}
+	if (have_pattern_node) {
+		char buf[16];
+		snprintf(buf, sizeof(buf), "%d", pattern);
+		write_str(PATTERN_NODE, buf);
+	} else if (have_blue_node) {
+		bool blue = pattern != PATTERN_OFF && pattern != PATTERN_CHARGING_RED;
+		write_str(BLUE_BRIGHTNESS_NODE, blue ? BLUE_ON : "0");
+	} else {
 		return;
 	}
 	current_pattern = pattern;
-
-	char buf[16];
-	snprintf(buf, sizeof(buf), "%d", pattern);
-	write_str(PATTERN_NODE, buf);
 }
 
 static int rate_pattern(int sample_rate) {
@@ -119,10 +134,9 @@ static void apply(void) {
 	// led.h.
 	bool charging_now = s_charging;
 
-	// The separate red classdev, where the firmware has one, driven the way the
-	// stock binary's own red-LED helper drives it: breathing on the charger,
-	// released otherwise. No module on this firmware registers it, so the write
-	// is skipped and the charging red comes from the pattern below.
+	// The separate red classdev: the R1's red LED. Breathing while a charge goes
+	// in, released otherwise. The R3 Pro II has no such node, and its charging
+	// red comes from the pattern below.
 	int want_red = charging_now ? 1 : 0;
 	if (have_red_node && want_red != red_trigger_state) {
 		red_trigger_state = want_red;
@@ -198,17 +212,19 @@ static void apply(void) {
 void led_init(void) {
 	have_pattern_node = access(PATTERN_NODE, W_OK) == 0;
 	have_red_node = access(RED_TRIGGER_NODE, W_OK) == 0;
+	have_blue_node = !have_pattern_node && access(BLUE_BRIGHTNESS_NODE, W_OK) == 0;
 
-	if (!have_pattern_node && !have_red_node) {
+	if (!have_pattern_node && !have_red_node && !have_blue_node) {
 		return; // host build, or firmware without the LED module
 	}
 
-	fprintf(stderr, "led: pattern node %s, red trigger %s\n", have_pattern_node ? "ok" : "missing",
-			have_red_node ? "ok" : "missing");
+	fprintf(stderr, "led: pattern node %s, red trigger %s, blue %s\n", have_pattern_node ? "ok" : "missing",
+			have_red_node ? "ok" : "missing", have_blue_node ? "ok" : "missing");
 
 	s_last_playing = time(NULL); // the power-on colour holds for the first idle window
 
-	// Exactly the stock startup sequence: red trigger released, pattern 1.
+	// Exactly the stock startup sequence: red trigger released, pattern 1 (blue
+	// on the R1).
 	if (have_red_node) {
 		write_str(RED_TRIGGER_NODE, "none");
 		red_trigger_state = 0;
