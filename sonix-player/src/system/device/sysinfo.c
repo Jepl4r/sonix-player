@@ -20,8 +20,26 @@ static char dac_info[96];
 // Every player this binary knows how to be. Both serial prefixes are the ones
 // printed on the box.
 static const sysinfo_model_t MODELS[] = {
-	{"HiBy R3 Pro II", 480, 720, "r3proii", "R3PII", false, false, true},
-	{"HiBy R1", 480, 800, "r1", "R1", true, true, false},
+	{
+		.name = "HiBy R3 Pro II",
+		.panel_width = 480,
+		.panel_height = 720,
+		.update_stem = "r3proii",
+		.serial_prefix = "R3PII",
+		.pmic_charger = false,
+		.cs43131 = false,
+		.tap_wake = true,
+	},
+	{
+		.name = "HiBy R1",
+		.panel_width = 480,
+		.panel_height = 800,
+		.update_stem = "r1",
+		.serial_prefix = "R1",
+		.pmic_charger = true,
+		.cs43131 = true,
+		.tap_wake = false,
+	},
 };
 
 // ---------------------------------------------------------------------------
