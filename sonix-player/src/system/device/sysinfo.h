@@ -63,6 +63,7 @@ typedef struct {
 	int panel_height;
 	const char *update_stem; // "<stem>.upt" is the update file this player accepts
 	const char *serial_prefix; // what the number on the box starts with
+	bool pmic_charger;		   // charged by the AXP2101 alone, no MP2731 (axpcharge.h)
 } sysinfo_model_t;
 
 // The entry for the name in the file, or NULL when the file says nothing or

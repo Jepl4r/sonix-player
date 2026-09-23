@@ -179,11 +179,11 @@ int eq_auto_headroom_tenths(void);
 
 #define MSEB_BANDS 10
 
-// How far the sliders travel. 20 is what the stock player offers and stays
-// the default: the per-step dB scales are unchanged, so a setting of 20 here
-// does exactly what 20 does on the original. 40 and 100 are for pushing a
-// characteristic further than HiBy allows.
-#define MSEB_RANGE_DEFAULT 20
+// How far the sliders travel: 20 (what the stock player offers), 40 or 100,
+// with 100 the default. The per-step dB scales are the stock player's, so a
+// setting of 20 here does exactly what 20 does on the original; 40 and 100
+// push a characteristic further than HiBy allows.
+#define MSEB_RANGE_DEFAULT 100
 #define MSEB_VALUE_MIN (-100)
 #define MSEB_VALUE_MAX 100
 

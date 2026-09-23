@@ -29,12 +29,13 @@
 // charging red > playback colour > idle aqua (the stock code applies the
 // charging override after computing the playback colour).
 //
-// The stock binary also has a helper for a dedicated red LED classdev
-// (/sys/class/leds/red/trigger, "breathing"/"none"); at startup it writes
-// "none" once and never touches it again -- no kernel module in the firmware
-// registers a "red" LED, so the node is vestigial on this device. It is still
-// driven here (breathing while charging) in case a firmware revision grows
-// it; a missing node is quietly skipped.
+// The R1 has no RGB controller: leds_pwm_add.ko registers two plain LEDs,
+// /sys/class/leds/red and /sys/class/leds/blue. There every lit pattern
+// becomes blue at brightness 50 and off stays off, as its stock player does
+// (blue 50 for every state but 0 and 6), and the charging red is the red LED
+// with its "breathing" trigger. The same states, priorities and switches
+// apply; only the output differs. Which player it is comes from the nodes
+// present, the pattern node winning.
 //
 // Everything degrades to a no-op when the sysfs nodes are missing (the host
 // build, or firmware without the module loaded).
