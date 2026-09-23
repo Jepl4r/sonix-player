@@ -17,8 +17,12 @@ static char build_version[64];
 static char device_name[64];
 static char dac_info[96];
 
-
-// The serial prefix in the information page
+// Every player this binary knows how to be.
+//
+// The serial prefix for the R3 Pro II is the one printed on a real box. The
+// R1's has not been checked against a box and is the obvious guess; it is only
+// ever shown on the information page, so being wrong about it costs a wrong
+// string there and nothing else.
 static const sysinfo_model_t MODELS[] = {
 	{"HiBy R3 Pro II", 480, 720, "r3proii", "R3PII"},
 	{"HiBy R1", 480, 800, "r1", "R1"},
@@ -144,6 +148,15 @@ const sysinfo_model_t *sysinfo_model(void) {
 	}
 	for (size_t i = 0; i < sizeof(MODELS) / sizeof(MODELS[0]); i++) {
 		if (strcasecmp(device_name, MODELS[i].name) == 0) {
+			return &MODELS[i];
+		}
+	}
+	return NULL;
+}
+
+const sysinfo_model_t *sysinfo_model_by_panel(int width, int height) {
+	for (size_t i = 0; i < sizeof(MODELS) / sizeof(MODELS[0]); i++) {
+		if (MODELS[i].panel_width == width && MODELS[i].panel_height == height) {
 			return &MODELS[i];
 		}
 	}

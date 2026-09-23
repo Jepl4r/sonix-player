@@ -3,6 +3,7 @@
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/decode/decode.h"
 #include "src/system/decode/growfile.h"
+#include "src/system/decode/sndfile.h"
 #include "src/system/audio/replaygain.h"
 #include "src/system/audio/speed.h"
 #include "src/system/audio/swvolume.h"
@@ -125,13 +126,35 @@ static void pcm_restart_after_pause(snd_pcm_t *pcm) {
 }
 
 
+// The sample encodings the WAV path reads. The device is opened at S16_LE for
+// the first two and at S32_LE, left-justified, for the rest -- the same format
+// the decoded path uses for 24-bit sources.
+typedef enum {
+	WAV_PCM_U8,
+	WAV_PCM_S16,
+	WAV_PCM_S24, // packed, three bytes a sample
+	WAV_PCM_S32,
+	WAV_FLOAT32,
+	WAV_FLOAT64,
+} wav_sample_t;
+
 typedef struct {
 	int channels;
 	int sample_rate;
-	int bits_per_sample;
-	long data_offset;
-	long data_size;
+	int bits_per_sample; // as stored in the file, for the format line
+	wav_sample_t sample;
+	int src_frame_bytes; // one frame as stored in the file
+	int out_bits;		 // 16 or 32: what the device is opened with
+	// 64-bit: long is 32 bits on the device, and a 24/96 stereo file passes
+	// 2 GB after about an hour.
+	int64_t data_offset;
+	int64_t data_size;
 } wav_info_t;
+
+// parse_wav() results.
+#define WAV_OK 0
+#define WAV_BAD -1		   // not a WAV, or a broken one
+#define WAV_UNSUPPORTED -2 // a sound WAV in an encoding this path does not read
 
 // The ALSA device playback opens. "default" is the DAC behind the jacks;
 // Bluetooth swaps in a bluealsa PCM name so the stream goes to the
@@ -408,78 +431,172 @@ static int stream_bitrate_kbps = 0;
 static bool stream_lossy = false;
 static char stream_codec[16] = "";
 
+// Little-endian readers for the header fields.
+static uint16_t le16(const unsigned char *p) { return (uint16_t)(p[0] | (p[1] << 8)); }
+static uint32_t le32(const unsigned char *p) {
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+#define WAVE_FORMAT_PCM 0x0001
+#define WAVE_FORMAT_IEEE_FLOAT 0x0003
+#define WAVE_FORMAT_EXTENSIBLE 0xFFFE
+
 static int parse_wav(const char *filepath, wav_info_t *info, FILE **file_out) {
 	FILE *f = fopen(filepath, "rb");
 	if (!f) {
 		fprintf(stderr, "Audio: Failed to open file: %s\n", filepath);
-		return -1;
+		return WAV_BAD;
 	}
 
-	char riff_header[12];
-	if (fread(riff_header, 1, 12, f) != 12) {
+	memset(info, 0, sizeof(*info));
+
+	unsigned char riff[12];
+	if (fread(riff, 1, sizeof(riff), f) != sizeof(riff) || memcmp(riff, "RIFF", 4) != 0 ||
+		memcmp(riff + 8, "WAVE", 4) != 0) {
 		fclose(f);
-		return -1;
+		return WAV_BAD;
 	}
 
-	if (memcmp(riff_header, "RIFF", 4) != 0 || memcmp(riff_header + 8, "WAVE", 4) != 0) {
+	if (fseeko(f, 0, SEEK_END) != 0) {
 		fclose(f);
-		return -1; // Not a valid WAVE file
+		return WAV_BAD;
 	}
+	int64_t file_end = (int64_t)ftello(f);
+	fseeko(f, (off_t)sizeof(riff), SEEK_SET);
 
-	info->channels = 0;
-	info->sample_rate = 0;
-	info->bits_per_sample = 0;
-	info->data_offset = 0;
-	info->data_size = 0;
+	int tag = 0;
+	int bits = 0;
+	bool have_fmt = false;
 
-	struct {
-		char id[4];
-		uint32_t size;
-	} chunk;
-
-	while (fread(&chunk, 1, sizeof(chunk), f) == sizeof(chunk)) {
-		if (memcmp(chunk.id, "fmt ", 4) == 0) {
-			struct {
-				uint16_t format;
-				uint16_t channels;
-				uint32_t rate;
-				uint32_t byterate;
-				uint16_t align;
-				uint16_t bps;
-			} fmt;
-			if (chunk.size < 16) {
-				fclose(f);
-				return -1;
-			}
-			if (fread(&fmt, 1, 16, f) != 16) {
-				fclose(f);
-				return -1;
-			}
-			info->channels = fmt.channels;
-			info->sample_rate = fmt.rate;
-			info->bits_per_sample = fmt.bps;
-
-			if (chunk.size > 16) {
-				fseek(f, chunk.size - 16, SEEK_CUR);
-			}
-		} else if (memcmp(chunk.id, "data", 4) == 0) {
-			info->data_offset = ftell(f);
-			info->data_size = chunk.size;
+	unsigned char head[8];
+	while (fread(head, 1, sizeof(head), f) == sizeof(head)) {
+		uint32_t size = le32(head + 4);
+		int64_t body = (int64_t)ftello(f);
+		if (body < 0) {
 			break;
-		} else {
-			// Chunk sizes are padded to even boundaries in RIFF.
-			uint32_t skip_sz = (chunk.size + 1) & ~1;
-			fseek(f, skip_sz, SEEK_CUR);
+		}
+
+		if (memcmp(head, "fmt ", 4) == 0) {
+			// Up to the end of WAVEFORMATEXTENSIBLE: 16 bytes of WAVEFORMAT, the
+			// extension size, valid bits, channel mask and the sub-format GUID,
+			// whose first two bytes are the real format tag.
+			unsigned char fmt[40];
+			size_t want = size < sizeof(fmt) ? size : sizeof(fmt);
+			if (size < 16 || fread(fmt, 1, want, f) != want) {
+				fclose(f);
+				return WAV_BAD;
+			}
+			tag = le16(fmt);
+			info->channels = le16(fmt + 2);
+			info->sample_rate = (int)le32(fmt + 4);
+			bits = le16(fmt + 14);
+			if (tag == WAVE_FORMAT_EXTENSIBLE) {
+				tag = want >= 26 ? le16(fmt + 24) : 0;
+			}
+			have_fmt = true;
+		} else if (memcmp(head, "data", 4) == 0) {
+			info->data_offset = body;
+			// 0 and 0xFFFFFFFF are what a writer leaves when it never went back
+			// to fill the length in, and a length past the end of the file is
+			// a truncated copy: in all three cases the audio runs to the end.
+			int64_t declared = (int64_t)size;
+			if (size == 0 || size == 0xFFFFFFFFu || body + declared > file_end) {
+				declared = file_end - body;
+			}
+			info->data_size = declared;
+			break;
+		}
+
+		// Chunks are padded to an even length.
+		if (fseeko(f, (off_t)(body + (int64_t)size + (size & 1)), SEEK_SET) != 0) {
+			break;
 		}
 	}
 
-	if (info->channels == 0 || info->sample_rate == 0 || info->bits_per_sample == 0 || info->data_offset == 0) {
+	if (!have_fmt || !info->data_offset || info->channels <= 0 || info->channels > 8 || info->sample_rate <= 0) {
 		fclose(f);
-		return -1;
+		return WAV_BAD;
 	}
 
+	info->bits_per_sample = bits;
+	if (tag == WAVE_FORMAT_PCM && bits == 8) {
+		info->sample = WAV_PCM_U8;
+	} else if (tag == WAVE_FORMAT_PCM && bits == 16) {
+		info->sample = WAV_PCM_S16;
+	} else if (tag == WAVE_FORMAT_PCM && bits == 24) {
+		info->sample = WAV_PCM_S24;
+	} else if (tag == WAVE_FORMAT_PCM && bits == 32) {
+		info->sample = WAV_PCM_S32;
+	} else if (tag == WAVE_FORMAT_IEEE_FLOAT && bits == 32) {
+		info->sample = WAV_FLOAT32;
+	} else if (tag == WAVE_FORMAT_IEEE_FLOAT && bits == 64) {
+		info->sample = WAV_FLOAT64;
+	} else {
+		fprintf(stderr, "audio: '%s' is WAV format 0x%04x at %d bits, not read by the WAV path\n", filepath, tag,
+				bits);
+		fclose(f);
+		return WAV_UNSUPPORTED;
+	}
+
+	info->src_frame_bytes = info->channels * (bits / 8);
+	info->out_bits = (info->sample == WAV_PCM_U8 || info->sample == WAV_PCM_S16) ? 16 : 32;
+
+	// Whole frames only.
+	info->data_size -= info->data_size % info->src_frame_bytes;
+
+	fseeko(f, (off_t)info->data_offset, SEEK_SET);
 	*file_out = f;
-	return 0;
+	return WAV_OK;
+}
+
+// Turns `frames` frames read from the file into the samples the device takes.
+// Only called for the encodings that need it: S16 and S32 are read straight
+// into the output buffer.
+static void wav_convert(const wav_info_t *info, const unsigned char *in, void *out, size_t frames) {
+	size_t n = frames * (size_t)info->channels;
+	switch (info->sample) {
+	case WAV_PCM_U8: {
+		int16_t *o = out;
+		for (size_t i = 0; i < n; i++) {
+			o[i] = (int16_t)(((int)in[i] - 128) * 256);
+		}
+		break;
+	}
+	case WAV_PCM_S24: {
+		// Left-justified, as a 24-bit FLAC arrives: the low byte is zero.
+		int32_t *o = out;
+		for (size_t i = 0; i < n; i++, in += 3) {
+			uint32_t v = (uint32_t)in[0] << 8 | (uint32_t)in[1] << 16 | (uint32_t)in[2] << 24;
+			o[i] = (int32_t)v;
+		}
+		break;
+	}
+	case WAV_FLOAT32: {
+		int32_t *o = out;
+		for (size_t i = 0; i < n; i++) {
+			float x;
+			memcpy(&x, in + i * 4, sizeof(x));
+			o[i] = x >= 1.0f ? INT32_MAX : x < -1.0f ? INT32_MIN : x == x ? (int32_t)(x * 2147483648.0f) : 0;
+		}
+		break;
+	}
+	case WAV_FLOAT64: {
+		int32_t *o = out;
+		for (size_t i = 0; i < n; i++) {
+			double x;
+			memcpy(&x, in + i * 8, sizeof(x));
+			o[i] = x >= 1.0 ? INT32_MAX : x < -1.0 ? INT32_MIN : x == x ? (int32_t)(x * 2147483648.0) : 0;
+		}
+		break;
+	}
+	case WAV_PCM_S16:
+	case WAV_PCM_S32:
+		break;
+	}
+}
+
+static bool wav_needs_conversion(const wav_info_t *info) {
+	return info->sample != WAV_PCM_S16 && info->sample != WAV_PCM_S32;
 }
 
 // When non-zero, the next open_pcm_device() sizes the buffer to this many
@@ -1129,6 +1246,69 @@ static snd_pcm_t *open_pcm_device(int channels, int sample_rate, int bits_per_sa
 	return pcm_handle;
 }
 
+// A line every HEALTH_PERIOD_MS while a track plays: the share of the core the
+// playback thread used, how many writes needed recovering, and MemAvailable.
+// The thread runs SCHED_RR on a single core, so whatever it uses is taken from
+// the interface first.
+#define HEALTH_PERIOD_MS 10000
+
+static volatile unsigned write_recoveries; // counted in pcm_write_recover()
+
+typedef struct {
+	long at_ms;
+	int64_t cpu_ns;
+	unsigned recoveries;
+} health_t;
+
+static int64_t thread_cpu_ns(void) {
+	struct timespec ts;
+	if (clock_gettime(CLOCK_THREAD_CPUTIME_ID, &ts) != 0) {
+		return 0;
+	}
+	return (int64_t)ts.tv_sec * 1000000000LL + ts.tv_nsec;
+}
+
+static long mem_available_kb(void) {
+	FILE *f = fopen("/proc/meminfo", "r");
+	if (!f) {
+		return -1;
+	}
+	char line[96];
+	long kb = -1;
+	while (fgets(line, sizeof(line), f)) {
+		if (sscanf(line, "MemAvailable: %ld kB", &kb) == 1) {
+			break;
+		}
+	}
+	fclose(f);
+	return kb;
+}
+
+static void health_start(health_t *h) {
+	h->at_ms = log_ms();
+	h->cpu_ns = thread_cpu_ns();
+	h->recoveries = write_recoveries;
+}
+
+// Called after every write. A window stretched by a pause says nothing about
+// playing, so it is restarted instead of reported.
+static void health_tick(health_t *h, int rate, int bits) {
+	long now = log_ms();
+	long span = now - h->at_ms;
+	if (span < HEALTH_PERIOD_MS) {
+		return;
+	}
+	if (span < 2 * HEALTH_PERIOD_MS) {
+		int64_t used = thread_cpu_ns() - h->cpu_ns;
+		int permille = (int)(used / 1000 / span);
+		fprintf(stderr, "audio[%ld]: %ld s at %d Hz / %d bit: playback thread %d.%d%% of the core, %u write recoveries, "
+						"MemAvailable %ld kB\n",
+				now, span / 1000, rate, bits, permille / 10, permille % 10, write_recoveries - h->recoveries,
+				mem_available_kb());
+	}
+	health_start(h);
+}
+
 // Writes one buffer of frames, recovering from the errors a real device
 // throws instead of killing the track on the first one:
 //
@@ -1410,6 +1590,7 @@ static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd
 			return written;
 		}
 
+		write_recoveries++;
 		fprintf(stderr, "audio[%ld]: write error: %s (recovery %d)\n", log_ms(), snd_strerror((int)written),
 				attempt + 1);
 
@@ -1631,10 +1812,19 @@ static void rebuffer_after_short_read(decoder_t *dec, int sample_rate, uint64_t 
 
 // Play routine for uncompressed WAV files: PCM data is streamed straight from
 // the file, no decode step needed.
+static void play_decoded_file(const char *filepath, decode_format_t format);
+
 static void play_wav_file(const char *filepath) {
 	FILE *f = NULL;
 	wav_info_t info;
-	if (parse_wav(filepath, &info, &f) < 0) {
+	int parsed = parse_wav(filepath, &info, &f);
+	// ADPCM, a-law and the rest: libsndfile reads them, and the decoded path
+	// plays what it hands over.
+	if (parsed == WAV_UNSUPPORTED && sndfile_available()) {
+		play_decoded_file(filepath, DECODE_FORMAT_SNDFILE);
+		return;
+	}
+	if (parsed != WAV_OK) {
 		fprintf(stderr, "Audio: Failed to parse WAV metadata: %s\n", filepath);
 		pthread_mutex_lock(&audio_mutex);
 		audio_command = AUDIO_CMD_STOP;
@@ -1643,7 +1833,9 @@ static void play_wav_file(const char *filepath) {
 		return;
 	}
 
-	double bytes_per_sec = info.sample_rate * info.channels * (info.bits_per_sample / 8.0);
+	// Progress, seeks and pauses count bytes of the file, not of what reaches the device.
+	double bytes_per_sec = (double)info.sample_rate * info.src_frame_bytes;
+	int src_frame_bytes = info.src_frame_bytes;
 	pthread_mutex_lock(&audio_mutex);
 	progress_total_secs = (double)info.data_size / bytes_per_sec;
 	progress_current_secs = 0.0;
@@ -1651,13 +1843,17 @@ static void play_wav_file(const char *filepath) {
 	stream_sample_rate = info.sample_rate;
 	stream_channels = info.channels;
 	stream_bits = info.bits_per_sample;
+	stream_dsd_multiple = 0;
+	stream_lossy = false;
+	stream_bitrate_kbps = (int)(bytes_per_sec * 8.0 / 1000.0 + 0.5);
+	stream_codec[0] = '\0'; // no decoder name: the page names it by the extension
 	// See the decoder path: a restore already has PAUSE queued, so it must
 	// not flash through PLAYING on its way to paused.
 	playback_status = (audio_command == AUDIO_CMD_PAUSE) ? AUDIO_STATUS_PAUSED : AUDIO_STATUS_PLAYING;
 	pthread_mutex_unlock(&audio_mutex);
 
 	snd_pcm_uframes_t period_size;
-	snd_pcm_t *pcm_handle = open_pcm_device(info.channels, info.sample_rate, info.bits_per_sample, &period_size);
+	snd_pcm_t *pcm_handle = open_pcm_device(info.channels, info.sample_rate, info.out_bits, &period_size);
 	if (!pcm_handle) {
 		fclose(f);
 		pthread_mutex_lock(&audio_mutex);
@@ -1669,10 +1865,21 @@ static void play_wav_file(const char *filepath) {
 
 	// From here, how long this track takes to start coming out is timed.
 	bt_start_probe_arm(pcm_handle);
+	health_t health;
+	health_start(&health);
 
-	int frame_bytes = info.channels * (info.bits_per_sample / 8);
+	int frame_bytes = info.channels * (info.out_bits / 8);
 	long paused_at_ms = 0; // when the current pause began (device power-down clock)
 	char *buffer = malloc(period_size * frame_bytes);
+	// What is read from the file, when it is not already what the device takes.
+	unsigned char *raw = NULL;
+	if (buffer && wav_needs_conversion(&info)) {
+		raw = malloc(period_size * (size_t)src_frame_bytes);
+		if (!raw) {
+			free(buffer);
+			buffer = NULL;
+		}
+	}
 	if (!buffer) {
 		fprintf(stderr, "Audio: Out of memory for period buffer\n");
 		snd_pcm_close(pcm_handle);
@@ -1692,6 +1899,7 @@ static void play_wav_file(const char *filepath) {
 	// or was cut short (cut_short, below), so the queue would advance on its
 	// own mid-book.
 	int64_t bytes_played = 0;
+	int64_t read_pos = 0; // bytes of the data chunk already read, ahead of bytes_played by what is queued
 	bool is_paused = false;
 	bool played_to_the_end = false;
 	int route_check = 0;
@@ -1710,13 +1918,14 @@ static void play_wav_file(const char *filepath) {
 			pthread_mutex_unlock(&audio_mutex);
 
 			int64_t target_byte_pos = (int64_t)(target * bytes_per_sec);
-			target_byte_pos = (target_byte_pos / frame_bytes) * frame_bytes;
+			target_byte_pos = (target_byte_pos / src_frame_bytes) * src_frame_bytes;
 			if (target_byte_pos < 0)
 				target_byte_pos = 0;
 			if (target_byte_pos > info.data_size)
 				target_byte_pos = info.data_size;
 
-			fseek(f, info.data_offset + target_byte_pos, SEEK_SET);
+			fseeko(f, (off_t)(info.data_offset + target_byte_pos), SEEK_SET);
+			read_pos = target_byte_pos;
 
 			// The device may have been handed back during a long pause (see the
 			// PAUSE branch below), and then there is no stream to flush. It has
@@ -1750,7 +1959,7 @@ static void play_wav_file(const char *filepath) {
 			pthread_mutex_unlock(&audio_mutex);
 
 			if (entering) {
-				int64_t rewind_bytes = pause_stop_stream(pcm_handle, frame_bytes);
+				int64_t rewind_bytes = pause_stop_stream(pcm_handle, src_frame_bytes);
 				if (rewind_bytes > 0) {
 					// What was still in the buffer was never heard: wind the
 					// file back over it so resuming picks up where the sound
@@ -1759,7 +1968,8 @@ static void play_wav_file(const char *filepath) {
 					if (bytes_played < 0) {
 						bytes_played = 0;
 					}
-					fseek(f, info.data_offset + bytes_played, SEEK_SET);
+					fseeko(f, (off_t)(info.data_offset + bytes_played), SEEK_SET);
+					read_pos = bytes_played;
 					pthread_mutex_lock(&audio_mutex);
 					progress_floor_secs = progress_current_secs; // the bar stays put
 					progress_current_secs = (double)bytes_played / bytes_per_sec;
@@ -1839,7 +2049,7 @@ static void play_wav_file(const char *filepath) {
 					// again. The file is already positioned where the sound
 					// stopped, so nothing else has to move.
 					snd_pcm_uframes_t new_period = period_size;
-					pcm_handle = open_pcm_device(info.channels, info.sample_rate, info.bits_per_sample, &new_period);
+					pcm_handle = open_pcm_device(info.channels, info.sample_rate, info.out_bits, &new_period);
 					if (!pcm_handle) {
 						fprintf(stderr, "Audio: cannot reopen the device after a pause\n");
 						audio_command = AUDIO_CMD_STOP;
@@ -1849,6 +2059,17 @@ static void play_wav_file(const char *filepath) {
 					}
 					if (new_period > period_size) {
 						char *bigger = realloc(buffer, new_period * frame_bytes);
+						if (bigger) {
+							buffer = bigger;
+						}
+						if (bigger && raw) {
+							unsigned char *more = realloc(raw, new_period * (size_t)src_frame_bytes);
+							if (more) {
+								raw = more;
+							} else {
+								bigger = NULL;
+							}
+						}
 						if (!bigger) {
 							snd_pcm_close(pcm_handle);
 							pcm_handle = NULL;
@@ -1880,7 +2101,7 @@ static void play_wav_file(const char *filepath) {
 			int now_route = alsa_output_key();
 			if (now_route != track_route) {
 				track_route = now_route;
-				if (!pcm_reroute(&pcm_handle, info.channels, info.sample_rate, info.bits_per_sample,
+				if (!pcm_reroute(&pcm_handle, info.channels, info.sample_rate, info.out_bits,
 								 &period_size)) {
 					fprintf(stderr, "Audio: reroute failed\n");
 					pthread_mutex_lock(&audio_mutex);
@@ -1892,32 +2113,39 @@ static void play_wav_file(const char *filepath) {
 			}
 		}
 
-		size_t read_bytes = fread(buffer, 1, period_size * frame_bytes, f);
-		if (read_bytes > 0) {
-			// 16- and 32-bit WAV go through the EQ chain at their own width;
-			// packed 24-bit (S24_3LE) has no in-place representation the
-			// filters can use, so it plays untouched rather than mangled.
-			if (info.bits_per_sample == 16) {
-				replaygain_process((short *)buffer, (int)(read_bytes / frame_bytes), info.channels);
-				eq_process((short *)buffer, (int)(read_bytes / frame_bytes), info.channels, info.sample_rate);
+		// Up to the end of the data chunk and no further: what follows it is
+		// metadata, not audio.
+		int64_t left = info.data_size - read_pos;
+		size_t want = period_size * (size_t)src_frame_bytes;
+		if ((int64_t)want > left) {
+			want = left > 0 ? (size_t)left : 0;
+		}
+		size_t read_bytes = want ? fread(raw ? (void *)raw : (void *)buffer, 1, want, f) : 0;
+		read_bytes -= read_bytes % (size_t)src_frame_bytes;
+		read_pos += (int64_t)read_bytes;
+		int frames_read = (int)(read_bytes / (size_t)src_frame_bytes);
+		if (frames_read > 0) {
+			if (raw) {
+				wav_convert(&info, raw, buffer, (size_t)frames_read);
+			}
+			if (info.out_bits == 16) {
+				replaygain_process((short *)buffer, frames_read, info.channels);
+				eq_process((short *)buffer, frames_read, info.channels, info.sample_rate);
 				// Soundfield last, on the finished stereo pair -- the stock
 				// module sits at the end of the chain too, taking whatever the
 				// tone shaping left it and widening that.
-				soundfield_process((short *)buffer, (int)(read_bytes / frame_bytes), info.channels);
-				crossfeed_process((short *)buffer, (int)(read_bytes / frame_bytes), info.channels,
-								  info.sample_rate);
-				balance_process((short *)buffer, (int)(read_bytes / frame_bytes), info.channels);
-			} else if (info.bits_per_sample == 32) {
-				replaygain_process_s32((int32_t *)buffer, (int)(read_bytes / frame_bytes), info.channels);
-				eq_process_s32((int32_t *)buffer, (int)(read_bytes / frame_bytes), info.channels,
-							   info.sample_rate);
-				soundfield_process_s32((int32_t *)buffer, (int)(read_bytes / frame_bytes), info.channels);
-				crossfeed_process_s32((int32_t *)buffer, (int)(read_bytes / frame_bytes), info.channels,
-									  info.sample_rate);
-				balance_process_s32((int32_t *)buffer, (int)(read_bytes / frame_bytes), info.channels);
+				soundfield_process((short *)buffer, frames_read, info.channels);
+				crossfeed_process((short *)buffer, frames_read, info.channels, info.sample_rate);
+				balance_process((short *)buffer, frames_read, info.channels);
+			} else {
+				replaygain_process_s32((int32_t *)buffer, frames_read, info.channels);
+				eq_process_s32((int32_t *)buffer, frames_read, info.channels, info.sample_rate);
+				soundfield_process_s32((int32_t *)buffer, frames_read, info.channels);
+				crossfeed_process_s32((int32_t *)buffer, frames_read, info.channels, info.sample_rate);
+				balance_process_s32((int32_t *)buffer, frames_read, info.channels);
 			}
 		}
-		if (read_bytes <= 0) {
+		if (frames_read <= 0) {
 			// As in the decoded path: a file that gave nothing has not been
 			// played, and must not be reported as finished.
 			if (bytes_played == 0) {
@@ -1949,14 +2177,11 @@ static void play_wav_file(const char *filepath) {
 			break;
 		}
 
-		snd_pcm_uframes_t frames_to_write = read_bytes / frame_bytes;
-		// 16 and 32 bit only, on the same grounds as the filters above: the
-		// fade has no in-place form for packed 24-bit or for unsigned 8-bit,
-		// and those two play untouched rather than mangled.
-		if (fade_enabled && (info.bits_per_sample == 16 || info.bits_per_sample == 32)) {
+		snd_pcm_uframes_t frames_to_write = (snd_pcm_uframes_t)frames_read;
+		if (fade_enabled) {
 			int gain = fade_gain_q10((double)bytes_played / bytes_per_sec, (double)info.data_size / bytes_per_sec);
 			int samples = (int)frames_to_write * info.channels;
-			if (info.bits_per_sample == 32) {
+			if (info.out_bits == 32) {
 				fade_apply_s32((int32_t *)buffer, samples, gain);
 			} else {
 				fade_apply_s16((short *)buffer, samples, gain);
@@ -1966,31 +2191,17 @@ static void play_wav_file(const char *filepath) {
 		// The volume, when it is this side of the cable and not in a register:
 		// a device on the USB-C port with no control of its own. A no-op, one
 		// comparison deep, on every other route.
-		//
-		// By the width the device was OPENED with, and not by "more than 16
-		// bits". A 24-bit WAV is playing as S24_3LE -- three bytes a sample --
-		// and the 32-bit routine walking that buffer reads each sample out of
-		// the wrong three bytes and writes one byte past the last frame.
 		if (swvolume_active()) {
 			int samples = (int)frames_to_write * info.channels;
-			switch (info.bits_per_sample) {
-			case 8:
-				swvolume_apply_u8((unsigned char *)buffer, samples);
-				break;
-			case 16:
+			if (info.out_bits == 16) {
 				swvolume_apply_s16((short *)buffer, samples);
-				break;
-			case 24:
-				swvolume_apply_s24_3le((unsigned char *)buffer, samples);
-				break;
-			default:
+			} else {
 				swvolume_apply_s32((int32_t *)buffer, samples);
-				break;
 			}
 		}
 
 		snd_pcm_sframes_t written = pcm_write_recover(&pcm_handle, buffer, frames_to_write, info.channels,
-													  info.sample_rate, info.bits_per_sample, &period_size);
+													  info.sample_rate, info.out_bits, &period_size);
 
 		if (written == -EINTR) {
 			continue; // a command is pending: the top of the loop handles it
@@ -2010,7 +2221,8 @@ static void play_wav_file(const char *filepath) {
 		bt_seek_probe_report(pcm_handle);
 		bt_start_probe_note(pcm_handle, written, info.sample_rate);
 
-		bytes_played += written * frame_bytes;
+		bytes_played += (int64_t)written * src_frame_bytes;
+		health_tick(&health, info.sample_rate, info.bits_per_sample);
 		host_pace(written, info.sample_rate);
 		pthread_mutex_lock(&audio_mutex);
 		progress_current_secs = (double)bytes_played / bytes_per_sec;
@@ -2047,6 +2259,7 @@ static void play_wav_file(const char *filepath) {
 	}
 	pcm_device_open = false;
 	free(buffer);
+	free(raw);
 	fclose(f);
 }
 
@@ -2226,6 +2439,8 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// available and playback runs at 1.0.
 	speed_t *stretch = (out_bits == 16) ? speed_open(channels, sample_rate) : NULL;
 	decoder_fill_t fill_ctx = {dec};
+	health_t health;
+	health_start(&health);
 
 	while (1) {
 		loop_turns++;
@@ -2678,6 +2893,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		if (frames_read > 0) {
 			bytes_played += (int64_t)((double)written * frame_bytes * (double)input_frames / (double)frames_read);
 		}
+		health_tick(&health, sample_rate, source_bits);
 		host_pace(written, sample_rate);
 		pthread_mutex_lock(&audio_mutex);
 		progress_current_secs = (double)bytes_played / bytes_per_sec;

@@ -970,32 +970,14 @@ static void install_signal_guards(void) {
 // A drag is not a tap.
 // ---------------------------------------------------------------------------
 //
-// LVGL cancels the click only when a scrollable container claimed the gesture:
-// at the release it looks for a scroll in progress and, finding one, sends
-// SCROLL_THROW_BEGIN instead of CLICKED. That covers a list and nothing else.
-// Wherever the finger moves over something that does not scroll -- a page short
-// enough to fit, a grid, a card carried by a handler of ours, the sheet the
-// control centre rides on -- press and release still add up to a click, and
-// what opens is whatever sat under the finger where the gesture STARTED. Which
-// is how dragging a screen ends up launching the thing the thumb landed on.
+// LVGL drops the click only when a scrollable container claimed the gesture.
+// This drops it for every other drag too: an indev event callback remembers
+// where the finger landed and, when SHORT_CLICKED or CLICKED arrives more than
+// TAP_SLOP_PX away from there, lv_indev_stop_processing() keeps the object from
+// receiving it. RELEASED still arrives, for the handlers that drive a drag.
 //
-// The rule belongs in one place rather than in every page, and the input device
-// is that place. send_event() in lv_indev.c offers PRESSED, SHORT_CLICKED,
-// CLICKED and RELEASED to the indev before the object, and
-// lv_indev_stop_processing() makes it skip that one delivery: so remember where
-// the finger landed, and swallow the click if it is more than a fingertip away
-// when the click would be sent. RELEASED is left alone -- the handlers that
-// drive a drag listen to it, and they are the ones that must still hear the end
-// of the gesture.
-//
-// Straight-line distance from the press point, not the length of the path. A
-// finger that wanders out and comes back to within a few pixels of where it
-// started is a tap by any reading, and measuring the path would need a sample
-// at every PRESSING, which is the one event the indev is not offered.
-//
-// Twelve pixels: three times the scroll limit above, so a gesture LVGL already
-// calls a scroll is never called a tap here, and far under what a deliberate
-// drag covers. A firm tap on this glass moves two or three.
+// The distance is from the press point to the release point; the indev
+// callback is not offered PRESSING, so the path in between is not seen.
 #define TAP_SLOP_PX 12
 
 static void tap_guard_cb(lv_event_t *e) {
@@ -1004,9 +986,7 @@ static void tap_guard_cb(lv_event_t *e) {
 		return;
 	}
 
-	// One point for all pointers, which is honest here: this device has one
-	// finger's worth of indev and the simulator one mouse, and neither can be
-	// pressed while the other is.
+	// One point for all pointers: there is only ever one pointer pressed.
 	static lv_point_t press_at;
 
 	lv_point_t p;
@@ -1036,9 +1016,7 @@ static void tune_kinetic_scroll(lv_indev_t *indev) {
 	indev->scroll_limit = SCROLL_START_LIMIT_PX;
 }
 
-// Both of the above, for a pointer that has just been created. Two calls rather
-// than one function doing two jobs under one name: the touch panel and the
-// simulator mouse both want both, and nothing else wants either.
+// Kinetic scrolling and the tap guard, for the touch panel and the simulator mouse.
 static void tune_pointer(lv_indev_t *indev) {
 	if (!indev) {
 		return;
@@ -1058,23 +1036,20 @@ static void tune_pointer(lv_indev_t *indev) {
 #define PANEL_MIN_WIDTH 320
 #define PANEL_MIN_HEIGHT 480
 
-// How big the panel is, on the device and on the simulator alike: the model
-// named in system-info.json, out of the table in sysinfo.c.
-//
-// NOT the framebuffer, even on the device where there is one. These two
-// numbers go into gui_config_t, where they are unsigned, and the interface is
-// full of lines shaped like `cfg->screen_height - top`. A number that does not
-// suit a tall portrait panel does not tilt the layout, it wraps that
-// subtraction to four thousand million and LVGL tries to allocate it; the
-// allocation fails, its assert handler runs, and nothing is ever drawn. A
-// table of two panels cannot do that. What the framebuffer reports is printed
-// at startup instead, which is where to look if a panel ever disagrees.
-//
-// SONIX_PANEL, as "480x800", overrides it: trying a layout at the other
-// model's size is otherwise a matter of editing a file under usr/resource and
-// putting it back afterwards.
-static void panel_size(int *width, int *height) {
+// The panel size for gui_config_t, in this order: SONIX_PANEL ("480x800"); the
+// model named in system-info.json; the model whose panel exactly matches the
+// framebuffer (fb_w/fb_h, 0 where there is none); SCREEN_WIDTH x SCREEN_HEIGHT.
+// A framebuffer size that matches no model is never used: the pages subtract
+// from these unsigned numbers, and an unexpected size wraps them.
+static void panel_size(int *width, int *height, int fb_w, int fb_h) {
 	const sysinfo_model_t *model = sysinfo_model();
+	if (!model && fb_w > 0 && fb_h > 0) {
+		model = sysinfo_model_by_panel(fb_w, fb_h);
+		if (model) {
+			printf("panel: system-info.json names no known model; the framebuffer is %dx%d, the %s's panel\n",
+				   fb_w, fb_h, model->name);
+		}
+	}
 	*width = model ? model->panel_width : SCREEN_WIDTH;
 	*height = model ? model->panel_height : SCREEN_HEIGHT;
 
@@ -1142,7 +1117,7 @@ static int host_key_watch(void *userdata, SDL_Event *event) {
 
 static lv_display_t *init_host_display(void) {
 	int width = 0, height = 0;
-	panel_size(&width, &height);
+	panel_size(&width, &height, 0, 0); // the window is made from it: nothing to ask
 
 	lv_display_t *disp = lv_sdl_window_create(width, height);
 	if (!disp) {
@@ -1945,20 +1920,20 @@ int main(int argc, char **argv) {
 
 	// The panel: the model, not the framebuffer. See panel_size().
 	int panel_w = 0, panel_h = 0;
-	panel_size(&panel_w, &panel_h);
-
 #ifndef HOST_BUILD
+	int fb_w = (int)lv_display_get_horizontal_resolution(disp);
+	int fb_h = (int)lv_display_get_vertical_resolution(disp);
+	panel_size(&panel_w, &panel_h, fb_w, fb_h);
+
 	// What the framebuffer says it is, beside what the interface is being laid
 	// out at. They should agree; when they do not, this line is the one that
 	// says so, and it costs nothing to print once.
-	{
-		int32_t fb_w = lv_display_get_horizontal_resolution(disp);
-		int32_t fb_h = lv_display_get_vertical_resolution(disp);
-		if (fb_w != panel_w || fb_h != panel_h) {
-			printf("panel: the framebuffer reports %dx%d, the model says %dx%d -- laying out at the model's\n",
-				   (int)fb_w, (int)fb_h, panel_w, panel_h);
-		}
+	if (fb_w != panel_w || fb_h != panel_h) {
+		printf("panel: the framebuffer reports %dx%d, the model says %dx%d -- laying out at the model's\n", fb_w,
+			   fb_h, panel_w, panel_h);
 	}
+#else
+	panel_size(&panel_w, &panel_h, 0, 0);
 #endif
 
 	{
