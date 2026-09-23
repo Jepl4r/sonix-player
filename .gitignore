@@ -12,6 +12,7 @@ sonix-player/audio-target
 sonix-player/compile_commands.json
 sonix-player/rockbox-toolchain
 
+sonix-player/lvgl/
 sonix-player/opus-1.4/
 sonix-player/wavpack-*
 sonix-player/opusfile-*
