@@ -20,7 +20,8 @@
 // which buttons are down: the mapping lives where the contacts are, not across
 // a bridge to the UI. A finger sliding from the d-pad to A behaves correctly
 // on its own, because the whole state is recomputed on every packet instead of
-// tracking press and release.
+// tracking press and release. On the R1 a contact also outlives one packet
+// without it, because its driver reports each finger on alternate scans.
 
 // Not a Game Boy button: "open the in-game menu". It shares the mask because a
 // zone is a zone, but the reader strips it before handing the buttons to the
