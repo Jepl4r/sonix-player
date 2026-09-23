@@ -957,6 +957,27 @@ static void log_bluealsa_plugin(void) {
 	fclose(maps);
 }
 
+// The plugin chain behind an opened PCM (plug, conversions, dmix, rate, the
+// hardware) as snd_pcm_dump() describes it, logged whenever it differs from the
+// last one logged.
+static void log_pcm_chain(snd_pcm_t *pcm) {
+	static char last[4096];
+	snd_output_t *out = NULL;
+	if (snd_output_buffer_open(&out) < 0) {
+		return;
+	}
+	char *text = NULL;
+	if (snd_pcm_dump(pcm, out) >= 0 && snd_output_buffer_string(out, &text) > 0 && text &&
+		strncmp(text, last, sizeof(last) - 1) != 0) {
+		snprintf(last, sizeof(last), "%s", text);
+		char *save = NULL;
+		for (char *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
+			fprintf(stderr, "audio: pcm | %s\n", line);
+		}
+	}
+	snd_output_close(out);
+}
+
 static snd_pcm_t *open_pcm_device(int channels, int sample_rate, int bits_per_sample, snd_pcm_uframes_t *period_size_out) {
 	snd_pcm_t *pcm_handle = NULL;
 
@@ -1241,6 +1262,8 @@ static snd_pcm_t *open_pcm_device(int channels, int sample_rate, int bits_per_sa
 		}
 	}
 
+	log_pcm_chain(pcm_handle);
+
 	*period_size_out = period_size;
 	pcm_device_open = true;
 	return pcm_handle;
@@ -1254,10 +1277,16 @@ static snd_pcm_t *open_pcm_device(int channels, int sample_rate, int bits_per_sa
 
 static volatile unsigned write_recoveries; // counted in pcm_write_recover()
 
+// Where the thread's time goes inside a turn: reading and decoding the file,
+// the effects chain, and handing the block to ALSA (alsa-lib and the kernel).
+typedef enum { STAGE_READ, STAGE_EFFECTS, STAGE_WRITE, STAGE_COUNT } stage_t;
+
 typedef struct {
 	long at_ms;
 	int64_t cpu_ns;
 	unsigned recoveries;
+	int64_t stage_ns[STAGE_COUNT];
+	int64_t lap_ns;
 } health_t;
 
 static int64_t thread_cpu_ns(void) {
@@ -1288,7 +1317,21 @@ static void health_start(health_t *h) {
 	h->at_ms = log_ms();
 	h->cpu_ns = thread_cpu_ns();
 	h->recoveries = write_recoveries;
+	memset(h->stage_ns, 0, sizeof(h->stage_ns));
+	h->lap_ns = h->cpu_ns;
 }
+
+// health_mark() at the top of a turn, then health_lap() after each stage.
+static void health_mark(health_t *h) { h->lap_ns = thread_cpu_ns(); }
+
+static void health_lap(health_t *h, stage_t stage) {
+	int64_t now = thread_cpu_ns();
+	h->stage_ns[stage] += now - h->lap_ns;
+	h->lap_ns = now;
+}
+
+// Tenths of a percent of the core over `span_ms`.
+static int health_permille(int64_t ns, long span_ms) { return (int)(ns / 1000 / span_ms); }
 
 // Called after every write. A window stretched by a pause says nothing about
 // playing, so it is restarted instead of reported.
@@ -1300,11 +1343,15 @@ static void health_tick(health_t *h, int rate, int bits) {
 	}
 	if (span < 2 * HEALTH_PERIOD_MS) {
 		int64_t used = thread_cpu_ns() - h->cpu_ns;
-		int permille = (int)(used / 1000 / span);
-		fprintf(stderr, "audio[%ld]: %ld s at %d Hz / %d bit: playback thread %d.%d%% of the core, %u write recoveries, "
-						"MemAvailable %ld kB\n",
-				now, span / 1000, rate, bits, permille / 10, permille % 10, write_recoveries - h->recoveries,
-				mem_available_kb());
+		int all = health_permille(used, span);
+		int rd = health_permille(h->stage_ns[STAGE_READ], span);
+		int fx = health_permille(h->stage_ns[STAGE_EFFECTS], span);
+		int wr = health_permille(h->stage_ns[STAGE_WRITE], span);
+		fprintf(stderr,
+				"audio[%ld]: %ld s at %d Hz / %d bit: playback thread %d.%d%% of the core (read+decode %d.%d%%, "
+				"effects %d.%d%%, ALSA write %d.%d%%), %u write recoveries, MemAvailable %ld kB\n",
+				now, span / 1000, rate, bits, all / 10, all % 10, rd / 10, rd % 10, fx / 10, fx % 10, wr / 10, wr % 10,
+				write_recoveries - h->recoveries, mem_available_kb());
 	}
 	health_start(h);
 }
@@ -2115,6 +2162,7 @@ static void play_wav_file(const char *filepath) {
 
 		// Up to the end of the data chunk and no further: what follows it is
 		// metadata, not audio.
+		health_mark(&health);
 		int64_t left = info.data_size - read_pos;
 		size_t want = period_size * (size_t)src_frame_bytes;
 		if ((int64_t)want > left) {
@@ -2128,6 +2176,7 @@ static void play_wav_file(const char *filepath) {
 			if (raw) {
 				wav_convert(&info, raw, buffer, (size_t)frames_read);
 			}
+			health_lap(&health, STAGE_READ);
 			if (info.out_bits == 16) {
 				replaygain_process((short *)buffer, frames_read, info.channels);
 				eq_process((short *)buffer, frames_read, info.channels, info.sample_rate);
@@ -2200,8 +2249,10 @@ static void play_wav_file(const char *filepath) {
 			}
 		}
 
+		health_lap(&health, STAGE_EFFECTS);
 		snd_pcm_sframes_t written = pcm_write_recover(&pcm_handle, buffer, frames_to_write, info.channels,
 													  info.sample_rate, info.out_bits, &period_size);
+		health_lap(&health, STAGE_WRITE);
 
 		if (written == -EINTR) {
 			continue; // a command is pending: the top of the loop handles it
@@ -2705,9 +2756,11 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		// same at normal speed, and deliberately not at any other.
 		uint64_t frames_read;
 		uint64_t input_frames;
+		health_mark(&health);
 		if (out_bits == 32) {
 			frames_read = decoder_read_pcm_frames_s32(dec, chunk_frames, (int32_t *)buffer);
 			input_frames = frames_read;
+			health_lap(&health, STAGE_READ);
 			if (frames_read != 0 && !passthrough) {
 				// ReplayGain first: it is a correction to the source level, so
 				// everything after it works on the level the listener will
@@ -2734,6 +2787,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				frames_read = decoder_read_pcm_frames_s16(dec, chunk_frames, (short *)buffer);
 				input_frames = frames_read;
 			}
+			health_lap(&health, STAGE_READ);
 			if (frames_read != 0) {
 				replaygain_process((short *)buffer, (int)frames_read, channels);
 				// The graphic EQ, in place on the decoded block. A no-op when off.
@@ -2862,8 +2916,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			}
 		}
 
+		health_lap(&health, STAGE_EFFECTS);
 		snd_pcm_sframes_t written =
 			pcm_write_recover(&pcm_handle, buffer, frames_read, channels, sample_rate, out_bits, &period_size);
+		health_lap(&health, STAGE_WRITE);
 
 		if (written == -EINTR) {
 			// Not an error: a command (pause, stop, another track, a seek)

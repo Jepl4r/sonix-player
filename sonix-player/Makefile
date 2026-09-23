@@ -64,7 +64,12 @@ HOST_CFLAGS = $(CFLAGS) -DHOST_BUILD=1 $(shell sdl2-config --cflags) $(shell pkg
 # build: it carries the .symver lines that keep five maths functions on the
 # names the device's glibc 2.22 knows, and a .symver applies only to its own
 # unit. Target only.
-TARGET_CFLAGS = $(CFLAGS) -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
+#
+# -march=mips32r2: the toolchain is configured without --with-arch, and for the
+# o32 ABI GCC then defaults to MIPS I. The X1600's core runs MIPS32r2 (the
+# device's kernel modules and bluealsa are built for it), which gives mul, madd,
+# conditional moves and no load delay slots.
+TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
 				-I$(AUDIO_PREFIX)/include -I$(AUDIO_PREFIX)/include/opus \
 				-include src/system/core/glibc_compat.h
 
@@ -273,15 +278,24 @@ check-abi:
 	fi; \
 	echo "check-abi: no symbol beyond glibc $(DEVICE_GLIBC_MAJOR).$(DEVICE_GLIBC_MINOR)."
 
-build_target/%.o: src/%.c
+# The flags every target object was compiled with. Rewritten only when they
+# differ, so a change of flags rebuilds everything and nothing else does.
+TARGET_FLAGS_STAMP = build_target/.flags
+$(TARGET_FLAGS_STAMP): FORCE
+	@mkdir -p $(dir $@)
+	@echo '$(TARGET_CFLAGS) | $(TARGET_CXXFLAGS)' | cmp -s - $@ || \
+		echo '$(TARGET_CFLAGS) | $(TARGET_CXXFLAGS)' > $@
+FORCE:
+
+build_target/%.o: src/%.c $(TARGET_FLAGS_STAMP)
 	@mkdir -p $(dir $@)
 	$(CROSS_CC) $(TARGET_CFLAGS) -c $< -o $@
 
-build_target/%.opp: src/%.cpp
+build_target/%.opp: src/%.cpp $(TARGET_FLAGS_STAMP)
 	@mkdir -p $(dir $@)
 	$(CROSS_CXX) $(TARGET_CXXFLAGS) -c $< -o $@
 
-build_target/lvgl/%.o: $(LVGL_DIR)/%.c
+build_target/lvgl/%.o: $(LVGL_DIR)/%.c $(TARGET_FLAGS_STAMP)
 	@mkdir -p $(dir $@)
 	$(CROSS_CC) $(TARGET_CFLAGS) -c $< -o $@
 
@@ -292,6 +306,11 @@ compile_commands.json:
 clean:
 	rm -rf build_host build_target $(HOST_BIN) $(TARGET_BIN) $(TARGET_DEBUG_BIN) compile_commands.json compile_flags.txt
 
+# The bundled libraries and their extracted sources. The downloaded tarballs stay.
+.PHONY: libs-clean
+libs-clean:
+	rm -rf $(FREETYPE_PREFIX) $(AUDIO_PREFIX) $(FREETYPE_SRC) $(OGG_SRC) $(OPUS_SRC) $(OPUSFILE_SRC) $(WAVPACK_SRC)
+
 # Make sure the cross compiler is built before trying to make any of the target
 # objects with it.
 $(TARGET_OBJS): $(CROSS_CC) $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS)
@@ -301,6 +320,11 @@ $(CROSS_CC):
 	@echo "Building Rockbox toolchain..."
 	./rockboxdev/rockboxdev.sh
 
+# The flags FreeType and the audio libraries are built with. -march as in
+# TARGET_CFLAGS. They are built once: `make libs-clean` removes them, with their
+# extracted sources, so the next `make target` builds them again.
+LIB_CFLAGS = -O2 -march=mips32r2
+
 # Cross-build FreeType, once. configure needs the toolchain on PATH for
 # ranlib/ar to be found under their host-triplet names.
 $(FREETYPE_PREFIX)/lib/libfreetype.a: $(CROSS_CC)
@@ -309,14 +333,14 @@ $(FREETYPE_PREFIX)/lib/libfreetype.a: $(CROSS_CC)
 		wget -O $(FREETYPE_TARBALL) $(FREETYPE_URL) || \
 		wget -O $(FREETYPE_TARBALL) $(FREETYPE_URL_MIRROR); \
 	fi
-	@if [ ! -d $(FREETYPE_SRC) ]; then tar xf $(FREETYPE_TARBALL); fi
+	rm -rf $(FREETYPE_SRC) && tar xf $(FREETYPE_TARBALL)
 	cd $(FREETYPE_SRC) && PATH="$(ROCKBOX_TOOLCHAIN_DIR)/bin:$$PATH" ./configure \
 		--host=mipsel-rockbox-linux-gnu \
 		--prefix=$(FREETYPE_PREFIX) \
 		--disable-shared --enable-static \
 		--with-zlib=no --with-bzip2=no --with-png=no \
 		--with-harfbuzz=no --with-brotli=no \
-		CC=$(CROSS_CC) CFLAGS="-O2" \
+		CC=$(CROSS_CC) CFLAGS="$(LIB_CFLAGS)" \
 		AR=$(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-ar \
 		RANLIB=$(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-ranlib
 	PATH="$(ROCKBOX_TOOLCHAIN_DIR)/bin:$$PATH" $(MAKE) -C $(FREETYPE_SRC)
@@ -329,7 +353,7 @@ $(FREETYPE_PREFIX)/lib/libfreetype.a: $(CROSS_CC)
 # ---------------------------------------------------------------------------
 
 CROSS_PATH = PATH="$(ROCKBOX_TOOLCHAIN_DIR)/bin:$$PATH"
-CROSS_TOOLS = CC=$(CROSS_CC) CFLAGS="-O2" \
+CROSS_TOOLS = CC=$(CROSS_CC) CFLAGS="$(LIB_CFLAGS)" \
 			  AR=$(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-ar \
 			  RANLIB=$(ROCKBOX_TOOLCHAIN_DIR)/bin/mipsel-rockbox-linux-gnu-ranlib
 CROSS_COMMON = --host=mipsel-rockbox-linux-gnu --prefix=$(AUDIO_PREFIX) --disable-shared --enable-static
@@ -339,7 +363,7 @@ $(OGG_LIB): $(CROSS_CC)
 	@if [ ! -f $(OGG_TARBALL) ]; then \
 		wget -O $(OGG_TARBALL) $(OGG_URL) || wget -O $(OGG_TARBALL) $(OGG_URL_MIRROR); \
 	fi
-	@if [ ! -d $(OGG_SRC) ]; then tar xf $(OGG_TARBALL); fi
+	rm -rf $(OGG_SRC) && tar xf $(OGG_TARBALL)
 	cd $(OGG_SRC) && $(CROSS_PATH) ./configure $(CROSS_COMMON) $(CROSS_TOOLS)
 	$(CROSS_PATH) $(MAKE) -C $(OGG_SRC)
 	$(CROSS_PATH) $(MAKE) -C $(OGG_SRC) install
@@ -351,7 +375,7 @@ $(OPUS_LIB): $(CROSS_CC)
 	@if [ ! -f $(OPUS_TARBALL) ]; then \
 		wget -O $(OPUS_TARBALL) $(OPUS_URL) || wget -O $(OPUS_TARBALL) $(OPUS_URL_MIRROR); \
 	fi
-	@if [ ! -d $(OPUS_SRC) ]; then tar xf $(OPUS_TARBALL); fi
+	rm -rf $(OPUS_SRC) && tar xf $(OPUS_TARBALL)
 	cd $(OPUS_SRC) && $(CROSS_PATH) ./configure $(CROSS_COMMON) \
 		--enable-fixed-point --disable-doc --disable-extra-programs \
 		$(CROSS_TOOLS)
@@ -367,7 +391,7 @@ $(OPUSFILE_LIB): $(CROSS_CC) $(OGG_LIB) $(OPUS_LIB)
 	@if [ ! -f $(OPUSFILE_TARBALL) ]; then \
 		wget -O $(OPUSFILE_TARBALL) $(OPUSFILE_URL) || wget -O $(OPUSFILE_TARBALL) $(OPUSFILE_URL_MIRROR); \
 	fi
-	@if [ ! -d $(OPUSFILE_SRC) ]; then tar xf $(OPUSFILE_TARBALL); fi
+	rm -rf $(OPUSFILE_SRC) && tar xf $(OPUSFILE_TARBALL)
 	cd $(OPUSFILE_SRC) && $(CROSS_PATH) ./configure $(CROSS_COMMON) \
 		--disable-http --disable-examples --disable-doc \
 		DEPS_CFLAGS="-I$(AUDIO_PREFIX)/include -I$(AUDIO_PREFIX)/include/opus" \
@@ -385,7 +409,7 @@ $(WAVPACK_LIB): $(CROSS_CC)
 	@if [ ! -f $(WAVPACK_TARBALL) ]; then \
 		wget -O $(WAVPACK_TARBALL) $(WAVPACK_URL) || wget -O $(WAVPACK_TARBALL) $(WAVPACK_URL_MIRROR); \
 	fi
-	@if [ ! -d $(WAVPACK_SRC) ]; then tar xf $(WAVPACK_TARBALL); fi
+	rm -rf $(WAVPACK_SRC) && tar xf $(WAVPACK_TARBALL)
 	cd $(WAVPACK_SRC) && $(CROSS_PATH) ./configure $(CROSS_COMMON) \
 		--disable-apps --disable-man --disable-asm \
 		--enable-dsd --enable-legacy --without-libiconv-prefix \
