@@ -38,6 +38,7 @@
 #include "src/system/audio/usbdac.h"
 #include "src/system/gearboy/gearboy.h"
 #include "src/system/device/led.h"
+#include "src/system/device/axpcharge.h"
 
 #include <errno.h>
 #include <fcntl.h>
@@ -322,7 +323,7 @@ bool power_charge_limit_supported(void) {
 
 int power_get_charge_limit(void) { return g_charge_limit; }
 
-bool power_charging_held(void) { return g_charging_suspended; }
+bool power_charging_held(void) { return g_charging_suspended || axpcharge_holding(); }
 
 static void charger_run(bool run);
 
@@ -1580,8 +1581,10 @@ static void power_timer_cb(lv_timer_t *timer) {
 	//           halt.
 	suspend_if_idle(now, playing);
 
-	// 4b. the charger, if it is being held below full
+	// 4b. the charger, if it is being held below full: the MP2731 by the
+	//     percentage, or the PMIC by its own two switches on the R1
 	apply_charge_limit();
+	axpcharge_tick();
 
 }
 

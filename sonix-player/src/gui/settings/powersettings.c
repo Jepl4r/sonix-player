@@ -7,6 +7,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/system/device/axpcharge.h"
 #include "src/system/device/led.h"
 #include "src/system/device/power.h"
 
@@ -31,6 +32,7 @@ static lv_obj_t *auto_off_switch, *auto_off_value, *auto_off_slider, *auto_off_c
 static lv_obj_t *led_on_switch, *led_off_switch, *led_off_card;
 static lv_obj_t *standby_switch;
 static lv_obj_t *charge_note;
+static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead of the slider
 
 // --- reading the saved values ---
 
@@ -58,8 +60,22 @@ static int auto_off_index(void) {
 
 // --- applying them ---
 
+static void set_checked(lv_obj_t *sw, bool on) {
+	if (on) {
+		lv_obj_add_state(sw, LV_STATE_CHECKED);
+	} else {
+		lv_obj_remove_state(sw, LV_STATE_CHECKED);
+	}
+}
+
 void powersettings_apply(void) {
-	power_set_charge_limit(CHARGE_LIMIT_MIN + (charge_index() * CHARGE_LIMIT_STEP));
+	if (axpcharge_applies()) {
+		power_set_charge_limit(100);
+		axpcharge_set(config_get_bool("power", "charge_limit_80", false),
+					  config_get_bool("power", "charge_500ma", false));
+	} else {
+		power_set_charge_limit(CHARGE_LIMIT_MIN + (charge_index() * CHARGE_LIMIT_STEP));
+	}
 
 	power_set_auto_off(config_get_bool("power", "auto_off", false), (uint32_t)AUTO_OFF[auto_off_index()].minutes);
 
@@ -75,7 +91,13 @@ void powersettings_apply(void) {
 }
 
 static void refresh_labels(void) {
-	lv_label_set_text_fmt(charge_value, "%d%%", CHARGE_LIMIT_MIN + (charge_index() * CHARGE_LIMIT_STEP));
+	if (charge_value) {
+		lv_label_set_text_fmt(charge_value, "%d%%", CHARGE_LIMIT_MIN + (charge_index() * CHARGE_LIMIT_STEP));
+	}
+	if (axp_limit_switch) {
+		set_checked(axp_limit_switch, config_get_bool("power", "charge_limit_80", false));
+		set_checked(axp_current_switch, config_get_bool("power", "charge_500ma", false));
+	}
 	lv_label_set_text(auto_off_value, tr(AUTO_OFF[auto_off_index()].label));
 
 	// The LED master switch, and the standby option that hangs off it: with the
@@ -122,6 +144,22 @@ static void charge_changed_cb(lv_event_t *e) {
 	(void)e;
 	int index = (int)lv_slider_get_value(charge_slider);
 	config_set_int("power", "charge_limit", CHARGE_LIMIT_MIN + (index * CHARGE_LIMIT_STEP));
+	config_save();
+	powersettings_apply();
+	refresh_labels();
+}
+
+static void axp_limit_toggled_cb(lv_event_t *e) {
+	(void)e;
+	config_set_bool("power", "charge_limit_80", lv_obj_has_state(axp_limit_switch, LV_STATE_CHECKED));
+	config_save();
+	powersettings_apply();
+	refresh_labels();
+}
+
+static void axp_current_toggled_cb(lv_event_t *e) {
+	(void)e;
+	config_set_bool("power", "charge_500ma", lv_obj_has_state(axp_current_switch, LV_STATE_CHECKED));
 	config_save();
 	powersettings_apply();
 	refresh_labels();
@@ -186,9 +224,24 @@ void powersettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(standby_note, &font_ui_22, 0);
 	lv_label_set_text(standby_note, tr("power_standby_mem_note"));
 
-	settingsrow_slider(container, "power_charge_limit", CHARGE_LIMIT_COUNT, &charge_value, &charge_slider,
-					   charge_changed_cb);
-	lv_slider_set_value(charge_slider, charge_index(), LV_ANIM_OFF);
+	// The R1 charges through its PMIC, which takes a lower target voltage and a
+	// lower current rather than a percentage: two switches there, the slider
+	// everywhere else.
+	bool pmic = axpcharge_applies();
+	if (pmic) {
+		settingsrow_toggle(container, "power_charge_limit_80", &axp_limit_switch, axp_limit_toggled_cb);
+		lv_obj_t *limit_note = lv_label_create(container);
+		lv_label_set_long_mode(limit_note, LV_LABEL_LONG_WRAP);
+		lv_obj_set_width(limit_note, lv_pct(100));
+		lv_obj_add_style(limit_note, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(limit_note, &font_ui_22, 0);
+		lv_label_set_text(limit_note, tr("power_charge_limit_80_note"));
+		settingsrow_toggle(container, "power_charge_500ma", &axp_current_switch, axp_current_toggled_cb);
+	} else {
+		settingsrow_slider(container, "power_charge_limit", CHARGE_LIMIT_COUNT, &charge_value, &charge_slider,
+						   charge_changed_cb);
+		lv_slider_set_value(charge_slider, charge_index(), LV_ANIM_OFF);
+	}
 
 	// The LED master switch, and the standby option that depends on it.
 	settingsrow_toggle(container, "power_led_on", &led_on_switch, led_on_toggled_cb);
@@ -212,9 +265,8 @@ void powersettings_init(gui_config_t *cfg) {
 	lv_obj_set_width(charge_note, lv_pct(100));
 	lv_obj_add_style(charge_note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(charge_note, &font_ui_22, 0);
-	lv_label_set_text(charge_note, power_charge_limit_supported()
-									   ? tr("power_auto_off_note")
-									   : tr("power_charge_limit_unavailable"));
+	lv_label_set_text(charge_note, pmic || power_charge_limit_supported() ? tr("power_auto_off_note")
+																	   : tr("power_charge_limit_unavailable"));
 
 	// Everything saved becomes effective now, at startup -- including the LED
 	// standby option, which lives in led.c rather than power.c.
