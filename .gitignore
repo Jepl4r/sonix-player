@@ -1,6 +1,7 @@
 .DS_Store
 
 sonix-player/sonix_player
+sonix-player/sonix_player_debug
 sonix-player/sonix_player_host
 
 sonix-player/build_target
@@ -26,3 +27,5 @@ sonix-player/freetype-2.13.3.tar.xz
 sonix-packer/r3proii.upt
 sonix-packer/sonix_player
 sonix-packer/r3proii_original.upt
+sonix-packer/r1.upt
+sonix-packer/r1_original.upt
