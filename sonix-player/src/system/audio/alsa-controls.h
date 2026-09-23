@@ -13,6 +13,11 @@ void alsa_list_controls(char *out, size_t out_size);
 
 int detect_output(void); // the "Output Port Switch" value for what is plugged in now
 
+// True on the R1's audio board: one CS43131, a 3.5 mm socket and the USB-C
+// port. No HBC3000, no 4.4 mm socket, no DRE or NOS, and the digital filter
+// goes to the chip by another way. See alsa-controls.c.
+bool alsa_board_is_cs43131(void);
+
 // The route to pass through on the way to `route` when the driver has to be
 // made to reconfigure: a route on the OTHER physical socket. Routes 1 and 2
 // are the two faces of the 3.5 mm one and the driver runs nothing between
