@@ -77,8 +77,8 @@ const sysinfo_model_t *sysinfo_model_by_panel(int width, int height);
 
 // The device serial number: the model's prefix plus the first eight hex digits
 // (upper case) of the SoC efuse chip id (/proc/jz/efuse/efuse_chip_id, line
-// "CHIP_ID: <32 hex>"). It is exactly the number printed on the box, verified
-// on an R3 Pro II (chip id 90a70a42... -> box R3PII90A70A42). "" when the node
+// "CHIP_ID: <32 hex>"). It is exactly the number printed on the box of either
+// model (chip id 90a70a42... -> box R3PII90A70A42). "" when the node
 // is absent (the host build, or a firmware without the efuse module) or the
 // model is unknown. Read once and kept: efuses do not change.
 const char *sysinfo_serial_number(void);

@@ -69,7 +69,10 @@ HOST_CFLAGS = $(CFLAGS) -DHOST_BUILD=1 $(shell sdl2-config --cflags) $(shell pkg
 # o32 ABI GCC then defaults to MIPS I. The X1600's core runs MIPS32r2 (the
 # device's kernel modules and bluealsa are built for it), which gives mul, madd,
 # conditional moves and no load delay slots.
-TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
+#
+# -mno-madd4: no madd.s/msub.s. Every float multiply and add stays a separate,
+# separately rounded instruction, as in a MIPS I build.
+TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
 				-I$(AUDIO_PREFIX)/include -I$(AUDIO_PREFIX)/include/opus \
 				-include src/system/core/glibc_compat.h
 
