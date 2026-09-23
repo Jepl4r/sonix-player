@@ -161,6 +161,12 @@ static uint32_t drag_begin_ms;
 #define FLICK_MIN_PX 40
 #define FLICK_SPEED_PX_S 500
 
+// How far a drag has to travel before the release opens or closes rather than
+// snapping back. Fixed pixels and not a share of the panel: both players have
+// the same 480-wide glass, so the same gesture decides the same way on the
+// 720-tall R3 Pro II and the 800-tall R1. 180 is a quarter of 720.
+#define DRAG_COMMIT_PX 180
+
 // The now-playing card's widgets.
 static lv_obj_t *np_title;
 static lv_obj_t *np_artist;
@@ -553,11 +559,11 @@ void quickpanel_drag_end(void) {
 	}
 	drag_active = false;
 
-	// A quarter of a screen of travel decides the outcome, in whichever direction
-	// the gesture started: the same point-of-no-return feel as the swipe-back.
+	// A fixed stretch of travel decides the outcome, in whichever direction the
+	// gesture started: the same point-of-no-return feel as the swipe-back.
 	int y = lv_obj_get_y(panel);
 	int travel = y - drag_from_y;
-	bool open = drag_from_y == 0 ? travel > -panel_h / 4 : travel > panel_h / 4;
+	bool open = drag_from_y == 0 ? travel > -DRAG_COMMIT_PX : travel > DRAG_COMMIT_PX;
 
 	// Unless it was a flick, which is over long before it has covered that much.
 	// Then only the direction counts.

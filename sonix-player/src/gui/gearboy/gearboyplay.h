@@ -8,9 +8,10 @@
 // The play screen: the Game Boy scaled three times at the top, the controls
 // below.
 //
-// 160x144 times three is 480x432, exactly the panel width and 432 of its 720
-// rows. The remaining 288 rows are the button pad, which happens to be almost
-// exactly the screen-to-buttons proportion of a real Game Boy.
+// 160x144 times three is 480x432, exactly the panel width on both players and
+// 432 of its rows. What is left is the button pad: 288 rows on the R3 Pro II,
+// which happens to be almost exactly the screen-to-buttons proportion of a real
+// Game Boy, and 368 on the R1, where the extra 80 hold Select and Start.
 
 extern lv_obj_t *gearboyplay_screen;
 
