@@ -1487,16 +1487,19 @@ void musicsettings_init(gui_config_t *cfg) {
 	build_filter_page(cfg);
 	settingsrow_add(container, "musicsettings_filters", NULL, switch_screen_cb, dacfilter_screen);
 
-	// Non-oversampling, off by default like the stock player.
-	settingsrow_toggle(container, "musicsettings_nos", &nos_switch, nos_toggle_cb);
-	if (config_get_int("audio", "dac_nos", 0)) {
-		lv_obj_add_state(nos_switch, LV_STATE_CHECKED);
-	}
+	// Non-oversampling off and dynamic-range enhancement on by default, like the
+	// stock player. The R1's CS43131 driver has neither: no rows there, and
+	// alsa-controls.c keeps both off.
+	if (!alsa_board_is_cs43131()) {
+		settingsrow_toggle(container, "musicsettings_nos", &nos_switch, nos_toggle_cb);
+		if (config_get_int("audio", "dac_nos", 0)) {
+			lv_obj_add_state(nos_switch, LV_STATE_CHECKED);
+		}
 
-	// The DAC's dynamic-range enhancement, on by default like the stock player.
-	settingsrow_toggle(container, "musicsettings_dac_dre", &dre_switch, dre_toggle_cb);
-	if (config_get_int("audio", "dac_dre", 1)) {
-		lv_obj_add_state(dre_switch, LV_STATE_CHECKED);
+		settingsrow_toggle(container, "musicsettings_dac_dre", &dre_switch, dre_toggle_cb);
+		if (config_get_int("audio", "dac_dre", 1)) {
+			lv_obj_add_state(dre_switch, LV_STATE_CHECKED);
+		}
 	}
 
 	theme_register_refresh(rg_refresh);

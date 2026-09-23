@@ -237,6 +237,10 @@ static double restart_fresh_pos;
 // ports, so the choice is between the balanced one and either of the
 // single-ended pair.
 void audio_force_output_reinit_after_resume(void) {
+	// No HBC3000 on the CS43131 board: nothing went down, nothing to re-init.
+	if (alsa_board_is_cs43131()) {
+		return;
+	}
 	// 1 = 3.5 mm line out, 2 = 3.5 mm headphone, 3 = 4.4 mm balanced.
 	int x = detect_output();
 	int y = output_reinit_partner(x);
@@ -3780,6 +3784,39 @@ static bool external_follow_output(void) {
 	return true;
 }
 
+// Under external_lock. Waits for room in a PCM that has none, and says whether
+// to go on writing. A Bluetooth PCM that takes nothing for BT_WRITE_STALL_MS
+// is closed and opened again: the transport under it is gone, and without a
+// fresh open every later write would be accepted and never heard.
+static bool external_wait_room(long *last_progress_ms) {
+	long since = log_ms() - *last_progress_ms;
+	if (since < 0) {
+		since = 0; // the millisecond counter wrapped; start the window again
+		*last_progress_ms = log_ms();
+	}
+	if (since >= BT_WRITE_STALL_MS) {
+		fprintf(stderr, "audio: the external source's PCM has taken nothing for %ld ms; re-opening\n", since);
+		snd_pcm_drop(external_pcm);
+		snd_pcm_close(external_pcm);
+		external_pcm = NULL;
+		pcm_device_open = false;
+		if (!external_open_locked()) {
+			fprintf(stderr, "audio: the output would not open again; the external source has nowhere to write\n");
+			return false;
+		}
+		*last_progress_ms = log_ms();
+		return true;
+	}
+
+	// The same guard pcm_write_bluetooth() has: bluealsa's poll follows its
+	// FIFO and the write follows the transport, so a poll that says "room"
+	// against a write that takes nothing becomes a short sleep, not a spin.
+	if (snd_pcm_wait(external_pcm, 100) > 0) {
+		usleep(10 * 1000);
+	}
+	return true;
+}
+
 int audio_external_write(const void *frames, int count) {
 	pthread_mutex_lock(&external_lock);
 
@@ -3797,9 +3834,24 @@ int audio_external_write(const void *frames, int count) {
 	}
 
 	int written = 0;
+	long last_progress_ms = log_ms();
 	while (written < count) {
 		snd_pcm_sframes_t got = snd_pcm_writei(external_pcm, (const char *)frames + (size_t)written * external_frame_bytes,
 											   (snd_pcm_uframes_t)(count - written));
+		if (got > 0) {
+			written += (int)got;
+			last_progress_ms = log_ms();
+			continue;
+		}
+		if (got == 0 || got == -EAGAIN) {
+			// No room. A bluealsa PCM is opened non-blocking (open_pcm_device),
+			// so the wait that paces the source to real time happens here; the
+			// rest of the chunk is not dropped.
+			if (!external_wait_room(&last_progress_ms)) {
+				break;
+			}
+			continue;
+		}
 		if (got == -EPIPE) {
 			// An underrun: the sender stalled, which over a wireless link is
 			// ordinary. Prepare and carry on rather than tearing the stream
@@ -3814,11 +3866,8 @@ int audio_external_write(const void *frames, int count) {
 			snd_pcm_prepare(external_pcm);
 			continue;
 		}
-		if (got < 0) {
-			fprintf(stderr, "audio: external write failed: %s\n", snd_strerror((int)got));
-			break;
-		}
-		written += (int)got;
+		fprintf(stderr, "audio: external write failed: %s\n", snd_strerror((int)got));
+		break;
 	}
 
 	pthread_mutex_unlock(&external_lock);

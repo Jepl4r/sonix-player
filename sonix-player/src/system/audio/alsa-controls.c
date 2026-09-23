@@ -6,6 +6,7 @@
 #include "src/system/audio/swvolume.h"
 #include "src/system/audio/usbaudio.h"
 #include "src/system/core/utils.h"
+#include "src/system/device/sysinfo.h"
 
 #include <alsa/asoundlib.h>
 #include <stdbool.h>
@@ -114,6 +115,34 @@ static bool usbc_attached(void) {
 }
 
 bool usbc_port_attached(void) { return usbc_attached(); }
+
+// ---------------------------------------------------------------------------
+// The R1's audio board
+//
+// One CS43131 on the SoC's I2S, a 3.5 mm socket and the USB-C port: no HBC3000
+// and no 4.4 mm socket. Its machine driver (x1600_hiby_r1_sound_card.ko) does
+// one thing with "Output Port Switch": 2 and 3 power the CS43131 up, any other
+// value powers it down. So on this board the route is always 2, written once,
+// with none of the HBC3000's re-init around it.
+//
+// Its codec driver (codec_cs43131.ko) has no DRE_EN and no NOS_EN, and the
+// handler of its "Digital Filter" control returns without writing anything.
+// The filter goes through the driver's register node instead: see
+// set_dac_filter().
+// ---------------------------------------------------------------------------
+
+// "<register> <value>", both hex. Written to the chip when it is powered, and
+// always into the table the driver replays at every stream start.
+#define CS43131_REG_NODE "/sys/bus/i2c/devices/3-0030/write_reg_val"
+
+bool alsa_board_is_cs43131(void) {
+	static int answer = -1;
+	if (answer < 0) {
+		const sysinfo_model_t *model = sysinfo_model();
+		answer = model ? model->cs43131 : access(CS43131_REG_NODE, F_OK) == 0;
+	}
+	return answer != 0;
+}
 
 static bool lineout_on;
 static int lineout_saved_percent = -1;
@@ -292,6 +321,12 @@ int detect_output(void) {
 	const char *const sysfs_hs_switch = "/sys/class/switch/headset/state";
 	const char *const sysfs_bal_switch = "/sys/class/switch/balance/state";
 
+	// One socket, and route 1 would power the DAC down. Line out on it is the
+	// fixed level alone.
+	if (alsa_board_is_cs43131()) {
+		return 2;
+	}
+
 	bool balanced = file_matches(sysfs_bal_switch, "1");
 
 	// Line out rides the jack that is plugged in: the balanced hole keeps route
@@ -332,6 +367,24 @@ int alsa_output_key(void) { return detect_output() * 2 + (want_balance_lineout()
 //   2 slow roll-off, low latency      3 slow roll-off, phase compensated
 static int current_filter = -1;
 
+// The same four on the CS43131, in its PCM filter option register (0x090000):
+// bit 7 slow roll-off, bit 6 phase compensated, bit 5 NOS (kept off), bit 1
+// the high-pass filter the driver's own table turns on, bit 0 de-emphasis
+// (off). The bit positions are those of Linux's cs43130 driver, which covers
+// the CS43131.
+static int write_cs43131_filter(int filter) {
+	unsigned value = 0x02u | ((filter & 2) ? 0x80u : 0) | ((filter & 1) ? 0x40u : 0);
+	FILE *f = fopen(CS43131_REG_NODE, "w");
+	if (!f) {
+		return -1;
+	}
+	bool ok = fprintf(f, "90000 %x", value) > 0;
+	if (fclose(f) != 0) {
+		ok = false;
+	}
+	return ok ? 0 : -1;
+}
+
 void set_dac_filter(int filter) {
 	if (filter < 0 || filter > 3) {
 		return;
@@ -340,6 +393,11 @@ void set_dac_filter(int filter) {
 		return; // same reasoning as the output switch: never poke it idly
 	}
 	current_filter = filter;
+	if (alsa_board_is_cs43131()) {
+		int rc = write_cs43131_filter(filter);
+		fprintf(stderr, "set dac filter to %d (cs43131 register%s)\n", filter, rc < 0 ? " NOT written" : "");
+		return;
+	}
 	alsa_set_control("Digital Filter", filter);
 	printf("set dac filter to %d\n", filter);
 }
@@ -351,28 +409,41 @@ int get_dac_filter(void) { return current_filter < 0 ? 0 : current_filter; }
 // filter and the output route: never poke the codec idly mid-stream.
 static int current_dre = -1;
 
+// Neither DRE nor NOS exists on the CS43131 board: both stay off there and
+// nothing is written.
 void set_dac_dre(int enabled) {
-	enabled = enabled ? 1 : 0;
+	enabled = enabled && !alsa_board_is_cs43131() ? 1 : 0;
 	if (enabled == current_dre) {
 		return;
 	}
 	current_dre = enabled;
+	if (alsa_board_is_cs43131()) {
+		return;
+	}
 	alsa_set_control("DRE_EN", enabled);
 	printf("set dac DRE to %d\n", enabled);
 }
 
-int get_dac_dre(void) { return current_dre < 0 ? 1 : current_dre; }
+int get_dac_dre(void) {
+	if (alsa_board_is_cs43131()) {
+		return 0;
+	}
+	return current_dre < 0 ? 1 : current_dre;
+}
 
 // The DAC's non-oversampling mode, the ALSA "NOS_EN" switch the stock player
 // writes (decompile FUN_004820e0, settings case 0x7e). Same cached contract.
 static int current_nos = -1;
 
 void set_dac_nos(int enabled) {
-	enabled = enabled ? 1 : 0;
+	enabled = enabled && !alsa_board_is_cs43131() ? 1 : 0;
 	if (enabled == current_nos) {
 		return;
 	}
 	current_nos = enabled;
+	if (alsa_board_is_cs43131()) {
+		return;
+	}
 	alsa_set_control("NOS_EN", enabled);
 	printf("set dac NOS to %d\n", enabled);
 }
@@ -602,6 +673,16 @@ static int write_output_route(int route) {
 // seconds and ending it in "write error: Input/output error". The
 // current_output cache is what keeps the route from being touched mid-track.
 void auto_set_output(void) {
+	// The CS43131 board: one route, no line-out flag, no transition to force.
+	if (alsa_board_is_cs43131()) {
+		int route = detect_output();
+		if (route != current_output && alsa_set_control("Output Port Switch", route) >= 0) {
+			current_output = route;
+			printf("set output to %d\n", route);
+		}
+		return;
+	}
+
 	// Read once: the jack can be pulled between two reads, and the route and
 	// the flag have to be decided from the same picture of the world.
 	int output = detect_output();
