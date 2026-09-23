@@ -1386,33 +1386,82 @@ int eq_auto_headroom_tenths(void) {
 	return (int)(total >= 0 ? total * 10.0 + 0.5 : total * 10.0 - 0.5);
 }
 
-static inline float slots_run(float x, int c, int from, int to) {
-	for (int b = from; b < to; b++) {
-		if (!chain_active[b]) {
-			continue;
-		}
-		biquad_t *f = &chain[b];
-		float y = f->b0 * x + f->z1[c];
-		f->z1[c] = f->b1 * x - f->a1 * y + f->z2[c];
-		f->z2[c] = f->b2 * x - f->a2 * y;
-		x = y;
-	}
-	return x;
-}
-
-// One sample through the whole chain, shared by the 16- and 32-bit paths, which
-// differ only in how they scale in and out of this float filter chain.
+// The chain runs over a block in passes of up to EQ_PASS_FRAMES frames. A pass
+// first works out the two pre-gains frame by frame, then runs each active
+// filter over every frame of the pass with its coefficients and state held in
+// locals, both channels together. Every sample goes through the same float
+// operations, in the same order, as it would one sample at a time through the
+// whole chain:
 //
-// Two stages with a gain in front of each, because they are two modules:
-//
-//     x -> MSEB's own pre-gain -> MSEB bank -> geq/peq headroom -> geq + peq
+//     x -> * mseb_pregain -> MSEB bank -> * pregain -> geq + peq
 //
 // The stock MSEB module puts its coefficient on the samples immediately before
 // its own filters and knows nothing of what follows; the headroom for the other
 // two is Sonix's and sits in front of the filters it is protecting.
-static inline float chain_run_sample(float x, int c) {
-	x = slots_run(x * mseb_pregain, c, 0, MSEB_FILTERS);
-	return slots_run(x * pregain, c, MSEB_FILTERS, CHAIN_SLOTS);
+#define EQ_PASS_FRAMES 256
+
+static float pass_buf[EQ_PASS_FRAMES * EQ_MAX_CHANNELS]; // interleaved, as the block
+static float pass_mseb_gain[EQ_PASS_FRAMES];
+static float pass_gain[EQ_PASS_FRAMES];
+
+// Direct form II transposed, one channel.
+static void biquad_run_mono(biquad_t *f, float *buf, int n) {
+	const float b0 = f->b0, b1 = f->b1, b2 = f->b2, a1 = f->a1, a2 = f->a2;
+	float z1 = f->z1[0], z2 = f->z2[0];
+	for (int i = 0; i < n; i++) {
+		float x = buf[i];
+		float y = b0 * x + z1;
+		z1 = b1 * x - a1 * y + z2;
+		z2 = b2 * x - a2 * y;
+		buf[i] = y;
+	}
+	f->z1[0] = z1;
+	f->z2[0] = z2;
+}
+
+// The same, on an interleaved stereo buffer. The two channels are independent
+// recursions, so the core works on one while the other waits for a result.
+static void biquad_run_stereo(biquad_t *f, float *buf, int n) {
+	const float b0 = f->b0, b1 = f->b1, b2 = f->b2, a1 = f->a1, a2 = f->a2;
+	float z1l = f->z1[0], z2l = f->z2[0];
+	float z1r = f->z1[1], z2r = f->z2[1];
+	for (int i = 0; i < n; i++) {
+		float xl = buf[2 * i];
+		float xr = buf[2 * i + 1];
+		float yl = b0 * xl + z1l;
+		float yr = b0 * xr + z1r;
+		z1l = b1 * xl - a1 * yl + z2l;
+		z1r = b1 * xr - a1 * yr + z2r;
+		z2l = b2 * xl - a2 * yl;
+		z2r = b2 * xr - a2 * yr;
+		buf[2 * i] = yl;
+		buf[2 * i + 1] = yr;
+	}
+	f->z1[0] = z1l;
+	f->z2[0] = z2l;
+	f->z1[1] = z1r;
+	f->z2[1] = z2r;
+}
+
+static void slots_run_pass(float *buf, int n, int channels, int from, int to) {
+	for (int b = from; b < to; b++) {
+		if (!chain_active[b]) {
+			continue;
+		}
+		if (channels == 2) {
+			biquad_run_stereo(&chain[b], buf, n);
+		} else {
+			biquad_run_mono(&chain[b], buf, n);
+		}
+	}
+}
+
+static void gain_run_pass(float *buf, int n, int channels, const float *gain) {
+	for (int i = 0; i < n; i++) {
+		for (int c = 0; c < channels; c++) {
+			buf[i * channels + c] = buf[i * channels + c] * gain[i];
+		}
+	}
 }
 
 // Both gains move toward their targets a step at a time rather than jumping.
@@ -1446,6 +1495,20 @@ static inline void pregain_glide(float step) {
 	}
 }
 
+// One pass through the chain: pass_buf holds `n` frames on the way in and on
+// the way out. The pre-gains advance one step per frame, before that frame.
+static void chain_run_pass(int n, int channels, float step) {
+	for (int i = 0; i < n; i++) {
+		pregain_glide(step);
+		pass_mseb_gain[i] = mseb_pregain;
+		pass_gain[i] = pregain;
+	}
+	gain_run_pass(pass_buf, n, channels, pass_mseb_gain);
+	slots_run_pass(pass_buf, n, channels, 0, MSEB_FILTERS);
+	gain_run_pass(pass_buf, n, channels, pass_gain);
+	slots_run_pass(pass_buf, n, channels, MSEB_FILTERS, CHAIN_SLOTS);
+}
+
 static bool process_prepare(int frame_count, int channels, int sample_rate) {
 	if ((!eq_enabled && !mseb_enabled && !peq_enabled) || frame_count <= 0 || sample_rate <= 0) {
 		return false;
@@ -1467,16 +1530,23 @@ void eq_process(short *frames, int frame_count, int channels, int sample_rate) {
 	// Per-sample pregain step sized for a ~20 ms glide at this rate.
 	float step = 1.0f / ((float)sample_rate * 0.02f);
 
-	for (int n = 0; n < frame_count; n++) {
-		pregain_glide(step);
-		for (int c = 0; c < channels; c++) {
-			float x = chain_run_sample((float)frames[n * channels + c], c);
+	for (int done = 0; done < frame_count; done += EQ_PASS_FRAMES) {
+		int n = frame_count - done < EQ_PASS_FRAMES ? frame_count - done : EQ_PASS_FRAMES;
+		short *in = frames + (size_t)done * channels;
+		int samples = n * channels;
+
+		for (int i = 0; i < samples; i++) {
+			pass_buf[i] = (float)in[i];
+		}
+		chain_run_pass(n, channels, step);
+		for (int i = 0; i < samples; i++) {
+			float x = pass_buf[i];
 			if (x > 32767.0f) {
 				x = 32767.0f;
 			} else if (x < -32768.0f) {
 				x = -32768.0f;
 			}
-			frames[n * channels + c] = (short)(x >= 0 ? x + 0.5f : x - 0.5f);
+			in[i] = (short)(x >= 0 ? x + 0.5f : x - 0.5f);
 		}
 	}
 }
@@ -1493,16 +1563,23 @@ void eq_process_s32(int32_t *frames, int frame_count, int channels, int sample_r
 	// out, so the coefficients' numeric range (and the shared z-state, when a
 	// 16-bit track follows a 24-bit one) behaves identically in both paths.
 	const float down = 1.0f / 65536.0f;
-	for (int n = 0; n < frame_count; n++) {
-		pregain_glide(step);
-		for (int c = 0; c < channels; c++) {
-			float x = chain_run_sample((float)frames[n * channels + c] * down, c);
+	for (int done = 0; done < frame_count; done += EQ_PASS_FRAMES) {
+		int n = frame_count - done < EQ_PASS_FRAMES ? frame_count - done : EQ_PASS_FRAMES;
+		int32_t *in = frames + (size_t)done * channels;
+		int samples = n * channels;
+
+		for (int i = 0; i < samples; i++) {
+			pass_buf[i] = (float)in[i] * down;
+		}
+		chain_run_pass(n, channels, step);
+		for (int i = 0; i < samples; i++) {
+			float x = pass_buf[i];
 			if (x > 32767.0f) {
 				x = 32767.0f;
 			} else if (x < -32768.0f) {
 				x = -32768.0f;
 			}
-			frames[n * channels + c] = (int32_t)(x * 65536.0f);
+			in[i] = (int32_t)(x * 65536.0f);
 		}
 	}
 }
