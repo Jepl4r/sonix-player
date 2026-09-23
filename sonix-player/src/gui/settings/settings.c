@@ -303,9 +303,12 @@ static void build_screen_page(gui_config_t *cfg) {
 	// Double-tap to wake: the touch controller's gesture mode. With the
 	// screen off, two taps light it back up -- the way the stock player's
 	// option works, through the same sysfs switch.
-	settingsrow_toggle(container, "settings_double_tap_to_wake", &doubletap_switch, doubletap_toggle_cb);
-	if (config_get_int("screen", "double_tap_wake", 0)) {
-		lv_obj_add_state(doubletap_switch, LV_STATE_CHECKED);
+	// Not on the R1, whose touch controller sleeps with the panel.
+	if (power_double_tap_wake_supported()) {
+		settingsrow_toggle(container, "settings_double_tap_to_wake", &doubletap_switch, doubletap_toggle_cb);
+		if (config_get_int("screen", "double_tap_wake", 0)) {
+			lv_obj_add_state(doubletap_switch, LV_STATE_CHECKED);
+		}
 	}
 
 	// The screensaver: a picture, the track and the time over everything else

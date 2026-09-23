@@ -65,6 +65,7 @@ typedef struct {
 	const char *serial_prefix; // what the number on the box starts with
 	bool pmic_charger;		   // charged by the AXP2101 alone, no MP2731 (axpcharge.h)
 	bool cs43131;			   // one CS43131, 3.5 mm only, no HBC3000 (alsa-controls.h)
+	bool tap_wake;			   // the touch controller can wake the screen (power.h)
 } sysinfo_model_t;
 
 // The entry for the name in the file, or NULL when the file says nothing or
