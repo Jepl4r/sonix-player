@@ -12,7 +12,9 @@
 // which is the game, not an edge case. So while playing, the screen changes
 // owner: panel_touch_enable(false) parks LVGL's indev, and this module opens
 // the same evdev node itself and reads the real multitouch protocol, which the
-// patched gt9xx_touch.ko reports (see tools/gt9xx_multitouch_patch.py).
+// patched touch driver reports -- gt9xx_touch.ko on the R3 Pro II,
+// cst8xx_touch.ko on the R1. Both are uncapped by a script in tools/; PATCHES.md
+// has the account of each.
 //
 // Zones come from outside in screen coordinates, and the reader thread decides
 // which buttons are down: the mapping lives where the contacts are, not across
@@ -35,15 +37,13 @@ typedef struct {
 	uint16_t keys; // mask of GB_KEY_* (src/gb/gbcore.h), or GBINPUT_KEY_MENU
 } gbinput_zone_t;
 
-// How many contacts are tracked. Five is what the patched driver reports, one
-// finger more than needed.
+// How many contacts are tracked: an array size, not a request to the driver.
+// The R3 Pro II's panel reports up to five, the R1's up to two.
 #define GBINPUT_MAX_CONTACTS 5
 
-// The panel, so raw touchscreen readings can be scaled onto it. The zones this
-// file is given are in screen coordinates, and this is the only thing that says
-// how big the screen is: nothing in this path goes through LVGL, which is where
-// everything else gets the answer. Call it before gbinput_start(); left unset
-// it assumes 480x720.
+// The size of the screen in pixels: 480x720 on the R3 Pro II, 480x800 on the
+// R1. Zones are in screen coordinates and raw touches are mapped onto this.
+// Call before gbinput_start(); zero or negative leaves the value unchanged.
 void gbinput_set_glass(int width, int height);
 
 // Takes the screen. `zones` is copied, so the caller may free it. False when
