@@ -54,35 +54,31 @@ static gbinput_zone_t zones[MAX_ZONES];
 static int zone_count;
 static void (*menu_cb)(void);
 
-// Glass size, used to map raw coordinates onto screen ones. Same as the
-// display's, and told to this file rather than asked of LVGL because this path
-// reads the touchscreen directly and never goes through it.
-//
-// It matters that it is the real panel: the zones are given in screen
-// coordinates, so a raw reading scaled into 720 rows on an 800-row panel puts
-// every touch progressively too high -- unnoticeable at the top of the picture
-// and an unreachable B button at the bottom.
-//
-// Named GLASS_ rather than PANEL_ because PANEL_H is already the include guard
-// of panel.h, which this file includes.
-#define GLASS_W_DEFAULT 480
-#define GLASS_H_DEFAULT 720
-
-static int glass_w = GLASS_W_DEFAULT;
-static int glass_h = GLASS_H_DEFAULT;
-
-void gbinput_set_glass(int width, int height) {
-	glass_w = width > 0 ? width : GLASS_W_DEFAULT;
-	glass_h = height > 0 ? height : GLASS_H_DEFAULT;
-}
+// The screen size raw coordinates are mapped onto, set by gbinput_set_glass().
+// Defaults to the R3 Pro II's panel. (Not panel_: PANEL_H is panel.h's guard.)
+static int glass_w = 480;
+static int glass_h = 720;
 
 static int abs_min_x, abs_max_x, abs_min_y, abs_max_y;
 
 bool gbinput_active(void) { return active_flag; }
 
-// Axis ranges, asked of the driver rather than guessed: on this panel they
-// nearly match the pixel grid, and "nearly" is not a basis for placing the edge
-// of a button.
+void gbinput_set_glass(int width, int height) {
+	if (width > 0) {
+		glass_w = width;
+	}
+	if (height > 0) {
+		glass_h = height;
+	}
+}
+
+// Raw coordinates map to the screen the way lv_evdev maps them: through the
+// ABS_X/ABS_Y range when the driver declares one, as pixels otherwise. Neither
+// touch driver declares ABS_X/ABS_Y, so on both players they are pixels.
+//
+// The multitouch axes are not used: cst8xx_touch.ko declares ABS_MT_POSITION_X
+// as 0..720 and ABS_MT_POSITION_Y as 0..1280 (immediates in hyn_ts_init) while
+// the chip reports pixels of the 480x800 panel.
 static void read_abs_range(int fd) {
 	struct input_absinfo info;
 
@@ -91,14 +87,18 @@ static void read_abs_range(int fd) {
 	abs_min_y = 0;
 	abs_max_y = glass_h - 1;
 
-	if (ioctl(fd, EVIOCGABS(ABS_MT_POSITION_X), &info) == 0 && info.maximum > info.minimum) {
+	// An undeclared axis reads back as 0..0 rather than as an error.
+	if (ioctl(fd, EVIOCGABS(ABS_X), &info) == 0 && info.maximum > info.minimum) {
 		abs_min_x = info.minimum;
 		abs_max_x = info.maximum;
 	}
-	if (ioctl(fd, EVIOCGABS(ABS_MT_POSITION_Y), &info) == 0 && info.maximum > info.minimum) {
+	if (ioctl(fd, EVIOCGABS(ABS_Y), &info) == 0 && info.maximum > info.minimum) {
 		abs_min_y = info.minimum;
 		abs_max_y = info.maximum;
 	}
+
+	printf("gbinput: glass %dx%d, raw x %d..%d, raw y %d..%d\n", glass_w, glass_h, abs_min_x, abs_max_x,
+		   abs_min_y, abs_max_y);
 }
 
 static int scale(int value, int lo, int hi, int size) {

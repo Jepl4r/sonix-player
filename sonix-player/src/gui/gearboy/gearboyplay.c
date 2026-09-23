@@ -27,19 +27,20 @@ lv_obj_t *gearboyplay_screen;
 // the layout
 // ---------------------------------------------------------------------------
 //
-// The game screen takes the first 432 rows at full width (exactly 3x, no
-// interpolation) and the controls take whatever is left: 288 rows on a 720
-// panel, 368 on an 800 one.
+// The panel is 480 wide and 720 (R3 Pro II) or 800 (R1) tall. The game screen
+// takes the first 432 rows at 3x; the controls take the rest.
 //
-// D-pad on the left, A/B on the right and diagonal with A higher, as on the
-// Game Boy itself. The measurements are in pixels rather than percentages on
-// purpose: they are passed to gbinput, which works in screen coordinates
-// because it reads the touchscreen without going through LVGL, and two
-// definitions of the same geometry would be two to keep in step.
+// D-pad on the left, A/B on the right and diagonal with A higher. The sizes are
+// in pixels because the same rectangles go to gbinput, which works in screen
+// coordinates. The D-pad and A/B sit at the same place on both panels; the rows
+// below them, where there are any, hold Select and Start (see PILL_).
 
 #define SCREEN_TOP 0
 #define GAME_W GEARBOY_SCREEN_W // 480
 #define GAME_H GEARBOY_SCREEN_H // 432
+
+// The panel the layout below is drawn for; a taller one has spare rows at the bottom.
+#define PANEL_H_REF 720
 
 // The D-pad: a square split into nine cells. The corners give two directions
 // at once, the centre none. The diagonals are not a luxury -- without them a
@@ -53,6 +54,7 @@ lv_obj_t *gearboyplay_screen;
 #define DPAD_SIZE 220
 #define DPAD_CELL (DPAD_SIZE / 3)
 #define DPAD_CX (DPAD_X0 + DPAD_SIZE / 2)
+#define DPAD_CY (DPAD_Y0 + DPAD_SIZE / 2)
 
 // A and B, diagonal as on the real machine. The rectangle is both the drawing
 // and the touch area: 110 pixels, already wider than a fingertip, and growing
@@ -63,41 +65,25 @@ lv_obj_t *gearboyplay_screen;
 #define B_X 300
 #define B_Y 592
 
-// Select and Start: invisible, inside the game screen, in the bottom corners.
-// Undrawn because a Game Boy game uses them twice a session, and two rectangles
-// over the picture would be in the way the rest of the time.
+// Select and Start: two drawn pills in a row under the D-pad and A/B when the
+// panel has PILL_ROW_NEEDS rows (the R1), otherwise two invisible rectangles in
+// the bottom corners of the picture (the R3 Pro II).
 #define CORNER_W 110
 #define CORNER_H 60
 #define CORNER_Y (GAME_H - CORNER_H)
 
-// The rows above are measured on a 720-row panel. On a taller one every row
-// past 720 is extra room under the picture -- which is always 480x432, three
-// times the Game Boy's own 160x144, a fourth being wider than the panel -- and
-// the block of controls is centred in it rather than left hanging under the
-// picture. On 720 that is where it already sits: eighteen rows clear above the
-// A button and eighteen below the B button.
-//
-// The shift is applied through the three names below and nowhere else, because
-// the touch zones go to gbinput in screen coordinates without passing through
-// LVGL: the drawing and the zones have to move together or the buttons stop
-// being where they look.
-#define PANEL_H_REF 720
+#define PILL_W 150
+#define PILL_H 52
+#define PILL_GAP 40 // between the two
+#define PILL_TOP_GAP 16 // clear of B, the lowest of the round buttons
+#define PILL_BOTTOM_GAP 24 // clear of the bottom edge
+#define PILL_X0 ((GAME_W - 2 * PILL_W - PILL_GAP) / 2)
 
-static int panel_h = PANEL_H_REF;
-static int controls_dy;
+// The lowest pixel the D-pad and A/B reach.
+#define CONTROLS_BOTTOM (B_Y + BTN_SIZE)
 
-static void panel_set_height(int height) {
-	panel_h = height > 0 ? height : PANEL_H_REF;
-	controls_dy = (panel_h - PANEL_H_REF) / 2;
-	if (controls_dy < 0) {
-		controls_dy = 0; // a shorter panel than this layout was drawn for
-	}
-}
-
-#define DPAD_Y (DPAD_Y0 + controls_dy)
-#define DPAD_CENTRE_Y (DPAD_Y + DPAD_SIZE / 2)
-#define A_ROW (A_Y + controls_dy)
-#define B_ROW (B_Y + controls_dy)
+// The shortest panel that fits the row.
+#define PILL_ROW_NEEDS (CONTROLS_BOTTOM + PILL_TOP_GAP + PILL_H + PILL_BOTTOM_GAP)
 
 // The in-game menu: in the MIDDLE of the picture, not in a corner.
 //
@@ -107,7 +93,7 @@ static void panel_set_height(int height) {
 // of the screen and the game stops.
 //
 // The middle because it is the only part of the picture a playing hand never
-// rests on: the controls are all below, Select and Start in the bottom corners.
+// rests on.
 #define MENU_W 240
 #define MENU_H 200
 #define MENU_X ((GAME_W - MENU_W) / 2)
@@ -160,6 +146,14 @@ static void refresh_period_restore(void) {
 	lv_timer_set_period(timer, saved_refresh_ms);
 	saved_refresh_ms = 0;
 }
+
+// The panel height, from gui_config_t at init.
+static int panel_h = PANEL_H_REF;
+
+// Whether Select and Start are the drawn row at the foot of the screen (true)
+// or the invisible corners of the picture (false). Decided once, from panel_h.
+static bool pill_row;
+static int pill_y;
 
 static lv_obj_t *game_image;
 static lv_obj_t *pause_veil;
@@ -223,7 +217,7 @@ static int build_zones(gbinput_zone_t *out, int max) {
 				continue;
 			}
 			out[n].x = DPAD_X0 + col * DPAD_CELL;
-			out[n].y = DPAD_Y + row * DPAD_CELL;
+			out[n].y = DPAD_Y0 + row * DPAD_CELL;
 			out[n].w = DPAD_CELL;
 			out[n].h = DPAD_CELL;
 			out[n].keys = DPAD[row][col];
@@ -232,10 +226,10 @@ static int build_zones(gbinput_zone_t *out, int max) {
 	}
 
 	if (n < max) {
-		out[n++] = (gbinput_zone_t){B_X, B_ROW, BTN_SIZE, BTN_SIZE, GB_KEY_B};
+		out[n++] = (gbinput_zone_t){B_X, B_Y, BTN_SIZE, BTN_SIZE, GB_KEY_B};
 	}
 	if (n < max) {
-		out[n++] = (gbinput_zone_t){A_X, A_ROW, BTN_SIZE, BTN_SIZE, GB_KEY_A};
+		out[n++] = (gbinput_zone_t){A_X, A_Y, BTN_SIZE, BTN_SIZE, GB_KEY_A};
 	}
 	// The menu BEFORE Select and Start: zones are tested in order and the first
 	// match wins, so whichever sits on top must be listed first. These do not
@@ -243,11 +237,20 @@ static int build_zones(gbinput_zone_t *out, int max) {
 	if (n < max) {
 		out[n++] = (gbinput_zone_t){MENU_X, MENU_Y, MENU_W, MENU_H, GBINPUT_KEY_MENU};
 	}
-	if (n < max) {
-		out[n++] = (gbinput_zone_t){0, CORNER_Y, CORNER_W, CORNER_H, GB_KEY_SELECT};
-	}
-	if (n < max) {
-		out[n++] = (gbinput_zone_t){GAME_W - CORNER_W, CORNER_Y, CORNER_W, CORNER_H, GB_KEY_START};
+	if (pill_row) {
+		if (n < max) {
+			out[n++] = (gbinput_zone_t){PILL_X0, pill_y, PILL_W, PILL_H, GB_KEY_SELECT};
+		}
+		if (n < max) {
+			out[n++] = (gbinput_zone_t){PILL_X0 + PILL_W + PILL_GAP, pill_y, PILL_W, PILL_H, GB_KEY_START};
+		}
+	} else {
+		if (n < max) {
+			out[n++] = (gbinput_zone_t){0, CORNER_Y, CORNER_W, CORNER_H, GB_KEY_SELECT};
+		}
+		if (n < max) {
+			out[n++] = (gbinput_zone_t){GAME_W - CORNER_W, CORNER_Y, CORNER_W, CORNER_H, GB_KEY_START};
+		}
 	}
 
 	return n;
@@ -322,7 +325,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_t *v = lv_obj_create(parent);
 	lv_obj_remove_style_all(v);
 	lv_obj_set_size(v, DPAD_CELL, DPAD_SIZE);
-	lv_obj_set_pos(v, DPAD_CX - DPAD_CELL / 2, DPAD_Y);
+	lv_obj_set_pos(v, DPAD_CX - DPAD_CELL / 2, DPAD_Y0);
 	lv_obj_set_style_bg_color(v, body, 0);
 	lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(v, 16, 0);
@@ -330,7 +333,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_t *h = lv_obj_create(parent);
 	lv_obj_remove_style_all(h);
 	lv_obj_set_size(h, DPAD_SIZE, DPAD_CELL);
-	lv_obj_set_pos(h, DPAD_X0, DPAD_CENTRE_Y - DPAD_CELL / 2);
+	lv_obj_set_pos(h, DPAD_X0, DPAD_CY - DPAD_CELL / 2);
 	lv_obj_set_style_bg_color(h, body, 0);
 	lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(h, 16, 0);
@@ -340,7 +343,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_t *dot = lv_obj_create(parent);
 	lv_obj_remove_style_all(dot);
 	lv_obj_set_size(dot, hub, hub);
-	lv_obj_set_pos(dot, DPAD_CX - hub / 2, DPAD_CENTRE_Y - hub / 2);
+	lv_obj_set_pos(dot, DPAD_CX - hub / 2, DPAD_CY - hub / 2);
 	lv_obj_set_style_bg_color(dot, lv_color_make(38, 38, 42), 0);
 	lv_obj_set_style_bg_opa(dot, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(dot, LV_RADIUS_CIRCLE, 0);
@@ -364,6 +367,26 @@ static void build_button(lv_obj_t *parent, int x, int y, const char *label, uint
 	lv_obj_center(text);
 
 	pressable(parent, x, y, BTN_SIZE, BTN_SIZE, key);
+}
+
+// One of the Select/Start pills, in the D-pad's grey. Level rather than slanted:
+// gbinput zones are axis-aligned rectangles.
+static void build_pill(lv_obj_t *parent, int x, const char *label, uint16_t key) {
+	lv_obj_t *o = lv_obj_create(parent);
+	lv_obj_remove_style_all(o);
+	lv_obj_set_size(o, PILL_W, PILL_H);
+	lv_obj_set_pos(o, x, pill_y);
+	lv_obj_set_style_bg_color(o, lv_color_make(58, 58, 62), 0);
+	lv_obj_set_style_bg_opa(o, LV_OPA_COVER, 0);
+	lv_obj_set_style_radius(o, LV_RADIUS_CIRCLE, 0);
+
+	lv_obj_t *text = lv_label_create(o);
+	lv_label_set_text(text, label);
+	lv_obj_set_style_text_font(text, &font_ui_18, 0);
+	lv_obj_set_style_text_color(text, lv_color_make(190, 190, 195), 0);
+	lv_obj_center(text);
+
+	pressable(parent, x, pill_y, PILL_W, PILL_H, key);
 }
 
 // ---------------------------------------------------------------------------
@@ -800,10 +823,18 @@ static void refresh_theme(void) {
 }
 
 void gearboyplay_init(gui_config_t *cfg) {
-	// Before anything is placed: every row below the picture is measured from
-	// this, and so are the touch zones handed to gbinput.
-	panel_set_height((int)cfg->screen_height);
-	gbinput_set_glass((int)cfg->screen_width, (int)cfg->screen_height);
+	panel_h = (int)cfg->screen_height;
+	pill_row = panel_h >= PILL_ROW_NEEDS;
+	pill_y = panel_h - PILL_BOTTOM_GAP - PILL_H;
+
+	// gbinput maps touches onto the display's resolution, the same surface
+	// LVGL clamps its own touches to. Set before the first gbinput_start().
+	lv_display_t *disp = lv_display_get_default();
+	int glass_w = disp ? (int)lv_display_get_horizontal_resolution(disp) : (int)cfg->screen_width;
+	int glass_h = disp ? (int)lv_display_get_vertical_resolution(disp) : panel_h;
+	gbinput_set_glass(glass_w, glass_h);
+	printf("gearboyplay: layout %ux%u, glass %dx%d, Select/Start %s\n", (unsigned)cfg->screen_width,
+		   (unsigned)cfg->screen_height, glass_w, glass_h, pill_row ? "below the controls" : "in the picture");
 
 	lv_obj_add_style(gearboyplay_screen, &theme_style_screen, 0);
 	lv_obj_set_style_bg_color(gearboyplay_screen, lv_color_black(), 0);
@@ -844,11 +875,13 @@ void gearboyplay_init(gui_config_t *cfg) {
 	lv_obj_set_size(game_image, GAME_W, GAME_H);
 	lv_obj_add_flag(game_image, LV_OBJ_FLAG_HIDDEN);
 
-	// Select and Start: two colourless rectangles inside the picture. Invisible
-	// by design -- they exist only so the simulator, which has no touchscreen
-	// reader, can click on them.
-	pressable(gearboyplay_screen, 0, SCREEN_TOP + CORNER_Y, CORNER_W, CORNER_H, GB_KEY_SELECT);
-	pressable(gearboyplay_screen, GAME_W - CORNER_W, SCREEN_TOP + CORNER_Y, CORNER_W, CORNER_H, GB_KEY_START);
+	// Select and Start in the picture corners, when there is no row for them.
+	// Invisible: the objects exist only for the simulator, which has no
+	// touchscreen reader. The drawn row is built with the controls below.
+	if (!pill_row) {
+		pressable(gearboyplay_screen, 0, SCREEN_TOP + CORNER_Y, CORNER_W, CORNER_H, GB_KEY_SELECT);
+		pressable(gearboyplay_screen, GAME_W - CORNER_W, SCREEN_TOP + CORNER_Y, CORNER_W, CORNER_H, GB_KEY_START);
+	}
 
 	// And the centre of the picture, which opens the menu. Invisible too.
 	{
@@ -877,8 +910,14 @@ void gearboyplay_init(gui_config_t *cfg) {
 		}
 	}
 
-	build_button(gearboyplay_screen, B_X, B_ROW, "B", GB_KEY_B);
-	build_button(gearboyplay_screen, A_X, A_ROW, "A", GB_KEY_A);
+	build_button(gearboyplay_screen, B_X, B_Y, "B", GB_KEY_B);
+	build_button(gearboyplay_screen, A_X, A_Y, "A", GB_KEY_A);
+
+	if (pill_row) {
+		// The legends printed on the machine, not translated.
+		build_pill(gearboyplay_screen, PILL_X0, "SELECT", GB_KEY_SELECT);
+		build_pill(gearboyplay_screen, PILL_X0 + PILL_W + PILL_GAP, "START", GB_KEY_START);
+	}
 
 	// The menu and the badge last: they are the only two things that must sit
 	// above everything else on the page.

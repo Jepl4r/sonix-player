@@ -50,23 +50,13 @@ const char *sysinfo_dac_info(void);
 // the models, and what differs between them
 // ---------------------------------------------------------------------------
 //
-// One table, because the alternative is the same `if` written out in four
-// places that then disagree. Everything in here is keyed on device-name.
+// One table, keyed on device-name.
 //
-// The panel is in here rather than read off the framebuffer, and that is
-// deliberate. screen_width and screen_height in gui_config_t are unsigned, and
-// the interface is full of lines shaped like `cfg->screen_height - top`: a
-// number that does not suit a tall portrait panel does not make the layout
-// slightly wrong, it makes that subtraction wrap to four thousand million,
-// which LVGL then tries to allocate. A failed allocation inside LVGL ends in
-// its assert handler and the interface stops before it has drawn anything.
-//
-// The framebuffer is not a safe source for that number. LVGL's own fbdev
-// driver creates its display at 800x480 and only corrects it afterwards, so a
-// display that is asked its size at the wrong moment answers with a landscape
-// panel that exists nowhere. Here the two numbers are written down per model
-// and cannot surprise anyone. What the framebuffer says is still printed at
-// startup, which is where to look if a panel ever disagrees with this table.
+// The panel is written here rather than read from the framebuffer: the pages
+// subtract from screen_height in unsigned arithmetic, and LVGL's fbdev driver
+// reports 800x480 until its file is set. The framebuffer size only picks a row
+// of this table, by exact match, when the name is missing (panel_size() in
+// main.c).
 typedef struct {
 	const char *name;		 // as written in system-info.json
 	int panel_width;		 // the panel, on the device and on the simulator alike
@@ -79,6 +69,11 @@ typedef struct {
 // names a player this binary does not know. NULL is not a failure to paper
 // over: see firmware_update_file_find().
 const sysinfo_model_t *sysinfo_model(void);
+
+// The entry whose panel is exactly width x height, or NULL. For sizing the
+// interface when system-info.json names no model; not for choosing an update
+// file or a serial prefix, which need the name itself.
+const sysinfo_model_t *sysinfo_model_by_panel(int width, int height);
 
 // The device serial number: the model's prefix plus the first eight hex digits
 // (upper case) of the SoC efuse chip id (/proc/jz/efuse/efuse_chip_id, line
