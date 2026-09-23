@@ -105,7 +105,14 @@ bool power_screen_is_on(void);
 void power_notify_activity(void);
 
 // Double-tap-to-wake via the touch controller's gesture mode (gesture_sw).
+// Where power_double_tap_wake_supported() is false it stays off whatever is
+// asked.
 void power_set_double_tap_wake(bool enabled);
+
+// False on the R1: cst8xx_touch.ko puts the controller in deep sleep with its
+// interrupt disabled when the panel blanks, and has no gesture mode. By the
+// model table, or by the gesture node when the model is unknown.
+bool power_double_tap_wake_supported(void);
 
 // Whether that option is on. The input threads ask before treating a pair of
 // taps on a dark screen as a wake: the touch controller keeps reporting them

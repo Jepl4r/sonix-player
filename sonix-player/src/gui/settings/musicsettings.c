@@ -83,7 +83,7 @@ static void build_filter_page(gui_config_t *cfg) {
 	lv_obj_set_width(note, lv_pct(100));
 	lv_obj_add_style(note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(note, &font_ui_22, 0);
-	lv_label_set_text(note, tr("musicsettings_filter_note"));
+	lv_label_set_text(note, tr(alsa_board_is_cs43131() ? "musicsettings_filter_note_cs43131" : "musicsettings_filter_note"));
 
 	refresh_filter_checks();
 	switcher_attach_back_gesture(dacfilter_screen);

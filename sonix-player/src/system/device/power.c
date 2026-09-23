@@ -38,6 +38,7 @@
 #include "src/system/audio/usbdac.h"
 #include "src/system/gearboy/gearboy.h"
 #include "src/system/device/led.h"
+#include "src/system/device/sysinfo.h"
 #include "src/system/device/axpcharge.h"
 
 #include <errno.h>
@@ -1641,7 +1642,20 @@ void power_hold_screen_on(bool hold) {
 
 bool power_double_tap_wake_enabled(void) { return g_double_tap_wake; }
 
+bool power_double_tap_wake_supported(void) {
+	static int answer = -1;
+	if (answer < 0) {
+		const sysinfo_model_t *model = sysinfo_model();
+		answer = model ? model->tap_wake : access(GESTURE_WAKE_NODE, F_OK) == 0;
+	}
+	return answer != 0;
+}
+
 void power_set_double_tap_wake(bool enabled) {
+	if (!power_double_tap_wake_supported()) {
+		g_double_tap_wake = false;
+		return;
+	}
 	g_double_tap_wake = enabled;
 	FILE *f = fopen(GESTURE_WAKE_NODE, "w");
 	if (!f) {
