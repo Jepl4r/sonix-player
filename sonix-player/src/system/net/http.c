@@ -36,7 +36,7 @@ static __thread char last_error[192];
 
 // URL of the last hop of this thread's last successful request; see
 // http_last_final_url() in http.h.
-static __thread char last_final_url[2048];
+static __thread char last_final_url[2600];
 
 const char *http_last_final_url(void) { return last_final_url; }
 
@@ -61,7 +61,7 @@ const char *http_last_error(void) {
 
 typedef struct {
 	char host[256];
-	char path[1024]; // always starts with '/'
+	char path[2048]; // always starts with '/'
 	int port;
 	bool secure; // https://
 } url_t;
@@ -654,7 +654,7 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 				 body_len);
 	}
 
-	char request[2600];
+	char request[4096];
 	int n = snprintf(request, sizeof(request),
 					 "%s %s HTTP/1.0\r\n"
 					 "Host: %s\r\n"
@@ -795,7 +795,7 @@ bool http_request(const char *url, const http_req_t *req, char **out, size_t *ou
 
 	clear_last_error();
 
-	char current[2048];
+	char current[2600];
 	snprintf(current, sizeof(current), "%s", url);
 
 	// The request changes hop by hop: after a redirect that changes the
@@ -810,7 +810,7 @@ bool http_request(const char *url, const http_req_t *req, char **out, size_t *ou
 		}
 
 		int status = 0;
-		char location[1024] = "";
+		char location[2048] = "";
 		char err[192] = "";
 		bool ok = get_once(&u, &hop_req, out, out_len, limit, timeout_secs, &status, location, sizeof(location), err,
 						   sizeof(err));
@@ -890,7 +890,7 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 	char host_header[300];
 	host_header_value(&u, host_header, sizeof(host_header));
 
-	char request[1400];
+	char request[2600];
 	int n = snprintf(request, sizeof(request),
 					 "GET %s HTTP/1.0\r\n" // 1.0: no chunking, no keep-alive to argue about
 					 "Host: %s\r\n"
@@ -957,12 +957,12 @@ bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs) {
 	st->fd = -1;
 	clear_last_error();
 
-	char current[2048];
+	char current[2600];
 	snprintf(current, sizeof(current), "%s", url);
 
 	for (int hop = 0; hop <= HTTP_MAX_REDIRECTS; hop++) {
 		int status = 0;
-		char location[1024] = "";
+		char location[2048] = "";
 		if (stream_open_once(st, current, timeout_secs, &status, location, sizeof(location))) {
 			return true;
 		}

@@ -64,7 +64,9 @@ lv_font_t font_ui_14;
 lv_font_t font_ui_16;
 lv_font_t font_ui_18;
 lv_font_t font_ui_20;
+lv_font_t font_ui_20_bold;
 lv_font_t font_ui_22;
+lv_font_t font_ui_22_bold;
 lv_font_t font_ui_24;
 lv_font_t font_ui_24_bold;
 lv_font_t font_ui_26;
@@ -84,7 +86,7 @@ static const ui_font_t ui_fonts[] = {
 	{&font_ui_14, 14, false}, {&font_ui_16, 16, false}, {&font_ui_18, 18, false},
 	{&font_ui_20, 20, false}, {&font_ui_22, 22, false}, {&font_ui_24, 24, false},
 	{&font_ui_26, 26, false}, {&font_ui_28, 28, false}, {&font_ui_32, 32, false},
-	{&font_ui_72, 72, false}, {&font_ui_24_bold, 24, true}, {&font_ui_36_bold, 36, true},
+	{&font_ui_72, 72, false}, {&font_ui_20_bold, 20, true}, {&font_ui_22_bold, 22, true}, {&font_ui_24_bold, 24, true}, {&font_ui_36_bold, 36, true},
 	{&font_ui_64_bold, 64, true},
 };
 

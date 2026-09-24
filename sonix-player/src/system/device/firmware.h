@@ -5,7 +5,8 @@
 #include <stddef.h>
 
 // Firmware update from the microSD card -- the same two steps the stock
-// player does, and nothing more.
+// player does, and nothing more. An update from the internet (ota.h) puts the
+// file on the card first and then takes the same path.
 //
 // The recovery kernel performs the update itself. All the player has to do is
 // (1) confirm there is a .upt file on the card and (2) tell the bootloader to
@@ -31,6 +32,11 @@
 // it -- the boot selector U-Boot reads. Nothing else on the flash is touched,
 // so a device that is rebooted before the update starts simply comes back up
 // in recovery and can be sent home again.
+
+// The name of this model's update file without ".upt": [firmware] name in
+// the config when set, otherwise the model table's update_stem ("r3proii",
+// "r1"). NULL when system-info.json names no model this build knows.
+const char *firmware_update_stem(void);
 
 // Looks for the update file on the card. Returns true and fills `out` with its
 // full path when one is there. The name must be the device's own --

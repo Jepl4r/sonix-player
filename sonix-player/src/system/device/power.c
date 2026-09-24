@@ -9,6 +9,7 @@
 #include "lvgl/src/misc/lv_timer_private.h"
 
 #include "src/system/audio/waveform.h"
+#include "src/system/device/ota.h"
 #include "src/system/device/system.h"
 
 #include <dirent.h>
@@ -597,7 +598,7 @@ static bool wifi_in_use(void) {
 		   dlna_get_enabled() || sonixlink_get_enabled() ||
 		   wifitransfer_get_enabled() || qobuzcache_downloading_id() > 0 ||
 		   qobuzcache_network_wanted() || tidalcache_downloading_id() > 0 || tidalcache_network_wanted() ||
-		   podcastcache_downloading_id() > 0 || podcastcache_network_wanted();
+		   podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || ota_busy();
 }
 
 // Pushes the next suspend attempt out by the anti-hammer delay. A radio that has
@@ -650,7 +651,8 @@ static bool player_is_busy(bool playing, uint32_t input_idle) {
 		   library_scan_running() ||			   // a scan, which is also writing to the card
 		   audiobookdb_scan_running() || wifitransfer_running() || dlna_running() || airplay_running() ||
 		   sonixlink_is_connected() || // a phone driving the player, not a switch left on
-		   qobuzcache_downloading_id() > 0 || tidalcache_downloading_id() > 0 || podcastcache_downloading_id() > 0;
+		   qobuzcache_downloading_id() > 0 || tidalcache_downloading_id() > 0 || podcastcache_downloading_id() > 0 ||
+		   ota_busy(); // a firmware update being fetched
 }
 
 static void park_bluetooth_now(void) {

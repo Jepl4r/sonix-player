@@ -29,7 +29,9 @@ extern lv_font_t font_ui_14;
 extern lv_font_t font_ui_16;
 extern lv_font_t font_ui_18;
 extern lv_font_t font_ui_20;
+extern lv_font_t font_ui_20_bold; // bold text in the release notes of the update card
 extern lv_font_t font_ui_22;
+extern lv_font_t font_ui_22_bold; // headings in the release notes of the update card
 extern lv_font_t font_ui_24;
 extern lv_font_t font_ui_24_bold;
 extern lv_font_t font_ui_26;

@@ -117,8 +117,10 @@ typedef struct {
 bool http_request(const char *url, const http_req_t *req, char **out, size_t *out_len, size_t limit, int timeout_secs,
 				  int *status_out);
 
-// How much is read at once while looking for the end of the headers.
-#define HTTP_HEADER_BUFFER 4096
+// How much is read at once while looking for the end of the headers. The
+// release-download redirect from github.com carries over 5 KB of them, with
+// the Location past the fourth kilobyte and close to a kilobyte long.
+#define HTTP_HEADER_BUFFER 8192
 
 // A stream whose body is read a piece at a time.
 typedef struct {

@@ -56,6 +56,33 @@ static bool find_in_dir(const char *root, const char *stem, char *out, size_t ou
 	return found;
 }
 
+const char *firmware_update_stem(void) {
+	// ONLY the name of THIS model -- deliberately NOT the stock binary's
+	// "update.upt" fallback.
+	//
+	// The recovery kernel does not check what it is given: a .upt built for
+	// another HiBy model, dropped on the card under the generic name, would be
+	// written to the flash exactly the same way, and the device would not come
+	// back. "update.upt" is a name anyone might use for anything; "r3proii.upt"
+	// is a claim about which player the file is for.
+	//
+	// An unrecognised player therefore gets no name at all: a fallback would
+	// hand an R1 the R3 Pro II's image. The config key is the way out for
+	// anyone who knows what they are doing.
+	const char *name = config_get("firmware", "name", "");
+	if (name && *name) {
+		return name;
+	}
+	const sysinfo_model_t *model = sysinfo_model();
+	if (!model) {
+		fprintf(stderr, "firmware: device-name in system-info.json names no player this build knows"
+						" ('%s'); no update file will be looked for\n",
+				sysinfo_device_name());
+		return NULL;
+	}
+	return model->update_stem;
+}
+
 bool firmware_update_file_find(char *out, size_t out_size) {
 	if (!out || out_size == 0) {
 		return false;
@@ -67,31 +94,9 @@ bool firmware_update_file_find(char *out, size_t out_size) {
 		return false;
 	}
 
-	// ONLY the name of THIS model -- deliberately NOT the stock binary's
-	// "update.upt" fallback.
-	//
-	// The recovery kernel does not check what it is given: a .upt built for
-	// another HiBy model, dropped on the card under the generic name, would be
-	// written to the flash exactly the same way, and the device would not come
-	// back. "update.upt" is a name anyone might use for anything; "r3proii.upt"
-	// is a claim about which player the file is for. Losing the convenience of
-	// the generic name is a fair price for that.
-	//
-	// Which is also why an unrecognised player offers no update at all rather
-	// than falling back to a name. The same reasoning applies with more force
-	// now that there are two models: a fallback would hand an R1 the R3 Pro II's
-	// image, which is the exact accident the paragraph above is about. The
-	// config key stays as the way out for anyone who knows what they are doing.
-	const char *name = config_get("firmware", "name", "");
-	if (!name || !*name) {
-		const sysinfo_model_t *model = sysinfo_model();
-		if (!model) {
-			fprintf(stderr, "firmware: device-name in system-info.json names no player this build knows"
-							" ('%s'); no update file will be looked for\n",
-					sysinfo_device_name());
-			return false;
-		}
-		name = model->update_stem;
+	const char *name = firmware_update_stem();
+	if (!name) {
+		return false;
 	}
 	return find_in_dir(root, name, out, out_size);
 }

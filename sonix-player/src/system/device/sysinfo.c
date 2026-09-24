@@ -16,6 +16,7 @@ static char os_version[64];
 static char build_version[64];
 static char device_name[64];
 static char dac_info[96];
+static char ota_repo[128];
 
 // Every player this binary knows how to be. Both serial prefixes are the ones
 // printed on the box.
@@ -125,6 +126,7 @@ void sysinfo_load(void) {
 	build_version[0] = '\0';
 	device_name[0] = '\0';
 	dac_info[0] = '\0';
+	ota_repo[0] = '\0';
 
 	FILE *f = fopen(SYSINFO_FILE, "rb");
 	if (!f) {
@@ -144,6 +146,7 @@ void sysinfo_load(void) {
 	json_string_field(buf, "Build_version", build_version, sizeof(build_version));
 	json_string_field(buf, "device-name", device_name, sizeof(device_name));
 	json_string_field(buf, "dac-info", dac_info, sizeof(dac_info));
+	json_string_field(buf, "ota-repo", ota_repo, sizeof(ota_repo));
 
 	const sysinfo_model_t *model = sysinfo_model();
 	printf("sysinfo: device '%s' (%s), system '%s', build '%s'\n", device_name,
@@ -154,6 +157,7 @@ const char *sysinfo_os_version(void) { return os_version; }
 const char *sysinfo_build_version(void) { return build_version; }
 const char *sysinfo_device_name(void) { return device_name; }
 const char *sysinfo_dac_info(void) { return dac_info; }
+const char *sysinfo_ota_repo(void) { return ota_repo; }
 
 // Matched without regard to case or to the spelling of "HiBy": the name is
 // typed by hand into a text file, and "Hiby R1" is the same player as

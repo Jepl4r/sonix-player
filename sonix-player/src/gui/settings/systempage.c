@@ -9,13 +9,13 @@
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/easteregg.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/settings/fwupdate.h"
 #include "src/gui/settings/settings.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/config.h"
 #include "src/system/device/factoryreset.h"
-#include "src/system/device/firmware.h"
 #include "src/system/audio/headset.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
@@ -32,32 +32,12 @@ lv_obj_t *sysinfo_screen;
 // ---------------------------------------------------------------------------
 // Firmware update
 //
-// The stock player's procedure, step by step.
-//
 //   battery below 30% and not charging -> refuse, and say why
-//   otherwise                          -> ask to update the system firmware
-//   on OK, no .upt on the card         -> report no update file found
-//   otherwise -> arm recovery and reboot; its kernel does the rest.
-//
-// The file check comes after the question, not before, because that is the
-// order the stock player asks in, and it is also the right order: whether there
-// is an update on this card is what the user came to find out.
+//   otherwise                          -> the update card (fwupdate.h): from
+//                                         the internet or from the card
 // ---------------------------------------------------------------------------
 
 #define FIRMWARE_MIN_BATTERY_PERCENT 30
-
-static void firmware_confirmed(void *user) {
-	(void)user;
-
-	char path[512];
-	if (!firmware_update_file_find(path, sizeof(path))) {
-		gui_notify_popup("system_update_file_missing");
-		return;
-	}
-
-	printf("firmware: update file %s\n", path);
-	firmware_update_start();
-}
 
 static void firmware_clicked_cb(lv_event_t *e) {
 	(void)e;
@@ -81,7 +61,7 @@ static void firmware_clicked_cb(lv_event_t *e) {
 		return;
 	}
 
-	confirm_show("system_update_firmware", "system_update_confirm", "system_update", firmware_confirmed, NULL);
+	fwupdate_show();
 }
 
 // ---------------------------------------------------------------------------

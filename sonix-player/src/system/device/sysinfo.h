@@ -19,7 +19,8 @@
 //         "device-name": "HiBy R3 Pro II",
 //         "dac-info": "Dual Cirrus Logic CS43198",
 //         "OS_version": "1.0",
-//         "Build_version": "182"
+//         "Build_version": "182",
+//         "ota-repo": "Jepl4r/sonix-player"
 //     }
 //
 // This way updating the build number does not mean rebuilding, and whoever
@@ -45,6 +46,10 @@ const char *sysinfo_device_name(void);
 // The converter, verbatim from the file, for the information page to print.
 // The player never decides anything by it.
 const char *sysinfo_dac_info(void);
+
+// The GitHub repository the update from the internet looks in, "owner/name",
+// verbatim from the file (ota.h). "" when the file does not say.
+const char *sysinfo_ota_repo(void);
 
 // ---------------------------------------------------------------------------
 // the models, and what differs between them
