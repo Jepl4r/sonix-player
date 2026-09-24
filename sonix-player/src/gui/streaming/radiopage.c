@@ -55,8 +55,19 @@ typedef struct {
 	lv_obj_t *name;
 	lv_obj_t *chevron;
 	lv_obj_t *menu_btn; // the ellipsis, on the favourites list only
+	lv_obj_t *playmark; // the accent bar on the station that is loaded, radio.txt only
 	int index;
 } row_t;
+
+// The mark on the loaded station, as the track lists draw it on the track that
+// is playing (medialist.c).
+#define PLAYMARK_WIDTH 6
+#define PLAYMARK_HEIGHT 52
+#define PLAYMARK_INSET 4 // from the row's left edge
+#define ROW_PAD_HOR 14
+
+// The radio.txt line the rows were last marked for, -1 for none.
+static int marked_custom = -1;
 
 static gui_config_t *g_cfg;
 
@@ -174,8 +185,17 @@ static void set_message(const char *text) {
 	}
 }
 
+static void row_update_playmark(row_t *row) {
+	if (list_mode == LIST_CUSTOM && row->index >= 0 && row->index == marked_custom) {
+		show(row->playmark);
+	} else {
+		hide(row->playmark);
+	}
+}
+
 static void row_bind(row_t *row, int index) {
 	row->index = index;
+	row_update_playmark(row);
 
 	if (index < 0 || index >= list_count()) {
 		hide(row->button);
@@ -471,6 +491,9 @@ static void list_reload_stored(void) {
 			station_count++;
 		}
 	}
+	if (list_mode == LIST_CUSTOM) {
+		marked_custom = radio_custom_current_index();
+	}
 }
 
 // What an empty stored list should say.
@@ -504,6 +527,19 @@ static void list_poll_cb(lv_timer_t *timer) {
 	if (lv_screen_active() != radiolist_screen) {
 		return;
 	}
+
+	// radio.txt: the mark follows the station, which changes from the player
+	// and the side keys as well as from here.
+	if (list_mode == LIST_CUSTOM) {
+		int now = radio_custom_current_index();
+		if (now != marked_custom) {
+			marked_custom = now;
+			for (int i = 0; i < ROW_POOL; i++) {
+				row_update_playmark(&rows[i]);
+			}
+		}
+	}
+
 	if (LIST_IS_STORED(list_mode)) {
 		return;
 	}
@@ -629,7 +665,7 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_set_style_radius(row->button, ROW_RADIUS, 0);
 		lv_obj_set_style_border_width(row->button, 0, 0);
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
-		lv_obj_set_style_pad_hor(row->button, 14, 0);
+		lv_obj_set_style_pad_hor(row->button, ROW_PAD_HOR, 0);
 		lv_obj_set_style_pad_ver(row->button, 10, 0);
 		lv_obj_set_style_pad_column(row->button, 14, 0);
 		hide(row->button);
@@ -685,6 +721,21 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_image_set_src(row->chevron, &icon_chevron_right);
 		lv_obj_add_style(row->chevron, &theme_style_icon, 0);
 		lv_obj_set_style_image_opa(row->chevron, LV_OPA_60, 0);
+
+		// Outside the flex layout, in the row's own left padding: it marks the
+		// row without moving anything on it.
+		row->playmark = lv_obj_create(row->button);
+		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_IGNORE_LAYOUT);
+		lv_obj_set_size(row->playmark, PLAYMARK_WIDTH, PLAYMARK_HEIGHT);
+		lv_obj_align(row->playmark, LV_ALIGN_LEFT_MID, PLAYMARK_INSET - ROW_PAD_HOR, 0);
+		lv_obj_add_style(row->playmark, &theme_style_accent_bg, 0);
+		lv_obj_set_style_radius(row->playmark, LV_RADIUS_CIRCLE, 0);
+		lv_obj_set_style_border_width(row->playmark, 0, 0);
+		lv_obj_set_style_shadow_width(row->playmark, 0, 0);
+		lv_obj_set_style_pad_all(row->playmark, 0, 0);
+		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_remove_flag(row->playmark, LV_OBJ_FLAG_CLICKABLE);
+		hide(row->playmark);
 
 		row->index = -1;
 	}

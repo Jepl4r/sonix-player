@@ -12,8 +12,9 @@
 //   line breaks, tabs, control characters     one space
 //   a JSON document instead of the song       its artist and title, or nothing
 //   fields between tildes (Mediaset radios)   the first two made of words,
-//                                             every number, date and code
+//   or between asterisks, two or more           every number, date and code
 //                                             dropped
+//   codes between " - " ("A1B2C3D4")          dropped
 //   key="value" fields (iHeart, ad servers)   title=/text=/song= and artist=
 //                                             kept, with the text before the
 //                                             first field as the artist

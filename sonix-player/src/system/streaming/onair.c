@@ -260,37 +260,58 @@ static bool from_fields(char *text) {
 }
 
 // ---------------------------------------------------------------------------
-// fields between tildes
+// codes among the words
 // ---------------------------------------------------------------------------
 
-// Whether a field between tildes is a code rather than words: no letter at all
-// (numbers, dates, times), a single character, or an identifier -- six or more
-// characters with a digit, no space, and either only hex digits and dashes or
-// only capitals, digits and underscores ("a3f9c2e1", "SPOT_12345").
-static bool tilde_field_is_code(const char *f, size_t len) {
+// Whether a piece of the text is a code rather than words. Codes are:
+//
+//   anything without a letter          numbers, dates, times
+//   a single character
+//   identifiers of six or more characters with a digit and no space, made of
+//     hex digits and dashes                        "a3f9c2e1", "3f2a-9c1b"
+//     capitals, digits and underscores             "SPOT_12345"
+//     capitals, digits and dashes, digits >= letters   "RDS-12345"
+//   eight or more letters and digits, upper and lower case mixed   "aB3dE9fG2"
+//
+// A name with a number in it ("UB40", "Blink-182", "Maroon 5") is none of these.
+static bool is_code(const char *f, size_t len) {
 	if (len < 2) {
 		return true;
 	}
-	bool letter = false, digit = false, space = false, hex_only = true, upper_only = true;
+	int letters = 0, digits = 0;
+	bool upper = false, lower = false, space = false, other = false;
+	bool hex_only = true, upper_underscore = true, upper_dash = true;
 	for (size_t i = 0; i < len; i++) {
 		unsigned char c = (unsigned char)f[i];
-		letter |= isalpha(c) || c >= 0x80;
-		digit |= isdigit(c) != 0;
+		if (isalpha(c) || c >= 0x80) {
+			letters++;
+		}
+		digits += isdigit(c) != 0;
+		upper |= isupper(c) != 0;
+		lower |= islower(c) != 0;
 		space |= c == ' ';
+		other |= !isalnum(c);
 		hex_only &= isxdigit(c) || c == '-';
-		upper_only &= isupper(c) || isdigit(c) || c == '_';
+		upper_underscore &= isupper(c) || isdigit(c) || c == '_';
+		upper_dash &= isupper(c) || isdigit(c) || c == '-';
 	}
-	if (!letter) {
+	if (letters == 0) {
 		return true;
 	}
-	return len >= 6 && digit && !space && (hex_only || upper_only);
+	if (space || digits == 0) {
+		return false;
+	}
+	if (len >= 6 && (hex_only || upper_underscore || (upper_dash && digits >= letters))) {
+		return true;
+	}
+	return len >= 8 && upper && lower && !other;
 }
 
-// `Artist~Title~2024~0~a3f9c2e1~` and the like: the first two fields made of
+// Text split at `sep` (a tilde, or an asterisk): the first two pieces made of
 // words, joined with " - ", and every code dropped. False, leaving `text`
-// alone, when there is no tilde in it.
-static bool from_tildes(char *text, size_t size) {
-	if (!strchr(text, '~')) {
+// alone, when `sep` is not there.
+static bool from_separated(char *text, size_t size, char sep) {
+	if (!strchr(text, sep)) {
 		return false;
 	}
 
@@ -298,7 +319,7 @@ static bool from_tildes(char *text, size_t size) {
 	int kept = 0;
 	const char *p = text;
 	while (kept < 2) {
-		const char *end = strchr(p, '~');
+		const char *end = strchr(p, sep);
 		size_t len = end ? (size_t)(end - p) : strlen(p);
 		const char *f = p;
 		while (len > 0 && *f == ' ') {
@@ -308,7 +329,7 @@ static bool from_tildes(char *text, size_t size) {
 		while (len > 0 && f[len - 1] == ' ') {
 			len--;
 		}
-		if (!tilde_field_is_code(f, len)) {
+		if (!is_code(f, len)) {
 			size_t used = strlen(result);
 			snprintf(result + used, sizeof(result) - used, "%s%.*s", kept ? " - " : "", (int)len, f);
 			kept++;
@@ -321,6 +342,48 @@ static bool from_tildes(char *text, size_t size) {
 
 	snprintf(text, size, "%s", result);
 	return true;
+}
+
+// The pieces between " - " that are codes go. A plain number goes only when
+// there are three pieces or more: "Smashing Pumpkins - 1979" is a song.
+static void drop_code_pieces(char *text) {
+	int pieces = 1;
+	for (const char *p = strstr(text, " - "); p; p = strstr(p + 3, " - ")) {
+		pieces++;
+	}
+	if (pieces < 2) {
+		return;
+	}
+
+	char result[2 * FIELD_MAX + 4] = "";
+	const char *p = text;
+	for (;;) {
+		const char *end = strstr(p, " - ");
+		size_t len = end ? (size_t)(end - p) : strlen(p);
+		bool has_letter = false;
+		for (size_t i = 0; i < len; i++) {
+			has_letter |= isalpha((unsigned char)p[i]) || (unsigned char)p[i] >= 0x80;
+		}
+		bool drop = len == 0 || (has_letter ? is_code(p, len) : pieces >= 3);
+		if (!drop) {
+			size_t used = strlen(result);
+			snprintf(result + used, sizeof(result) - used, "%s%.*s", used ? " - " : "", (int)len, p);
+		}
+		if (!end) {
+			break;
+		}
+		p = end + 3;
+	}
+	snprintf(text, strlen(text) + 1, "%s", result);
+}
+
+// How many times `c` is in `text`.
+static int count_of(const char *text, char c) {
+	int n = 0;
+	for (; *text; text++) {
+		n += *text == c;
+	}
+	return n;
 }
 
 // ---------------------------------------------------------------------------
@@ -432,13 +495,15 @@ void onair_clean(char *text, size_t size) {
 		char found[FIELD_MAX + 4];
 		from_json(text, found, sizeof(found));
 		snprintf(text, strlen(text) + 1, "%s", found);
-	} else if (!from_tildes(text, size)) {
+	} else if (!from_separated(text, size, '~') &&
+			   !(count_of(text, '*') >= 2 && from_separated(text, size, '*'))) {
 		from_fields(text);
 	}
 
 	drop_html(text);
 	drop_urls(text);
 	flatten(text);
+	drop_code_pieces(text);
 	trim_separators(text);
 	if (is_placeholder(text)) {
 		text[0] = '\0';

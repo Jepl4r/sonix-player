@@ -37,6 +37,7 @@
 #include "src/gui/shell/main_menu.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/library/filespage.h"
+#include "src/gui/library/textview.h"
 #include "src/gui/shell/morepage.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/nowplaying/trackmenu.h"
@@ -586,6 +587,7 @@ void gui_init(gui_config_t *cfg) {
 	sonixlink_screen = lv_obj_create(NULL);
 	morepage_screen = lv_obj_create(NULL);
 	filespage_screen = lv_obj_create(NULL);
+	textview_screen = lv_obj_create(NULL);
 	gearboypage_screen = lv_obj_create(NULL);
 	gearboyplay_screen = lv_obj_create(NULL);
 
@@ -637,6 +639,7 @@ void gui_init(gui_config_t *cfg) {
 	ebooksettings_init(cfg); // likewise: the other corner button opens this
 	ebookpage_init(cfg);
 	morepage_init(cfg);
+	textview_init(cfg); // before filespage: a text file tapped there opens here
 	filespage_init(cfg);
 	streaming_init(cfg);
 
