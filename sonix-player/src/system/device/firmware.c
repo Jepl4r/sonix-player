@@ -16,6 +16,7 @@
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/remote/dlna.h"
+#include "src/system/device/power.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/device/system.h"
 
@@ -100,6 +101,11 @@ void firmware_update_start(void) {
 	printf("firmware: (host build) would arm recovery and reboot\n");
 #else
 	printf("firmware: arming recovery\n");
+
+	// The screen fades out the way the power key puts it out, first: what
+	// follows holds this thread for seconds, and a frozen page reads as a
+	// device that has hung. A dark one reads as a device that is restarting.
+	power_screen_off();
 
 	// Playback down first: the card is about to be handed to the recovery
 	// kernel, and the decoder still has it open.

@@ -12,7 +12,6 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -25,35 +24,29 @@
 lv_obj_t *remap_screen;
 
 // ---------------------------------------------------------------------------
-// The two sides
+// The photos
 //
-// The device has buttons on both flanks: the media rocker under the power
-// button on the right, the volume rocker on the left. The page shows one at a
-// time, and the top-right button swaps them by sliding the first out to the
-// left and the second in from the right.
+// The R3 Pro II has buttons on both flanks: the media rocker under the power
+// button on the right, the volume rocker on the left. The page shows both at
+// once, cut to the part that carries buttons: the right flank at the top left
+// with its rows beside it, the left flank at the bottom right with its rows to
+// its left, the way the device reads turned over in the hand.
 //
-// One at a time rather than both: two photos side by side on a 480-wide panel
-// would leave 120 pixels for the rows, not enough for a label like "Previous
-// track".
+// The R1 has every button on its right flank -- power, the volume rocker, then
+// play/pause over next -- so there it is one photo, the media side's files, cut
+// off at the bottom and sitting on the bottom edge, with four taller rows.
 //
-// The photos live in /usr/resource/sonix/gui rather than in
-// the binary: 200 KB each as RGB565, which does not stay resident on a 64 MB
-// device for a picture seen once a year. They are loaded when the page opens
-// and freed when it closes.
+// The photos live in /usr/resource/sonix/gui rather than in the binary, and are
+// loaded when the page opens and freed when it closes: a picture seen once a
+// year does not stay resident on a 64 MB device.
 //
 // Two files per side, one per theme: the silver device in the dark theme, the
-// black one in the light theme. Same reason the icons recolour: a dark photo on
-// a dark background has no outline, and the button profile is exactly what has
-// to be recognised here.
+// black one in the light theme. A dark photo on a dark background has no
+// outline, and the button profile is exactly what has to be recognised here.
 //
 // The PNG has transparent corners, so transparency is resolved once here by
 // blending every pixel against the page background; from there on it is plain
 // RGB565, the panel's format.
-//
-// The R1 has every button on its right flank -- power, the volume rocker, then
-// play/pause over next -- so there it is one photo, the media side's files,
-// with four rows and no swap control. That photo is cut off at the bottom and
-// sits on the bottom edge of the screen, and its rows are taller.
 // ---------------------------------------------------------------------------
 
 #define PHOTO_PLAY_DARK SONIX_RESOURCE_DIR "/gui/remap-play-dark.png"
@@ -62,21 +55,7 @@ lv_obj_t *remap_screen;
 #define PHOTO_VOL_LIGHT SONIX_RESOURCE_DIR "/gui/remap-vol-light.png"
 #define PHOTO_MAX_BYTES (2 * 1024 * 1024)
 
-// Photo size, measured from the files. With the rectangles below, these are the
-// only constants on this page that depend on the images.
-#define PHOTO_W 186
-#define PHOTO_H 580
-#define R1_PHOTO_W 229
-#define R1_PHOTO_H 663
-
-// Ten pixels clear of the bottom edge. With a 580-tall photo on a 720-tall
-// panel, what is left at the top is exactly the header space, which is why this
-// page can carry a title like every other. The R1's photo is cut, so it goes
-// right down to the edge.
-#define PHOTO_BOTTOM_GAP 10
-#define R1_PHOTO_BOTTOM_GAP 0
-
-// Length of the leader line tying a row to its button, and the row height.
+// Length of the leader line tying a row to its button, and the row heights.
 #define LEADER_W 18
 #define ROW_H 44
 #define R1_ROW_H 56
@@ -90,17 +69,18 @@ typedef struct {
 	int y, h; // within the photo
 } hit_t;
 
-// The right flank, top to bottom. Power is absent: it does one thing and that
-// is not negotiable.
+// The R3 Pro II's right flank, top to bottom. Power is absent: it does one
+// thing and that is not negotiable.
 static const hit_t PLAY_HITS[] = {
-	{KEYMAP_BTN_PREV, 190, 52},
-	{KEYMAP_BTN_PLAY, 252, 54},
-	{KEYMAP_BTN_NEXT, 306, 54},
+	{KEYMAP_BTN_PREV, 22, 50},
+	{KEYMAP_BTN_PLAY, 85, 58},
+	{KEYMAP_BTN_NEXT, 143, 59},
 };
 
-// And the left. Below the rocker is the microSD door, which is not a button.
+// And its left flank. Below the rocker is the microSD door, which is not a
+// button.
 static const hit_t VOL_HITS[] = {
-	{KEYMAP_BTN_VOL_UP, 140, 62},
+	{KEYMAP_BTN_VOL_UP, 145, 57},
 	{KEYMAP_BTN_VOL_DOWN, 202, 58},
 };
 
@@ -113,35 +93,31 @@ static const hit_t R1_HITS[] = {
 	{KEYMAP_BTN_NEXT, 426, 67},
 };
 
-// Where the touch zone starts inside the photo. On the right flank the buttons
-// sit on the right of the image, on the left flank on the left: it is the same
-// device seen from the other side.
+// How wide the touch zone over a flank is: the buttons sit on its outer edge,
+// on the right of a right flank and on the left of a left one.
 #define HIT_W 86
-#define VOL_HIT_X 0
 
 typedef struct {
 	const char *dark;  // file for the dark theme
 	const char *light; // and for the light one
-	int x;			   // where the photo sits inside its panel
+	int x, y, w, h;	   // where the photo sits on screen, and its size
+	const hit_t *hits;
+	int hit_count;
+	bool rows_on_right; // a right flank: buttons on the photo's right, rows beyond
 
-	lv_obj_t *panel; // everything belonging to this side
-	lv_obj_t *image;
+	lv_obj_t *image; // NULL for a side this player does not have
 	lv_image_dsc_t dsc;
 	uint8_t *pixels; // RGB565, owned here
 } side_t;
 
-static side_t play_side = {PHOTO_PLAY_DARK, PHOTO_PLAY_LIGHT, 0, NULL, NULL, {{0}}, NULL};
-static side_t vol_side = {PHOTO_VOL_DARK, PHOTO_VOL_LIGHT, 0, NULL, NULL, {{0}}, NULL};
+static side_t play_side = {.dark = PHOTO_PLAY_DARK, .light = PHOTO_PLAY_LIGHT};
+static side_t vol_side = {.dark = PHOTO_VOL_DARK, .light = PHOTO_VOL_LIGHT};
 
 static lv_obj_t *value_labels[KEYMAP_BTN_COUNT];
 static lv_obj_t *rows[KEYMAP_BTN_COUNT];
 
-static int photo_w, photo_h; // the photos in use: the R3 Pro II's or the R1's
 static int row_h;
 static const lv_font_t *row_font;
-static int photo_y;			 // the same for both sides
-static int screen_w;
-static bool showing_vol;	 // which of the two is on stage
 
 // ---------------------------------------------------------------------------
 // the photos
@@ -152,9 +128,6 @@ static uint16_t pack565(int r, int g, int b) {
 }
 
 static void side_free(side_t *side) {
-	if (!side->panel) {
-		return; // a side this player does not have
-	}
 	if (side->image) {
 		lv_image_set_src(side->image, NULL);
 		lv_obj_add_flag(side->image, LV_OBJ_FLAG_HIDDEN);
@@ -171,8 +144,8 @@ static void side_free(side_t *side) {
 }
 
 static bool side_load(side_t *side, lv_color_t bg) {
-	if (!side->panel) {
-		return false;
+	if (!side->image) {
+		return false; // a side this player does not have
 	}
 	side_free(side);
 
@@ -310,105 +283,41 @@ static void pick_clicked_cb(lv_event_t *e) {
 }
 
 // ---------------------------------------------------------------------------
-// swapping between the two sides
-// ---------------------------------------------------------------------------
-
-#define SWAP_ANIM_MS 260
-
-static void panel_x_cb(void *obj, int32_t x) { lv_obj_set_x((lv_obj_t *)obj, (int32_t)x); }
-
-static void slide_to(lv_obj_t *panel, int32_t from, int32_t to) {
-	lv_anim_t a;
-	lv_anim_init(&a);
-	lv_anim_set_var(&a, panel);
-	lv_anim_set_exec_cb(&a, panel_x_cb);
-	lv_anim_set_values(&a, from, to);
-	lv_anim_set_duration(&a, SWAP_ANIM_MS);
-	lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
-	lv_anim_start(&a);
-}
-
-// Both panels are as wide as the screen and sit side by side: the visible one
-// at zero, the other off the right edge. Swapping moves both by that width in
-// the same direction.
-static void swap_sides(void) {
-	int32_t w = (int32_t)screen_w;
-
-	if (showing_vol) {
-		slide_to(vol_side.panel, 0, w);
-		slide_to(play_side.panel, -w, 0);
-	} else {
-		slide_to(play_side.panel, 0, -w);
-		slide_to(vol_side.panel, w, 0);
-	}
-	showing_vol = !showing_vol;
-}
-
-static void swap_clicked_cb(lv_event_t *e) {
-	(void)e;
-	if (switcher_back_drag_active()) {
-		return;
-	}
-	swap_sides();
-}
-
-// Puts both panels back where they start when the page opens, with no
-// animation: the media side on stage, the volume side waiting off the right
-// edge.
-static void sides_reset(void) {
-	lv_anim_delete(play_side.panel, panel_x_cb);
-	lv_obj_set_x(play_side.panel, 0);
-	if (vol_side.panel) {
-		lv_anim_delete(vol_side.panel, panel_x_cb);
-		lv_obj_set_x(vol_side.panel, (int32_t)screen_w);
-	}
-	showing_vol = false;
-}
-
-// ---------------------------------------------------------------------------
 // building the page
 // ---------------------------------------------------------------------------
 
-// One side: the photo, and next to each button a row saying what it does.
-//
-// `rows_on_right` is the only difference between the two. On the media side the
-// photo is on the left and the rows on the right; on the volume side the photo
-// is mirrored and pinned to the right edge, so the rows go left.
-static void build_side(side_t *side, gui_config_t *cfg, const hit_t *hits, int hit_count, int hit_x,
-					   bool rows_on_right) {
-	side->panel = lv_obj_create(remap_screen);
-	lv_obj_remove_style_all(side->panel);
-	lv_obj_set_size(side->panel, cfg->screen_width, cfg->screen_height);
-	lv_obj_set_pos(side->panel, 0, 0);
-	lv_obj_remove_flag(side->panel, LV_OBJ_FLAG_SCROLLABLE);
-	lv_obj_remove_flag(side->panel, LV_OBJ_FLAG_CLICKABLE);
-
-	side->image = lv_image_create(side->panel);
-	lv_obj_set_pos(side->image, side->x, photo_y);
-	lv_obj_set_size(side->image, photo_w, photo_h);
+// One side: the photo, and next to each button a row saying what it does, on
+// the far side of the photo from the device's body.
+static void build_side(side_t *side, gui_config_t *cfg) {
+	side->image = lv_image_create(remap_screen);
+	lv_obj_set_pos(side->image, side->x, side->y);
+	lv_obj_set_size(side->image, side->w, side->h);
 	lv_obj_add_flag(side->image, LV_OBJ_FLAG_HIDDEN); // until it is loaded
 
-	// Where the row column starts and how wide it is.
-	int col_x, col_w, leader_x;
-	if (rows_on_right) {
-		col_x = side->x + photo_w + LEADER_W;
+	// Where the touch zones start, where the row column starts and how wide it
+	// is.
+	int hit_x, col_x, col_w, leader_x;
+	if (side->rows_on_right) {
+		hit_x = side->x + side->w - HIT_W;
+		col_x = side->x + side->w + LEADER_W;
 		col_w = cfg->screen_width - col_x - cfg->padding;
-		leader_x = side->x + photo_w;
+		leader_x = side->x + side->w;
 	} else {
+		hit_x = side->x;
 		col_x = cfg->padding;
 		col_w = side->x - LEADER_W - col_x;
 		leader_x = side->x - LEADER_W;
 	}
 
-	for (int i = 0; i < hit_count; i++) {
-		const hit_t *hit = &hits[i];
-		int centre = photo_y + hit->y + hit->h / 2;
+	for (int i = 0; i < side->hit_count; i++) {
+		const hit_t *hit = &side->hits[i];
+		int centre = side->y + hit->y + hit->h / 2;
 
 		// The touch rectangle over the button in the photo. Invisible: what is
 		// seen is the photographed button itself.
-		lv_obj_t *zone = lv_obj_create(side->panel);
+		lv_obj_t *zone = lv_obj_create(remap_screen);
 		lv_obj_remove_style_all(zone);
-		lv_obj_set_pos(zone, side->x + hit_x, photo_y + hit->y);
+		lv_obj_set_pos(zone, hit_x, side->y + hit->y);
 		lv_obj_set_size(zone, HIT_W, hit->h);
 		lv_obj_add_flag(zone, LV_OBJ_FLAG_CLICKABLE);
 		lv_obj_remove_flag(zone, LV_OBJ_FLAG_SCROLLABLE);
@@ -417,7 +326,7 @@ static void build_side(side_t *side, gui_config_t *cfg, const hit_t *hits, int h
 		// The leader line tying a button to its row. Eighteen pixels of nothing,
 		// but without it rows stacked next to closely spaced buttons have to be
 		// matched up by eye.
-		lv_obj_t *leader = lv_obj_create(side->panel);
+		lv_obj_t *leader = lv_obj_create(remap_screen);
 		lv_obj_remove_style_all(leader);
 		lv_obj_set_pos(leader, leader_x, centre - 1);
 		lv_obj_set_size(leader, LEADER_W, 2);
@@ -426,7 +335,7 @@ static void build_side(side_t *side, gui_config_t *cfg, const hit_t *hits, int h
 
 		// The row: what that button does. It is touchable too, because a
 		// 260-pixel target is easier to hit than an 86-pixel one.
-		lv_obj_t *row = lv_btn_create(side->panel);
+		lv_obj_t *row = lv_btn_create(remap_screen);
 		rows[hit->button] = row;
 		lv_obj_set_pos(row, col_x, centre - row_h / 2);
 		lv_obj_set_size(row, col_w, row_h);
@@ -455,7 +364,6 @@ static void screen_loaded_cb(lv_event_t *e) {
 	// which photo is needed and the colour it is blended against.
 	photos_show();
 	refresh_values();
-	sides_reset();
 }
 
 static void screen_unloaded_cb(lv_event_t *e) {
@@ -483,45 +391,44 @@ void remap_init(gui_config_t *cfg) {
 	}
 	bool one_flank = model && model->one_flank;
 
-	photo_w = one_flank ? R1_PHOTO_W : PHOTO_W;
-	photo_h = one_flank ? R1_PHOTO_H : PHOTO_H;
+	lv_obj_t *title = settingsrow_title(remap_screen, cfg, "remap_buttons");
+	settingsrow_title_corner_slots(title, cfg, 0);
+
 	row_h = one_flank ? R1_ROW_H : ROW_H;
 	row_font = one_flank ? &font_ui_22 : &font_ui_20;
-	screen_w = cfg->screen_width;
-	photo_y = cfg->screen_height - (one_flank ? R1_PHOTO_BOTTOM_GAP : PHOTO_BOTTOM_GAP) - photo_h;
 
-	lv_obj_t *title = settingsrow_title(remap_screen, cfg, "remap_buttons");
-	settingsrow_title_corner_slots(title, cfg, one_flank ? 0 : 1);
-
-	// Media side pinned to the left edge, volume side to the right: it is the
-	// same device seen from the other side, and placing it on the other side
-	// reads as turning the device over in the hand.
-	play_side.x = 0;
+	// Sizes are those of the files; positions put the photos where the design
+	// has them. The R3 Pro II's right flank starts under the title and its left
+	// flank runs four pixels past the bottom edge; the R1's photo stands on the
+	// bottom edge.
+	play_side.hits = one_flank ? R1_HITS : PLAY_HITS;
+	play_side.hit_count = one_flank ? (int)(sizeof(R1_HITS) / sizeof(R1_HITS[0]))
+									: (int)(sizeof(PLAY_HITS) / sizeof(PLAY_HITS[0]));
+	play_side.rows_on_right = true;
 	if (one_flank) {
-		build_side(&play_side, cfg, R1_HITS, (int)(sizeof(R1_HITS) / sizeof(R1_HITS[0])), photo_w - HIT_W, true);
+		play_side.w = 229;
+		play_side.h = 663;
+		play_side.x = 0;
+		play_side.y = cfg->screen_height - play_side.h;
 	} else {
-		// The swap control, in the top-right corner where every page keeps its
-		// action.
-		lv_obj_t *swap = lv_btn_create(remap_screen);
-		lv_obj_set_size(swap, 56, 56);
-		lv_obj_set_style_bg_opa(swap, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_border_width(swap, 0, 0);
-		lv_obj_set_style_shadow_width(swap, 0, 0);
-		lv_obj_set_style_pad_all(swap, 0, 0);
-		lv_obj_align(swap, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
-		lv_obj_add_event_cb(swap, swap_clicked_cb, LV_EVENT_CLICKED, NULL);
+		play_side.w = 185;
+		play_side.h = 411;
+		play_side.x = -1; // the first column of the light photo is not opaque
+		play_side.y = 126;
+	}
+	build_side(&play_side, cfg);
 
-		lv_obj_t *swap_icon = lv_image_create(swap);
-		lv_image_set_src(swap_icon, &icon_swap_remap);
-		lv_obj_add_style(swap_icon, &theme_style_icon, 0);
-		lv_obj_center(swap_icon);
-
-		vol_side.x = cfg->screen_width - photo_w;
-		build_side(&play_side, cfg, PLAY_HITS, (int)(sizeof(PLAY_HITS) / sizeof(PLAY_HITS[0])), photo_w - HIT_W, true);
-		build_side(&vol_side, cfg, VOL_HITS, (int)(sizeof(VOL_HITS) / sizeof(VOL_HITS[0])), VOL_HIT_X, false);
+	if (!one_flank) {
+		vol_side.hits = VOL_HITS;
+		vol_side.hit_count = (int)(sizeof(VOL_HITS) / sizeof(VOL_HITS[0]));
+		vol_side.rows_on_right = false;
+		vol_side.w = 186;
+		vol_side.h = 294;
+		vol_side.x = cfg->screen_width - vol_side.w;
+		vol_side.y = cfg->screen_height - vol_side.h + 4;
+		build_side(&vol_side, cfg);
 	}
 
-	sides_reset();
 	refresh_values();
 
 	lv_obj_add_event_cb(remap_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
