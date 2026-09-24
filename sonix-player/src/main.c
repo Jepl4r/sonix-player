@@ -1087,9 +1087,11 @@ static lv_display_t *host_display;
 
 // The keyboard stands in for the buttons on the case.
 //
-// The two skip keys arrive from the kernel swapped -- NEXTSONG is the upper
-// button and PREVIOUSSONG the lower one (see keymap_button_for_code) -- so the
-// codes below are crossed to match what the device really sends.
+// On the R3 Pro II the two skip keys arrive from the kernel swapped --
+// NEXTSONG is the upper button and PREVIOUSSONG the lower one (see
+// keymap_button_for_code) -- so the codes below are crossed to match what that
+// device really sends. On the R1, whose one skip key sends NEXTSONG, B is that
+// key and M stands for a previous key the R1 does not have.
 static const struct {
 	SDL_Keycode key;
 	int code;

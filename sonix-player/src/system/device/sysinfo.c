@@ -31,6 +31,7 @@ static const sysinfo_model_t MODELS[] = {
 		.cs43131 = false,
 		.tap_wake = true,
 		.one_flank = false,
+		.media_keys_swapped = true,
 	},
 	{
 		.name = "HiBy R1",
@@ -42,6 +43,7 @@ static const sysinfo_model_t MODELS[] = {
 		.cs43131 = true,
 		.tap_wake = false,
 		.one_flank = true,
+		.media_keys_swapped = false,
 	},
 };
 

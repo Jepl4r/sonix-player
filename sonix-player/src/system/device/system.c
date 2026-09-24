@@ -22,6 +22,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/settings/screensaver.h"
 #include "src/gui/shell/gui.h"
+#include "src/system/device/sysinfo.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/bluetooth/btplayer.h"
 #include "src/system/audio/audio.h"
@@ -1141,19 +1142,26 @@ static bool combo_release(int code) {
 // clicks -- and remapping it along with the side buttons would change two
 // things while meaning to change one (see keymap.h).
 //
-// The two media keys arrive SWAPPED: the kernel reports NEXTSONG for the UPPER
-// one and PREVIOUSSONG for the lower. The stock firmware compensates the same
-// way, and there are years of muscle memory built on it.
+// On the R3 Pro II the two media keys arrive SWAPPED: the kernel reports
+// NEXTSONG for the UPPER one and PREVIOUSSONG for the lower. The stock firmware
+// compensates the same way, and there are years of muscle memory built on it.
+// The R1 has no previous key: its one skip key, under play, is a GPIO key that
+// keyboard_gpio_add.sh declares as KEY_NEXTSONG, and it is next.
 //
 // Rotating the screen does not flip this on top. The button remap page can say
 // exactly that instead, and a hidden second swap on top of a user's own mapping
 // is a setting fighting a setting.
+static bool media_keys_swapped(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	return !model || model->media_keys_swapped;
+}
+
 static keymap_button_t keymap_button_for_code(int code) {
 	switch (code) {
 	case KEY_NEXTSONG:
-		return KEYMAP_BTN_PREV;
+		return media_keys_swapped() ? KEYMAP_BTN_PREV : KEYMAP_BTN_NEXT;
 	case KEY_PREVIOUSSONG:
-		return KEYMAP_BTN_NEXT;
+		return media_keys_swapped() ? KEYMAP_BTN_NEXT : KEYMAP_BTN_PREV;
 	case KEY_PLAYPAUSE:
 		return KEYMAP_BTN_PLAY;
 	case KEY_VOLUMEUP:
@@ -1283,10 +1291,8 @@ static void run_mapped_action(keymap_button_t button) {
 }
 
 static void handle_key_press(const char *node, int code, bool headset) {
-	// The side buttons, translated from kernel code to the button as held. The
-	// kernel reports NEXTSONG for the UPPER one and PREVIOUSSONG for the lower;
-	// the stock firmware swaps them the same way and there are years of muscle
-	// memory built on it.
+	// The side buttons, translated from kernel code to the button as held (see
+	// keymap_button_for_code() for the R3 Pro II's swapped media keys).
 	if (!headset) {
 		keymap_button_t button = keymap_button_for_code(code);
 		if (button != KEYMAP_BTN_COUNT) {

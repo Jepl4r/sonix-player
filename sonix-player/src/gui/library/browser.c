@@ -1203,6 +1203,13 @@ static void build_rows(int width) {
 		lv_obj_set_flex_grow(row->label, 1);
 		lv_obj_add_style(row->label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(row->label, &font_ui_24, 0);
+		// Two lines at most: the cap on the height is what makes LV_LABEL_LONG_DOT
+		// cut the name there, with the ellipsis, instead of wrapping on past the
+		// row. A cap and not a height, so a one-line name stays centred.
+		lv_obj_set_style_max_height(row->label,
+									2 * lv_font_get_line_height(&font_ui_24) +
+										lv_obj_get_style_text_line_space(row->label, LV_PART_MAIN),
+									0);
 
 		// Outside the flex layout, in the row's own left padding: it marks the
 		// row without moving anything on it.
