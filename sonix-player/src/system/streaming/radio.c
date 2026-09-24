@@ -17,6 +17,7 @@
 #include "src/system/net/http.h"
 #include "src/system/core/lang.h"
 #include "src/system/net/tls.h"
+#include "src/system/streaming/onair.h"
 #include "src/system/core/utils.h"
 
 // The MP3 frame decoder on its own -- no file, no seeking, no length. This is
@@ -1175,6 +1176,40 @@ bool radio_custom_get(int index, radio_station_t *out) {
 	return ok;
 }
 
+int radio_custom_current_index(void) {
+	radio_station_t current;
+	if (!radio_current_station(&current) || strncmp(current.uuid, "txt:", 4) != 0) {
+		return -1;
+	}
+	int found = -1;
+	pthread_mutex_lock(&custom_lock);
+	for (int i = 0; i < custom_count; i++) {
+		if (strcmp(custom[i].url, current.url) == 0) {
+			found = i;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&custom_lock);
+	return found;
+}
+
+bool radio_custom_can_step(void) { return radio_custom_count() > 1 && radio_custom_current_index() >= 0; }
+
+bool radio_custom_step(int step) {
+	int index = radio_custom_current_index();
+	int count = radio_custom_count();
+	if (index < 0 || count <= 0) {
+		return false;
+	}
+	int next = ((index + step) % count + count) % count;
+	radio_station_t station;
+	if (!radio_custom_get(next, &station)) {
+		return false;
+	}
+	radio_play(&station);
+	return true;
+}
+
 bool radio_custom_file_present(void) {
 	pthread_mutex_lock(&custom_lock);
 	bool present = custom_present;
@@ -2277,6 +2312,7 @@ static bool play_one_connection(const char *url, unsigned mine, char *redirect, 
 
 		char announced[sizeof(stream.stream_title)];
 		if (radio_buffer_take_title(&radio_buffer, announced, sizeof(announced))) {
+			onair_clean(announced, sizeof(announced));
 			pthread_mutex_lock(&now_lock);
 			snprintf(now_state.title, sizeof(now_state.title), "%s", announced);
 			now_touch();

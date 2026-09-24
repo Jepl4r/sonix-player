@@ -164,6 +164,19 @@ bool radio_custom_get(int index, radio_station_t *out);
 // list from a missing file.
 bool radio_custom_file_present(void);
 
+// Where the loaded station sits in radio.txt, playing or stopped: its index,
+// or -1 when it does not come from there.
+int radio_custom_current_index(void);
+
+// Whether previous and next move along radio.txt: the loaded station comes
+// from there, and there is somewhere else in it to go.
+bool radio_custom_can_step(void);
+
+// Plays the station `step` places on from the loaded one in radio.txt (-1 the
+// one before), round from the end to the start. False, doing nothing, when the
+// loaded station is not from radio.txt.
+bool radio_custom_step(int step);
+
 // ---------------------------------------------------------------------------
 // Playback
 // ---------------------------------------------------------------------------

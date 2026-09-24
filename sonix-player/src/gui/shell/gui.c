@@ -496,13 +496,6 @@ static void key_async_cb(void *user_data) {
 		break;
 	}
 
-	// A playing radio station has no previous or next: the keys would drop the
-	// stream and start a file from the card. Stopped, the station is just
-	// something the player is showing, and they mean what they always meant.
-	if (radio_is_playing() && (key == GUI_KEY_NEXT || key == GUI_KEY_PREV)) {
-		return;
-	}
-
 	switch (key) {
 	case GUI_KEY_PLAY_PAUSE:
 		player_key_play_pause();

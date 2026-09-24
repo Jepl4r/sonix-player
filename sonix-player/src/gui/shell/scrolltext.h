@@ -32,7 +32,8 @@
 // player, the control centre and the screensaver.
 void scrolltext_apply(lv_obj_t *label);
 
-// Sets a scrolling label's text only when it has actually changed.
+// Sets a scrolling label's text only when it has actually changed. Line breaks
+// and other control characters are shown as spaces: the label is one line.
 //
 // LVGL rebuilds the scroll animation from scratch on every
 // lv_label_set_text(), delay included. A card that repaints itself on a timer

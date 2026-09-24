@@ -176,7 +176,8 @@ static lv_obj_t *np_repeat_icon;
 
 // Transport widgets. Prev, next and repeat are hidden on a live stream, as the
 // player hides them: they would not do nothing, they would quietly swap the
-// station for a track out of the queue.
+// station for a track out of the queue. Prev and next stay for a station from
+// radio.txt, where they move along that list.
 static lv_obj_t *np_prev_btn;
 static lv_obj_t *np_next_btn;
 static lv_obj_t *np_prev_icon;
@@ -259,12 +260,14 @@ static void refresh_now_playing_card(void) {
 	}
 	lv_image_set_src(np_play_icon, glyph);
 
+	bool station_steps = state.live && radio_custom_can_step();
 	lv_obj_t *const only_for_tracks[] = {np_prev_btn, np_next_btn, np_repeat_btn};
 	for (size_t i = 0; i < sizeof(only_for_tracks) / sizeof(only_for_tracks[0]); i++) {
 		if (!only_for_tracks[i]) {
 			continue;
 		}
-		if (state.live) {
+		bool steps = station_steps && only_for_tracks[i] != np_repeat_btn;
+		if (state.live && !steps) {
 			lv_obj_add_flag(only_for_tracks[i], LV_OBJ_FLAG_HIDDEN);
 		} else {
 			lv_obj_remove_flag(only_for_tracks[i], LV_OBJ_FLAG_HIDDEN);

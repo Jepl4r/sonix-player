@@ -160,7 +160,8 @@ static lv_obj_t *qobuz_badge;	   // the Qobuz mark, in the same corner
 static lv_obj_t *tidal_badge;	   // and the Tidal one, over it: only one ever shows
 static lv_obj_t *podcast_badge;	   // and the podcast one, third in the same place
 static bool live_mode;
-static bool live_transport_hidden; // prev/next taken away while a stream is playing
+static bool live_transport_hidden; // prev/next taken away on a stream
+static bool live_custom_nav;	   // on a radio.txt station, where they change station
 
 // Audiobook mode. A book is one long file, not a queue of songs: previous and
 // next have nothing to move to, and what a listener wants from those two
@@ -291,19 +292,20 @@ static bool chrome_over_cover;
 // idempotent: called from every now-playing refresh, and does nothing at all
 // unless the mode actually changed.
 static void apply_live_mode(bool live) {
-	// Previous and next go away while a station is actually playing, and come
-	// back when it is stopped. The distinction is not cosmetic: on a running
-	// stream those buttons have nothing to move to, so a tap starts a local
-	// track underneath the radio -- which is exactly the surprise being
-	// removed. With the station stopped there is nothing to interrupt, and
-	// they mean what they always meant.
-	bool transport_hidden = live && radio_is_playing();
+	// Previous and next go away on a stream, playing or stopped: they would
+	// start a local track in place of the station. On a station from radio.txt
+	// they stay and move along that list, and the bearing under the bar says
+	// where in it the station is (see update_queue_position()).
+	bool custom_nav = live && radio_custom_can_step();
+	bool transport_hidden = live && !custom_nav;
 
-	if (live == live_mode && transport_hidden == live_transport_hidden && cover_placeholder_icon) {
+	if (live == live_mode && transport_hidden == live_transport_hidden && custom_nav == live_custom_nav &&
+		cover_placeholder_icon) {
 		return;
 	}
 	live_mode = live;
 	live_transport_hidden = transport_hidden;
+	live_custom_nav = custom_nav;
 
 	// A stream has no queue to look at, no length to scrub and no repeat mode
 	// that means anything.
@@ -312,7 +314,8 @@ static void apply_live_mode(bool live) {
 	// on a stream, it is misleading. The mode it cycles belongs to the track
 	// queue, so a tap there would silently change what happens to the music
 	// the radio interrupted.
-	lv_obj_t *const hidden_when_live[] = {more_btn_obj, repeat_btn_obj, progress_slider, below_slider_obj};
+	lv_obj_t *const hidden_when_live[] = {more_btn_obj, repeat_btn_obj, progress_slider, elapsed_label,
+										  remaining_label};
 	for (size_t i = 0; i < sizeof(hidden_when_live) / sizeof(hidden_when_live[0]); i++) {
 		if (!hidden_when_live[i]) {
 			continue;
@@ -321,6 +324,15 @@ static void apply_live_mode(bool live) {
 			lv_obj_add_flag(hidden_when_live[i], LV_OBJ_FLAG_HIDDEN);
 		} else {
 			lv_obj_remove_flag(hidden_when_live[i], LV_OBJ_FLAG_HIDDEN);
+		}
+	}
+	// The row under the bar stays for a radio.txt station, for its place in
+	// the list and nothing else.
+	if (below_slider_obj) {
+		if (live && !custom_nav) {
+			lv_obj_add_flag(below_slider_obj, LV_OBJ_FLAG_HIDDEN);
+		} else {
+			lv_obj_remove_flag(below_slider_obj, LV_OBJ_FLAG_HIDDEN);
 		}
 	}
 
@@ -662,9 +674,19 @@ static void update_queue_position(void) {
 		return;
 	}
 
+	if (live_mode) {
+		if (live_custom_nav) {
+			lv_label_set_text_fmt(queue_position_label, "%d/%d", radio_custom_current_index() + 1,
+								  radio_custom_count());
+		} else {
+			lv_label_set_text(queue_position_label, "");
+		}
+		return;
+	}
+
 	int count = playlist_count();
 	int index = playlist_current_index();
-	bool worth_saying = count > 1 && index >= 0 && !audiobook_mode && !live_mode && !dlna_owns_playback();
+	bool worth_saying = count > 1 && index >= 0 && !audiobook_mode && !dlna_owns_playback();
 
 	if (!worth_saying) {
 		lv_label_set_text(queue_position_label, "");
@@ -2468,6 +2490,9 @@ static void update_progress(void) {
 	// answer here has to follow it. Two string compares and a struct copy,
 	// twice a second.
 	update_layout(&state);
+	// Likewise the transport: radio.txt can be reloaded under a station, which
+	// decides whether previous and next are there for it.
+	apply_live_mode(state.live);
 
 	if (state.progress_total_secs > 0) {
 		int value = (state.progress_current_secs / state.progress_total_secs) * 1000;
@@ -2563,7 +2588,24 @@ static void play_btn_event_cb(lv_event_t *e) {
 // the same buttons cannot mean two different things in the two places. (The
 // physical side keys stay episode changes on a podcast: see
 // player_key_prev/next.)
+// Previous and next on a stream. True when the press was the stream's: it
+// changed station along radio.txt, or there was nowhere to go and it did
+// nothing. False when no station is loaded and the press is the queue's.
+static bool live_step(int step) {
+	if (!radio_is_active()) {
+		return false;
+	}
+	if (radio_custom_can_step() && radio_custom_step(step)) {
+		refresh_now_playing();
+	}
+	return true;
+}
+
 void player_screen_prev(void) {
+	if (live_step(-1)) {
+		return;
+	}
+
 	device_state_t state;
 	device_state_get(&state);
 
@@ -2592,6 +2634,10 @@ void player_screen_prev(void) {
 }
 
 void player_screen_next(void) {
+	if (live_step(1)) {
+		return;
+	}
+
 	if (audiobook_mode || podcast_mode) {
 		device_state_t state;
 		device_state_get(&state);
@@ -2628,6 +2674,10 @@ void player_key_play_pause(void) {
 }
 
 void player_key_next(void) {
+	if (live_step(1)) {
+		return;
+	}
+
 	// On a track coming from DLNA, "next" is a question for the phone: the
 	// queue is its own.
 	if (dlna_owns_playback()) {
@@ -2656,6 +2706,10 @@ void player_key_next(void) {
 }
 
 void player_key_prev(void) {
+	if (live_step(-1)) {
+		return;
+	}
+
 	device_state_t state;
 	device_state_get(&state);
 

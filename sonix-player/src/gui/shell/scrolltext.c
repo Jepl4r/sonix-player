@@ -344,6 +344,44 @@ void scrolltext_apply(lv_obj_t *label) {
 	fade_update(label);
 }
 
+// `text` on one line: line breaks, tabs and other control characters become
+// one space. A break would make the label two lines tall, and the row it sits
+// in would spill over whatever is above it. Returns `text` itself when there
+// is nothing to change, otherwise a copy the caller frees.
+static char *one_line(const char *text) {
+	const char *r = text;
+	while (*r && (unsigned char)*r >= 0x20 && *r != 0x7F) {
+		r++;
+	}
+	if (!*r) {
+		return (char *)text;
+	}
+
+	char *copy = malloc(strlen(text) + 1);
+	if (!copy) {
+		return (char *)text;
+	}
+	char *w = copy;
+	bool space = false;
+	for (r = text; *r; r++) {
+		unsigned char c = (unsigned char)*r;
+		if (c < 0x20 || c == 0x7F) {
+			if (!space && w > copy) {
+				*w++ = ' ';
+			}
+			space = true;
+			continue;
+		}
+		*w++ = (char)c;
+		space = c == ' ';
+	}
+	while (w > copy && w[-1] == ' ') {
+		w--;
+	}
+	*w = '\0';
+	return copy;
+}
+
 void scrolltext_set(lv_obj_t *label, const char *text) {
 	if (!label) {
 		return;
@@ -351,15 +389,22 @@ void scrolltext_set(lv_obj_t *label, const char *text) {
 	if (!text) {
 		text = "";
 	}
+	char *line = one_line(text);
 	const char *current = lv_label_get_text(label);
-	if (current && strcmp(current, text) == 0) {
+	if (current && strcmp(current, line) == 0) {
+		if (line != text) {
+			free(line);
+		}
 		return; // same words: leave the animation where it is
 	}
 
 	// The duration first: changing it rebuilds the scroll animation, so doing
 	// it before the text means the text change is the last word and the
 	// animation it builds is the one that stays.
-	apply_duration(label, text);
-	lv_label_set_text(label, text);
+	apply_duration(label, line);
+	lv_label_set_text(label, line);
 	fade_update(label);
+	if (line != text) {
+		free(line);
+	}
 }
