@@ -29,6 +29,7 @@ static const sysinfo_model_t MODELS[] = {
 		.pmic_charger = false,
 		.cs43131 = false,
 		.tap_wake = true,
+		.one_flank = false,
 	},
 	{
 		.name = "HiBy R1",
@@ -39,6 +40,7 @@ static const sysinfo_model_t MODELS[] = {
 		.pmic_charger = true,
 		.cs43131 = true,
 		.tap_wake = false,
+		.one_flank = true,
 	},
 };
 

@@ -347,6 +347,61 @@ static int result_station_count;
 // of the next one.
 static int result_raw_count;
 
+// ---------------------------------------------------------------------------
+// Country names
+//
+// The directory names countries the ISO 3166 way: "The Russian Federation",
+// "The United States Of America", "Korea, Republic Of". Sorted as they come,
+// Russia sits under T and both Koreas under K with nothing to tell them
+// apart. The label shown and sorted on is the everyday name instead: from the
+// ISO code where the official one is not what anybody looks for, otherwise the
+// official one without a leading "The" and without anything after a comma or
+// an opening bracket. The search still sends the directory's own name.
+// ---------------------------------------------------------------------------
+
+static const struct {
+	const char code[3];
+	const char *name;
+} COUNTRY_NAMES[] = {
+	{"AE", "United Arab Emirates"}, {"BN", "Brunei"},		  {"BO", "Bolivia"},
+	{"BQ", "Caribbean Netherlands"}, {"BS", "Bahamas"},		  {"CD", "DR Congo"},
+	{"CF", "Central African Republic"}, {"CG", "Congo"},	  {"CV", "Cape Verde"},
+	{"CZ", "Czechia"},				{"DO", "Dominican Republic"}, {"FK", "Falkland Islands"},
+	{"FM", "Micronesia"},			{"FO", "Faroe Islands"},  {"GB", "United Kingdom"},
+	{"GM", "Gambia"},				{"HK", "Hong Kong"},	  {"IR", "Iran"},
+	{"KM", "Comoros"},				{"KP", "North Korea"},	  {"KR", "South Korea"},
+	{"KY", "Cayman Islands"},		{"LA", "Laos"},			  {"MD", "Moldova"},
+	{"MF", "Saint Martin"},			{"MH", "Marshall Islands"}, {"MK", "North Macedonia"},
+	{"MO", "Macao"},				{"MV", "Maldives"},		  {"NE", "Niger"},
+	{"NL", "Netherlands"},			{"PH", "Philippines"},	  {"PS", "Palestine"},
+	{"RU", "Russia"},				{"SD", "Sudan"},		  {"SY", "Syria"},
+	{"SZ", "Eswatini"},				{"TC", "Turks and Caicos Islands"}, {"TL", "Timor-Leste"},
+	{"TW", "Taiwan"},				{"TZ", "Tanzania"},		  {"US", "United States"},
+	{"VA", "Vatican City"},			{"VE", "Venezuela"},	  {"VG", "British Virgin Islands"},
+	{"VI", "US Virgin Islands"},	{"VN", "Vietnam"},
+};
+
+static void country_label(const char *name, const char *code, char *out, size_t size) {
+	for (size_t i = 0; i < sizeof(COUNTRY_NAMES) / sizeof(COUNTRY_NAMES[0]); i++) {
+		if (strcasecmp(code, COUNTRY_NAMES[i].code) == 0) {
+			snprintf(out, size, "%s", COUNTRY_NAMES[i].name);
+			return;
+		}
+	}
+
+	if (strncasecmp(name, "the ", 4) == 0) {
+		name += 4;
+	}
+	snprintf(out, size, "%s", name);
+	char *cut = strpbrk(out, ",(");
+	if (cut && cut > out) {
+		*cut = '\0';
+		for (char *e = cut - 1; e >= out && *e == ' '; e--) {
+			*e = '\0';
+		}
+	}
+}
+
 // Parses a terms response ("[{\"name\":\"italian\",\"stationcount\":123}, ...]").
 static int parse_terms(const char *json, radio_browse_t kind, radio_term_t *out, int max) {
 	int count = 0;
@@ -370,7 +425,13 @@ static int parse_terms(const char *json, radio_browse_t kind, radio_term_t *out,
 		t->stationcount = json_int(obj, end, "stationcount");
 
 		// The lists come back lower case; the label carries a leading capital.
-		snprintf(t->label, sizeof(t->label), "%s", t->name);
+		if (kind == RADIO_BROWSE_COUNTRIES) {
+			char code[8];
+			json_string(obj, end, "iso_3166_1", code, sizeof(code));
+			country_label(t->name, code, t->label, sizeof(t->label));
+		} else {
+			snprintf(t->label, sizeof(t->label), "%s", t->name);
+		}
 		if (t->label[0] >= 'a' && t->label[0] <= 'z') {
 			t->label[0] = (char)(t->label[0] - 'a' + 'A');
 		}
