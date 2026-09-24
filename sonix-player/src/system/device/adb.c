@@ -337,7 +337,14 @@ static void *adb_apply_thread(void *arg) {
 	return NULL;
 }
 
+// The switch, as last set: read by usb.c's watcher thread, which must not go
+// through the config (it is not made for two threads).
+static volatile bool wanted;
+
+bool adb_switched_on(void) { return wanted; }
+
 bool adb_set_enabled(bool enabled) {
+	wanted = enabled;
 	config_set_bool("system", "adb", enabled);
 	config_save();
 
@@ -353,6 +360,7 @@ void adb_apply_saved_state(void) {
 	if (!config_get_bool("system", "adb", false)) {
 		return;
 	}
+	wanted = true;
 
 	if (adb_is_running()) {
 		printf("adb: already running\n");

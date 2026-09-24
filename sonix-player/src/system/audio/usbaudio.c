@@ -3,6 +3,7 @@
 #include "src/system/audio/audio.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/bluetooth/bluetooth.h"
+#include "src/system/device/usb.h"
 
 #include <alsa/asoundlib.h>
 #include <dirent.h>
@@ -16,6 +17,20 @@
 #define TYPEC_PARTNER "/sys/class/typec/port0-partner"
 #define SOUND_CLASS "/sys/class/sound"
 
+// The R1 has no Type-C class. Its CC controller is a TCS1421 set by two GPIOs,
+// and the platform driver takes the mode by name through one attribute and
+// reads the current one back: "Sink", "Source", "StrongDRP" or "NormalDRP".
+// NormalDRP is what the driver starts in, and what the stock player uses as
+// long as its "USB working mode" is left alone; it writes Sink for DAC mode.
+#define TCS1421_CFG "/sys/devices/platform/tcs1421/tcs1421_cfg"
+#define TCS1421_DUAL "NormalDRP"
+#define TCS1421_SINK "Sink"
+
+// And no partner node either. What the R1 does have is the ID line the
+// controller hands to the SoC's OTG block: 0 while this player is the host end
+// of the cable. The stock player reads the same node.
+#define DWC2_OTG_ID "/sys/devices/platform/jz-dwc2/dwc2/otg_id"
+
 // How long something may sit on the port without turning into a sound card
 // before it is taken for a host. Enumerating a USB audio device takes well
 // under a second; three is generous and still short enough that a phone
@@ -28,16 +43,67 @@
 // each write; without this delay the two states chase each other.
 #define RELEASE_SECS 3
 
+// On the R1, how long after writing Sink the ID line is given to follow before
+// it is believed. A host end reading after that is an ID line that does not
+// mean what this file thinks it means.
+#define ID_SETTLE_SECS 3
+
 static int active_card = -1;			// the USB card in use, -1 when none
 static char active_name[64];			// its id, for the interface
 static char volume_control[64];			// the control the level is written to
 static long volume_min, volume_max;
 static unsigned int volume_count = 1; // how many channels that control carries
 
-// Whether the port is set to dual role right now. The attribute lists the types
-// it supports and brackets the one in force, so "[dual] source sink" is dual and
-// "dual source [sink]" is not.
+// Which of the two controls the port has. Decided at the first question and
+// kept: both are platform devices, there from boot or not at all.
+typedef enum { PORT_NONE, PORT_TYPEC, PORT_TCS1421 } port_kind_t;
+
+static port_kind_t port_kind(void) {
+	static int kind = -1;
+	if (kind < 0) {
+		if (access(TYPEC_PORT_TYPE, F_OK) == 0) {
+			kind = PORT_TYPEC;
+		} else if (access(TCS1421_CFG, W_OK) == 0) {
+			kind = PORT_TCS1421;
+			fprintf(stderr, "usbaudio: the port is a TCS1421 (%s)\n", TCS1421_CFG);
+		} else {
+			kind = PORT_NONE;
+		}
+	}
+	return (port_kind_t)kind;
+}
+
+// The TCS1421's mode, "" when it cannot be read.
+static void tcs1421_mode(char *out, size_t out_size) {
+	out[0] = '\0';
+	FILE *f = fopen(TCS1421_CFG, "r");
+	if (!f) {
+		return;
+	}
+	if (fgets(out, (int)out_size, f)) {
+		out[strcspn(out, "\r\n")] = '\0';
+	}
+	fclose(f);
+}
+
+// When the TCS1421 was last set to Sink, for the ID line's check.
+static time_t sink_written_at;
+
+// Set when the ID line has been caught reading "host" with the port held as a
+// sink, which a sink cannot be. From then on it is not trusted, and the R1 does
+// what the stock player does: the port stays dual.
+static bool otg_id_untrusted;
+
+// Whether the port is set to dual role right now. The Type-C attribute lists
+// the types it supports and brackets the one in force, so "[dual] source sink"
+// is dual and "dual source [sink]" is not.
 static bool port_is_dual(void) {
+	if (port_kind() == PORT_TCS1421) {
+		char mode[32];
+		tcs1421_mode(mode, sizeof(mode));
+		return strcmp(mode, TCS1421_DUAL) == 0;
+	}
+
 	FILE *f = fopen(TYPEC_PORT_TYPE, "r");
 	if (!f) {
 		return false;
@@ -48,10 +114,45 @@ static bool port_is_dual(void) {
 	return dual;
 }
 
-// Whether anything at all is on the port. The kernel creates this node when a
-// cable brings something with it and takes it away when it goes, before any
+// The R1's ID line: true while this player is the host end.
+static bool otg_id_says_host(void) {
+	FILE *f = fopen(DWC2_OTG_ID, "r");
+	if (!f) {
+		return false;
+	}
+	int c = fgetc(f);
+	fclose(f);
+	return c == '0';
+}
+
+// Whether something is on the port that may need the port handed over.
+//
+// On the R3 that is anything at all: the kernel creates the partner node when
+// a cable brings something with it and takes it away when it goes, before any
 // role or protocol is worked out.
+//
+// On the R1 it is narrower, because narrower is all it can see: this player
+// being the host end. That is also the only case that needs anything done. A
+// charger or a computer that powers the port has already made this player the
+// sink; a Mac or a phone, dual-role like this port, may just as well have made
+// it the source, and then nothing charges and nothing enumerates.
 static bool partner_present(void) {
+	if (port_kind() == PORT_TCS1421) {
+		if (otg_id_untrusted || !otg_id_says_host()) {
+			return false;
+		}
+		// A sink cannot be the host end. Given a moment to follow the last
+		// write, an ID line that says it is has been read the wrong way round,
+		// and the port goes back to dual for good.
+		if (!port_is_dual() && sink_written_at && time(NULL) - sink_written_at >= ID_SETTLE_SECS) {
+			otg_id_untrusted = true;
+			fprintf(stderr, "usbaudio: %s reads host with the port held as a sink; not trusted from now on\n",
+					DWC2_OTG_ID);
+			return false;
+		}
+		return true;
+	}
+
 	DIR *dir = opendir(TYPEC_PARTNER);
 	if (!dir) {
 		return false;
@@ -60,20 +161,49 @@ static bool partner_present(void) {
 	return true;
 }
 
-// Writes port_type, and says whether it took.
+// Whether the port is empty, so that dual role can be offered again. On the R3
+// the partner node says it. On the R1 a cable that powers the port and leaves
+// this player the sink is invisible to partner_present(), so the charger input
+// is asked as well: no host end and nothing on VBUS is an empty port.
+//
+// Not in the first seconds after writing Sink either: the other end has to
+// notice, become the source and raise VBUS, and the PMIC reports the input
+// once a second. Counted as empty in that gap, the port would go straight back
+// to dual under a Mac that was about to power it.
+static bool port_empty(void) {
+	if (port_kind() == PORT_TCS1421) {
+		if (sink_written_at && time(NULL) - sink_written_at < RELEASE_SECS + ID_SETTLE_SECS) {
+			return false;
+		}
+		return !partner_present() && !usb_vbus_present();
+	}
+	return !partner_present();
+}
+
+// Writes port_type, and says whether it took. `want` is "dual" or "sink".
 static bool write_port_type(const char *want) {
-	FILE *f = fopen(TYPEC_PORT_TYPE, "w");
+	bool tcs = port_kind() == PORT_TCS1421;
+	const char *path = tcs ? TCS1421_CFG : TYPEC_PORT_TYPE;
+	const char *text = want;
+	if (tcs) {
+		text = strcmp(want, "sink") == 0 ? TCS1421_SINK : TCS1421_DUAL;
+	}
+
+	FILE *f = fopen(path, "w");
 	if (!f) {
 		static bool said;
 		if (!said) {
 			said = true;
-			fprintf(stderr, "usbaudio: %s is not there; the port cannot take a peripheral\n", TYPEC_PORT_TYPE);
+			fprintf(stderr, "usbaudio: %s is not there; the port cannot take a peripheral\n", path);
 		}
 		return false;
 	}
-	bool ok = fputs(want, f) >= 0 && fputc('\n', f) != EOF;
+	bool ok = fputs(text, f) >= 0 && fputc('\n', f) != EOF;
 	if (fclose(f) != 0) {
 		ok = false;
+	}
+	if (ok && tcs && strcmp(want, "sink") == 0) {
+		sink_written_at = time(NULL);
 	}
 	return ok;
 }
@@ -386,6 +516,10 @@ void usbaudio_apply_volume(int percent) {
 // sound card, and if it does not, the port goes sink and the other end gets to
 // be the host. It goes back to dual once the port is empty again. The cost is
 // that a phone connects a few seconds late rather than instantly.
+//
+// The R1 runs the same rules on its TCS1421. A computer's USB-C port is often
+// dual-role as well, and against one the R1 can come out the host end: then
+// the cable neither charges it nor shows anything to the computer.
 static void arbitrate_port(bool audio_present) {
 	static time_t attached_at;	// when the current non-audio partner appeared
 	static time_t empty_at;		// when the port last became empty
@@ -409,6 +543,10 @@ static void arbitrate_port(bool audio_present) {
 	}
 
 	attached_at = 0;
+	if (!port_empty()) {
+		empty_at = 0;
+		return;
+	}
 	if (empty_at == 0) {
 		empty_at = now;
 	}

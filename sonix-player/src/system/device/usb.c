@@ -2,6 +2,7 @@
 
 #include "src/system/device/adb.h"
 #include "src/system/device/power.h"
+#include "src/system/device/sysinfo.h"
 
 #include <dirent.h>
 #include <limits.h>
@@ -10,6 +11,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <unistd.h>
 
 #include "src/system/library/audiobookdb.h"
@@ -61,11 +63,8 @@ static volatile bool storage_active;
 // Which way the gadget was exported, so the restore tears down the same one.
 static enum { EXPORT_NONE, EXPORT_OWN_GADGET, EXPORT_ADB_COMPOSITE } export_mode;
 
-// What the PC should see in its "device connected" notification. The
-// firmware's mass-storage script hardcodes "HiBy R1" (it shipped on the R1
-// and nobody updated the strings); the gadget is pre-created here with the
-// right identity before the script runs, and the script keeps it because it
-// only writes descriptors into a gadget it created itself.
+// What the PC should see in its "device connected" notification: these two
+// ids, and the strings below, named after the model this player is running on.
 #define USB_ID_VENDOR "0x32BB"
 // The product id the stock firmware gives its storage gadget (config.json calls
 // it usb_pid, and keeps 0x0004 for the DAC's dac_pid). They were the same number
@@ -73,13 +72,28 @@ static enum { EXPORT_NONE, EXPORT_OWN_GADGET, EXPORT_ADB_COMPOSITE } export_mode
 // shown a card reader wearing the same identity.
 #define USB_ID_PRODUCT "0x0101"
 #define USB_MANUFACTURER "HiBy"
-#define USB_PRODUCT "R3 Pro II"
+
+// The product string: the model's name without the maker's, "R3 Pro II" or
+// "R1", which is what the stock firmware of each writes.
+static const char *usb_product(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	if (!model) {
+		return "R3 Pro II";
+	}
+	const char *name = model->name;
+	return strncasecmp(name, "HiBy ", 5) == 0 ? name + 5 : name;
+}
 
 // What the LUN answers to a SCSI INQUIRY: vendor (8), product (16), revision
-// (4). Without it the mass-storage function reports "Linux / File-Stor Gadget",
-// which is what a bare gadget looks like; the stock writes its own, and some
-// hosts -- Android among them -- are fussier about a card reader than a PC is.
-#define USB_INQUIRY_STRING "HiBy    R3 Pro II U-DISK0100"
+// (4), "HiBy    R3 Pro II U-DISK0100" on the R3. Without it the mass-storage
+// function reports "Linux / File-Stor Gadget", which is what a bare gadget
+// looks like; the stock writes its own, and some hosts -- Android among them --
+// are fussier about a card reader than a PC is.
+static void usb_inquiry_string(char *out, size_t out_size) {
+	char product[40];
+	snprintf(product, sizeof(product), "%s U-DISK", usb_product());
+	snprintf(out, out_size, "%-8s%-16.16s0100", USB_MANUFACTURER, product);
+}
 
 #define STORAGE_GADGET "/sys/kernel/config/usb_gadget/android0"
 
@@ -200,6 +214,10 @@ bool usb_dac_mode(void) {
 // This function is the sink half of that rule, kept here because it also runs
 // before the gadget is bound: it is the role that decides whether the
 // controller has a gadget side at all.
+//
+// The R1 has none of this: no FUSB302B and no Type-C class, but a TCS1421 set
+// through its own platform attribute. Its role is looked after entirely by the
+// arbitration in usbaudio.c, and this function does nothing there.
 // ---------------------------------------------------------------------------
 static void typec_force_sink(void) {
 	static bool announced;
@@ -264,6 +282,10 @@ static void ensure_storage_gadget(void) {
 	// controller that is going to be the peripheral end of the cable.
 	typec_force_sink();
 
+	char inquiry[32];
+	usb_inquiry_string(inquiry, sizeof(inquiry));
+	const char *product = usb_product();
+
 	char cmd[2048];
 	snprintf(cmd, sizeof(cmd),
 			 "[ -d /sys/kernel/config/usb_gadget ] || mount -t configfs none /sys/kernel/config; "
@@ -297,7 +319,7 @@ static void ensure_storage_gadget(void) {
 			 "[ -e configs/c.1/mass_storage.0 ] || ln -s functions/mass_storage.0 configs/c.1; "
 			 "grep -q '[a-zA-Z0-9]' UDC || echo $(ls /sys/class/udc/ | head -n1) > UDC",
 			 STORAGE_GADGET, STORAGE_GADGET, STORAGE_GADGET, USB_ID_VENDOR, USB_ID_PRODUCT, USB_MANUFACTURER,
-			 USB_PRODUCT, USB_MANUFACTURER, USB_PRODUCT, STORAGE_GADGET, USB_INQUIRY_STRING);
+			 product, USB_MANUFACTURER, product, STORAGE_GADGET, inquiry);
 	int rc = system(cmd);
 	(void)rc;
 }
@@ -426,6 +448,52 @@ void usb_gadget_yield_to_adb(void) { gadget_unbind(); }
 // configfs, so the gadget is rebuilt from nothing.
 void usb_gadget_reclaim_from_adb(void) { ensure_storage_gadget(); }
 
+// ADB switched on and adbd up, and yet its gadget is not on the controller:
+// the card reader's is, or nothing is. Hands the controller over.
+//
+// It happens at boot. With the switch left on, adbd is started first, by the
+// firmware's script, and it binds its gadget on its own a moment later (on
+// the R1 adbd runs /sbin/usb_adb_enable.sh once its endpoints are open). The
+// card reader's gadget is built during that moment, takes the one controller,
+// and adbd's bind fails for good: a PC then finds an empty card reader and no
+// ADB, until the switch is turned off and on again.
+//
+// Checked on every poll, and cheap when all is well: one read of the ADB
+// gadget's UDC file. adbd is looked for in /proc only when that is empty, and
+// nothing is written unless the gadget is ready to bind (its functionfs is
+// mounted, which adbd needs before it can write its descriptors).
+static void adb_keep_controller(void) {
+	if (!adb_switched_on() || adb_gadget_bound() || access(ADB_GADGET "/functions/ffs.adb", F_OK) != 0) {
+		return;
+	}
+	if (!adb_is_running()) {
+		return;
+	}
+
+	char udc[NAME_MAX + 1];
+	if (!first_udc(udc, sizeof(udc))) {
+		return;
+	}
+	gadget_unbind(); // the card reader lets go; failing when it holds nothing is fine
+
+	bool ok = false;
+	FILE *f = fopen(ADB_GADGET "/UDC", "w");
+	if (f) {
+		ok = fprintf(f, "%s\n", udc) >= 0;
+		if (fclose(f) != 0) {
+			ok = false;
+		}
+	}
+
+	// Once per outcome: adbd not yet ready is retried every poll.
+	static int said = -1;
+	if (said != (int)ok) {
+		said = ok;
+		fprintf(stderr, "usb: ADB is on but its gadget was not bound; %s\n",
+				ok ? "handed it the controller" : "adbd is not ready yet, retrying");
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Around a system suspend
 //
@@ -478,7 +546,7 @@ static void composite_export(void) {
 			 "cd %s && "
 			 "echo '' > UDC; "
 			 "echo '" USB_MANUFACTURER "' > strings/0x409/manufacturer 2>/dev/null; "
-			 "echo '" USB_PRODUCT "' > strings/0x409/product 2>/dev/null; "
+			 "echo '%s' > strings/0x409/product 2>/dev/null; "
 			 "mkdir -p functions/mass_storage.0 && "
 			 "echo 0 > functions/mass_storage.0/lun.0/ro; "
 			 "echo 1 > functions/mass_storage.0/lun.0/removable; "
@@ -487,7 +555,7 @@ static void composite_export(void) {
 			 "echo %s > functions/mass_storage.0/lun.0/file; "
 			 "[ -e configs/c.1/mass_storage.0 ] || ln -s functions/mass_storage.0 configs/c.1; "
 			 "echo $(ls /sys/class/udc/ | head -n1) > UDC",
-			 ADB_GADGET, sd_device);
+			 ADB_GADGET, usb_product(), sd_device);
 	fprintf(stderr, "usb: adding storage to the adb gadget\n");
 	int rc = system(cmd);
 	fprintf(stderr, "usb: composite export exit code %d\n", rc);
@@ -768,6 +836,8 @@ static void *usb_thread(void *arg) {
 		// the CPU every second for the whole night.
 		sleep(power_screen_is_on() ? POLL_SECONDS : POLL_SECONDS_STANDBY);
 
+		adb_keep_controller();
+
 		// A host that has enumerated this device is a cable, whatever the
 		// charger says. On a phone the two can disagree: the power role and the
 		// data role are separate on Type-C, so a phone can act as the host
@@ -811,7 +881,9 @@ static void *usb_thread(void *arg) {
 				parked = true;
 				fprintf(stderr, "usb: no cable and the screen is dark; gadget unbound\n");
 			} else if (parked && power_screen_is_on()) {
-				if (!gadget_rebind()) {
+				// Unless ADB has been switched on meanwhile: the controller is
+				// its gadget's now, and adb_keep_controller() sees to it.
+				if (!adb_switched_on() && !gadget_rebind()) {
 					ensure_storage_gadget();
 				}
 				parked = false;
@@ -827,7 +899,7 @@ static void *usb_thread(void *arg) {
 			// is doing -- but by the cheap route first: the gadget was only
 			// unbound, not taken apart, so putting it back is one write.
 			typec_force_sink();
-			if (!gadget_rebind()) {
+			if (!adb_switched_on() && !gadget_rebind()) {
 				ensure_storage_gadget();
 			}
 			parked = false;
@@ -907,9 +979,12 @@ void usb_start(const char *device, const char *mount_point) {
 	snprintf(sd_device, sizeof(sd_device), "%s", device);
 	snprintf(sd_mount, sizeof(sd_mount), "%s", mount_point);
 
-	// The empty-medium gadget goes up right away (unless ADB already owns the
-	// controller -- then its gadget provides the enumeration signal instead).
-	if (!adb_gadget_bound()) {
+	// The empty-medium gadget goes up right away, unless ADB owns the
+	// controller -- then its gadget provides the enumeration signal instead.
+	// "Owns" includes the moment before adbd has bound it: started just
+	// before this, it may not have got that far, and a card reader bound now
+	// would keep it off the controller (see adb_keep_controller()).
+	if (!adb_gadget_bound() && !(adb_switched_on() && adb_is_running())) {
 		ensure_storage_gadget();
 	}
 

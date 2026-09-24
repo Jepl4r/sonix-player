@@ -22,6 +22,11 @@ bool adb_is_running(void);
 // not whether adbd has finished starting, which takes a moment.
 bool adb_set_enabled(bool enabled);
 
+// Whether the switch is on: set by the two functions around it, so it says
+// what the user asked for, not whether adbd has come up yet. Safe from any
+// thread.
+bool adb_switched_on(void);
+
 // Applies the remembered choice. Call once at startup, after config_init().
 void adb_apply_saved_state(void);
 

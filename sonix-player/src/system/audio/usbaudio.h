@@ -21,6 +21,10 @@
 //
 // So the whole feature is: allow dual role at startup, watch for a sound card
 // that belongs to the USB bus, and point playback at it while it is there.
+//
+// The R1 has no Type-C class: its port is a TCS1421, switched between
+// "NormalDRP" and "Sink" through /sys/devices/platform/tcs1421/tcs1421_cfg.
+// The same rules apply to it, through that attribute (see the .c).
 
 // Allows the port to take a peripheral. Returns whether the write was accepted.
 // Safe when the port is already dual, and harmless where the attribute does not
