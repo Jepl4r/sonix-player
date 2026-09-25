@@ -79,14 +79,6 @@ jobs:
             sonix-player/wavpack-5.6.0.tar.bz2
           key: sonix-r1-libs-v3-${{ runner.os }}-${{ hashFiles('sonix-player/Makefile') }}
 
-      # ============================================================
-      # INSTALL HOST BUILD DEPENDENCIES
-      #
-      # Important:
-      # The bundled rockboxdev.sh rebuilds legacy GLib 2.46.2.
-      # Its compatibility path runs autoreconf, which requires
-      # gtkdocize from gtk-doc-tools.
-      # ============================================================
       - name: Install build and packaging dependencies
         shell: bash
         run: |
@@ -138,15 +130,15 @@ jobs:
 
           echo ""
           echo "GCC:"
-          gcc --version | head -1
+          gcc --version
 
           echo ""
           echo "G++:"
-          g++ --version | head -1
+          g++ --version
 
           echo ""
           echo "Make:"
-          make --version | head -1
+          make --version
 
           echo ""
           echo "Python:"
@@ -154,32 +146,38 @@ jobs:
 
           echo ""
           echo "Autoconf:"
-          autoconf --version | head -1
+          autoconf --version
 
           echo ""
           echo "Automake:"
-          automake --version | head -1
+          automake --version
 
           echo ""
           echo "Libtool:"
-          libtool --version | head -1
+          libtool --version
 
           echo ""
           echo "GTK Doc:"
-          gtkdocize --version | head -1
+          gtkdocize --version
 
           echo ""
           echo "Autoreconf:"
-          autoreconf --version | head -1
+          autoreconf --version
 
           echo ""
           echo "GitHub CLI:"
-          gh --version | head -1
+          gh --version
 
           echo ""
-          echo "Required GCC libraries:"
+          echo "GMP:"
           dpkg -s libgmp-dev | grep '^Version:'
+
+          echo ""
+          echo "MPFR:"
           dpkg -s libmpfr-dev | grep '^Version:'
+
+          echo ""
+          echo "MPC:"
           dpkg -s libmpc-dev | grep '^Version:'
 
       # ============================================================
