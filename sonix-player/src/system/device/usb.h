@@ -40,7 +40,8 @@ bool usb_dac_mode(void);
 // Coordination with ADB, whose init script needs the one USB controller for
 // its own gadget: yield unbinds the storage gadget before adbd starts, reclaim
 // rebuilds and rebinds it after adbd stops (its stop script tears the whole
-// configfs down). Called by adb.c around the init scripts.
+// configfs down). Both take a card handed to the host back first. Called by
+// adb.c around the init scripts.
 void usb_gadget_yield_to_adb(void);
 void usb_gadget_reclaim_from_adb(void);
 

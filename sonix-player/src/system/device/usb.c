@@ -60,6 +60,20 @@ static char sd_mount[256];
 
 static volatile bool storage_active;
 
+// Export and restore run on the watcher thread, and a restore is also asked for
+// by the threads that start DAC mode and switch ADB. One at a time: a restore
+// landing in the middle of an export would remount the card under a host that
+// is about to be handed it.
+static pthread_mutex_t storage_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Counts the times the controller has changed hands (DAC mode, ADB). The
+// watcher forgets what it knew about the cable when it moves: an eject done by
+// the host before the handover says nothing about the device after it, and a
+// card taken back by someone else is no longer exported.
+static unsigned owner_serial;
+
+static void owner_changed(void) { __atomic_add_fetch(&owner_serial, 1, __ATOMIC_SEQ_CST); }
+
 // Which way the gadget was exported, so the restore tears down the same one.
 static enum { EXPORT_NONE, EXPORT_OWN_GADGET, EXPORT_ADB_COMPOSITE } export_mode;
 
@@ -158,7 +172,7 @@ static volatile bool dac_owns_usb;
 // cannot see. The popups are silenced for the duration of the transition.
 static volatile bool suppress_popups;
 static void ensure_storage_gadget(void);
-static void storage_restore(void);
+static void take_card_back(const char *why);
 
 void usb_set_dac_mode(bool on) {
 	// The flag goes up before anything else: setting it afterwards leaves a
@@ -171,12 +185,24 @@ void usb_set_dac_mode(bool on) {
 		// sound card and nothing else: handing over the microSD at the same
 		// time is not a bonus, it is the card being pulled out from under the
 		// player while it works.
-		storage_restore();
+		//
+		// Only when it was handed over. A restore with nothing exported still
+		// unmounts and remounts the card the player is reading from.
+		take_card_back("DAC mode takes the controller");
 	}
 	dac_owns_usb = on;
+	owner_changed();
 	fprintf(stderr, "usb: controller %s\n", on ? "handed to DAC mode" : "back from DAC mode");
 	if (!on) {
-		ensure_storage_gadget();
+		// Entering DAC mode took the controller from ADB's gadget as well. With
+		// ADB on it goes back to that one (adb_keep_controller(), at the next
+		// poll): binding the card reader first would only be undone a second
+		// later.
+		if (adb_switched_on() && adb_is_running()) {
+			fprintf(stderr, "usb: ADB is on; its gadget gets the controller back\n");
+		} else {
+			ensure_storage_gadget();
+		}
 	}
 	suppress_popups = false;
 }
@@ -287,26 +313,32 @@ static void ensure_storage_gadget(void) {
 	const char *product = usb_product();
 
 	char cmd[2048];
+	// The descriptors are written every time the gadget is about to be bound,
+	// not only when it is created. DAC mode builds its audio function in this
+	// same gadget (usbdac.c) and leaves its own class, configuration name and
+	// power draw behind; a card reader bound over those looks to the host like
+	// an audio device with a disk in it, and a phone gives up on it.
 	snprintf(cmd, sizeof(cmd),
 			 "[ -d /sys/kernel/config/usb_gadget ] || mount -t configfs none /sys/kernel/config; "
-			 "if [ ! -d %s ]; then "
-			 "mkdir %s && cd %s && "
+			 "mkdir -p %s/strings/0x409 %s/configs/c.1/strings/0x409 && cd %s && "
+			 "if ! grep -q '[a-zA-Z0-9]' UDC; then "
 			 "echo 0x00 > bDeviceClass; "
+			 "echo 0x00 > bDeviceSubClass; "
+			 "echo 0x00 > bDeviceProtocol; "
 			 "echo 0x0200 > bcdUSB; "
 			 "echo 0x0100 > bcdDevice; "
 			 "echo %s > idVendor; "
 			 "echo %s > idProduct; "
-			 "mkdir strings/0x409; "
 			 "echo '%s' > strings/0x409/manufacturer; "
 			 "echo '%s' > strings/0x409/product; "
 			 "echo '%s %s' > strings/0x409/serialnumber; "
-			 "mkdir configs/c.1; "
 			 "echo 500 > configs/c.1/MaxPower; "
 			 "echo 0x80 > configs/c.1/bmAttributes; "
-			 "mkdir configs/c.1/strings/0x409; "
 			 "echo storage > configs/c.1/strings/0x409/configuration; "
+			 "for l in configs/c.1/*; do "
+			 "[ -L \"$l\" ] && [ \"$l\" != configs/c.1/mass_storage.0 ] && rm -f \"$l\"; "
+			 "done; "
 			 "fi; "
-			 "cd %s && "
 			 "if [ ! -d functions/mass_storage.0 ]; then "
 			 "mkdir functions/mass_storage.0; "
 			 "echo 0 > functions/mass_storage.0/lun.0/ro; "
@@ -319,7 +351,7 @@ static void ensure_storage_gadget(void) {
 			 "[ -e configs/c.1/mass_storage.0 ] || ln -s functions/mass_storage.0 configs/c.1; "
 			 "grep -q '[a-zA-Z0-9]' UDC || echo $(ls /sys/class/udc/ | head -n1) > UDC",
 			 STORAGE_GADGET, STORAGE_GADGET, STORAGE_GADGET, USB_ID_VENDOR, USB_ID_PRODUCT, USB_MANUFACTURER,
-			 product, USB_MANUFACTURER, product, STORAGE_GADGET, inquiry);
+			 product, USB_MANUFACTURER, product, inquiry);
 	int rc = system(cmd);
 	(void)rc;
 }
@@ -442,11 +474,35 @@ static bool gadget_rebind(void) {
 
 // Called right before ADB's init script starts: two gadgets cannot bind at
 // once.
-void usb_gadget_yield_to_adb(void) { gadget_unbind(); }
+//
+// A card handed to the host comes back first. With ADB on the card stays with
+// the player (see the watcher), and unbinding under an exported medium left it
+// unmounted here and gone from the host, until the cable was pulled.
+void usb_gadget_yield_to_adb(void) {
+	take_card_back("ADB is starting");
+	owner_changed();
+	gadget_unbind();
+}
 
 // Called after ADB shuts down. Its stop script also unmounts the whole
 // configfs, so the gadget is rebuilt from nothing.
-void usb_gadget_reclaim_from_adb(void) { ensure_storage_gadget(); }
+//
+// A card that was riding on ADB's gadget comes back first; the watcher then
+// hands it to the host again through the card reader, if a host is there.
+void usb_gadget_reclaim_from_adb(void) {
+	take_card_back("ADB stopped");
+	// The composite restore binds ADB's gadget again, and with adbd gone that
+	// gadget has nothing left to carry but still holds the controller.
+	if (!adb_is_running()) {
+		FILE *f = fopen(ADB_GADGET "/UDC", "w");
+		if (f) {
+			fputs("\n", f);
+			fclose(f);
+		}
+	}
+	owner_changed();
+	ensure_storage_gadget();
+}
 
 // ADB switched on and adbd up, and yet its gadget is not on the controller:
 // the card reader's is, or nothing is. Hands the controller over.
@@ -795,6 +851,31 @@ static void storage_restore(void) {
 	}
 }
 
+// Takes the card back from the host if it was handed over, from any thread.
+static void take_card_back(const char *why) {
+	pthread_mutex_lock(&storage_lock);
+	if (storage_active) {
+		fprintf(stderr, "usb: %s; taking the card back from the host\n", why);
+		storage_restore();
+	}
+	pthread_mutex_unlock(&storage_lock);
+}
+
+// The watcher's own export and restore, under the same lock.
+static void locked_export(void) {
+	pthread_mutex_lock(&storage_lock);
+	storage_export();
+	pthread_mutex_unlock(&storage_lock);
+}
+
+static void locked_restore(void) {
+	pthread_mutex_lock(&storage_lock);
+	if (storage_active) {
+		storage_restore();
+	}
+	pthread_mutex_unlock(&storage_lock);
+}
+
 static void *usb_thread(void *arg) {
 	(void)arg;
 	thread_be_background("usb watcher");
@@ -811,6 +892,8 @@ static void *usb_thread(void *arg) {
 	// The gadget is unbound from the controller while the device sits in
 	// standby with no cable (see below).
 	bool parked = false;
+
+	unsigned seen_owner = __atomic_load_n(&owner_serial, __ATOMIC_SEQ_CST);
 
 	for (;;) {
 		// DAC mode owns the controller: stand completely down. Not just "do
@@ -836,6 +919,22 @@ static void *usb_thread(void *arg) {
 		// the CPU every second for the whole night.
 		sleep(power_screen_is_on() ? POLL_SECONDS : POLL_SECONDS_STANDBY);
 
+		// The controller changed hands since the last look: whatever was
+		// known about the cable belongs to the gadget before. And a card
+		// taken back by DAC mode or ADB is not exported any more, whatever
+		// this loop last did with it: believing otherwise read the emptied
+		// medium as an eject by the host, and the card was not offered again
+		// until the cable was pulled.
+		unsigned owner = __atomic_load_n(&owner_serial, __ATOMIC_SEQ_CST);
+		if (owner != seen_owner) {
+			seen_owner = owner;
+			await_unplug = false;
+			said_adb = false;
+		}
+		if (exported && !storage_active) {
+			exported = false;
+		}
+
 		adb_keep_controller();
 
 		// A host that has enumerated this device is a cable, whatever the
@@ -848,7 +947,7 @@ static void *usb_thread(void *arg) {
 
 		if (!vbus) {
 			if (exported) {
-				storage_restore();
+				locked_restore();
 				exported = false;
 			}
 			await_unplug = false;
@@ -910,7 +1009,7 @@ static void *usb_thread(void *arg) {
 		if (exported) {
 			if (host_ejected()) {
 				fprintf(stderr, "usb: host ejected the medium, reclaiming the card\n");
-				storage_restore();
+				locked_restore();
 				exported = false;
 				await_unplug = true;
 			}
@@ -943,8 +1042,8 @@ static void *usb_thread(void *arg) {
 			continue;
 		}
 
-		storage_export();
-		exported = true;
+		locked_export();
+		exported = storage_active;
 	}
 
 	return NULL;

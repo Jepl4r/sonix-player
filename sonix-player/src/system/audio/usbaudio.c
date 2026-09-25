@@ -114,6 +114,33 @@ static bool port_is_dual(void) {
 	return dual;
 }
 
+// Whether the host side of the controller has enumerated anything: a device
+// under /sys/bus/usb/devices other than the root hub ("1-1", "1-1.2"; the
+// interfaces, "1-1:1.0", carry a colon). Only possible with this player as the
+// host end, so it says the same thing as the ID line, from the bus itself.
+//
+// On the R1 this is what finds a phone. The ID line cannot be relied on there:
+// read the wrong way round once, it is dropped for the rest of the session
+// (see partner_present()), and a phone that has won the host role from then on
+// is charged and never shown the card.
+static bool host_bus_has_device(void) {
+	DIR *dir = opendir("/sys/bus/usb/devices");
+	if (!dir) {
+		return false;
+	}
+	bool found = false;
+	struct dirent *de;
+	while (!found && (de = readdir(dir)) != NULL) {
+		const char *name = de->d_name;
+		if (name[0] < '0' || name[0] > '9' || !strchr(name, '-') || strchr(name, ':')) {
+			continue;
+		}
+		found = true;
+	}
+	closedir(dir);
+	return found;
+}
+
 // The R1's ID line: true while this player is the host end.
 static bool otg_id_says_host(void) {
 	FILE *f = fopen(DWC2_OTG_ID, "r");
@@ -138,6 +165,9 @@ static bool otg_id_says_host(void) {
 // it the source, and then nothing charges and nothing enumerates.
 static bool partner_present(void) {
 	if (port_kind() == PORT_TCS1421) {
+		if (host_bus_has_device()) {
+			return true;
+		}
 		if (otg_id_untrusted || !otg_id_says_host()) {
 			return false;
 		}
@@ -520,10 +550,43 @@ void usbaudio_apply_volume(int percent) {
 // The R1 runs the same rules on its TCS1421. A computer's USB-C port is often
 // dual-role as well, and against one the R1 can come out the host end: then
 // the cable neither charges it nor shows anything to the computer.
+// What the R1's port looks like, written to the log each time it changes: the
+// TCS1421 mode, the ID line, VBUS and the host bus. The four together are what
+// says why a cable did or did not end up where it should.
+static void tcs1421_trace(void) {
+	char mode[32];
+	tcs1421_mode(mode, sizeof(mode));
+	int id = -1;
+	FILE *f = fopen(DWC2_OTG_ID, "r");
+	if (f) {
+		int c = fgetc(f);
+		id = (c == '0' || c == '1') ? c - '0' : -1;
+		fclose(f);
+	}
+	int vbus = usb_vbus_present() ? 1 : 0;
+	int bus = host_bus_has_device() ? 1 : 0;
+
+	static char said_mode[32];
+	static int said_id = -2, said_vbus = -1, said_bus = -1;
+	if (strcmp(mode, said_mode) == 0 && id == said_id && vbus == said_vbus && bus == said_bus) {
+		return;
+	}
+	snprintf(said_mode, sizeof(said_mode), "%s", mode);
+	said_id = id;
+	said_vbus = vbus;
+	said_bus = bus;
+	fprintf(stderr, "usbaudio: port %s, otg_id %d%s, vbus %d, device on the host bus %d\n", mode[0] ? mode : "?", id,
+			otg_id_untrusted ? " (not trusted)" : "", vbus, bus);
+}
+
 static void arbitrate_port(bool audio_present) {
 	static time_t attached_at;	// when the current non-audio partner appeared
 	static time_t empty_at;		// when the port last became empty
 	time_t now = time(NULL);
+
+	if (port_kind() == PORT_TCS1421) {
+		tcs1421_trace();
+	}
 
 	if (audio_present) {
 		attached_at = 0;
