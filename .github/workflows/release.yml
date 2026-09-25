@@ -13,7 +13,7 @@ permissions:
 jobs:
   build:
     name: Build R1 Firmware
-    runs-on: ubuntu-24.04
+    runs-on: ubuntu-22.04
     timeout-minutes: 120
 
     steps:
@@ -27,7 +27,7 @@ jobs:
           fetch-depth: 0
 
       # ============================================================
-      # INSTALL ALL ROCKBOX BUILD DEPENDENCIES
+      # INSTALL BUILD DEPENDENCIES
       # ============================================================
       - name: Install build dependencies
         run: |
@@ -68,12 +68,28 @@ jobs:
             libmpfr-dev \
             libmpc-dev
 
+          echo ""
           echo "============================================"
-          echo "DEPENDENCY CHECK"
+          echo "BUILD ENVIRONMENT"
           echo "============================================"
 
+          echo "Ubuntu:"
+          lsb_release -ds
+
+          echo ""
+          echo "GCC:"
           gcc --version | head -1
+
+          echo ""
+          echo "Make:"
           make --version | head -1
+
+          echo ""
+          echo "Python:"
+          python3 --version
+
+          echo ""
+          echo "Libtool:"
           libtool --version | head -1
 
           echo ""
@@ -96,23 +112,62 @@ jobs:
           set -eux
 
           echo "============================================"
-          echo "VERIFYING PROJECT"
+          echo "VERIFY PROJECT"
           echo "============================================"
 
           test -f sonix-player/Makefile
+          test -f sonix-player/rockboxdev/rockboxdev.sh
           test -f sonix-packer/sonix_firmware_packer.sh
           test -d sonix-packer/assets/R1
 
-          echo ""
-          echo "Project structure:"
-          ls -la
+          chmod +x sonix-player/rockboxdev/rockboxdev.sh
+          chmod +x sonix-packer/sonix_firmware_packer.sh
 
           echo ""
-          echo "R1 assets:"
-          find sonix-packer/assets/R1 -maxdepth 4 -type f | sort
+          echo "Project structure:"
+          find . \
+            -path './.git' -prune -o \
+            -path './__MACOSX' -prune -o \
+            -maxdepth 3 \
+            -type f \
+            -print | sort | head -200
+
+      # ============================================================
+      # SHOW ROCKBOX BUILD CONFIGURATION
+      # ============================================================
+      - name: Check Rockbox configuration
+        working-directory: sonix-player
+        run: |
+          set -eux
+
+          echo "============================================"
+          echo "ROCKBOX CONFIGURATION"
+          echo "============================================"
+
+          grep -n \
+            -E 'glib_ver|glibc_ver|gcc_ver|binutils_ver|mpc|mpfr' \
+            rockboxdev/rockboxdev.sh || true
+
+          echo ""
+          echo "GLib compatibility code:"
+          sed -n '275,295p' rockboxdev/rockboxdev.sh
 
       # ============================================================
       # BUILD SONIX PLAYER
+      #
+      # The Makefile automatically:
+      #
+      #   1. Builds the Rockbox MIPS toolchain
+      #   2. Builds FreeType
+      #   3. Builds libogg
+      #   4. Builds libopus
+      #   5. Builds opusfile
+      #   6. Builds WavPack
+      #   7. Builds Sonix Player
+      #
+      # IMPORTANT:
+      # Do not manually invoke rockboxdev.sh here.
+      # The Makefile handles the dependency chain.
       # ============================================================
       - name: Build Sonix Player
         working-directory: sonix-player
@@ -127,29 +182,41 @@ jobs:
 
           echo ""
           echo "============================================"
-          echo "BUILD COMPLETED"
+          echo "SONIX PLAYER BUILD COMPLETE"
           echo "============================================"
 
           test -f sonix_player
           test -s sonix_player
 
+          echo ""
+          echo "Binary:"
           ls -lh sonix_player
+
+          echo ""
+          echo "File:"
           file sonix_player
 
       # ============================================================
-      # PREPARE PACKER
+      # PREPARE FIRMWARE PACKER
       # ============================================================
       - name: Prepare firmware packer
         run: |
           set -eux
 
+          echo "============================================"
+          echo "PREPARING FIRMWARE PACKER"
+          echo "============================================"
+
           chmod +x sonix-packer/sonix_firmware_packer.sh
 
-          cp sonix-player/sonix_player \
-             sonix-packer/sonix_player
+          cp \
+            sonix-player/sonix_player \
+            sonix-packer/sonix_player
 
           test -f sonix-packer/sonix_player
+          test -s sonix-packer/sonix_player
 
+          echo ""
           echo "Packer directory:"
           ls -lah sonix-packer
 
@@ -160,25 +227,37 @@ jobs:
         run: |
           set -eux
 
+          echo "============================================"
+          echo "CHECKING STOCK R1 FIRMWARE"
+          echo "============================================"
+
           if [ ! -f sonix-packer/r1_original.upt ]; then
             echo ""
             echo "============================================================"
-            echo "ERROR: r1_original.upt is missing"
+            echo "ERROR: Missing r1_original.upt"
             echo "============================================================"
             echo ""
-            echo "Expected file:"
-            echo "sonix-packer/r1_original.upt"
+            echo "The firmware packer requires:"
+            echo ""
+            echo "    sonix-packer/r1_original.upt"
+            echo ""
+            echo "Add the original HiBy R1 firmware to the repository."
             echo ""
             exit 1
           fi
 
-          test -s sonix-packer/r1_original.upt
+          if [ ! -s sonix-packer/r1_original.upt ]; then
+            echo ""
+            echo "ERROR: r1_original.upt exists but is empty."
+            echo ""
+            exit 1
+          fi
 
           echo "Stock firmware found:"
           ls -lh sonix-packer/r1_original.upt
 
       # ============================================================
-      # CREATE R1 FIRMWARE
+      # CREATE R1.UPT
       # ============================================================
       - name: Create R1 firmware
         working-directory: sonix-packer
@@ -199,24 +278,38 @@ jobs:
           echo "R1.UPT CREATED SUCCESSFULLY"
           echo "============================================"
 
+          echo ""
+          echo "Firmware:"
           ls -lh r1.upt
+
+          echo ""
+          echo "File information:"
           file r1.upt
 
       # ============================================================
-      # VERIFY FIRMWARE
+      # VERIFY FINAL OUTPUT
       # ============================================================
       - name: Verify firmware
         run: |
           set -eux
 
+          echo "============================================"
+          echo "FINAL VERIFICATION"
+          echo "============================================"
+
           test -f sonix-packer/r1.upt
           test -s sonix-packer/r1.upt
 
-          echo "Final firmware:"
+          echo ""
+          echo "R1 firmware:"
           ls -lh sonix-packer/r1.upt
 
+          echo ""
+          echo "Sonix Player:"
+          ls -lh sonix-player/sonix_player
+
       # ============================================================
-      # UPLOAD ARTIFACT
+      # UPLOAD GITHUB ACTION ARTIFACT
       # ============================================================
       - name: Upload R1 firmware artifact
         uses: actions/upload-artifact@v4
@@ -229,18 +322,31 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # PUBLISH / UPDATE LATEST RELEASE
+      # PUBLISH LATEST RELEASE
+      #
+      # Every successful build of main updates:
+      #
+      #     Latest R1 Firmware
+      #
+      # Release tag:
+      #
+      #     latest
+      #
+      # Asset:
+      #
+      #     r1.upt
       # ============================================================
       - name: Publish Latest R1 Firmware
         uses: softprops/action-gh-release@v2
         with:
           tag_name: latest
           name: Latest R1 Firmware
+
           body: |
             # Sonix Player — HiBy R1
 
-            Automatically generated from the latest successful
-            `main` branch build.
+            Automatically generated firmware from the latest
+            successful `main` branch build.
 
             ## Firmware
 
@@ -254,8 +360,10 @@ jobs:
 
             This release is automatically updated after every
             successful build.
+
           files: |
             sonix-packer/r1.upt
+
           draft: false
           prerelease: false
           make_latest: true
