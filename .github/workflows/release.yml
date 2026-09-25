@@ -27,10 +27,12 @@ jobs:
           fetch-depth: 0
 
       # ============================================================
-      # INSTALL BUILD DEPENDENCIES
+      # INSTALL ALL ROCKBOX BUILD DEPENDENCIES
       # ============================================================
       - name: Install build dependencies
         run: |
+          set -eux
+
           sudo apt-get update
 
           sudo apt-get install -y \
@@ -61,12 +63,30 @@ jobs:
             libtool \
             libtool-bin \
             autoconf \
-            automake
+            automake \
+            libgmp-dev \
+            libmpfr-dev \
+            libmpc-dev
 
-          echo "Installed tool versions:"
+          echo "============================================"
+          echo "DEPENDENCY CHECK"
+          echo "============================================"
+
           gcc --version | head -1
           make --version | head -1
           libtool --version | head -1
+
+          echo ""
+          echo "GMP:"
+          dpkg -s libgmp-dev | grep '^Version:'
+
+          echo ""
+          echo "MPFR:"
+          dpkg -s libmpfr-dev | grep '^Version:'
+
+          echo ""
+          echo "MPC:"
+          dpkg -s libmpc-dev | grep '^Version:'
 
       # ============================================================
       # VERIFY PROJECT
@@ -75,16 +95,17 @@ jobs:
         run: |
           set -eux
 
-          echo "Repository:"
-          pwd
-
-          echo ""
-          echo "Top-level files:"
-          ls -la
+          echo "============================================"
+          echo "VERIFYING PROJECT"
+          echo "============================================"
 
           test -f sonix-player/Makefile
           test -f sonix-packer/sonix_firmware_packer.sh
           test -d sonix-packer/assets/R1
+
+          echo ""
+          echo "Project structure:"
+          ls -la
 
           echo ""
           echo "R1 assets:"
@@ -99,19 +120,19 @@ jobs:
           set -eux
 
           echo "============================================"
-          echo "Building Sonix Player"
+          echo "BUILDING SONIX PLAYER"
           echo "============================================"
 
           make target -j2
 
           echo ""
-          echo "Build completed."
+          echo "============================================"
+          echo "BUILD COMPLETED"
+          echo "============================================"
 
           test -f sonix_player
           test -s sonix_player
 
-          echo ""
-          echo "Sonix Player binary:"
           ls -lh sonix_player
           file sonix_player
 
@@ -133,7 +154,7 @@ jobs:
           ls -lah sonix-packer
 
       # ============================================================
-      # CHECK STOCK FIRMWARE
+      # CHECK STOCK R1 FIRMWARE
       # ============================================================
       - name: Check stock R1 firmware
         run: |
@@ -145,11 +166,8 @@ jobs:
             echo "ERROR: r1_original.upt is missing"
             echo "============================================================"
             echo ""
-            echo "The firmware packer requires:"
-            echo ""
-            echo "  sonix-packer/r1_original.upt"
-            echo ""
-            echo "Add the official HiBy R1 stock firmware to that location."
+            echo "Expected file:"
+            echo "sonix-packer/r1_original.upt"
             echo ""
             exit 1
           fi
@@ -160,7 +178,7 @@ jobs:
           ls -lh sonix-packer/r1_original.upt
 
       # ============================================================
-      # CREATE R1.UPT
+      # CREATE R1 FIRMWARE
       # ============================================================
       - name: Create R1 firmware
         working-directory: sonix-packer
@@ -168,7 +186,7 @@ jobs:
           set -eux
 
           echo "============================================"
-          echo "Creating R1 firmware"
+          echo "CREATING R1.UPT"
           echo "============================================"
 
           ./sonix_firmware_packer.sh
@@ -178,14 +196,14 @@ jobs:
 
           echo ""
           echo "============================================"
-          echo "R1 FIRMWARE CREATED"
+          echo "R1.UPT CREATED SUCCESSFULLY"
           echo "============================================"
 
           ls -lh r1.upt
           file r1.upt
 
       # ============================================================
-      # VERIFY FINAL FIRMWARE
+      # VERIFY FIRMWARE
       # ============================================================
       - name: Verify firmware
         run: |
@@ -211,13 +229,7 @@ jobs:
           retention-days: 30
 
       # ============================================================
-      # CREATE / UPDATE LATEST RELEASE
-      #
-      # Every successful push to main updates:
-      #
-      #   Latest R1 Firmware
-      #
-      # and replaces r1.upt with the newest build.
+      # PUBLISH / UPDATE LATEST RELEASE
       # ============================================================
       - name: Publish Latest R1 Firmware
         uses: softprops/action-gh-release@v2
@@ -227,19 +239,21 @@ jobs:
           body: |
             # Sonix Player — HiBy R1
 
-            Automatically generated firmware from the latest successful `main` build.
+            Automatically generated from the latest successful
+            `main` branch build.
 
             ## Firmware
 
-            - `r1.upt` — HiBy R1 firmware
+            `r1.upt`
 
-            ## Build
+            ## Build Information
 
             - Commit: `${{ github.sha }}`
             - Branch: `${{ github.ref_name }}`
             - Build: `${{ github.run_number }}`
 
-            This release is automatically updated after every successful build.
+            This release is automatically updated after every
+            successful build.
           files: |
             sonix-packer/r1.upt
           draft: false
