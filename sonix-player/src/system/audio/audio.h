@@ -67,6 +67,9 @@ bool audio_playback_context_active(void);
 // powers the HBC3000 back up) instead of skipping it as "no change". Without
 // it the first play after standby reboots the device.
 void audio_force_output_reinit_after_resume(void);
+// Moves the route to the unused socket so the driver mutes the one in use
+// before mem cuts the amplifier's power (R3 Pro II; see audio.c).
+void audio_park_output_before_suspend(void);
 
 // True while the playback thread holds an open PCM handle. The suspend path
 // waits for this to go false: an ALSA stream must never live across a system

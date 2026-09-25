@@ -922,6 +922,10 @@ static void suspend_to_ram(void) {
 		return;
 	}
 
+	// 1-bis. The socket in use muted by the driver, so the amplifier losing
+	//        its power is not heard in the headphones.
+	audio_park_output_before_suspend();
+
 	// 2. The time written where it survives: the RTC domain stays powered in
 	//    suspend (RTCLDO at 1.8 V), but the copy in config is the insurance.
 	clock_remember();

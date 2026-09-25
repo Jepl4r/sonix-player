@@ -258,6 +258,42 @@ void audio_force_output_reinit_after_resume(void) {
 #endif
 }
 
+// The pop into the headphones as the R3 Pro II goes into mem.
+//
+// mem cuts the HBC3000's power with its output stage still switched on to the
+// socket, and the amplifier losing its supply with the headphones connected is
+// the thump. The mixer offers no mute for that stage -- the card's controls are
+// the route, the balanced line-out flag and DOP_EN, the codec's are before the
+// amplifier -- but a route change is the machine driver's own orderly sequence
+// (mute the old port, reconfigure, unmute the new one), and it is silent: the
+// re-init above runs one at every wake and nobody hears it.
+//
+// So before the suspend the route is moved to the other socket, the empty one.
+// The port in use is muted by the driver, and what goes down in mem is an
+// amplifier driving nothing. The wake needs nothing more: the re-init writes
+// the partner and then the real route, and the second write is a real change
+// from the parked one, which is the full sequence that powers the HBC3000 back.
+//
+// Called with the PCM closed: audio_suspend_freeze() has run.
+void audio_park_output_before_suspend(void) {
+	if (alsa_board_is_cs43131()) {
+		return; // no HBC3000, and no thump to take away
+	}
+	int x = detect_output();
+	if (x < 1 || x > 3) {
+		return; // not one of the analogue sockets
+	}
+	int y = output_reinit_partner(x);
+	fprintf(stderr, "audio: output parked on %d before mem (was %d)\n", y, x);
+#ifndef HOST_BUILD
+	alsa_set_control("Output Port Switch", y);
+	usleep(120 * 1000); // the driver's mute and route change, before the power goes
+	// Written by hand like the re-init: the cache follows, so a suspend that
+	// fails after this puts the real route back at the next play.
+	alsa_controls_note_output(y);
+#endif
+}
+
 // True while the playback thread holds an open PCM handle. The suspend path
 // waits on this: no ALSA object may be alive when the SoC stops.
 static volatile bool pcm_device_open = false;
