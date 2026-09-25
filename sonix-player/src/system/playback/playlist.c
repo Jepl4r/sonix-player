@@ -223,7 +223,7 @@ bool playlist_is_playable_file(const char *name) {
 	// any other in the browser, and a folder of them has to queue.
 	static const char *const playable_exts[] = {".wav",  ".mp3",  ".flac", ".ogg", ".m4b", ".m4a",
 												 ".alac", ".aac",  ".dsf",  ".dff", ".aif", ".aiff",
-												 ".aifc", ".caf",  ".opus", ".wv"};
+												 ".aifc", ".caf",  ".opus", ".wv",   ".ape"};
 
 	if (!name || playlist_is_junk_name(name)) {
 		return false;

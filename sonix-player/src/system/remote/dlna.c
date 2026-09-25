@@ -481,6 +481,10 @@ static void extension_for(const char *content_type, const char *url, char *out, 
 		{"audio/x-wavpack", "wv"},
 		{"audio/wavpack", "wv"},
 
+		{"audio/x-ape", "ape"},
+		{"audio/ape", "ape"},
+		{"audio/x-monkeys-audio", "ape"},
+
 		{"audio/dsd", "dsf"},
 		{"audio/x-dsd", "dsf"},
 		{"audio/x-dsf", "dsf"},

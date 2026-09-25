@@ -2,6 +2,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/shell/spinner.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
 
@@ -26,7 +27,13 @@ static lv_obj_t *icon;
 static lv_obj_t *label;
 static lv_timer_t *hide_timer;
 
+// The busy card's spinner, alive only while it shows.
+static lv_obj_t *busy_spinner;
+
 static void toast_dismiss(void) {
+	if (busy_spinner) {
+		return; // only toast_busy_end() takes the busy card away
+	}
 	if (veil) {
 		lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
 	}
@@ -103,6 +110,10 @@ static void show(const lv_image_dsc_t *glyph, lv_color_t colour, const char *tex
 	if (!card) {
 		return;
 	}
+	if (busy_spinner) {
+		lv_obj_delete(busy_spinner);
+		busy_spinner = NULL;
+	}
 
 	if (glyph) {
 		lv_image_set_src(icon, glyph);
@@ -128,3 +139,28 @@ void toast_error(const char *text) { show(&icon_circle_alert, TOAST_RED, text); 
 void toast_plain(const char *text) { show(NULL, TOAST_GREEN, text); }
 
 void toast_glyph(const lv_image_dsc_t *glyph, const char *text) { show(glyph, TOAST_GREEN, text); }
+
+void toast_busy(const char *text) {
+	if (!card) {
+		return;
+	}
+	lv_timer_pause(hide_timer);
+	lv_obj_add_flag(icon, LV_OBJ_FLAG_HIDDEN);
+	if (!busy_spinner) {
+		busy_spinner = spinner_create(card, &icon_loader_big);
+		lv_obj_move_to_index(busy_spinner, 0);
+	}
+	lv_obj_set_height(card, TOAST_HEIGHT);
+	lv_label_set_text(label, text ? tr(text) : "");
+	lv_obj_remove_flag(veil, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_move_foreground(veil);
+}
+
+void toast_busy_end(void) {
+	if (!busy_spinner) {
+		return;
+	}
+	lv_obj_delete(busy_spinner);
+	busy_spinner = NULL;
+	lv_obj_add_flag(veil, LV_OBJ_FLAG_HIDDEN);
+}

@@ -6,6 +6,7 @@
 #include "src/system/decode/mp4.h"
 #include "src/system/decode/stb_vorbis_decl.h"
 #include "src/system/decode/wavpackdec.h"
+#include "src/system/decode/apedec.h"
 #include "src/system/core/utils.h"
 
 #include <opusfile.h>
@@ -598,6 +599,18 @@ static bool read_wavpack_embedded(const char *filepath, albumart_t *out) {
 	return ok;
 }
 
+// Monkey's Audio keeps its cover the same way, in an APEv2 tag at the end.
+static bool read_ape_embedded(const char *filepath, albumart_t *out) {
+	size_t size = 0;
+	unsigned char *image = apedec_cover(filepath, ALBUMART_MAX_BYTES, &size);
+	if (!image)
+		return false;
+
+	bool ok = take_picture(out, image, size);
+	free(image);
+	return ok;
+}
+
 // ---------------------------------------------------------------------------
 // Folder fallback: cover.jpg & friends sitting next to the music
 // ---------------------------------------------------------------------------
@@ -807,6 +820,8 @@ static bool read_embedded(const char *filepath, albumart_t *out) {
 		return read_opus_embedded(filepath, out);
 	case DECODE_FORMAT_WAVPACK:
 		return read_wavpack_embedded(filepath, out);
+	case DECODE_FORMAT_APE:
+		return read_ape_embedded(filepath, out);
 	case DECODE_FORMAT_DSD:
 		return has_extension(filepath, ".dsf") && read_dsf_embedded(filepath, out);
 	case DECODE_FORMAT_SNDFILE:

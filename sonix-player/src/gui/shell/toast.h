@@ -30,4 +30,10 @@ void toast_plain(const char *text);
 // own symbol says more than a tick does: a bookmark saved wears a bookmark.
 void toast_glyph(const lv_image_dsc_t *glyph, const char *text);
 
+// The card with a spinner instead of a glyph, for work the user waits on. It
+// stays, and a tap does not take it away, until toast_busy_end() or the next
+// toast replaces it.
+void toast_busy(const char *text);
+void toast_busy_end(void);
+
 #endif /* TOAST_H */

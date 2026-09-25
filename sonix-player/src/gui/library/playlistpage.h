@@ -20,4 +20,8 @@ void playlistpage_open(void);
 // Pick: choose (or create) the playlist `track_path` is added to.
 void playlistpage_add_track(const char *track_path);
 
+// Pick for a set of local tracks: the chosen playlist gets all of them, in this
+// order, written in the background. The page keeps its own copy of the paths.
+void playlistpage_add_tracks(const char *const *paths, int count);
+
 #endif /* PLAYLISTPAGE_H */

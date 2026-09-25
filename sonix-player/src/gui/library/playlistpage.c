@@ -59,6 +59,92 @@ static char pending_track[512];
 static long pending_qobuz_id;
 static long pending_tidal_id;
 
+// Picker mode for a set of tracks at once (the library lists' selection): the
+// paths waiting for a playlist, owned by this page. Always local files.
+static char **pending_many;
+static int pending_many_count;
+
+static void pending_many_free(void) {
+	for (int i = 0; i < pending_many_count; i++) {
+		free(pending_many[i]);
+	}
+	free(pending_many);
+	pending_many = NULL;
+	pending_many_count = 0;
+}
+
+// ---------------------------------------------------------------------------
+// Adding a set of tracks
+//
+// Every track costs a read of its tags and of its length, which for a few
+// albums at once is seconds of card access. It runs on a thread of its own, one
+// set at a time, under a card that says so and stays until it is done.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	char name[NAME_MAX + 1];
+	char **paths;
+	int count;
+	int added;
+} batch_t;
+
+static pthread_mutex_t batch_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static void batch_done_cb(void *arg) {
+	batch_t *b = arg;
+	toast_busy_end();
+	if (b->added == b->count) {
+		toast_success("playlist_tracks_added");
+	} else if (b->added > 0) {
+		toast_error("playlist_some_tracks_not_added");
+	} else {
+		gui_notify_popup("playlist_cannot_add_the_tracks");
+	}
+	for (int i = 0; i < b->count; i++) {
+		free(b->paths[i]);
+	}
+	free(b->paths);
+	free(b);
+}
+
+static void *batch_worker(void *arg) {
+	batch_t *b = arg;
+	thread_be_low_priority("playlistadd");
+	pthread_mutex_lock(&batch_lock);
+	for (int i = 0; i < b->count; i++) {
+		if (playlists_add_track(b->name, b->paths[i])) {
+			b->added++;
+		}
+	}
+	pthread_mutex_unlock(&batch_lock);
+	gui_post(batch_done_cb, b);
+	return NULL;
+}
+
+// Hands the pending set to a worker that adds it to `name`. False when nothing
+// could be started; the set is gone either way.
+static bool batch_start(const char *name) {
+	batch_t *b = calloc(1, sizeof(*b));
+	if (!b) {
+		pending_many_free();
+		return false;
+	}
+	snprintf(b->name, sizeof(b->name), "%s", name);
+	b->paths = pending_many;
+	b->count = pending_many_count;
+	pending_many = NULL;
+	pending_many_count = 0;
+
+	toast_busy("playlist_adding_tracks");
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, batch_worker, b) != 0) {
+		batch_done_cb(b);
+		return false;
+	}
+	pthread_detach(thread);
+	return true;
+}
+
 // The naming dialog.
 static lv_obj_t *name_layer; // full-screen cover holding the field + keyboard
 static lv_obj_t *name_field;
@@ -132,6 +218,12 @@ static void row_clicked_cb(lv_event_t *e) {
 
 	if (!picking) {
 		open_playlist(name);
+		return;
+	}
+
+	if (pending_many_count > 0) {
+		batch_start(name);
+		back_btn_cb(NULL);
 		return;
 	}
 
@@ -848,6 +940,12 @@ static void name_accept_cb(lv_event_t *e) {
 
 	name_layer_hide();
 
+	if (picking && pending_many_count > 0) {
+		batch_start(name);
+		back_btn_cb(NULL);
+		return;
+	}
+
 	if (picking && pending_track[0]) {
 		if (playlists_add_track(name, pending_track)) {
 			toast_success("playlist_track_added");
@@ -967,6 +1065,7 @@ static void rebuild_rows(void) {
 void playlistpage_open(void) {
 	picking = false;
 	pending_track[0] = '\0';
+	pending_many_free();
 	pending_qobuz_id = 0;
 	pending_tidal_id = 0;
 	lv_label_set_text(title_label, tr("playlists"));
@@ -982,6 +1081,7 @@ void playlistpage_add_track(const char *track_path) {
 		return;
 	}
 	picking = true;
+	pending_many_free();
 	snprintf(pending_track, sizeof(pending_track), "%s", track_path);
 	pending_qobuz_id = qobuzcache_track_id(track_path);
 	pending_tidal_id = tidalcache_track_id(track_path);
@@ -996,6 +1096,36 @@ void playlistpage_add_track(const char *track_path) {
 	// While the page is choosing where a track goes it is not somewhere to
 	// import from: the corner button would open a dialog over a half-finished
 	// action.
+	lv_obj_add_flag(import_btn, LV_OBJ_FLAG_HIDDEN);
+	rebuild_rows();
+	switch_screen(playlistpage_screen);
+}
+
+void playlistpage_add_tracks(const char *const *paths, int count) {
+	pending_many_free();
+	if (!paths || count <= 0) {
+		return;
+	}
+	pending_many = malloc((size_t)count * sizeof(*pending_many));
+	if (!pending_many) {
+		return;
+	}
+	for (int i = 0; i < count; i++) {
+		pending_many[pending_many_count] = strdup(paths[i] ? paths[i] : "");
+		if (!pending_many[pending_many_count]) {
+			pending_many_free();
+			return;
+		}
+		pending_many_count++;
+	}
+
+	picking = true;
+	pending_track[0] = '\0';
+	pending_qobuz_id = 0;
+	pending_tidal_id = 0;
+	lv_label_set_text(title_label, tr("playlist_add_to_playlist_2"));
+	name_layer_hide();
+	import_layer_hide();
 	lv_obj_add_flag(import_btn, LV_OBJ_FLAG_HIDDEN);
 	rebuild_rows();
 	switch_screen(playlistpage_screen);

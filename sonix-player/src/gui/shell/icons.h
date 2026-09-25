@@ -66,6 +66,7 @@ extern const lv_image_dsc_t icon_album_big;
 extern const lv_image_dsc_t icon_circle_play;
 extern const lv_image_dsc_t icon_ellipsis_vertical;
 extern const lv_image_dsc_t icon_list_music;
+extern const lv_image_dsc_t icon_list_plus;
 extern const lv_image_dsc_t icon_search;
 extern const lv_image_dsc_t icon_wifi;
 extern const lv_image_dsc_t icon_bluetooth;
