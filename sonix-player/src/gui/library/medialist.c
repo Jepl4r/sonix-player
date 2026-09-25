@@ -2563,14 +2563,14 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	bool want_album = artist_tracks;
 	// The circle-play menu, wherever "play all of this" is a question worth
 	// asking: an artist's records, an artist's tracks, all the records, all the
-	// tracks, the favourites, a playlist. Not on the name lists, where a row is
-	// not a set of tracks, and not inside one album, where a tap on the first
-	// row is the whole answer.
+	// tracks, the favourites, a playlist, inside one album. Not on the name lists,
+	// where a row is not a set of tracks.
 	bool want_play = artist_albums || (kind == LIBRARY_LIST_ALBUMS && filter == LIBRARY_FILTER_NONE) ||
 					 kind == LIBRARY_LIST_FAVOURITES || kind == LIBRARY_LIST_PLAYLIST ||
 					 (kind == LIBRARY_LIST_TRACKS &&
 					  (filter == LIBRARY_FILTER_NONE || filter == LIBRARY_FILTER_ARTIST ||
-					   filter == LIBRARY_FILTER_ALBUM_ARTIST));
+					   filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_ALBUM));
+
 	bool want_sort = sortable && !(artist_tracks && artist_album_order);
 	bool want_reverse = kind == LIBRARY_LIST_FAVOURITES;
 	// A playlist is the only list whose order belongs to the user. Every other
