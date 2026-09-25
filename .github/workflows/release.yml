@@ -1,5 +1,9 @@
 name: Build R1 Firmware
 
+concurrency:
+  group: sonix-r1-${{ github.ref }}
+  cancel-in-progress: false
+
 on:
   push:
     branches:
@@ -10,75 +14,135 @@ on:
 permissions:
   contents: write
 
+env:
+  # --------------------------------------------------------------
+  # Rockbox toolchain locations used by this project's bundled
+  # rockboxdev.sh.
+  # --------------------------------------------------------------
+  RBDEV_HOST_PREFIX: ${{ github.workspace }}/sonix-player/rockbox-toolchain
+  RBDEV_DOWNLOAD: ${{ github.workspace }}/sonix-player/.cache/rbdev-dl
+  RBDEV_BUILD: ${{ github.workspace }}/sonix-player/.cache/rbdev-build
+  MAKEFLAGS: -j2
+
+  # --------------------------------------------------------------
+  # Base R1 firmware used as the input image by the packer.
+  # This is separate from the release produced by this workflow.
+  # --------------------------------------------------------------
+  BASE_FIRMWARE_REPO: Starnished66/compas-player
+  BASE_FIRMWARE_RELEASE: staging-image-base
+
+  # Rolling release produced by this workflow.
+  LATEST_RELEASE_TAG: latest
+
 jobs:
   build:
     name: Build R1 Firmware
-    runs-on: ubuntu-22.04
-    timeout-minutes: 120
+    runs-on: ubuntu-24.04
+    timeout-minutes: 240
 
     steps:
-
       # ============================================================
       # CHECKOUT
       # ============================================================
       - name: Checkout repository
         uses: actions/checkout@v4
         with:
-          fetch-depth: 0
+          fetch-depth: 1
 
       # ============================================================
-      # INSTALL BUILD DEPENDENCIES
+      # RESTORE ROCKBOX TOOLCHAIN + DOWNLOADED SOURCES
       # ============================================================
-      - name: Install build dependencies
+      - name: Restore Rockbox toolchain cache
+        id: toolchain-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            sonix-player/rockbox-toolchain
+            sonix-player/.cache/rbdev-dl
+            sonix-player/.cache/rbdev-build
+          key: sonix-r1-toolchain-v8-${{ runner.os }}-${{ hashFiles('sonix-player/rockboxdev/rockboxdev.sh', 'sonix-player/rockboxdev/toolchain-patches/**') }}
+
+      # ============================================================
+      # RESTORE TARGET LIBRARY CACHE
+      # ============================================================
+      - name: Restore target library cache
+        id: libs-cache
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            sonix-player/freetype-target
+            sonix-player/audio-target
+            sonix-player/freetype-2.13.3.tar.xz
+            sonix-player/libogg-1.3.5.tar.gz
+            sonix-player/opus-1.4.tar.gz
+            sonix-player/opusfile-0.12.tar.gz
+            sonix-player/wavpack-5.6.0.tar.bz2
+          key: sonix-r1-libs-v3-${{ runner.os }}-${{ hashFiles('sonix-player/Makefile') }}
+
+      # ============================================================
+      # INSTALL HOST BUILD DEPENDENCIES
+      #
+      # Important:
+      # The bundled rockboxdev.sh rebuilds legacy GLib 2.46.2.
+      # Its compatibility path runs autoreconf, which requires
+      # gtkdocize from gtk-doc-tools.
+      # ============================================================
+      - name: Install build and packaging dependencies
+        shell: bash
         run: |
-          set -eux
+          set -euo pipefail
 
           sudo apt-get update
 
-          sudo apt-get install -y \
-            build-essential \
-            gcc \
-            g++ \
-            make \
-            git \
-            wget \
-            curl \
-            pkg-config \
-            python3 \
-            python3-pip \
-            texinfo \
-            bison \
-            flex \
-            bc \
-            rsync \
-            file \
-            xz-utils \
-            bzip2 \
-            gzip \
-            tar \
-            p7zip-full \
-            squashfs-tools \
-            genisoimage \
-            libasound2-dev \
-            libtool \
-            libtool-bin \
+          sudo apt-get install -y --no-install-recommends \
             autoconf \
             automake \
+            autopoint \
+            bc \
+            bison \
+            build-essential \
+            bzip2 \
+            ca-certificates \
+            curl \
+            file \
+            flex \
+            genisoimage \
+            gettext \
+            gh \
+            git \
+            gzip \
+            gtk-doc-tools \
+            libasound2-dev \
             libgmp-dev \
+            libmpc-dev \
             libmpfr-dev \
-            libmpc-dev
+            libtool \
+            libtool-bin \
+            make \
+            patch \
+            p7zip-full \
+            pkg-config \
+            python3 \
+            rsync \
+            squashfs-tools \
+            tar \
+            texinfo \
+            wget \
+            xz-utils
 
-          echo ""
           echo "============================================"
-          echo "BUILD ENVIRONMENT"
+          echo "HOST ENVIRONMENT"
           echo "============================================"
 
-          echo "Ubuntu:"
           lsb_release -ds
 
           echo ""
           echo "GCC:"
           gcc --version | head -1
+
+          echo ""
+          echo "G++:"
+          g++ --version | head -1
 
           echo ""
           echo "Make:"
@@ -89,180 +153,291 @@ jobs:
           python3 --version
 
           echo ""
+          echo "Autoconf:"
+          autoconf --version | head -1
+
+          echo ""
+          echo "Automake:"
+          automake --version | head -1
+
+          echo ""
           echo "Libtool:"
           libtool --version | head -1
 
           echo ""
-          echo "GMP:"
+          echo "GTK Doc:"
+          gtkdocize --version | head -1
+
+          echo ""
+          echo "Autoreconf:"
+          autoreconf --version | head -1
+
+          echo ""
+          echo "GitHub CLI:"
+          gh --version | head -1
+
+          echo ""
+          echo "Required GCC libraries:"
           dpkg -s libgmp-dev | grep '^Version:'
-
-          echo ""
-          echo "MPFR:"
           dpkg -s libmpfr-dev | grep '^Version:'
-
-          echo ""
-          echo "MPC:"
           dpkg -s libmpc-dev | grep '^Version:'
 
       # ============================================================
-      # VERIFY PROJECT
+      # VERIFY PROJECT STRUCTURE
       # ============================================================
       - name: Verify project
+        shell: bash
         run: |
-          set -eux
-
-          echo "============================================"
-          echo "VERIFY PROJECT"
-          echo "============================================"
+          set -euo pipefail
 
           test -f sonix-player/Makefile
           test -f sonix-player/rockboxdev/rockboxdev.sh
+          test -d sonix-player/rockboxdev/toolchain-patches
+
           test -f sonix-packer/sonix_firmware_packer.sh
           test -d sonix-packer/assets/R1
 
           chmod +x sonix-player/rockboxdev/rockboxdev.sh
           chmod +x sonix-packer/sonix_firmware_packer.sh
 
-          echo ""
-          echo "Project structure:"
-          find . \
-            -path './.git' -prune -o \
-            -path './__MACOSX' -prune -o \
-            -maxdepth 3 \
-            -type f \
-            -print | sort | head -200
+          echo "Project structure verified."
 
       # ============================================================
-      # SHOW ROCKBOX BUILD CONFIGURATION
+      # VERIFY GLIB 2.46.2 COMPATIBILITY WORKAROUND
       # ============================================================
-      - name: Check Rockbox configuration
-        working-directory: sonix-player
+      - name: Verify Rockbox GLib compatibility fix
+        shell: bash
         run: |
-          set -eux
+          set -euo pipefail
 
-          echo "============================================"
-          echo "ROCKBOX CONFIGURATION"
-          echo "============================================"
+          SCRIPT="sonix-player/rockboxdev/rockboxdev.sh"
 
-          grep -n \
-            -E 'glib_ver|glibc_ver|gcc_ver|binutils_ver|mpc|mpfr' \
-            rockboxdev/rockboxdev.sh || true
+          grep -q 'glib_ver="2.46.2"' "$SCRIPT"
+          grep -q 'm4_copy_force' "$SCRIPT"
+          grep -q 'autoreconf -fiv' "$SCRIPT"
+          grep -q -- '--disable-gtk-doc' "$SCRIPT"
 
-          echo ""
-          echo "GLib compatibility code:"
-          sed -n '275,295p' rockboxdev/rockboxdev.sh
+          echo "GLib 2.46.2 compatibility workaround verified."
+
+      # ============================================================
+      # REPORT CACHE STATUS
+      # ============================================================
+      - name: Report cache status
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          echo "Toolchain cache hit: ${{ steps.toolchain-cache.outputs.cache-hit }}"
+          echo "Library cache hit:    ${{ steps.libs-cache.outputs.cache-hit }}"
+
+          if [ -x "sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc" ]; then
+            echo ""
+            echo "Cached cross compiler found:"
+            sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc --version | head -1
+          else
+            echo ""
+            echo "No cached cross compiler found."
+            echo "rockboxdev.sh will build the toolchain."
+          fi
 
       # ============================================================
       # BUILD SONIX PLAYER
-      #
-      # The Makefile automatically:
-      #
-      #   1. Builds the Rockbox MIPS toolchain
-      #   2. Builds FreeType
-      #   3. Builds libogg
-      #   4. Builds libopus
-      #   5. Builds opusfile
-      #   6. Builds WavPack
-      #   7. Builds Sonix Player
-      #
-      # IMPORTANT:
-      # Do not manually invoke rockboxdev.sh here.
-      # The Makefile handles the dependency chain.
       # ============================================================
       - name: Build Sonix Player
         working-directory: sonix-player
+        shell: bash
         run: |
-          set -eux
+          set -uo pipefail
 
           echo "============================================"
-          echo "BUILDING SONIX PLAYER"
+          echo "BUILDING SONIX PLAYER FOR HIBY R1"
           echo "============================================"
 
-          make target -j2
+          make BOARD=r1 target
+          status=$?
 
-          echo ""
-          echo "============================================"
-          echo "SONIX PLAYER BUILD COMPLETE"
-          echo "============================================"
+          if [ "$status" -ne 0 ]; then
+            echo ""
+            echo "============================================"
+            echo "ROCKBOX BUILD FAILED"
+            echo "============================================"
+            echo ""
 
-          test -f sonix_player
+            echo "Available Rockbox logs:"
+            find .cache/rbdev-build \
+              -type f \
+              -name '*.log' \
+              -print 2>/dev/null || true
+
+            for log in .cache/rbdev-build/build-*.log; do
+              [ -f "$log" ] || continue
+
+              echo ""
+              echo "---------------- $log ----------------"
+              tail -n 200 "$log" || true
+            done
+
+            exit "$status"
+          fi
+
+          test -x sonix_player
           test -s sonix_player
 
           echo ""
-          echo "Binary:"
-          ls -lh sonix_player
+          echo "============================================"
+          echo "SONIX PLAYER BUILD SUCCESSFUL"
+          echo "============================================"
 
-          echo ""
-          echo "File:"
+          ls -lh sonix_player
           file sonix_player
+
+      # ============================================================
+      # SAVE TOOLCHAIN CACHE ONLY AFTER A SUCCESSFUL BUILD
+      # ============================================================
+      - name: Save Rockbox toolchain cache
+        if: success() && steps.toolchain-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            sonix-player/rockbox-toolchain
+            sonix-player/.cache/rbdev-dl
+            sonix-player/.cache/rbdev-build
+          key: ${{ steps.toolchain-cache.outputs.cache-primary-key }}
+
+      # ============================================================
+      # SAVE TARGET LIBRARY CACHE
+      # ============================================================
+      - name: Save target library cache
+        if: success() && steps.libs-cache.outputs.cache-hit != 'true'
+        uses: actions/cache/save@v4
+        with:
+          path: |
+            sonix-player/freetype-target
+            sonix-player/audio-target
+            sonix-player/freetype-2.13.3.tar.xz
+            sonix-player/libogg-1.3.5.tar.gz
+            sonix-player/opus-1.4.tar.gz
+            sonix-player/opusfile-0.12.tar.gz
+            sonix-player/wavpack-5.6.0.tar.bz2
+          key: ${{ steps.libs-cache.outputs.cache-primary-key }}
+
+      # ============================================================
+      # VERIFY TARGET ELF
+      # ============================================================
+      - name: Verify target binary
+        working-directory: sonix-player
+        shell: bash
+        run: |
+          set -euo pipefail
+
+          test -x sonix_player
+          test -s sonix_player
+
+          file sonix_player
+
+          rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-readelf \
+            -h sonix_player \
+            | grep -E 'Class:|Data:|Machine:'
+
+          rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-readelf \
+            --version-info sonix_player \
+            > /tmp/sonix-readelf-version-info.txt || true
 
       # ============================================================
       # PREPARE FIRMWARE PACKER
       # ============================================================
       - name: Prepare firmware packer
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
         run: |
-          set -eux
+          set -euo pipefail
 
-          echo "============================================"
-          echo "PREPARING FIRMWARE PACKER"
-          echo "============================================"
+          mkdir -p sonix-packer/release
 
-          chmod +x sonix-packer/sonix_firmware_packer.sh
-
-          cp \
+          cp -f \
             sonix-player/sonix_player \
             sonix-packer/sonix_player
 
-          test -f sonix-packer/sonix_player
+          chmod +x sonix-packer/sonix_player
+          chmod +x sonix-packer/sonix_firmware_packer.sh
+
+          # --------------------------------------------------------
+          # Download the base R1 firmware automatically.
+          # The downloaded r1.upt becomes r1_original.upt for the
+          # packer.
+          # --------------------------------------------------------
+          rm -f sonix-packer/r1_original.upt
+
+          gh release download "$BASE_FIRMWARE_RELEASE" \
+            --repo "$BASE_FIRMWARE_REPO" \
+            --pattern 'r1.upt' \
+            --dir sonix-packer \
+            --clobber
+
+          mv -f \
+            sonix-packer/r1.upt \
+            sonix-packer/r1_original.upt
+
+          test -s sonix-packer/r1_original.upt
           test -s sonix-packer/sonix_player
 
-          echo ""
-          echo "Packer directory:"
-          ls -lah sonix-packer
+          echo "============================================"
+          echo "PACKER INPUTS"
+          echo "============================================"
+
+          file sonix-packer/r1_original.upt
+
+          ls -lh \
+            sonix-packer/r1_original.upt \
+            sonix-packer/sonix_player
 
       # ============================================================
-      # CHECK STOCK R1 FIRMWARE
+      # VERIFY PACKAGING TOOLS
       # ============================================================
-      - name: Check stock R1 firmware
+      - name: Verify firmware packaging tools
+        shell: bash
         run: |
-          set -eux
+          set -euo pipefail
 
-          echo "============================================"
-          echo "CHECKING STOCK R1 FIRMWARE"
-          echo "============================================"
+          for tool in \
+            7z \
+            unsquashfs \
+            mksquashfs \
+            split \
+            tar
+          do
+            command -v "$tool" >/dev/null || {
+              echo "Missing packaging tool: $tool"
+              exit 1
+            }
+          done
 
-          if [ ! -f sonix-packer/r1_original.upt ]; then
-            echo ""
-            echo "============================================================"
-            echo "ERROR: Missing r1_original.upt"
-            echo "============================================================"
-            echo ""
-            echo "The firmware packer requires:"
-            echo ""
-            echo "    sonix-packer/r1_original.upt"
-            echo ""
-            echo "Add the original HiBy R1 firmware to the repository."
-            echo ""
-            exit 1
-          fi
+          ISO_TOOL=""
 
-          if [ ! -s sonix-packer/r1_original.upt ]; then
-            echo ""
-            echo "ERROR: r1_original.upt exists but is empty."
-            echo ""
-            exit 1
-          fi
+          for tool in \
+            mkisofs \
+            genisoimage \
+            xorrisofs
+          do
+            if command -v "$tool" >/dev/null 2>&1; then
+              ISO_TOOL="$tool"
+              break
+            fi
+          done
 
-          echo "Stock firmware found:"
-          ls -lh sonix-packer/r1_original.upt
+          test -n "$ISO_TOOL"
+
+          echo "Using ISO writer: $ISO_TOOL"
 
       # ============================================================
       # CREATE R1.UPT
       # ============================================================
-      - name: Create R1 firmware
+      - name: Build R1 firmware
         working-directory: sonix-packer
+        shell: bash
         run: |
-          set -eux
+          set -euo pipefail
 
           echo "============================================"
           echo "CREATING R1.UPT"
@@ -270,7 +445,6 @@ jobs:
 
           ./sonix_firmware_packer.sh
 
-          test -f r1.upt
           test -s r1.upt
 
           echo ""
@@ -278,35 +452,43 @@ jobs:
           echo "R1.UPT CREATED SUCCESSFULLY"
           echo "============================================"
 
-          echo ""
-          echo "Firmware:"
           ls -lh r1.upt
-
-          echo ""
-          echo "File information:"
           file r1.upt
 
       # ============================================================
-      # VERIFY FINAL OUTPUT
+      # GENERATE RELEASE FILES
       # ============================================================
-      - name: Verify firmware
+      - name: Generate release files
+        shell: bash
         run: |
-          set -eux
+          set -euo pipefail
+
+          cp -f \
+            sonix-packer/r1.upt \
+            sonix-packer/release/r1.upt
+
+          cp -f \
+            sonix-player/sonix_player \
+            sonix-packer/release/sonix_player
+
+          cp -f \
+            /tmp/sonix-readelf-version-info.txt \
+            sonix-packer/release/sonix-readelf-version-info.txt
+
+          sha256sum \
+            sonix-packer/release/r1.upt \
+            sonix-packer/release/sonix_player \
+            > sonix-packer/release/SHA256SUMS
 
           echo "============================================"
-          echo "FINAL VERIFICATION"
+          echo "RELEASE FILES"
           echo "============================================"
 
-          test -f sonix-packer/r1.upt
-          test -s sonix-packer/r1.upt
+          ls -lh sonix-packer/release
 
           echo ""
-          echo "R1 firmware:"
-          ls -lh sonix-packer/r1.upt
-
-          echo ""
-          echo "Sonix Player:"
-          ls -lh sonix-player/sonix_player
+          echo "Checksums:"
+          cat sonix-packer/release/SHA256SUMS
 
       # ============================================================
       # UPLOAD GITHUB ACTION ARTIFACT
@@ -314,58 +496,119 @@ jobs:
       - name: Upload R1 firmware artifact
         uses: actions/upload-artifact@v4
         with:
-          name: sonix-player-r1-firmware
-          path: |
-            sonix-packer/r1.upt
-            sonix-player/sonix_player
+          name: r1-firmware-${{ github.sha }}
           if-no-files-found: error
+          path: |
+            sonix-packer/release/r1.upt
+            sonix-packer/release/SHA256SUMS
           retention-days: 30
 
       # ============================================================
-      # PUBLISH LATEST RELEASE
-      #
-      # Every successful build of main updates:
-      #
-      #     Latest R1 Firmware
+      # UPLOAD PLAYER BINARY ARTIFACT
+      # ============================================================
+      - name: Upload Sonix Player binary artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonix-player-r1-${{ github.sha }}
+          if-no-files-found: error
+          path: |
+            sonix-packer/release/sonix_player
+            sonix-packer/release/sonix-readelf-version-info.txt
+          retention-days: 30
+
+      # ============================================================
+      # CREATE / UPDATE LATEST R1 FIRMWARE RELEASE
       #
       # Release tag:
+      #   latest
       #
-      #     latest
+      # Release:
+      #   Latest R1 Firmware
       #
-      # Asset:
-      #
-      #     r1.upt
+      # Files:
+      #   r1.upt
+      #   SHA256SUMS
       # ============================================================
       - name: Publish Latest R1 Firmware
-        uses: softprops/action-gh-release@v2
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+
+          TAG="$LATEST_RELEASE_TAG"
+          TITLE="Latest R1 Firmware"
+
+          NOTES=$(cat <<EOF
+          # Sonix Player — HiBy R1
+
+          Automatically generated from the latest successful main build.
+
+          ## Files
+
+          - r1.upt — firmware image for HiBy R1
+          - SHA256SUMS — SHA-256 checksums
+
+          ## Build
+
+          - Commit: ${GITHUB_SHA}
+          - Run: ${GITHUB_RUN_NUMBER}
+
+          This release is updated automatically after each successful build.
+          EOF
+          )
+
+          if gh release view \
+            "$TAG" \
+            --repo "$GITHUB_REPOSITORY" \
+            >/dev/null 2>&1
+          then
+            echo "Updating existing $TAG release..."
+
+            gh release upload \
+              "$TAG" \
+              sonix-packer/release/r1.upt \
+              sonix-packer/release/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" \
+              --clobber
+
+            gh release edit \
+              "$TAG" \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" \
+              --notes "$NOTES" \
+              --latest
+
+          else
+            echo "Creating $TAG release..."
+
+            gh release create \
+              "$TAG" \
+              sonix-packer/release/r1.upt \
+              sonix-packer/release/SHA256SUMS \
+              --repo "$GITHUB_REPOSITORY" \
+              --title "$TITLE" \
+              --notes "$NOTES" \
+              --latest \
+              --target "$GITHUB_SHA"
+          fi
+
+          echo ""
+          echo "============================================"
+          echo "LATEST R1 RELEASE PUBLISHED"
+          echo "============================================"
+
+      # ============================================================
+      # UPLOAD DIAGNOSTICS IF ANY STEP FAILS
+      # ============================================================
+      - name: Upload build diagnostics on failure
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@v4
         with:
-          tag_name: latest
-          name: Latest R1 Firmware
-
-          body: |
-            # Sonix Player — HiBy R1
-
-            Automatically generated firmware from the latest
-            successful `main` branch build.
-
-            ## Firmware
-
-            `r1.upt`
-
-            ## Build Information
-
-            - Commit: `${{ github.sha }}`
-            - Branch: `${{ github.ref_name }}`
-            - Build: `${{ github.run_number }}`
-
-            This release is automatically updated after every
-            successful build.
-
-          files: |
-            sonix-packer/r1.upt
-
-          draft: false
-          prerelease: false
-          make_latest: true
-          fail_on_unmatched_files: true
-          overwrite_files: true
+          name: r1-build-diagnostics-${{ github.sha }}
+          if-no-files-found: ignore
+          path: |
+            sonix-player/.cache/rbdev-build/*.log
+            sonix-player/.cache/rbdev-build/**/*.log
+            sonix-packer/release
+          retention-days: 14
