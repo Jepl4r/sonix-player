@@ -49,6 +49,13 @@ int audiobook_speed_permille(void);
 bool audiobook_stop_at_chapter_end(void);
 void audiobook_set_stop_at_chapter_end(bool on);
 
+// Show duration: what the progress bar and its two clocks stand for on a book
+// with chapter marks. False (the default) is the whole file; true is the
+// chapter being listened to, from 0:00 to the chapter's own length. A book
+// with no marks shows the whole file either way.
+bool audiobook_duration_per_chapter(void);
+void audiobook_set_duration_per_chapter(bool on);
+
 // The sleep timer is one of the three in sleeptimer.h, which keeps the
 // audiobook one under the same [audiobook] keys. "Stop at the end of the
 // chapter" is the switch above, not a timer length.

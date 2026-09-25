@@ -142,14 +142,26 @@ void devoptions_init(gui_config_t *cfg) {
 	// Without it the switch would enable something without saying how to use it.
 	lv_obj_t *shot_card = settingsrow_toggle(container, "devoptions_enable_screenshots", &screenshot_switch, screenshot_toggled_cb);
 	lv_obj_t *shot_name = lv_obj_get_child(shot_card, 0);
-	lv_obj_align(shot_name, LV_ALIGN_TOP_LEFT, 0, 0);
+	lv_obj_t *shot_toggle = lv_obj_get_child(shot_card, 1);
 
 	lv_obj_t *shot_hint = lv_label_create(shot_card);
 	lv_label_set_text(shot_hint, tr("devoptions_screenshot_keys"));
-	lv_obj_set_width(shot_hint, lv_pct(72));
+	lv_obj_set_width(shot_hint, lv_pct(100));
+	lv_obj_set_style_pad_right(shot_hint, lv_obj_get_style_pad_right(shot_name, LV_PART_MAIN), 0);
 	lv_obj_add_style(shot_hint, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(shot_hint, &font_ui_18, 0);
-	lv_obj_align(shot_hint, LV_ALIGN_BOTTOM_LEFT, 0, 0);
+
+	// Name on top, keys at the bottom, in a column the card grows around: the
+	// keys take two lines in a long language or with large text, and a row of
+	// fixed height would draw them over the name. The row's own height stays
+	// the least it is, and the switch keeps to the middle of it.
+	int32_t row_height = lv_obj_get_style_height(shot_card, LV_PART_MAIN);
+	lv_obj_set_height(shot_card, LV_SIZE_CONTENT);
+	lv_obj_set_style_min_height(shot_card, row_height, 0);
+	lv_obj_set_flex_flow(shot_card, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(shot_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+	lv_obj_set_style_pad_row(shot_card, 2, 0);
+	lv_obj_add_flag(shot_toggle, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
 	if (screenshot_enabled()) {
 		lv_obj_add_state(screenshot_switch, LV_STATE_CHECKED);

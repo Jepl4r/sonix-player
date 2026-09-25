@@ -283,6 +283,14 @@ static bool backdrop_is_studio;
 static double current_total_length = 0; // cached from the last device_state snapshot, so slider math works between polls
 static char progress_label_text[32];
 
+// The stretch of the file the progress bar and its two clocks stand for. The
+// whole file, except on a book with chapters when Audiobooks -> Show duration
+// is set to the chapter: then only the chapter being listened to, so the bar
+// starts empty at every chapter and the right clock is the chapter's length.
+// `view_length` is 0 while the length of the file is not known.
+static double view_start;
+static double view_length;
+
 // True while the controls sit on a loaded cover's dark backdrop. The play
 // button wears its white disc there (it has to stand out against artwork);
 // on the plain no-cover panel it is flat, like prev and next.
@@ -695,21 +703,68 @@ static void update_queue_position(void) {
 	lv_label_set_text_fmt(queue_position_label, "%d/%d", (int)playlist_current_entry() + 1, count);
 }
 
+// Works out view_start and view_length for playback at `position` in a file
+// `total` seconds long. Asked on every poll rather than at a chapter change:
+// a seek, a skip or the book simply playing on moves into another chapter, and
+// nothing has to be told.
+static void view_update(double position, double total) {
+	view_start = 0;
+	view_length = total > 0 ? total : 0;
+	if (view_length <= 0 || !audiobook_mode || !audiobook_has_chapters || !audiobook_duration_per_chapter()) {
+		return;
+	}
+	int index = audiobook_chapter_at(position);
+	double start = 0;
+	if (index < 0 || !audiobook_chapter(index, NULL, 0, &start)) {
+		return;
+	}
+	double end = total;
+	if (!audiobook_chapter(index + 1, NULL, 0, &end) || end > total) {
+		end = total; // the last chapter ends where the file does
+	}
+	if (start < 0 || end - start < 1.0) {
+		return; // a mark with nothing after it: the whole file is the better answer
+	}
+	view_start = start;
+	view_length = end - start;
+}
+
+// Where `position` sits along the bar, 0 to 1000, the slider's range.
+static int view_value(double position) {
+	if (view_length <= 0) {
+		return 0;
+	}
+	double fraction = (position - view_start) / view_length;
+	if (fraction < 0) {
+		fraction = 0;
+	}
+	if (fraction > 1) {
+		fraction = 1;
+	}
+	return (int)(fraction * 1000);
+}
+
+// The other way round: the second of the file that slider value `value` is.
+static double view_seconds(int value) { return view_start + view_length * value / 1000.0; }
+
 // Writes the two clocks that sit under the ends of the progress bar: elapsed
-// on the left, total length on the right.
+// on the left, total length on the right -- both of the file, or both of the
+// chapter (see view_start).
 static void set_progress_label(double current_secs, double total_secs) {
-	if (total_secs <= 0) {
-		current_secs = 0;
-		total_secs = 0;
-	} else {
-		int value = (current_secs / total_secs) * 1000;
-		lv_slider_set_value(progress_slider, value, LV_ANIM_OFF);
+	view_update(current_secs, total_secs);
+	double shown = 0;
+	if (view_length > 0) {
+		lv_slider_set_value(progress_slider, view_value(current_secs), LV_ANIM_OFF);
+		shown = current_secs - view_start;
+		if (shown < 0) {
+			shown = 0;
+		}
 	}
 
-	formatDoubleSeconds(current_secs, progress_label_text, sizeof(progress_label_text));
+	formatDoubleSeconds(shown, progress_label_text, sizeof(progress_label_text));
 	lv_label_set_text(elapsed_label, progress_label_text);
 
-	formatDoubleSeconds(total_secs, progress_label_text, sizeof(progress_label_text));
+	formatDoubleSeconds(view_length, progress_label_text, sizeof(progress_label_text));
 	lv_label_set_text(remaining_label, progress_label_text);
 
 	// Written from here because this is the one place that runs on every poll
@@ -1521,16 +1576,13 @@ static void wave_geometry(int *bar_w, int *left) {
 // boundary stands still for several seconds and then jumps. In pixels the
 // playhead moves by one every half second or so, and the bar it is inside is
 // lit up to the playhead rather than all at once.
-static int wave_played_px(double position, double total) {
+//
+// Along the same stretch as the bar laid over it (see view_start), so a finger
+// on the strip lands where the lit part says it will.
+static int wave_played_px(double position) {
 	int bar_w, left;
 	wave_geometry(&bar_w, &left);
-	double fraction = total > 0.1 ? position / total : 0.0;
-	if (fraction < 0.0) {
-		fraction = 0.0;
-	}
-	if (fraction > 1.0) {
-		fraction = 1.0;
-	}
+	double fraction = view_length > 0.1 ? view_value(position) / 1000.0 : 0.0;
 	return left + (int)(fraction * bar_w * WAVEFORM_BARS);
 }
 
@@ -1611,10 +1663,10 @@ static void wave_paint(int played_px) {
 // repainting is eighty kilobytes of buffer and an invalidate, and on a track of
 // any length the answer changes about twice a second.
 static void wave_preview(double seconds) {
-	if (!layout_alt_now || !wave_canvas || current_total_length <= 0.1) {
+	if (!layout_alt_now || !wave_canvas || view_length <= 0.1) {
 		return;
 	}
-	int px = wave_played_px(seconds, current_total_length);
+	int px = wave_played_px(seconds);
 	if (px == wave_drawn) {
 		return;
 	}
@@ -1625,7 +1677,7 @@ static void wave_preview(double seconds) {
 // Asks for this track's shape and repaints when either the shape or the
 // playhead has moved. Called from the progress poll, so it runs twice a second
 // while something is playing and once every two seconds otherwise.
-static void wave_refresh(const char *path, double position, double total) {
+static void wave_refresh(const char *path, double position) {
 	if (!layout_alt_now || !wave_canvas) {
 		return;
 	}
@@ -1637,7 +1689,7 @@ static void wave_refresh(const char *path, double position, double total) {
 		wave_have = false;
 	}
 
-	int px = wave_played_px(position, total);
+	int px = wave_played_px(position);
 	uint32_t tone = album_tone;
 	if (px == wave_drawn && wave_have == had && tone == wave_drawn_tone) {
 		return;
@@ -2494,10 +2546,9 @@ static void update_progress(void) {
 	// decides whether previous and next are there for it.
 	apply_live_mode(state.live);
 
+	// The bar itself is set by set_progress_label() below, which knows
+	// whether it stands for the file or for the chapter.
 	if (state.progress_total_secs > 0) {
-		int value = (state.progress_current_secs / state.progress_total_secs) * 1000;
-		lv_slider_set_value(progress_slider, value, LV_ANIM_OFF);
-
 		current_total_length = state.progress_total_secs;
 	}
 
@@ -2516,7 +2567,7 @@ static void update_progress(void) {
 	}
 
 	set_progress_label(state.progress_current_secs, current_total_length);
-	wave_refresh(cover_shown_path, state.progress_current_secs, current_total_length);
+	wave_refresh(cover_shown_path, state.progress_current_secs);
 	apply_playback_status(state.status);
 	// Asked every poll rather than only on a track change: the answer comes
 	// from the audiobook index, which a scan finishing can change under a
@@ -2783,7 +2834,7 @@ static void progress_slider_event_cb(lv_event_t *e) {
 
 		int value = lv_slider_get_value(progress_slider);
 
-		double seconds = current_total_length * value / 1000.0;
+		double seconds = view_seconds(value);
 
 		device_state_seek(seconds);
 
@@ -2794,9 +2845,9 @@ static void progress_slider_event_cb(lv_event_t *e) {
 		// While dragging, the left clock previews where the knob would land.
 		int value = lv_slider_get_value(progress_slider);
 
-		double seconds = current_total_length * value / 1000.0;
+		double seconds = view_seconds(value);
 
-		formatDoubleSeconds(seconds, progress_label_text, sizeof(progress_label_text));
+		formatDoubleSeconds(seconds - view_start, progress_label_text, sizeof(progress_label_text));
 		lv_label_set_text(elapsed_label, progress_label_text);
 
 		// And so does the waveform, when that is what is being dragged. The
@@ -2816,7 +2867,7 @@ static void progress_slider_event_cb(lv_event_t *e) {
 // nothing costs nothing.
 static void smooth_timer_cb(lv_timer_t *timer) {
 	(void)timer;
-	if (!progress_running || current_total_length <= 0.1) {
+	if (!progress_running || view_length <= 0.1) {
 		return;
 	}
 	// Nothing is drawn for a screen nobody is looking at, or for a page that is
@@ -2827,11 +2878,11 @@ static void smooth_timer_cb(lv_timer_t *timer) {
 	}
 
 	double seconds = progress_anchor_secs + (double)lv_tick_elaps(progress_anchor_tick) / 1000.0;
-	if (seconds > current_total_length) {
-		seconds = current_total_length; // the poll will say what happens next
+	if (seconds > view_start + view_length) {
+		seconds = view_start + view_length; // the poll will say what happens next
 	}
 
-	int value = (int)(seconds / current_total_length * 1000);
+	int value = view_value(seconds);
 	if (value != lv_slider_get_value(progress_slider)) {
 		lv_slider_set_value(progress_slider, value, LV_ANIM_OFF);
 	}

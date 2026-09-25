@@ -158,6 +158,10 @@ bool audiobook_stop_at_chapter_end(void) { return config_get_int("audiobook", "s
 
 void audiobook_set_stop_at_chapter_end(bool on) { config_set_int("audiobook", "stop_chapter_end", on ? 1 : 0); }
 
+bool audiobook_duration_per_chapter(void) { return config_get_int("audiobook", "duration_chapter", 0) != 0; }
+
+void audiobook_set_duration_per_chapter(bool on) { config_set_int("audiobook", "duration_chapter", on ? 1 : 0); }
+
 static bool rewind_suppressed;
 
 void audiobook_suppress_rewind_once(void) { rewind_suppressed = true; }

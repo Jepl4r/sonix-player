@@ -49,6 +49,29 @@
 // known key (a user-typed preset, an SSID) comes back from tr() unchanged.
 static void fit_title(lv_obj_t *label, int width);
 
+// Every heading built here, so a change of text size can fit them again: the
+// step each one settled on was chosen at the old size. Its width is the
+// label's own, which is what both callers of fit_title() pass.
+#define SETTINGSROW_MAX_TITLES 160
+static lv_obj_t *titles[SETTINGSROW_MAX_TITLES];
+static int title_count;
+
+static void title_deleted_cb(lv_event_t *e) {
+	lv_obj_t *label = lv_event_get_target(e);
+	for (int i = 0; i < title_count; i++) {
+		if (titles[i] == label) {
+			titles[i] = titles[--title_count];
+			return;
+		}
+	}
+}
+
+static void refit_titles(void) {
+	for (int i = 0; i < title_count; i++) {
+		fit_title(titles[i], lv_obj_get_style_width(titles[i], LV_PART_MAIN));
+	}
+}
+
 lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *text) {
 	lv_obj_t *label = lv_label_create(screen);
 	lv_label_set_text(label, tr(text));
@@ -66,6 +89,14 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_32));
 	fit_title(label, cfg->screen_width - left - cfg->padding - CORNER_BTN_SIZE - 14);
 	lv_obj_align(label, LV_ALIGN_TOP_LEFT, left, cfg->top_bar_height + cfg->padding + 10);
+
+	if (title_count == 0) {
+		fonts_register_change(refit_titles);
+	}
+	if (title_count < SETTINGSROW_MAX_TITLES) {
+		titles[title_count++] = label;
+		lv_obj_add_event_cb(label, title_deleted_cb, LV_EVENT_DELETE, NULL);
+	}
 
 	return label;
 }
@@ -646,8 +677,10 @@ lv_obj_t *settingsrow_add(lv_obj_t *parent, const char *name, lv_obj_t **value_o
 
 	// The name steps down a size if it does not fit; see fit_row_label(). Hooked
 	// to the resize event rather than called now, because the row has no width
-	// yet at this point.
+	// yet at this point -- and to the style event, which is how a change of
+	// text size reaches a row whose size stays the same.
 	lv_obj_add_event_cb(row, row_resized_cb, LV_EVENT_SIZE_CHANGED, NULL);
+	lv_obj_add_event_cb(row, row_resized_cb, LV_EVENT_STYLE_CHANGED, NULL);
 
 	if (value_out) {
 		*value_out = lv_label_create(row);

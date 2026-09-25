@@ -232,9 +232,39 @@ static void photos_free(void) {
 // here from the touch that opened it.
 static keymap_button_t choosing = KEYMAP_BTN_COUNT;
 
+// The rows' size: the largest of row_font and the two sizes under it at which
+// every row's action fits across, all rows alike so the column reads as one
+// list. The column is as narrow as the photo leaves it: "Abbassa il volume"
+// fills an R1 row at 22 px, and with large text, or in a longer language, it
+// would not fit at all. A name that fits at none of them is cut with dots.
 static void refresh_values(void) {
+	static const lv_font_t *const STEPS[] = {&font_ui_22, &font_ui_20, &font_ui_18};
+	const size_t count = sizeof(STEPS) / sizeof(STEPS[0]);
+
+	size_t step = 0;
+	while (step + 1 < count && STEPS[step] != row_font) {
+		step++;
+	}
+	for (int i = 0; i < KEYMAP_BTN_COUNT; i++) {
+		if (!value_labels[i]) {
+			continue;
+		}
+		const char *text = tr(keymap_action_name(keymap_get((keymap_button_t)i)));
+		int32_t width = lv_obj_get_style_width(value_labels[i], LV_PART_MAIN);
+		while (step + 1 < count) {
+			lv_point_t size;
+			lv_text_get_size(&size, text, STEPS[step], 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
+			if (size.x <= width) {
+				break;
+			}
+			step++;
+		}
+	}
+
 	for (int i = 0; i < KEYMAP_BTN_COUNT; i++) {
 		if (value_labels[i]) {
+			lv_obj_set_style_text_font(value_labels[i], STEPS[step], 0);
+			lv_obj_set_height(value_labels[i], lv_font_get_line_height(STEPS[step]));
 			lv_label_set_text(value_labels[i], tr(keymap_action_name(keymap_get((keymap_button_t)i))));
 		}
 	}
@@ -352,6 +382,10 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 		value_labels[hit->button] = value;
 		lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
 		lv_obj_set_width(value, col_w - 28);
+		// One line, cut with dots: the rows sit a few pixels apart, and a name
+		// that wrapped would spill out of its row onto the next one. The size
+		// is chosen with the text, in refresh_values().
+		lv_obj_set_height(value, lv_font_get_line_height(row_font));
 		lv_obj_add_style(value, &theme_style_text, 0);
 		lv_obj_set_style_text_font(value, row_font, 0);
 		lv_obj_align(value, LV_ALIGN_LEFT_MID, 0, 0);
@@ -396,6 +430,8 @@ void remap_init(gui_config_t *cfg) {
 
 	row_h = one_flank ? R1_ROW_H : ROW_H;
 	row_font = one_flank ? &font_ui_22 : &font_ui_20;
+	// The size refresh_values() settles on depends on the text size.
+	fonts_register_change(refresh_values);
 
 	// Sizes are those of the files; positions put the photos where the design
 	// has them. The R3 Pro II's right flank starts under the title and its left

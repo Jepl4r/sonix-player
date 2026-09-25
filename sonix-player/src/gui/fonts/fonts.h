@@ -51,6 +51,24 @@ extern lv_font_t font_ui_72; // the screensaver's clock, nothing else is this bi
 // can be drawn without it, so the caller should treat that as fatal.
 bool fonts_init(void);
 
+// Settings -> Appearance -> Text size, stored as [ui] text_size and read by
+// fonts_init().
+#define FONTS_TEXT_NORMAL 0
+#define FONTS_TEXT_LARGE 1
+
+// Whether the small sizes are drawn larger (see fonts.c).
+bool fonts_large_text(void);
+
+// Switches the size on the running interface: the objects above are drawn at
+// the other size from the next frame, and every page is measured and laid out
+// again. Does not touch the config. False, changing nothing, when the faces
+// cannot be opened at the new sizes.
+bool fonts_set_large_text(bool large);
+
+// Called after every such switch, for a page that worked something out from a
+// font when it was built and has to work it out again.
+void fonts_register_change(void (*cb)(void));
+
 // For the developer options page: which font files are in use, e.g.
 // "default.otf, bold.otf, Korean + Thai". Never NULL.
 const char *fonts_summary(void);

@@ -7,7 +7,9 @@
 #include <unistd.h>
 
 #include "lvgl/lvgl.h"
+#include "lvgl/src/display/lv_display_private.h"
 
+#include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 
 // All text is drawn through LVGL's FreeType binding, from the faces the
@@ -90,7 +92,54 @@ static const ui_font_t ui_fonts[] = {
 	{&font_ui_64_bold, 64, true},
 };
 
+#define UI_FONT_COUNT (sizeof(ui_fonts) / sizeof(ui_fonts[0]))
+
 static char summary[128] = "";
+
+// Settings -> Appearance -> Text size: Large. The small sizes -- the ones
+// secondary lines, notes, clocks and counters are set in -- are drawn a step
+// or more larger; headings, big numbers and the screensaver's clock stay as
+// they are, since those were never hard to read. The objects keep their
+// names: font_ui_22 is whatever 22 is drawn at, so every page follows without
+// being told.
+typedef struct {
+	int size;
+	int large;
+} text_step_t;
+
+static const text_step_t LARGE_STEPS[] = {
+	{14, 17}, {16, 19}, {18, 21}, {20, 23}, {22, 25}, {24, 26},
+};
+
+static bool large_text;
+
+static int drawn_size(int size, bool large) {
+	if (!large) {
+		return size;
+	}
+	for (size_t i = 0; i < sizeof(LARGE_STEPS) / sizeof(LARGE_STEPS[0]); i++) {
+		if (LARGE_STEPS[i].size == size) {
+			return LARGE_STEPS[i].large;
+		}
+	}
+	return size;
+}
+
+bool fonts_large_text(void) { return large_text; }
+
+// The two sets of fonts, normal and large, each built the first time it is
+// needed and then kept: switching back and forth copies one set into the
+// objects above and opens nothing. A size the large set does not change is
+// the normal set's font, not a second copy of it.
+static lv_font_t sets[2][UI_FONT_COUNT];
+static bool set_built[2];
+
+static const char *regular_file;
+static const char *bold_file;
+static const char *korean_file;
+static const char *thai_file;
+static bool have_korean;
+static bool have_thai;
 
 static lv_font_t *open_face(const char *path, int size) {
 	if (access(path, R_OK) != 0) {
@@ -100,58 +149,82 @@ static lv_font_t *open_face(const char *path, int size) {
 								   LV_FREETYPE_FONT_STYLE_NORMAL);
 }
 
+// One size as the interface draws it: the main face with Hangul and Thai
+// chained behind. NULL when the main face cannot be opened.
+static lv_font_t *open_chain(const ui_font_t *ui, int size) {
+	// The face this size draws from. The bold heading font uses the bold
+	// file when the firmware has one; the regular stands in otherwise,
+	// which reads fine at heading sizes even if it is not actually heavier.
+	lv_font_t *head = NULL;
+	if (ui->bold && bold_file) {
+		head = open_face(bold_file, size);
+	}
+	if (!head) {
+		head = open_face(regular_file, size);
+	}
+	if (!head) {
+		fprintf(stderr, "fonts: cannot open %s at %dpx\n", regular_file, size);
+		return NULL;
+	}
+
+	// Hangul and Thai live in their own files, chained behind the main
+	// face as fallbacks so they only answer for what it lacks.
+	lv_font_t *tail = head;
+	lv_font_t *korean = korean_file ? open_face(korean_file, size) : NULL;
+	if (korean) {
+		tail->fallback = korean;
+		tail = korean;
+		have_korean = true;
+	}
+	lv_font_t *thai = thai_file ? open_face(thai_file, size) : NULL;
+	if (thai) {
+		tail->fallback = thai;
+		have_thai = true;
+	}
+	return head;
+}
+
+// Fills sets[large]. The heap fonts FreeType creates are kept on purpose:
+// their dsc is what the copies draw through.
+static bool build_set(bool large) {
+	if (set_built[large]) {
+		return true;
+	}
+	for (size_t i = 0; i < UI_FONT_COUNT; i++) {
+		const ui_font_t *ui = &ui_fonts[i];
+		int size = drawn_size(ui->size, large);
+		if (size == ui->size && set_built[!large] && drawn_size(ui->size, !large) == size) {
+			sets[large][i] = sets[!large][i];
+			continue;
+		}
+		lv_font_t *head = open_chain(ui, size);
+		if (!head) {
+			return false;
+		}
+		sets[large][i] = *head;
+	}
+	set_built[large] = true;
+	return true;
+}
+
 bool fonts_init(void) {
-	const char *regular_file = first_present(FONT_DEFAULT_FILES);
-	const char *bold_file = first_present(FONT_BOLD_FILES);
-	const char *korean_file = first_present(FONT_KOREAN_FILES);
-	const char *thai_file = first_present(FONT_THAI_FILES);
+	regular_file = first_present(FONT_DEFAULT_FILES);
+	bold_file = first_present(FONT_BOLD_FILES);
+	korean_file = first_present(FONT_KOREAN_FILES);
+	thai_file = first_present(FONT_THAI_FILES);
 
 	if (!regular_file) {
 		fprintf(stderr, "fonts: no default.ttf or default.otf in %s or %s\n", FONT_DIR, FONT_DIR_FALLBACK);
 		return false;
 	}
 
-	bool have_korean = false;
-	bool have_thai = false;
-	int filled = 0;
-
-	for (size_t i = 0; i < sizeof(ui_fonts) / sizeof(ui_fonts[0]); i++) {
-		const ui_font_t *ui = &ui_fonts[i];
-
-		// The face this size draws from. The bold heading font uses the bold
-		// file when the firmware has one; the regular stands in otherwise,
-		// which reads fine at heading sizes even if it is not actually heavier.
-		lv_font_t *head = NULL;
-		if (ui->bold && bold_file) {
-			head = open_face(bold_file, ui->size);
-		}
-		if (!head) {
-			head = open_face(regular_file, ui->size);
-		}
-		if (!head) {
-			fprintf(stderr, "fonts: cannot open %s at %dpx\n", regular_file, ui->size);
-			return false;
-		}
-
-		// Hangul and Thai live in their own files, chained behind the main
-		// face as fallbacks so they only answer for what it lacks.
-		lv_font_t *tail = head;
-		lv_font_t *korean = korean_file ? open_face(korean_file, ui->size) : NULL;
-		if (korean) {
-			tail->fallback = korean;
-			tail = korean;
-			have_korean = true;
-		}
-		lv_font_t *thai = thai_file ? open_face(thai_file, ui->size) : NULL;
-		if (thai) {
-			tail->fallback = thai;
-			have_thai = true;
-		}
-
-		// Fill the static object the interface points at. `head` itself is
-		// left allocated on purpose: its dsc is what the copy draws through.
-		*ui->font = *head;
-		filled++;
+	large_text = config_get_int("ui", "text_size", FONTS_TEXT_NORMAL) == FONTS_TEXT_LARGE;
+	if (!build_set(large_text)) {
+		return false;
+	}
+	// Fill the static objects the interface points at.
+	for (size_t i = 0; i < UI_FONT_COUNT; i++) {
+		*ui_fonts[i].font = sets[large_text][i];
 	}
 
 	// Records the actual file names, so the log shows which container this
@@ -162,7 +235,109 @@ bool fonts_init(void) {
 
 	char from[256];
 	snprintf(from, sizeof(from), "%.*s", (int)(basename_of(regular_file) - regular_file - 1), regular_file);
-	fprintf(stderr, "fonts: %d sizes from %s (%s)\n", filled, from, summary);
+	fprintf(stderr, "fonts: %d sizes from %s (%s)%s\n", (int)UI_FONT_COUNT, from, summary,
+			large_text ? ", large text" : "");
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// Changing the size on a running interface
+//
+// Every label draws through the objects above, so copying the other set into
+// them is most of the change: after that each object is told its style has
+// changed, and LVGL measures the text again and lays the pages out around it.
+//
+// What LVGL cannot know about is a height a page worked out from a font when
+// it was built -- a label pinned to one line, or capped at two, so that
+// LV_LABEL_LONG_DOT cuts it there. Those are found by their value: a label
+// whose height, or maximum height, is a whole number of its own font's lines
+// (with the line spacing between them) is a label sized that way, and gets the
+// same number of lines at the new size. Anything else the pages worked out
+// from a font is theirs to redo, from a callback registered below.
+// ---------------------------------------------------------------------------
+
+#define FONTS_CHANGE_CALLBACKS 8
+static void (*change_callbacks[FONTS_CHANGE_CALLBACKS])(void);
+static int change_callback_count;
+
+void fonts_register_change(void (*cb)(void)) {
+	if (cb && change_callback_count < FONTS_CHANGE_CALLBACKS) {
+		change_callbacks[change_callback_count++] = cb;
+	}
+}
+
+// `value` again for the new line height, when it is one to three lines of the
+// old one. Unchanged otherwise.
+static int32_t rescale_lines(int32_t value, int32_t old_line, int32_t new_line, int32_t gap) {
+	if (!LV_COORD_IS_PX(value) || old_line <= 0) {
+		return value;
+	}
+	for (int32_t lines = 1; lines <= 3; lines++) {
+		if (value == lines * old_line + (lines - 1) * gap) {
+			return lines * new_line + (lines - 1) * gap;
+		}
+	}
+	return value;
+}
+
+static void rescale_labels(lv_obj_t *obj, const int32_t *old_line) {
+	if (lv_obj_check_type(obj, &lv_label_class)) {
+		const lv_font_t *font = lv_obj_get_style_text_font(obj, LV_PART_MAIN);
+		for (size_t i = 0; i < UI_FONT_COUNT; i++) {
+			if (ui_fonts[i].font != font) {
+				continue;
+			}
+			int32_t new_line = lv_font_get_line_height(font);
+			if (new_line == old_line[i]) {
+				break;
+			}
+			int32_t gap = lv_obj_get_style_text_line_space(obj, LV_PART_MAIN);
+			int32_t height = lv_obj_get_style_height(obj, LV_PART_MAIN);
+			int32_t scaled = rescale_lines(height, old_line[i], new_line, gap);
+			if (scaled != height) {
+				lv_obj_set_height(obj, scaled);
+			}
+			int32_t max_height = lv_obj_get_style_max_height(obj, LV_PART_MAIN);
+			scaled = rescale_lines(max_height, old_line[i], new_line, gap);
+			if (scaled != max_height) {
+				lv_obj_set_style_max_height(obj, scaled, 0);
+			}
+			break;
+		}
+	}
+	uint32_t count = lv_obj_get_child_count(obj);
+	for (uint32_t i = 0; i < count; i++) {
+		rescale_labels(lv_obj_get_child(obj, (int32_t)i), old_line);
+	}
+}
+
+bool fonts_set_large_text(bool large) {
+	if (large == large_text) {
+		return true;
+	}
+	if (!build_set(large)) {
+		return false;
+	}
+
+	int32_t old_line[UI_FONT_COUNT];
+	for (size_t i = 0; i < UI_FONT_COUNT; i++) {
+		old_line[i] = lv_font_get_line_height(ui_fonts[i].font);
+		*ui_fonts[i].font = sets[large][i];
+	}
+	large_text = large;
+
+	// Every screen the display holds, the top and system layers included:
+	// LVGL keeps those in the same list.
+	for (lv_display_t *disp = lv_display_get_next(NULL); disp; disp = lv_display_get_next(disp)) {
+		for (uint32_t i = 0; i < disp->screen_cnt; i++) {
+			rescale_labels(disp->screens[i], old_line);
+			lv_obj_refresh_style(disp->screens[i], LV_PART_ANY, LV_STYLE_PROP_ANY);
+		}
+	}
+	for (int i = 0; i < change_callback_count; i++) {
+		change_callbacks[i]();
+	}
+	fprintf(stderr, "fonts: %s text\n", large ? "large" : "normal");
 	return true;
 }
 

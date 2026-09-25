@@ -1727,10 +1727,13 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_gap(np_card, 6, 0);
 
 	// Title and artist are centred and scroll when too long, the same treatment
-	// as the player's now-playing lines.
+	// as the player's now-playing lines. Each is exactly one line of its own
+	// font high: a scrolling label shorter than its text scrolls it upwards
+	// instead of sideways, which is what a fixed height did to the artist as
+	// soon as the text size was Large.
 	np_title = lv_label_create(np_card);
 	lv_obj_set_width(np_title, lv_pct(100));
-	lv_obj_set_height(np_title, 34);
+	lv_obj_set_height(np_title, lv_font_get_line_height(&font_ui_26));
 	lv_obj_add_style(np_title, &theme_style_text, 0);
 	lv_obj_set_style_text_font(np_title, &font_ui_26, 0);
 	lv_obj_set_style_text_align(np_title, LV_TEXT_ALIGN_CENTER, 0);
@@ -1738,7 +1741,7 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	np_artist = lv_label_create(np_card);
 	lv_obj_set_width(np_artist, lv_pct(100));
-	lv_obj_set_height(np_artist, 30);
+	lv_obj_set_height(np_artist, lv_font_get_line_height(&font_ui_22));
 	lv_obj_add_style(np_artist, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(np_artist, &font_ui_22, 0);
 	lv_obj_set_style_text_align(np_artist, LV_TEXT_ALIGN_CENTER, 0);

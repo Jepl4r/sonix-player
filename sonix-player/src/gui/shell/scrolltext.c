@@ -1,5 +1,7 @@
 #include "scrolltext.h"
 
+#include "src/gui/fonts/fonts.h"
+
 #include <stdlib.h>
 #include <string.h>
 
@@ -329,11 +331,25 @@ static void apply_duration(lv_obj_t *label, const char *text) {
 	lv_obj_set_style_anim_duration(label, ms, 0);
 }
 
+// A change of text size: every scrolling label's pass is measured again, at
+// the new width of its text, and its fade follows whether it still overflows.
+static void fonts_changed(void) {
+	for (int i = 0; i < fade_label_count; i++) {
+		apply_duration(fade_labels[i].label, lv_label_get_text(fade_labels[i].label));
+		fade_update(fade_labels[i].label);
+	}
+}
+
 void scrolltext_apply(lv_obj_t *label) {
 	if (!label) {
 		return;
 	}
 	build_template();
+	static bool registered;
+	if (!registered) {
+		fonts_register_change(fonts_changed);
+		registered = true;
+	}
 
 	lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
 	lv_obj_set_style_anim(label, &scroll_template, LV_PART_MAIN);

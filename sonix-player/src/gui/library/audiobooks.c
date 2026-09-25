@@ -19,6 +19,7 @@
 #include "src/system/playback/audiobook.h"
 #include "src/system/library/audiobookdb.h"
 #include "src/system/playback/device_state.h"
+#include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
 
@@ -780,6 +781,8 @@ static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value, lv_eve
 #define REWIND_CHOICES 4
 
 static lv_obj_t *stop_chapter_switch;
+static lv_obj_t *duration_total_pill;
+static lv_obj_t *duration_chapter_pill;
 static settingsrow_duration_t sleep_row;
 static toggle_pills_t rewind_card;
 static lv_obj_t *rewind_pill[REWIND_CHOICES];
@@ -789,6 +792,10 @@ static void refresh_settings_page(void) {
 	if (!stop_chapter_switch) {
 		return;
 	}
+
+	bool per_chapter = audiobook_duration_per_chapter();
+	settingsrow_pill_active(duration_total_pill, !per_chapter);
+	settingsrow_pill_active(duration_chapter_pill, per_chapter);
 
 	if (audiobook_stop_at_chapter_end()) {
 		lv_obj_add_state(stop_chapter_switch, LV_STATE_CHECKED);
@@ -811,6 +818,15 @@ static void refresh_settings_page(void) {
 	for (int i = 0; i < REWIND_CHOICES; i++) {
 		paint_choice(rewind_pill[i], REWIND_VALUES[i] == seconds);
 	}
+}
+
+static void duration_pick_cb(lv_event_t *e) {
+	if (switcher_back_drag_active()) {
+		return;
+	}
+	audiobook_set_duration_per_chapter(lv_event_get_user_data(e) != NULL);
+	config_save();
+	refresh_settings_page();
 }
 
 static void stop_chapter_cb(lv_event_t *e) {
@@ -849,6 +865,13 @@ static void settings_loaded_cb(lv_event_t *e) {
 static void build_settings_page(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(audiobooksettings_screen, cfg, "audiobooks");
 	settingsrow_add(container, "change_controls", NULL, switch_screen_cb, audiobookcontrols_screen);
+
+	// What the progress bar on the player stands for: the whole book, or the
+	// chapter being listened to. Only a book with chapter marks is affected.
+	lv_obj_t *duration_pills;
+	settingsrow_pills(container, "audiobook_show_duration", &duration_pills);
+	duration_total_pill = settingsrow_pill(duration_pills, "audiobook_duration_total", 0, duration_pick_cb);
+	duration_chapter_pill = settingsrow_pill(duration_pills, "audiobook_duration_chapter", 1, duration_pick_cb);
 
 	settingsrow_toggle(container, "audiobook_stop_at_end_of_chapter", &stop_chapter_switch, stop_chapter_cb);
 
