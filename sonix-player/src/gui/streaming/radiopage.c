@@ -1,12 +1,14 @@
 #include "radiopage.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 #include <strings.h>
 
 #include "lvgl/lvgl.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/azindex.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/nowplaying/player.h"
@@ -18,7 +20,9 @@
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/wireless/wifisettings.h"
+#include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/system/library/library.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/net/wifi.h"
 
@@ -53,6 +57,9 @@ typedef enum {
 typedef struct {
 	lv_obj_t *button;
 	lv_obj_t *name;
+	lv_obj_t *detail;  // the line under the name, on station rows
+	lv_obj_t *quality; // ...the stream's quality badge on it
+	lv_obj_t *code;	   // ...and the country code, on a search's hits
 	lv_obj_t *chevron;
 	lv_obj_t *menu_btn; // the ellipsis, on the favourites list only
 	lv_obj_t *playmark; // the accent bar on the station that is loaded, radio.txt only
@@ -91,6 +98,9 @@ static lv_obj_t *list_view;
 static lv_obj_t *list_body;
 static lv_obj_t *list_message; // "Loading...", "Nothing here", the error
 static lv_obj_t *list_title;
+static lv_obj_t *sort_btn;	// A-Z / Z-A, on the three category lists
+static lv_obj_t *sort_icon;
+static azindex_t *list_index; // the letters down the right edge, same lists
 static row_t rows[ROW_POOL];
 static lv_timer_t *list_timer;
 
@@ -185,6 +195,149 @@ static void set_message(const char *text) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// The quality badge
+//
+// One glyph in four colours, from what the directory says the stream is: MP3
+// or AAC, and a low or a high bitrate. High starts at 192 kbps for MP3 and at
+// 160 for AAC, which holds as much at a lower rate. A station whose codec is
+// something else, or whose bitrate the directory does not know, wears none: a
+// colour that means "unknown" would sit on most of the rows and say nothing.
+// ---------------------------------------------------------------------------
+
+typedef enum {
+	QUALITY_NONE = -1,
+	QUALITY_MP3_LOW,
+	QUALITY_MP3_HIGH,
+	QUALITY_AAC_LOW,
+	QUALITY_AAC_HIGH,
+	QUALITY_COUNT,
+} station_quality_t;
+
+// Light theme, then dark: the same four, a step lighter on the dark cards.
+static const uint32_t QUALITY_COLOURS[2][QUALITY_COUNT] = {
+	{0xC47A5A, 0x6A9B78, 0xB56F7C, 0x5B9696},
+	{0xD99A7A, 0x82B894, 0xD18A98, 0x78B5B5},
+};
+
+// Whether `codec` names AAC in any of the directory's spellings: "AAC",
+// "AAC+", "aac", "HE-AAC".
+static bool codec_is_aac(const char *codec) {
+	for (const char *c = codec; c[0] && c[1] && c[2]; c++) {
+		if (strncasecmp(c, "AAC", 3) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static station_quality_t station_quality(const radio_station_t *s) {
+	if (s->bitrate <= 0) {
+		return QUALITY_NONE;
+	}
+	if (strncasecmp(s->codec, "MP3", 3) == 0) {
+		return s->bitrate >= 192 ? QUALITY_MP3_HIGH : QUALITY_MP3_LOW;
+	}
+	if (codec_is_aac(s->codec)) {
+		return s->bitrate >= 160 ? QUALITY_AAC_HIGH : QUALITY_AAC_LOW;
+	}
+	return QUALITY_NONE;
+}
+
+// ---------------------------------------------------------------------------
+// The category lists in order
+//
+// Languages, countries and genres are listed alphabetically, either way round,
+// in the music library's own collation: accents folded, a leading article
+// skipped when the library skips them. The letters of the A-Z strip come from
+// the same collation, so each points at the rows it names.
+// ---------------------------------------------------------------------------
+
+// Which of the three lists run Z-A, one bit per radio_browse_t, kept across
+// restarts like the track lists' direction.
+static bool terms_desc(radio_browse_t kind) {
+	return (config_get_int("radio", "sort_desc", 0) & (1L << kind)) != 0;
+}
+
+static void terms_set_desc(radio_browse_t kind, bool desc) {
+	long mask = config_get_int("radio", "sort_desc", 0);
+	mask = desc ? (mask | (1L << kind)) : (mask & ~(1L << kind));
+	config_set_int("radio", "sort_desc", mask);
+	config_save();
+}
+
+// The sort keys of the terms being sorted: qsort takes no context.
+static char (*sort_keys)[LIBRARY_SORT_KEY_MAX];
+
+static int term_order(const void *a, const void *b) {
+	int x = *(const int *)a;
+	int y = *(const int *)b;
+	int order = strcmp(sort_keys[x], sort_keys[y]);
+	return order ? order : x - y;
+}
+
+// Puts terms[] in order and tells the strip where each letter starts.
+static void terms_sort(void) {
+	bool desc = terms_desc(list_browse);
+	int first[LIBRARY_INDEX_BUCKETS];
+	for (int i = 0; i < LIBRARY_INDEX_BUCKETS; i++) {
+		first[i] = -1;
+	}
+
+	sort_keys = malloc((size_t)(term_count > 0 ? term_count : 1) * sizeof(*sort_keys));
+	int *order = malloc((size_t)(term_count > 0 ? term_count : 1) * sizeof(*order));
+	radio_term_t *sorted = malloc((size_t)(term_count > 0 ? term_count : 1) * sizeof(*sorted));
+	if (!sort_keys || !order || !sorted) {
+		free(sort_keys);
+		free(order);
+		free(sorted);
+		sort_keys = NULL;
+		azindex_set_rows(list_index, NULL, 0, false);
+		return;
+	}
+
+	for (int i = 0; i < term_count; i++) {
+		library_sort_key(terms[i].label, sort_keys[i], sizeof(sort_keys[i]));
+		order[i] = i;
+	}
+	qsort(order, (size_t)term_count, sizeof(*order), term_order);
+
+	for (int i = 0; i < term_count; i++) {
+		int from = order[desc ? term_count - 1 - i : i];
+		sorted[i] = terms[from];
+		int bucket = library_index_slot(library_index_letter_of_key(sort_keys[from]));
+		// The first row of a letter is where it starts reading down, whichever
+		// way round the list runs.
+		if (first[bucket] < 0) {
+			first[bucket] = i;
+		}
+	}
+	memcpy(terms, sorted, (size_t)term_count * sizeof(*terms));
+
+	free(sort_keys);
+	free(order);
+	free(sorted);
+	sort_keys = NULL;
+
+	azindex_set_rows(list_index, first, term_count, desc);
+}
+
+// The corner button and the strip belong to the category lists only: a list
+// of stations is in the directory's order, most played first, and has no
+// letters to jump between.
+static void sort_button_update(void) {
+	if (!sort_btn) {
+		return;
+	}
+	if (list_mode == LIST_TERMS) {
+		lv_image_set_src(sort_icon, terms_desc(list_browse) ? &icon_sort_za : &icon_sort_az);
+		lv_obj_remove_flag(sort_btn, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(sort_btn, LV_OBJ_FLAG_HIDDEN);
+		azindex_set_rows(list_index, NULL, 0, false);
+	}
+}
+
 static void row_update_playmark(row_t *row) {
 	if (list_mode == LIST_CUSTOM && row->index >= 0 && row->index == marked_custom) {
 		show(row->playmark);
@@ -207,6 +360,7 @@ static void row_bind(row_t *row, int index) {
 
 	if (list_mode == LIST_TERMS) {
 		lv_label_set_text(row->name, terms[index].label);
+		hide(row->detail);
 		show(row->chevron);
 		hide(row->menu_btn);
 		return;
@@ -214,6 +368,30 @@ static void row_bind(row_t *row, int index) {
 
 	const radio_station_t *s = &stations[index];
 	lv_label_set_text(row->name, s->name);
+
+	// Under the name: the quality badge, and on a search's hits the country
+	// code, since a search crosses every country and the same name can be a
+	// station in three of them. The line goes when there is neither.
+	station_quality_t quality = station_quality(s);
+	if (quality != QUALITY_NONE) {
+		uint32_t colour = QUALITY_COLOURS[theme_is_dark() ? 1 : 0][quality];
+		lv_obj_set_style_image_recolor(row->quality, lv_color_hex(colour), 0);
+		show(row->quality);
+	} else {
+		hide(row->quality);
+	}
+	bool with_code = page_is_search && list_mode == LIST_STATIONS && s->country[0];
+	if (with_code) {
+		lv_label_set_text(row->code, s->country);
+		show(row->code);
+	} else {
+		hide(row->code);
+	}
+	if (quality != QUALITY_NONE || with_code) {
+		show(row->detail);
+	} else {
+		hide(row->detail);
+	}
 
 	// A station that cannot be played is drawn faint: still there, still
 	// tappable (it says why), but plainly not one of the ones that will. Since
@@ -318,6 +496,9 @@ static void list_scroll_cb(lv_event_t *e) {
 	}
 
 	list_window_update();
+	if (list_mode == LIST_TERMS) {
+		azindex_flash(list_index);
+	}
 
 	// Within a screenful of the end is close enough: the request takes a
 	// moment, and arriving at the last row to find the list simply stops is
@@ -365,6 +546,7 @@ static void row_clicked_cb(lv_event_t *e) {
 		page_append = false;
 		page_loading = true;
 		snprintf(page_value, sizeof(page_value), "%s", value);
+		sort_button_update();
 		list_rebuild();
 		set_message("loading");
 
@@ -566,6 +748,7 @@ static void list_poll_cb(lv_timer_t *timer) {
 		term_count = radio_get_terms(terms, (int)(sizeof(terms) / sizeof(terms[0])));
 		station_count = 0;
 		page_more = false;
+		terms_sort();
 		list_rebuild();
 		set_message(term_count ? NULL : "nothing_to_show");
 		return;
@@ -605,6 +788,25 @@ static void list_loaded_cb(lv_event_t *e) {
 		list_rebuild();
 		set_message(station_count ? NULL : stored_empty_message());
 	} else {
+		list_window_update();
+	}
+}
+
+static void sort_clicked_cb(lv_event_t *e) {
+	(void)e;
+	if (list_mode != LIST_TERMS) {
+		return;
+	}
+	terms_set_desc(list_browse, !terms_desc(list_browse));
+	sort_button_update();
+	terms_sort();
+	list_rebuild();
+}
+
+// The badges' colours are hand-set per row, so a change of theme binds the rows
+// on screen again.
+static void list_theme_refresh(void) {
+	if (list_body) {
 		list_window_update();
 	}
 }
@@ -674,11 +876,11 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-		// The name alone. No icon -- an identical note on every row says nothing,
-		// and a station is recognised by its name -- and no detail line: codec,
-		// bitrate and country are player-page information, not something to
-		// scroll past with a thumb. A station that cannot be played stays faint,
-		// and the popup says why.
+		// The name, and under it the quality badge -- one small glyph, not the
+		// codec and the bitrate spelled out -- with the country code beside it on
+		// a search's hits. No icon in front: an identical note on every row says
+		// nothing, and a station is recognised by its name. A station that
+		// cannot be played stays faint, and the popup says why.
 		lv_obj_t *text = lv_obj_create(row->button);
 		lv_obj_set_flex_grow(text, 1);
 		lv_obj_set_height(text, LV_SIZE_CONTENT);
@@ -688,7 +890,8 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_remove_flag(text, LV_OBJ_FLAG_SCROLLABLE);
 		lv_obj_add_flag(text, LV_OBJ_FLAG_EVENT_BUBBLE);
 		lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
-		lv_obj_set_flex_align(text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
+		lv_obj_set_flex_align(text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+		lv_obj_set_style_pad_row(text, 4, 0);
 
 		row->name = lv_label_create(text);
 		lv_label_set_long_mode(row->name, LV_LABEL_LONG_DOT);
@@ -701,6 +904,30 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_set_height(row->name, lv_font_get_line_height(&font_ui_24));
 		lv_obj_add_style(row->name, &theme_style_text, 0);
 		lv_obj_set_style_text_font(row->name, &font_ui_24, 0);
+
+		row->detail = lv_obj_create(text);
+		lv_obj_remove_style_all(row->detail);
+		lv_obj_set_size(row->detail, lv_pct(100), LV_SIZE_CONTENT);
+		lv_obj_set_flex_flow(row->detail, LV_FLEX_FLOW_ROW);
+		lv_obj_set_flex_align(row->detail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+		lv_obj_set_style_pad_column(row->detail, 8, 0);
+		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_add_flag(row->detail, LV_OBJ_FLAG_EVENT_BUBBLE);
+		hide(row->detail);
+
+		// White, tinted per row with the colour of its quality.
+		row->quality = lv_image_create(row->detail);
+		lv_image_set_src(row->quality, &icon_radio_quality);
+		lv_obj_set_style_image_recolor_opa(row->quality, LV_OPA_COVER, 0);
+		lv_obj_remove_flag(row->quality, LV_OBJ_FLAG_CLICKABLE);
+		hide(row->quality);
+
+		row->code = lv_label_create(row->detail);
+		lv_label_set_text(row->code, "");
+		lv_obj_add_style(row->code, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(row->code, &font_ui_20, 0);
+		hide(row->code);
 
 		row->menu_btn = lv_btn_create(row->button);
 		lv_obj_set_size(row->menu_btn, 52, 52);
@@ -740,12 +967,32 @@ static void build_list_page(gui_config_t *cfg) {
 		row->index = -1;
 	}
 
+	// A-Z / Z-A in the corner the title leaves free, and the strip of letters
+	// down the right edge: the category lists only (see sort_button_update).
+	sort_btn = lv_btn_create(radiolist_screen);
+	lv_obj_set_size(sort_btn, 56, 56);
+	lv_obj_set_style_bg_opa(sort_btn, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_border_width(sort_btn, 0, 0);
+	lv_obj_set_style_shadow_width(sort_btn, 0, 0);
+	lv_obj_set_style_pad_all(sort_btn, 0, 0);
+	lv_obj_align(sort_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	lv_obj_add_event_cb(sort_btn, sort_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_flag(sort_btn, LV_OBJ_FLAG_HIDDEN);
+
+	sort_icon = lv_image_create(sort_btn);
+	lv_image_set_src(sort_icon, &icon_sort_az);
+	lv_obj_add_style(sort_icon, &theme_style_icon, 0);
+	lv_obj_center(sort_icon);
+
+	list_index = azindex_create(radiolist_screen, cfg, list_view, ROW_PITCH, list_window_update);
+
 	switcher_attach_back_gesture(list_view);
 	switcher_set_back_guard(radiolist_screen, list_back_guard);
 	switcher_set_back_guard_peek(radiolist_screen, list_back_has_step);
 	lv_obj_add_event_cb(radiolist_screen, list_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 
 	list_timer = lv_timer_create(list_poll_cb, POLL_MS, NULL);
+	theme_register_refresh(list_theme_refresh);
 }
 
 // ---------------------------------------------------------------------------
@@ -787,6 +1034,7 @@ static bool list_back_guard(void) {
 	page_loading = false;
 	page_append = false;
 	lv_label_set_text(list_title, terms_title);
+	sort_button_update();
 	list_rebuild();
 	set_message("loading");
 	last_job_serial = radio_job_serial();
@@ -805,6 +1053,7 @@ static void open_browse(radio_browse_t kind, const char *title) {
 	page_append = false;
 
 	lv_label_set_text(list_title, tr(title));
+	sort_button_update();
 	list_rebuild();
 	set_message("loading");
 
@@ -836,6 +1085,7 @@ static void open_stored(list_mode_t mode, const char *title) {
 	page_loading = false;
 	page_append = false;
 	lv_label_set_text(list_title, tr(title));
+	sort_button_update();
 	list_reload_stored();
 	list_rebuild();
 	set_message(station_count ? NULL : stored_empty_message());
@@ -949,6 +1199,7 @@ static void run_search(void) {
 	snprintf(page_value, sizeof(page_value), "%s", text);
 
 	lv_label_set_text(list_title, text);
+	sort_button_update();
 	list_rebuild();
 	set_message("loading");
 

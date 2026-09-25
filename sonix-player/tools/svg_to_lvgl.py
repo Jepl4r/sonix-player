@@ -218,6 +218,10 @@ ICONS = [
     ("star.svg", "star_corner", 34),
     ("radio-recent.svg", "radio_recent", 34), # stations played most recently
     ("custom-radio.svg", "radio_custom", 34), # the stations written into radio.txt
+    # Under a station's name: the stream's quality, one glyph in four colours
+    # that follow the theme, so white like the rest of this list and tinted by
+    # the page (radiopage.c). The size of the track rows' quality badges.
+    ("radio-quality.svg", "radio_quality", 26),
     ("refresh.svg", "refresh", 34), # the Processes page's refresh
     # Audiobook transport: the four jumps the two buttons can be set to, plus
     # the chapter list. Which pair is on screen follows Settings -> Audiobooks

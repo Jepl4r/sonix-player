@@ -129,6 +129,7 @@ extern const lv_image_dsc_t icon_star_filled;
 extern const lv_image_dsc_t icon_star_corner;
 extern const lv_image_dsc_t icon_radio_recent;
 extern const lv_image_dsc_t icon_radio_custom;
+extern const lv_image_dsc_t icon_radio_quality;
 extern const lv_image_dsc_t icon_refresh;
 extern const lv_image_dsc_t icon_prev_10;
 extern const lv_image_dsc_t icon_next_10;
