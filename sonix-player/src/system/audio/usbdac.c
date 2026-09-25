@@ -319,7 +319,7 @@ static bool gadget_build(void) {
 	// The device's own name. Without these string descriptors a host has
 	// nothing to call the device but "Unknown USB Audio Device".
 	write_noted(GADGET "/strings/0x409/manufacturer", "HiBy");
-	write_noted(GADGET "/strings/0x409/product", "R3 Pro II");
+	write_noted(GADGET "/strings/0x409/product", usb_product());
 	write_noted(GADGET "/strings/0x409/serialnumber", chip_serial());
 
 	// What the kernel actually kept, so the log answers the next question

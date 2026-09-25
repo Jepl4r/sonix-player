@@ -56,4 +56,7 @@ bool usb_vbus_present(void);
 void usb_suspend_prepare(void);
 void usb_resume_restore(void);
 
+// The product string: the model's name without the maker's
+const char *usb_product(void);
+
 #endif /* USB_H */

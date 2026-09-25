@@ -75,7 +75,7 @@ static enum { EXPORT_NONE, EXPORT_OWN_GADGET, EXPORT_ADB_COMPOSITE } export_mode
 
 // The product string: the model's name without the maker's, "R3 Pro II" or
 // "R1", which is what the stock firmware of each writes.
-static const char *usb_product(void) {
+const char *usb_product(void) {
 	const sysinfo_model_t *model = sysinfo_model();
 	if (!model) {
 		return "R3 Pro II";
