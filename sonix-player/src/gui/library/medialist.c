@@ -118,6 +118,7 @@ typedef struct {
 typedef struct {
 	char name[256];
 	char path[512];
+	char artist[128]; // a track's artist, an album's; empty on the other lists
 	bool has_path;
 } winrow_t;
 
@@ -126,7 +127,9 @@ typedef struct {
 	lv_obj_t *icon;
 	lv_obj_t *text;	 // title and badge, stacked, so one does not sit on the other
 	lv_obj_t *label;
-	lv_obj_t *quality;	// the badge under the title on track rows; NULL elsewhere
+	lv_obj_t *detail;	// the line under the title: the badge and the artist
+	lv_obj_t *quality;	// ...the badge, on track rows; NULL elsewhere
+	lv_obj_t *artist;	// ...and the artist, where "Show artist" asks for it
 	lv_obj_t *menu_btn; // the ellipsis on track rows; NULL on name lists
 	lv_obj_t *playmark; // the accent bar shown on the playing row
 	int index;
@@ -244,6 +247,12 @@ static bool album_view = true;
 // way down.
 static bool quality_badges;
 
+// "Show artist": the artist under each row's title, on the lists picked out by
+// artist_lists (MEDIALIST_ARTIST_* bits). Off by default, with all three picked
+// so that switching it on shows something at once.
+static bool show_artist;
+static int artist_lists = MEDIALIST_ARTIST_TRACKS | MEDIALIST_ARTIST_ALBUMS | MEDIALIST_ARTIST_GENRES;
+
 // Both are read on first use rather than in medialist_init(): the music
 // settings page is built before it (see gui_init), so a switch built from these
 // at init time would show the default rather than what the user chose, and then
@@ -257,6 +266,8 @@ static void load_view_settings(void) {
 	view_settings_loaded = true;
 	album_view = config_get_int("library", "album_view", 1) != 0;
 	quality_badges = config_get_int("library", "quality_badges", 0) != 0;
+	show_artist = config_get_int("library", "show_artist", 0) != 0;
+	artist_lists = (int)config_get_int("library", "artist_lists", artist_lists);
 }
 
 bool medialist_album_view(void) {
@@ -330,7 +341,6 @@ typedef struct {
 } window_fill_t;
 
 static bool window_fill_cb(const char *name, const char *path, const char *artist, void *user) {
-	(void)artist;
 	window_fill_t *fill = user;
 	if (fill->filled >= WINDOW_ROWS) {
 		return false;
@@ -339,6 +349,7 @@ static bool window_fill_cb(const char *name, const char *path, const char *artis
 	snprintf(row->name, sizeof(row->name), "%s", name && name[0] ? name : tr("medialist_no_name"));
 	row->has_path = path != NULL;
 	snprintf(row->path, sizeof(row->path), "%s", path ? path : "");
+	snprintf(row->artist, sizeof(row->artist), "%s", artist ? artist : "");
 	return true;
 }
 
@@ -437,6 +448,16 @@ static bool row_at(panel_t *p, int index, const char **name_out, const char **pa
 		*path_out = row->has_path ? row->path : NULL;
 	}
 	return true;
+}
+
+// The artist the database gave a row, or NULL: a list of paths handed in has
+// none, and neither has a row whose artist tag is empty.
+static const char *row_artist_at(panel_t *p, int index) {
+	if (p->from_paths || index < 0 || index >= p->count || !window_cover(p, index)) {
+		return NULL;
+	}
+	const char *artist = p->window[index - p->window_first].artist;
+	return artist[0] ? artist : NULL;
 }
 
 // The same, copied out, for a caller that has to keep it across another read.
@@ -693,6 +714,47 @@ static void row_update_quality(panel_t *p, row_t *row, const char *path) {
 	lv_obj_remove_flag(row->quality, LV_OBJ_FLAG_HIDDEN);
 }
 
+// Whether this list is one "Show artist" is on for: all the tracks, the albums,
+// or the tracks of a genre. Not an artist's own lists, where the name is the
+// page's title already, and not the name lists, whose rows are artists or
+// genres themselves.
+static bool panel_shows_artist(const panel_t *p) {
+	if (!show_artist || p->from_paths) {
+		return false;
+	}
+	if (p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_NONE) {
+		return (artist_lists & MEDIALIST_ARTIST_TRACKS) != 0;
+	}
+	if (p->kind == LIBRARY_LIST_ALBUMS && p->filter == LIBRARY_FILTER_NONE) {
+		return (artist_lists & MEDIALIST_ARTIST_ALBUMS) != 0;
+	}
+	if (p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_GENRE) {
+		return (artist_lists & MEDIALIST_ARTIST_GENRES) != 0;
+	}
+	return false;
+}
+
+// The line under the title: the badge, the artist, both or neither -- and when
+// neither, the line itself goes, so the title sits in the middle of the row.
+static void row_update_detail(panel_t *p, row_t *row, int index, const char *path) {
+	row_update_quality(p, row, path);
+
+	const char *artist = panel_shows_artist(p) ? row_artist_at(p, index) : NULL;
+	if (artist) {
+		lv_label_set_text(row->artist, artist);
+		lv_obj_remove_flag(row->artist, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(row->artist, LV_OBJ_FLAG_HIDDEN);
+	}
+
+	bool badge = row->quality && !lv_obj_has_flag(row->quality, LV_OBJ_FLAG_HIDDEN);
+	if (badge || artist) {
+		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(row->detail, LV_OBJ_FLAG_HIDDEN);
+	}
+}
+
 static void row_bind(panel_t *p, row_t *row, int index) {
 	if (row->index == index) {
 		return;
@@ -729,7 +791,7 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 		lv_obj_add_flag(row->icon, LV_OBJ_FLAG_HIDDEN);
 	}
 	row_update_playmark(p, row);
-	row_update_quality(p, row, path);
+	row_update_detail(p, row, index, path);
 }
 
 // Requests artwork for the visible rows and collects what the worker has
@@ -836,6 +898,22 @@ static void window_update(panel_t *p) {
 	thumbs_update(p);
 }
 
+// Every row of every panel bound again, for a setting that changes what a row
+// shows. Only panels that have been built and hold a list.
+static void rebind_all_panels(void) {
+	panel_t *panels[] = {&panel_names, &panel_tracks, &panel_artist_albums};
+	for (size_t i = 0; i < sizeof(panels) / sizeof(panels[0]); i++) {
+		panel_t *p = panels[i];
+		if (!p->rows[0].button || !p->list) {
+			continue;
+		}
+		for (int r = 0; r < ROW_POOL; r++) {
+			p->rows[r].index = -1;
+		}
+		window_update(p);
+	}
+}
+
 void medialist_set_quality_badges(bool on) {
 	load_view_settings();
 	if (quality_badges == on) {
@@ -856,6 +934,33 @@ void medialist_set_quality_badges(bool on) {
 		panel_tracks.rows[i].index = -1;
 	}
 	window_update(&panel_tracks);
+}
+
+bool medialist_show_artist(void) {
+	load_view_settings();
+	return show_artist;
+}
+
+int medialist_artist_lists(void) {
+	load_view_settings();
+	return artist_lists;
+}
+
+static void rebind_all_panels(void);
+
+void medialist_set_show_artist(bool on, int lists) {
+	load_view_settings();
+	if (show_artist == on && artist_lists == lists) {
+		return;
+	}
+	show_artist = on;
+	artist_lists = lists;
+	config_set_int("library", "show_artist", on ? 1 : 0);
+	config_set_int("library", "artist_lists", lists);
+	config_save();
+	// As with the badges: the list behind the settings page shows the change,
+	// not only the next one opened.
+	rebind_all_panels();
 }
 
 // Takes one entry out of the model and lays the list out again. Used when the
@@ -2389,9 +2494,9 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_size(row->icon, THUMB_SIZE, THUMB_SIZE);
 		lv_image_set_inner_align(row->icon, LV_IMAGE_ALIGN_CENTER);
 
-		// The title, and under it the quality badge. A column rather than the
-		// label alone: with the badge in the row itself it would sit beside
-		// the title and eat the width the title needs.
+		// The title, and under it the quality badge and the artist. A column
+		// rather than the label alone: with those in the row itself they would
+		// sit beside the title and eat the width the title needs.
 		row->text = lv_obj_create(row->button);
 		lv_obj_remove_style_all(row->text);
 		lv_obj_set_flex_grow(row->text, 1);
@@ -2412,14 +2517,35 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_add_style(row->label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(row->label, &font_ui_24, 0);
 
+		row->detail = lv_obj_create(row->text);
+		lv_obj_remove_style_all(row->detail);
+		lv_obj_set_size(row->detail, LV_PCT(100), LV_SIZE_CONTENT);
+		lv_obj_set_flex_flow(row->detail, LV_FLEX_FLOW_ROW);
+		lv_obj_set_flex_align(row->detail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+		lv_obj_set_style_pad_column(row->detail, 8, 0);
+		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_SCROLLABLE);
+		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_add_flag(row->detail, LV_OBJ_FLAG_EVENT_BUBBLE);
+		lv_obj_add_flag(row->detail, LV_OBJ_FLAG_HIDDEN);
+
 		// Only track rows have a quality to show: an album or an artist is not
 		// one recording.
 		row->quality = NULL;
 		if (is_tracks) {
-			row->quality = lv_image_create(row->text);
+			row->quality = lv_image_create(row->detail);
 			lv_obj_add_flag(row->quality, LV_OBJ_FLAG_HIDDEN);
 			lv_obj_remove_flag(row->quality, LV_OBJ_FLAG_CLICKABLE);
 		}
+
+		// One line like the title, cut with dots, in the quieter colour.
+		row->artist = lv_label_create(row->detail);
+		lv_label_set_text(row->artist, "");
+		lv_label_set_long_mode(row->artist, LV_LABEL_LONG_DOT);
+		lv_obj_set_flex_grow(row->artist, 1);
+		lv_obj_set_height(row->artist, lv_font_get_line_height(&font_ui_20));
+		lv_obj_add_style(row->artist, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(row->artist, &font_ui_20, 0);
+		lv_obj_add_flag(row->artist, LV_OBJ_FLAG_HIDDEN);
 
 		// Out of the flex layout on purpose: it sits in the row's own left
 		// padding, so adding it moves nothing. Hidden until a row it belongs

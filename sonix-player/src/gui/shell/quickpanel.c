@@ -260,7 +260,21 @@ static void refresh_now_playing_card(void) {
 	}
 	lv_image_set_src(np_play_icon, glyph);
 
-	bool station_steps = state.live && radio_custom_can_step();
+	bool station_steps = state.live && radio_can_step();
+
+	// Greyed out and inert while a station connects, as on the player.
+	bool connecting = state.live && radio_is_connecting();
+	lv_obj_t *const transport[] = {np_prev_btn, np_play_btn, np_next_btn};
+	for (size_t i = 0; i < sizeof(transport) / sizeof(transport[0]); i++) {
+		if (!transport[i]) {
+			continue;
+		}
+		if (connecting) {
+			lv_obj_add_state(transport[i], LV_STATE_DISABLED);
+		} else {
+			lv_obj_remove_state(transport[i], LV_STATE_DISABLED);
+		}
+	}
 	lv_obj_t *const only_for_tracks[] = {np_prev_btn, np_next_btn, np_repeat_btn};
 	for (size_t i = 0; i < sizeof(only_for_tracks) / sizeof(only_for_tracks[0]); i++) {
 		if (!only_for_tracks[i]) {
@@ -1792,6 +1806,10 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_t *next_btn = make_flat_button(transport, 76, next_cb);
 	np_next_btn = next_btn;
 	lv_obj_t *next_icon = lv_image_create(next_btn);
+	// The look of the three while a station connects; see the refresh.
+	lv_obj_set_style_opa(prev_btn, LV_OPA_40, LV_STATE_DISABLED);
+	lv_obj_set_style_opa(play_btn, LV_OPA_40, LV_STATE_DISABLED);
+	lv_obj_set_style_opa(next_btn, LV_OPA_40, LV_STATE_DISABLED);
 	np_next_icon = next_icon;
 	lv_image_set_src(next_icon, &icon_skip_forward_large);
 	lv_obj_add_style(next_icon, &theme_style_icon, 0);

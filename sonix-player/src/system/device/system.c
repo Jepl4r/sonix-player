@@ -1493,12 +1493,25 @@ static void *input_thread_func(void *arg) {
 
 		log_key_event(node, &ev);
 
+		// The headphone remote reports a press it never releases as the device
+		// wakes from suspend: see power_headset_keys_settling(). A press let
+		// through here would be a volume key held down for good.
+		if (info->headset && power_headset_keys_settling()) {
+			if (ev.value == 1) {
+				printf("input: %s key %d ignored, the device is waking\n", node, ev.code);
+			}
+			continue;
+		}
+
 		if (ev.value == 1) {
 			power_notify_activity(); // any physical button counts as use
 
 			// Volume up + power: if the combination has fired -- now, or because
-			// the other key was already down -- this key belongs to it.
-			bool combo = combo_press(ev.code);
+			// the other key was already down -- this key belongs to it. The
+			// volume key on the case only: the remote's is not under the thumb
+			// that presses power, and one stuck down would turn every later
+			// press of power into a screenshot.
+			bool combo = !info->headset && combo_press(ev.code);
 
 			// A scrub still open from a button whose release never arrived --
 			// another key went down first and took `held` with it -- is closed
@@ -1545,7 +1558,7 @@ static void *input_thread_func(void *arg) {
 		}
 
 		if (ev.value == 0) {
-			bool combo = combo_release(ev.code);
+			bool combo = !info->headset && combo_release(ev.code);
 
 			if (ev.code == KEY_POWER && !long_press_done && !combo) {
 				// Short press: the screen toggle.

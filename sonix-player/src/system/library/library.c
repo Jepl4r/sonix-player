@@ -1865,8 +1865,15 @@ static const char *row_by_id_sql(library_list_t kind, const char *value, char *o
 		// caller one representative track per album to load the art from. This
 		// is why it is not in the ordered pass -- there it would run the
 		// subquery for every album on the card, to be thrown away.
+		//
+		// The same first track names the album's artist: its album artist, or
+		// its artist on a file that has none. Lists that show it read it from
+		// here; a window of rows is a dozen lookups on the album index.
 		return "SELECT album, (SELECT path FROM MEDIA_TABLE m WHERE m.album = ALBUM_TABLE.album"
-			   " ORDER BY COALESCE(m.disc,1), m.dis_id LIMIT 1), NULL FROM ALBUM_TABLE WHERE rowid=?";
+			   " ORDER BY COALESCE(m.disc,1), m.dis_id LIMIT 1),"
+			   " (SELECT COALESCE(NULLIF(m.album_artist,''), m.artist) FROM MEDIA_TABLE m"
+			   " WHERE m.album = ALBUM_TABLE.album ORDER BY COALESCE(m.disc,1), m.dis_id LIMIT 1)"
+			   " FROM ALBUM_TABLE WHERE rowid=?";
 	case LIBRARY_LIST_ARTISTS:
 		return "SELECT artist, NULL, NULL FROM ARTIST_TABLE WHERE rowid=?";
 	case LIBRARY_LIST_ALBUM_ARTISTS:

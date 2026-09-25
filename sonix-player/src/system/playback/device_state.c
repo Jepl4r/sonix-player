@@ -1154,6 +1154,11 @@ audio_status_t device_state_toggle_play_pause(void) {
 	// "stop this". Without this, the paused track underneath would resume on
 	// top of the stream and both would be writing to one output.
 	if (radio_is_active()) {
+		// While it is still connecting the key does nothing: stopping a
+		// connection halfway only makes the wait for the next one longer.
+		if (radio_is_connecting()) {
+			return AUDIO_STATUS_PLAYING;
+		}
 		if (radio_is_playing()) {
 			radio_stop();
 			return AUDIO_STATUS_STOPPED;

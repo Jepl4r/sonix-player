@@ -145,6 +145,11 @@ void power_set_wake_hook(bool (*cb)(void));
 // which toggles the screen (or is absorbed as the wake event after suspend).
 void power_notify_power_button(void);
 
+// True from just before the device suspends to RAM until a moment after it
+// wakes: the headphone remote's keys are to be ignored then (see power.c).
+// Safe to call from any thread.
+bool power_headset_keys_settling(void);
+
 // --- Runtime configuration (driven by the settings pages) ---
 void power_set_brightness(long value); // raw backlight units, clamped to [0, max]
 long power_get_brightness(void);	   // current on-level

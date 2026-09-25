@@ -269,7 +269,8 @@ bool library_index_buckets(const library_index_t *ix, int counts[LIBRARY_INDEX_B
 
 // Reads `count` rows from `offset`, in the handle's order, one callback each.
 // Returns how many were delivered: fewer than asked means the end of the list,
-// and zero on a stale handle.
+// and zero on a stale handle. Unlike library_for_each(), an album row comes
+// with a `path` (a track to take the cover from) and an `artist` (the album's).
 int library_index_window(const library_index_t *ix, int offset, int count, library_row_cb cb, void *user);
 
 // A second handle over the same rows, without asking the database for the

@@ -161,7 +161,7 @@ static lv_obj_t *tidal_badge;	   // and the Tidal one, over it: only one ever sh
 static lv_obj_t *podcast_badge;	   // and the podcast one, third in the same place
 static bool live_mode;
 static bool live_transport_hidden; // prev/next taken away on a stream
-static bool live_custom_nav;	   // on a radio.txt station, where they change station
+static bool live_custom_nav;	   // on a station from a list, where they change station
 
 // Audiobook mode. A book is one long file, not a queue of songs: previous and
 // next have nothing to move to, and what a listener wants from those two
@@ -296,15 +296,41 @@ static double view_length;
 // on the plain no-cover panel it is flat, like prev and next.
 static bool chrome_over_cover;
 
+// While a station connects, stop, previous and next are greyed out and do
+// nothing: the connection is on its way, and pulling it down or starting the
+// next one in the middle of it is a tap that only makes the wait longer. The
+// side keys and the control centre ask radio_is_connecting() themselves.
+static bool connecting_shown;
+
+static void apply_connecting(void) {
+	bool connecting = radio_is_connecting();
+	if (connecting == connecting_shown) {
+		return;
+	}
+	connecting_shown = connecting;
+	lv_obj_t *const buttons[] = {play_btn, prev_btn_obj, next_btn_obj};
+	for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
+		if (!buttons[i]) {
+			continue;
+		}
+		if (connecting) {
+			lv_obj_add_state(buttons[i], LV_STATE_DISABLED);
+		} else {
+			lv_obj_remove_state(buttons[i], LV_STATE_DISABLED);
+		}
+	}
+}
+
 // Switches the transport between a track and a live stream. Cheap and
 // idempotent: called from every now-playing refresh, and does nothing at all
 // unless the mode actually changed.
 static void apply_live_mode(bool live) {
 	// Previous and next go away on a stream, playing or stopped: they would
-	// start a local track in place of the station. On a station from radio.txt
-	// they stay and move along that list, and the bearing under the bar says
-	// where in it the station is (see update_queue_position()).
-	bool custom_nav = live && radio_custom_can_step();
+	// start a local track in place of the station. On a station started from a
+	// list -- radio.txt, a country, a search, the starred -- they stay and move
+	// along that list, and the bearing under the bar says where in it the
+	// station is (see update_queue_position()).
+	bool custom_nav = live && radio_can_step();
 	bool transport_hidden = live && !custom_nav;
 
 	if (live == live_mode && transport_hidden == live_transport_hidden && custom_nav == live_custom_nav &&
@@ -334,7 +360,7 @@ static void apply_live_mode(bool live) {
 			lv_obj_remove_flag(hidden_when_live[i], LV_OBJ_FLAG_HIDDEN);
 		}
 	}
-	// The row under the bar stays for a radio.txt station, for its place in
+	// The row under the bar stays for a station from a list, for its place in
 	// the list and nothing else.
 	if (below_slider_obj) {
 		if (live && !custom_nav) {
@@ -683,9 +709,10 @@ static void update_queue_position(void) {
 	}
 
 	if (live_mode) {
-		if (live_custom_nav) {
-			lv_label_set_text_fmt(queue_position_label, "%d/%d", radio_custom_current_index() + 1,
-								  radio_custom_count());
+		int index;
+		int count;
+		if (live_custom_nav && radio_list_position(&index, &count)) {
+			lv_label_set_text_fmt(queue_position_label, "%d/%d", index + 1, count);
 		} else {
 			lv_label_set_text(queue_position_label, "");
 		}
@@ -1949,6 +1976,7 @@ static void refresh_now_playing(void) {
 	device_state_get(&state);
 
 	apply_live_mode(state.live);
+	apply_connecting();
 	// Before anything is drawn: which arrangement this source gets decides
 	// where the title goes and what colour everything is.
 	update_layout(&state);
@@ -2545,6 +2573,7 @@ static void update_progress(void) {
 	// Likewise the transport: radio.txt can be reloaded under a station, which
 	// decides whether previous and next are there for it.
 	apply_live_mode(state.live);
+	apply_connecting();
 
 	// The bar itself is set by set_progress_label() below, which knows
 	// whether it stands for the file or for the chapter.
@@ -2617,8 +2646,11 @@ static void play_btn_event_cb(lv_event_t *e) {
 
 	// A live stream has no position to come back to, so this is a stop, not a
 	// pause: the connection goes, the station stays on screen, and pressing
-	// play again reconnects to it.
+	// play again reconnects to it. Not while it is still connecting.
 	if (radio_is_active()) {
+		if (radio_is_connecting()) {
+			return;
+		}
 		if (radio_is_playing()) {
 			radio_stop();
 		} else {
@@ -2640,13 +2672,17 @@ static void play_btn_event_cb(lv_event_t *e) {
 // physical side keys stay episode changes on a podcast: see
 // player_key_prev/next.)
 // Previous and next on a stream. True when the press was the stream's: it
-// changed station along radio.txt, or there was nowhere to go and it did
-// nothing. False when no station is loaded and the press is the queue's.
+// changed station along the list the station came from, or there was nowhere
+// to go, or the station is still connecting (see apply_connecting()), and it
+// did nothing. False when no station is loaded and the press is the queue's.
 static bool live_step(int step) {
 	if (!radio_is_active()) {
 		return false;
 	}
-	if (radio_custom_can_step() && radio_custom_step(step)) {
+	if (radio_is_connecting()) {
+		return true;
+	}
+	if (radio_step(step)) {
 		refresh_now_playing();
 	}
 	return true;
@@ -3629,6 +3665,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_center(prev_icon);
 
 	lv_obj_add_event_cb(prev_btn, prev_btn_event_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_set_style_opa(prev_btn, LV_OPA_40, LV_STATE_DISABLED); // see apply_connecting()
 
 	// Play/pause: a white disc, with the glyph carrying the colour.
 	play_btn = lv_btn_create(player_controls_buttons);
@@ -3638,6 +3675,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
 	lv_obj_set_style_shadow_width(play_btn, 0, 0);
 	lv_obj_add_event_cb(play_btn, play_btn_event_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_set_style_opa(play_btn, LV_OPA_40, LV_STATE_DISABLED);
 
 	play_btn_icon = lv_image_create(play_btn);
 	lv_obj_center(play_btn_icon);
@@ -3654,6 +3692,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_center(next_icon);
 
 	lv_obj_add_event_cb(next_btn, next_btn_event_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_set_style_opa(next_btn, LV_OPA_40, LV_STATE_DISABLED);
 
 	// Album art: a square as wide as the screen, flush against the top edge
 	// (this page hides the status bar, see switch_screen). The picture is

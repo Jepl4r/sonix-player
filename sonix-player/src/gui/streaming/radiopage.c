@@ -76,6 +76,11 @@ typedef struct {
 // The radio.txt line the rows were last marked for, -1 for none.
 static int marked_custom = -1;
 
+// The station the other lists were last marked for -- the directory's, the
+// starred and the recent ones: its uuid, or its address when it has none.
+// Empty when no station is loaded.
+static char marked_station[RADIO_URL_MAX];
+
 static gui_config_t *g_cfg;
 
 // --- the hub ---
@@ -338,8 +343,36 @@ static void sort_button_update(void) {
 	}
 }
 
+static const char *station_key(const radio_station_t *s) { return s->uuid[0] ? s->uuid : s->url; }
+
+// Reads which station is loaded, playing or stopped. True when the answer
+// differs from the one the rows were marked with.
+static bool marked_station_update(void) {
+	radio_station_t now;
+	char key[sizeof(marked_station)] = "";
+	if (radio_current_station(&now)) {
+		snprintf(key, sizeof(key), "%s", station_key(&now));
+	}
+	if (strcmp(key, marked_station) == 0) {
+		return false;
+	}
+	snprintf(marked_station, sizeof(marked_station), "%s", key);
+	return true;
+}
+
+// radio.txt marks its line by position, since the same address can be written
+// down twice; every other list marks the station by who it is, so the one
+// playing is found again in a search, in the starred and in the recent alike.
 static void row_update_playmark(row_t *row) {
-	if (list_mode == LIST_CUSTOM && row->index >= 0 && row->index == marked_custom) {
+	bool marked = false;
+	if (row->index >= 0 && row->index < list_count()) {
+		if (list_mode == LIST_CUSTOM) {
+			marked = row->index == marked_custom;
+		} else if (list_mode != LIST_TERMS && marked_station[0]) {
+			marked = strcmp(station_key(&stations[row->index]), marked_station) == 0;
+		}
+	}
+	if (marked) {
 		show(row->playmark);
 	} else {
 		hide(row->playmark);
@@ -417,6 +450,7 @@ static void row_bind(row_t *row, int index) {
 // the scroll that asked for it.
 static void list_rebuild_keep(bool keep_scroll) {
 	int count = list_count();
+	marked_station_update(); // the rows below are marked from it
 
 	lv_obj_set_height(list_body, count > 0 ? count * ROW_PITCH : ROW_PITCH);
 	if (!keep_scroll) {
@@ -564,7 +598,11 @@ static void row_clicked_cb(lv_event_t *e) {
 	}
 
 	// Otherwise start it and go to the player: connecting takes a moment, and
-	// the player is where that moment is explained.
+	// the player is where that moment is explained. The list goes with it, for
+	// previous and next to walk; radio.txt has its own.
+	if (list_mode != LIST_CUSTOM) {
+		radio_set_list(stations, station_count);
+	}
 	if (radio_play(&stations[index])) {
 		player_refresh_now_playing();
 		player_sheet_open(true);
@@ -710,8 +748,8 @@ static void list_poll_cb(lv_timer_t *timer) {
 		return;
 	}
 
-	// radio.txt: the mark follows the station, which changes from the player
-	// and the side keys as well as from here.
+	// The mark follows the station, which changes from the player and the
+	// side keys as well as from here.
 	if (list_mode == LIST_CUSTOM) {
 		int now = radio_custom_current_index();
 		if (now != marked_custom) {
@@ -719,6 +757,10 @@ static void list_poll_cb(lv_timer_t *timer) {
 			for (int i = 0; i < ROW_POOL; i++) {
 				row_update_playmark(&rows[i]);
 			}
+		}
+	} else if (list_mode != LIST_TERMS && marked_station_update()) {
+		for (int i = 0; i < ROW_POOL; i++) {
+			row_update_playmark(&rows[i]);
 		}
 	}
 

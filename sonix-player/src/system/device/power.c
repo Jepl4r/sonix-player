@@ -439,7 +439,7 @@ static uint32_t g_auto_off_ms;
 // power parameters.
 //
 // So most of the saving comes from cutting wake-ups -- screen off, Wi-Fi
-// parked, Bluetooth down, inline-remote ADC stopped, timers paused -- and the
+// parked, Bluetooth down, timers paused -- and the
 // suspend sequence further down tears the audio context all the way down before
 // writing `mem`.
 // ---------------------------------------------------------------------------
@@ -453,80 +453,47 @@ void power_set_auto_off(bool enabled, uint32_t minutes) {
 static bool g_double_tap_wake; // rearmed at every blank; see power_set_double_tap_wake
 
 // ---------------------------------------------------------------------------
-// The inline-remote ADC
+// The headphone remote across a suspend
 //
-// /root/work/rootfs/rootfs/module_driver/sa_earpods_adc.sh loads its driver
-// with sea_poll_ms=10: the analogue line that reads the three buttons on a
-// headphone cable's remote is sampled a hundred times a second, for as long as
-// the device is on, and it holds regulator aldo4 while it does. Nothing here
-// reads the remote, so that is a hundred wake-ups a second and a regulator held
-// up for nothing.
+// The inline-remote module (see headset.h) reports a volume-up press as the
+// device comes back from `mem`, while the audio route is re-initialised, and
+// never the release that goes with it. Taken at its word that is a key held
+// down: the volume climbs a step every 70 ms, all the way to the top, until the
+// headphones are pulled out. So the remote's keys are not listened to from just
+// before the write that suspends until a moment after the wake.
 //
-// The node's exact path is a runtime discovery -- the stock player shells out
-// to `find /sys/devices/platform/earpods_adc/earpods_adc -name earpods_adc_sw`
-// -- so this looks for it the same way, once.
+// Before and not only after: whatever the module reports while resuming is
+// queued in the kernel and can be read by the input thread before this one has
+// returned from the write.
 // ---------------------------------------------------------------------------
 
-#define EARPODS_ROOT "/sys/devices/platform/earpods_adc"
+#define HEADSET_SETTLE_MS 1500
 
-static bool earpods_find(char *out, size_t out_size, const char *dir, int depth) {
-	if (depth > 4) {
-		return false;
-	}
+static int g_headset_sleeping;			// set across the `mem` write
+static uint32_t g_headset_settled_at;	// CLOCK_MONOTONIC, ms; 0 before any wake
 
-	DIR *d = opendir(dir);
-	if (!d) {
-		return false;
-	}
-
-	bool found = false;
-	struct dirent *entry;
-	while (!found && (entry = readdir(d)) != NULL) {
-		if (entry->d_name[0] == '.') {
-			continue;
-		}
-
-		char path[512];
-		snprintf(path, sizeof(path), "%s/%s", dir, entry->d_name);
-
-		if (strcmp(entry->d_name, "earpods_adc_sw") == 0) {
-			snprintf(out, out_size, "%s", path);
-			found = true;
-			break;
-		}
-
-		struct stat info;
-		if (lstat(path, &info) == 0 && S_ISDIR(info.st_mode)) {
-			found = earpods_find(out, out_size, path, depth + 1);
-		}
-	}
-
-	closedir(d);
-	return found;
+static uint32_t monotonic_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint32_t)(ts.tv_sec * 1000) + (uint32_t)(ts.tv_nsec / 1000000);
 }
 
-static void earpods_adc_set(bool on) {
-	static char node[512];
-	static bool looked;
-
-	if (!looked) {
-		looked = true;
-		if (!earpods_find(node, sizeof(node), EARPODS_ROOT, 0)) {
-			node[0] = '\0';
-		}
+bool power_headset_keys_settling(void) {
+	if (__atomic_load_n(&g_headset_sleeping, __ATOMIC_ACQUIRE)) {
+		return true;
 	}
+	uint32_t settled_at = __atomic_load_n(&g_headset_settled_at, __ATOMIC_ACQUIRE);
+	return settled_at != 0 && (int32_t)(settled_at - monotonic_ms()) > 0;
+}
 
-	if (!node[0]) {
-		return; // not this firmware
-	}
+static void headset_keys_sleep(void) { __atomic_store_n(&g_headset_sleeping, 1, __ATOMIC_RELEASE); }
 
-	FILE *f = fopen(node, "w");
-	if (!f) {
-		return;
-	}
-	fputs(on ? "on" : "off", f);
-	fclose(f);
-	printf("power: inline-remote ADC %s (%s)\n", on ? "on" : "off", node);
+// The window is set before the flag comes down, so there is no moment between
+// the two in which a key from the wake would be taken.
+static void headset_keys_wake(void) {
+	uint32_t at = monotonic_ms() + HEADSET_SETTLE_MS;
+	__atomic_store_n(&g_headset_settled_at, at ? at : 1, __ATOMIC_RELEASE);
+	__atomic_store_n(&g_headset_sleeping, 0, __ATOMIC_RELEASE);
 }
 
 // ---------------------------------------------------------------------------
@@ -975,16 +942,19 @@ static void suspend_to_ram(void) {
 	uint32_t before_wall = boottime_ms();
 	printf("power: mem: writing '%s'\n", path);
 	fflush(stdout);
+	headset_keys_sleep();
 	FILE *f = fopen(path, "w");
 	if (!f) {
 		printf("power: mem: %s will not open (%s) -- prototype off for this session\n", path, strerror(errno));
 		g_mem_enabled = false;
 		rtc_alarm_disarm(); // armed a moment ago for a sleep that never began
+		headset_keys_wake();
 		return;
 	}
 	fputs("mem", f);
 	int rc = fclose(f);
 	int write_errno = errno;
+	headset_keys_wake();
 	uint32_t slept_s = (boottime_ms() - before_wall) / 1000;
 
 	// --- awake from here on ---
@@ -1697,10 +1667,6 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	}
 	screen_power(true); // make sure the panel is unblanked (in case a prior run left it off)
 	backlight_write(g_cfg.brightness);
-
-	// Nothing in this player reads the headphone cable's inline remote, and
-	// leaving its ADC scanning costs a hundred wake-ups a second all day.
-	earpods_adc_set(false);
 
 
 	uint32_t now = lv_tick_get();

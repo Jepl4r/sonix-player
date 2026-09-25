@@ -1210,6 +1210,116 @@ bool radio_custom_step(int step) {
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// The list a station was started from
+//
+// Previous and next move along it: the stations of a country, a language or a
+// genre, a search's hits, the starred or the recent -- whichever list the tap
+// came from, as it stood then. A copy, because the page goes on to show other
+// lists, and the order the stations were offered in is the one to walk.
+//
+// radio.txt keeps its own: it is read from the card, and its stations are known
+// by a "txt:" uuid (see radio_custom_reload).
+// ---------------------------------------------------------------------------
+
+static pthread_mutex_t list_lock = PTHREAD_MUTEX_INITIALIZER;
+static radio_station_t *play_list;
+static int play_list_count;
+
+void radio_set_list(const radio_station_t *list, int count) {
+	radio_station_t *copy = NULL;
+	if (list && count > 0) {
+		copy = malloc((size_t)count * sizeof(*copy));
+		if (copy) {
+			memcpy(copy, list, (size_t)count * sizeof(*copy));
+		}
+	}
+	pthread_mutex_lock(&list_lock);
+	free(play_list);
+	play_list = copy;
+	play_list_count = copy ? count : 0;
+	pthread_mutex_unlock(&list_lock);
+}
+
+// The directory's uuid when both have one; the address otherwise.
+static bool same_station(const radio_station_t *a, const radio_station_t *b) {
+	if (a->uuid[0] && b->uuid[0]) {
+		return strcmp(a->uuid, b->uuid) == 0;
+	}
+	return strcmp(a->url, b->url) == 0;
+}
+
+// Where `station` is in the list. Call with list_lock held.
+static int list_find_locked(const radio_station_t *station) {
+	for (int i = 0; i < play_list_count; i++) {
+		if (same_station(&play_list[i], station)) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static bool is_custom(const radio_station_t *station) { return strncmp(station->uuid, "txt:", 4) == 0; }
+
+bool radio_list_position(int *index_out, int *count_out) {
+	radio_station_t current;
+	if (!radio_current_station(&current)) {
+		return false;
+	}
+	int index;
+	int count;
+	if (is_custom(&current)) {
+		index = radio_custom_current_index();
+		count = radio_custom_count();
+	} else {
+		pthread_mutex_lock(&list_lock);
+		index = list_find_locked(&current);
+		count = play_list_count;
+		pthread_mutex_unlock(&list_lock);
+	}
+	if (index < 0 || count < 2) {
+		return false;
+	}
+	if (index_out) {
+		*index_out = index;
+	}
+	if (count_out) {
+		*count_out = count;
+	}
+	return true;
+}
+
+bool radio_can_step(void) { return radio_list_position(NULL, NULL); }
+
+bool radio_step(int step) {
+	radio_station_t current;
+	if (!radio_current_station(&current)) {
+		return false;
+	}
+	if (is_custom(&current)) {
+		return radio_custom_can_step() && radio_custom_step(step);
+	}
+
+	// The next one that can be played here: a list from the directory holds
+	// stations this device cannot open, and stopping on one of them would be a
+	// dead end in the middle of the list.
+	radio_station_t next;
+	bool found = false;
+	pthread_mutex_lock(&list_lock);
+	int index = list_find_locked(&current);
+	for (int tries = 1; index >= 0 && tries < play_list_count; tries++) {
+		int at = ((index + step * tries) % play_list_count + play_list_count) % play_list_count;
+		if (!radio_station_problem(&play_list[at])) {
+			next = play_list[at];
+			found = true;
+			break;
+		}
+	}
+	pthread_mutex_unlock(&list_lock);
+
+	return found && radio_play(&next);
+}
+
 bool radio_custom_file_present(void) {
 	pthread_mutex_lock(&custom_lock);
 	bool present = custom_present;
@@ -2728,6 +2838,13 @@ bool radio_is_playing(void) {
 	bool on = now_state.active && (now_state.playing || now_state.connecting);
 	pthread_mutex_unlock(&now_lock);
 	return on;
+}
+
+bool radio_is_connecting(void) {
+	pthread_mutex_lock(&now_lock);
+	bool connecting = now_state.active && now_state.connecting;
+	pthread_mutex_unlock(&now_lock);
+	return connecting;
 }
 
 bool radio_is_active(void) {

@@ -178,6 +178,30 @@ bool radio_custom_can_step(void);
 bool radio_custom_step(int step);
 
 // ---------------------------------------------------------------------------
+// Previous and next on a station
+//
+// A station steps along the list it was started from: radio.txt for its own
+// stations, and for the rest whatever list the page hands over with
+// radio_set_list() when one of its rows is tapped. A station started from
+// nowhere in particular -- restored at boot, say -- has nowhere to step to.
+// ---------------------------------------------------------------------------
+
+// Copies `list` as the one to step along; NULL or 0 forgets it.
+void radio_set_list(const radio_station_t *list, int count);
+
+// Where the loaded station is in its list, and how long the list is. False
+// when there is no station, it is in no list, or the list holds it alone.
+// Either output may be NULL.
+bool radio_list_position(int *index_out, int *count_out);
+
+bool radio_can_step(void);
+
+// Plays the station `step` places on (-1 the one before), round from the end
+// to the start, passing over any this device cannot play. False, doing
+// nothing, when there is nowhere to step to.
+bool radio_step(int step);
+
+// ---------------------------------------------------------------------------
 // Playback
 // ---------------------------------------------------------------------------
 
@@ -220,6 +244,10 @@ bool radio_is_active(void);
 
 // True only while the stream is actually running (or connecting).
 bool radio_is_playing(void);
+
+// True while a station is loaded and no audio has come out of it yet: the
+// first connection, or a reconnection after a drop.
+bool radio_is_connecting(void);
 
 void radio_get_now(radio_now_t *out);
 
