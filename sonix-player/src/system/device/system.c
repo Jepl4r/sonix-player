@@ -597,18 +597,21 @@ static int mount_sd_directly(const char *device, const char *mount_point) {
 	// Cards come formatted every which way and the kernel does not guess, so
 	// the plausible types are tried in order of likelihood.
 	//
-	// ntfs-3g comes before the list, and the kernel `ntfs` module after it: the
-	// module would win the race and mount the card read-only, which is worse
-	// than not mounting it as NTFS at all. `ntfs3` is the newer kernel driver
-	// that does write; it is not in a 4.4 kernel, but asking costs one failed
-	// syscall and this file outlives the kernel it was written for.
+	// NTFS comes last. ntfs-3g is a separate program, so trying it costs a
+	// fork and an exec that fail on every card that is not NTFS -- nearly all
+	// of them. It goes before the kernel `ntfs` module, which would otherwise
+	// win and mount the card read-only, which is worse than not mounting it as
+	// NTFS at all. `ntfs3` is the newer kernel driver that does write; it is
+	// not in a 4.4 kernel, but asking costs one failed syscall and this file
+	// outlives the kernel it was written for.
 	static const char *const fs_types[] = {"exfat", "vfat", "ext4", "ext3", "ext2", "ntfs3", "ntfs"};
-
-	if (mount_ntfs_rw(device, mount_point) == 0) {
-		return 0;
-	}
+	const size_t kernel_ntfs = sizeof(fs_types) / sizeof(fs_types[0]) - 1;
 
 	for (size_t i = 0; i < sizeof(fs_types) / sizeof(fs_types[0]); i++) {
+		if (i == kernel_ntfs && mount_ntfs_rw(device, mount_point) == 0) {
+			return 0;
+		}
+
 		if (mount(device, mount_point, fs_types[i], MS_NOATIME, NULL) == 0) {
 			printf("storage: mounted %s on %s as %s\n", device, mount_point, fs_types[i]);
 			return 0;

@@ -21,6 +21,9 @@
 #define LV_USE_LOG 1
 #define LV_LOG_LEVEL LV_LOG_LEVEL_WARN
 #define LV_LOG_PRINTF 1
+/* The player's log puts the time on every line (src/system/core/logging.c);
+ * LVGL's own "(373.404, +373404)" would only repeat it. */
+#define LV_LOG_USE_TIMESTAMP 0
 #define LV_USE_STDLIB_STRING  LV_STDLIB_CLIB
 #define LV_USE_STDLIB_SPRINTF LV_STDLIB_CLIB
 

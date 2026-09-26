@@ -426,9 +426,9 @@ static lv_obj_t *build_block(lv_obj_t *parent, const ebook_block_t *b, uint32_t 
 	// spangroups: left that way they take every press themselves and the page
 	// underneath -- which is what turns -- never hears a tap at all.
 	lv_obj_remove_flag(group, LV_OBJ_FLAG_CLICKABLE);
-	lv_spangroup_set_mode(group, LV_SPAN_MODE_BREAK);
+	// A fixed width and the height of the content: the lines wrap at the width.
 	lv_spangroup_set_overflow(group, LV_SPAN_OVERFLOW_CLIP);
-	lv_obj_set_width(group, width - b->indent * opt_size);
+	lv_obj_set_size(group, width - b->indent * opt_size, LV_SIZE_CONTENT);
 	lv_obj_set_style_margin_left(group, b->indent * opt_size, 0);
 	lv_obj_set_style_text_line_space(group, opt_line, 0);
 	lv_obj_set_style_margin_top(group, block_margin_top(b), 0);
@@ -436,9 +436,9 @@ static lv_obj_t *build_block(lv_obj_t *parent, const ebook_block_t *b, uint32_t 
 	// A heading is centred because that is what a heading looks like; anything
 	// else is centred only if the book's stylesheet says so.
 	if (b->type == EBOOK_BLOCK_HEADING || b->align == EBOOK_ALIGN_CENTRE) {
-		lv_spangroup_set_align(group, LV_TEXT_ALIGN_CENTER);
+		lv_obj_set_style_text_align(group, LV_TEXT_ALIGN_CENTER, 0);
 	} else if (b->align == EBOOK_ALIGN_RIGHT) {
-		lv_spangroup_set_align(group, LV_TEXT_ALIGN_RIGHT);
+		lv_obj_set_style_text_align(group, LV_TEXT_ALIGN_RIGHT, 0);
 	}
 
 	const char *pool = ebook_chapter_text(book);

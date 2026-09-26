@@ -1,11 +1,16 @@
+// fopencookie
+#define _GNU_SOURCE
+
 #include "logging.h"
 
 #include <sys/klog.h>
 
+#include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
+#include <time.h>
 #include <unistd.h>
 
 #include "src/system/core/config.h"
@@ -93,6 +98,10 @@ static void drain_held(FILE *held, FILE *destination) {
 	if (!held) {
 		return;
 	}
+	// A line still in stdout's buffer is headed for the held file, through
+	// the descriptors that point at it: it goes in now or it is lost.
+	fflush(stdout);
+	fflush(stderr);
 	fflush(held);
 	long size = ftell(held);
 	rewind(held);
@@ -117,8 +126,132 @@ static void drain_held(FILE *held, FILE *destination) {
 	fclose(held);
 }
 
-// Points stdout and stderr at `stream`. Line buffered, so a crash still leaves
-// everything up to the last newline behind. Closes the stream they fed before.
+// ---------------------------------------------------------------------------
+// The time on every line
+//
+// stdout and stderr are replaced with two streams of the player's own, built
+// with fopencookie(), that put the time in front of each line and hand the
+// result to descriptors 1 and 2. glibc documents the three standard streams as
+// plain variables that a program may reassign, and every printf, puts, perror
+// and fprintf(stderr) in the process -- LVGL's log and the libraries included
+// -- reads the variable, so the whole log is stamped without a call site
+// changing.
+//
+// The descriptors stay where they were: redirect_to() still moves 1 and 2 with
+// dup2, and whatever writes to them directly goes out unstamped but in place.
+// That is the crash handler in main.c (write(2) only, which is all a signal
+// handler may use) and the child processes, which inherit the descriptors and
+// not the streams.
+//
+// The time is the same local time the status bar shows, to the millisecond. A
+// line with the date goes out before the first stamped line and again whenever
+// the day changes: at midnight, and when the clock is set, which on a device
+// that booted with no time is the difference between 1970 and today.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	int fd;
+	bool line_start; // the next byte begins a line
+} stamp_stream_t;
+
+static stamp_stream_t stamp_out = {STDOUT_FILENO, true};
+static stamp_stream_t stamp_err = {STDERR_FILENO, true};
+
+// Year and day of the year of the last date line; -1 before the first.
+static int stamp_day = -1;
+
+static void write_all(int fd, const char *data, size_t size) {
+	while (size > 0) {
+		ssize_t done = write(fd, data, size);
+		if (done < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			return; // a card that went away mid-line; nothing to be done here
+		}
+		data += done;
+		size -= (size_t)done;
+	}
+}
+
+static void write_stamp(int fd) {
+	struct timespec now;
+	clock_gettime(CLOCK_REALTIME, &now);
+	time_t seconds = now.tv_sec;
+	struct tm local;
+	if (!localtime_r(&seconds, &local)) {
+		return;
+	}
+
+	char text[48];
+	int day = local.tm_year * 366 + local.tm_yday;
+	if (day != stamp_day) {
+		stamp_day = day;
+		size_t len = strftime(text, sizeof(text), "---- %Y-%m-%d ----\n", &local);
+		write_all(fd, text, len);
+	}
+
+	int len = snprintf(text, sizeof(text), "%02d:%02d:%02d.%03ld ", local.tm_hour, local.tm_min, local.tm_sec,
+					   now.tv_nsec / 1000000L);
+	if (len > 0) {
+		write_all(fd, text, (size_t)len);
+	}
+}
+
+// Called by stdio with whatever it has buffered: usually one line, but a
+// single printf can carry several, and a full buffer can end mid-line. The
+// stream's lock is held, so line_start needs none of its own. An empty line
+// stays empty.
+static ssize_t stamp_write(void *cookie, const char *data, size_t size) {
+	stamp_stream_t *stream = cookie;
+	size_t done = 0;
+	while (done < size) {
+		const char *start = data + done;
+		const char *newline = memchr(start, '\n', size - done);
+		size_t len = newline ? (size_t)(newline - start) + 1 : size - done;
+		if (stream->line_start && *start != '\n') {
+			write_stamp(stream->fd);
+		}
+		write_all(stream->fd, start, len);
+		stream->line_start = newline != NULL;
+		done += len;
+	}
+	// Always all of it. A write that failed (the card pulled) must not leave
+	// the stream in an error state that outlives the card coming back.
+	return (ssize_t)size;
+}
+
+static FILE *stamp_open(stamp_stream_t *stream) {
+	cookie_io_functions_t io = {.write = stamp_write};
+	FILE *file = fopencookie(stream, "w", io);
+	if (file) {
+		setvbuf(file, NULL, _IOLBF, 0);
+	}
+	return file;
+}
+
+// Puts the stamping streams in place of stdout and stderr. Either one that
+// cannot be made leaves the original where it was, which prints as before.
+static void stamp_install(void) {
+	fflush(stdout);
+	fflush(stderr);
+	FILE *out = stamp_open(&stamp_out);
+	if (out) {
+		stdout = out;
+	} else {
+		setvbuf(stdout, NULL, _IOLBF, 0);
+	}
+	FILE *err = stamp_open(&stamp_err);
+	if (err) {
+		stderr = err;
+	} else {
+		setvbuf(stderr, NULL, _IOLBF, 0);
+	}
+}
+
+// Points descriptors 1 and 2 -- and so stdout and stderr, which write to them
+// -- at `stream`. Line buffered, so a crash still leaves everything up to the
+// last newline behind. Closes the stream they fed before.
 //
 // False when the descriptors could not be moved, and then nothing is closed:
 // closing the previous stream after a failed dup2 would leave stdout writing
@@ -128,13 +261,17 @@ static bool redirect_to(FILE *stream) {
 		return false;
 	}
 
+	// Whatever stdout and stderr still hold belongs to the old destination.
+	fflush(stdout);
+	fflush(stderr);
+
 	setvbuf(stream, NULL, _IOLBF, 0);
 	int fd = fileno(stream);
-	if (fd < 0 || dup2(fd, fileno(stdout)) < 0 || dup2(fd, fileno(stderr)) < 0) {
+	// The numbers and not fileno(stdout): the stamping streams have no
+	// descriptor of their own, and fileno() on them is -1.
+	if (fd < 0 || dup2(fd, STDOUT_FILENO) < 0 || dup2(fd, STDERR_FILENO) < 0) {
 		return false;
 	}
-	setvbuf(stdout, NULL, _IOLBF, 0);
-	setvbuf(stderr, NULL, _IOLBF, 0);
 
 	if (active_stream && active_stream != stream) {
 		fclose(active_stream);
@@ -144,6 +281,8 @@ static bool redirect_to(FILE *stream) {
 }
 
 void logging_init(void) {
+	stamp_install();
+
 	const char *override = getenv("SONIX_LOG");
 	if (override && override[0]) {
 		FILE *file = fopen(override, "w");
@@ -267,7 +406,7 @@ void logging_suspend_for_usb(void) {
 	}
 	usb_was_on_sd = true;
 
-	printf("log: releasing the card log for the USB export\n");
+	printf("log: card log released, holding output until the card is back\n");
 	fflush(stdout);
 
 	usb_stream = open_held(USB_HELD_PATH);
@@ -303,7 +442,7 @@ void logging_resume_after_usb(void) {
 		}
 		on_sd = true;
 		usb_was_on_sd = false; // only now: the flag is spent when it has paid off
-		printf("log: card log resumed after the USB export\n");
+		printf("log: card log resumed\n");
 	} else {
 		// The card did not come back writable. usb_was_on_sd stays set so a
 		// later attempt (a reinsert, or the switch being toggled) can still
