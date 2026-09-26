@@ -10,7 +10,7 @@
 //     /lib/libm.so.6: version `GLIBC_2.27' not found
 //
 // The link succeeds, so nothing shows at build time, and on the device nothing
-// shows at run time either, because hiby_player.sh does `sleep 1; reboot` as
+// shows at run time either, because sonix_launch does `sleep 1; reboot` as
 // soon as the player exits: the only symptom is a bootloop.
 //
 // glibc 2.27 reimplemented five single-precision functions (powf, expf, logf,

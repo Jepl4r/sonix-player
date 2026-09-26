@@ -3,6 +3,8 @@
 # Target executables
 HOST_BIN = sonix_player_host
 TARGET_BIN = sonix_player
+# Built from launcher/, see "sonix_launch" below.
+LAUNCH_BIN = sonix_launch
 
 # The unstripped copy of the target binary, kept beside the stripped one.
 #
@@ -215,13 +217,32 @@ build_host/lvgl/%.o: $(LVGL_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(HOST_CFLAGS) -c $< -o $@
 
-target: $(TARGET_BIN) compile_commands.json
+target: $(TARGET_BIN) $(LAUNCH_BIN) compile_commands.json
 
 $(TARGET_BIN): $(TARGET_OBJS)
 	$(TARGET_LD) -o $@ $(TARGET_OBJS) $(TARGET_LDFLAGS)
 	@$(MAKE) --no-print-directory check-abi
 	@$(MAKE) --no-print-directory strip-target
 	@echo "Target build complete: File ready at '$(TARGET_BIN)'"
+
+# ---------------------------------------------------------------------------
+# sonix_launch
+#
+# The process sonix_player.sh hands itself over to: it starts the player and
+# reboots the device when the player exits (launcher/sonix_launch.c). No libc
+# and no loader, so it is built on its own: static, freestanding, non-PIC, and
+# with the loop idioms GCC would turn into memset or strlen calls left as loops.
+# The packer takes it from next to itself, like sonix_player.
+# ---------------------------------------------------------------------------
+
+LAUNCH_CFLAGS = -Os -Wall -Wextra -march=mips32r2 -mno-abicalls -fno-pic -G0 -static -nostdlib \
+				-ffreestanding -fno-builtin -fno-tree-loop-distribute-patterns -fno-stack-protector \
+				-fno-asynchronous-unwind-tables -Wl,-e,__start
+
+$(LAUNCH_BIN): launcher/sonix_launch.c $(CROSS_CC)
+	$(CROSS_CC) $(LAUNCH_CFLAGS) -o $@ $<
+	@if [ -x "$(CROSS_STRIP)" ]; then $(CROSS_STRIP) $@; fi
+	@echo "sonix_launch: $$(wc -c < $@) bytes"
 
 # ---------------------------------------------------------------------------
 # Splitting the link output in two
@@ -255,7 +276,7 @@ strip-target:
 #
 # The toolchain compiles against glibc 2.27, the device has 2.22. A binary
 # asking for a newer versioned symbol links without a word and then refuses to
-# start, and on this device that means a boot loop: sonix_player.sh runs
+# start, and on this device that means a boot loop: sonix_launch runs
 # `sleep 1; reboot` as soon as the player exits.
 #
 # glibc_compat.h holds the known functions down; this catches the next ones.
@@ -318,7 +339,7 @@ compile_commands.json:
 	@python3 generate_compile_commands.py
 
 clean:
-	rm -rf build_host build_target $(HOST_BIN) $(TARGET_BIN) $(TARGET_DEBUG_BIN) compile_commands.json compile_flags.txt
+	rm -rf build_host build_target $(HOST_BIN) $(TARGET_BIN) $(TARGET_DEBUG_BIN) $(LAUNCH_BIN) compile_commands.json compile_flags.txt
 
 # The bundled libraries and their extracted sources. The downloaded tarballs stay.
 .PHONY: libs-clean

@@ -138,7 +138,7 @@ The first run takes a while and does four things by itself:
 2. downloads and cross-builds FreeType, static, into `freetype-target/`
 3. downloads and cross-builds libogg, libopus, opusfile and libwavpack, static,
    into `audio-target/`
-4. compiles and links `sonix_player`
+4. compiles and links `sonix_player`, and builds `sonix_launch` (see below)
 
 Steps 1 to 3 happen once. Later builds go straight to step 4.
 
@@ -151,8 +151,15 @@ The link is followed by a `readelf` pass that fails the build if the binary
 asks for a glibc symbol newer than the device's 2.22.
 
 This is not decoration. A binary that asks for a newer symbol links without a
-word and then refuses to start, and `hiby_player.sh` runs `sleep 1; reboot` as
-soon as the player exits - so the only symptom on the device is a boot loop.
+word and then refuses to start, and the device reboots as soon as the player
+exits - so the only symptom on the device is a boot loop.
+
+### sonix_launch
+
+A 2 KB static binary with no libc (`launcher/sonix_launch.c`). The launcher
+script execs it, and it runs the player as its child and does `sleep 1; reboot`
+when the player exits - what the rest of the script would do, without a shell
+sitting in memory for the whole session.
 
 
 ## Creating the firmware image
@@ -164,6 +171,7 @@ sonix-packer/
 ├── sonix_firmware_packer.sh
 ├── r3proii_original.upt     the stock firmware, from HiBy
 ├── sonix_player             the binary from `make target`
+├── sonix_launch             also from `make target`; optional
 └── assets/                  an overlay copied onto the root of the rootfs
 ```
 
@@ -210,7 +218,8 @@ It runs through without asking anything:
 2. deletes `usr/bin/hiby_player` and installs `usr/bin/sonix_player`
 3. renames `hiby_player.sh` to `sonix_player.sh` and rewrites the name inside it
 4. points `etc/init.d/S92_03_start_music_player` at the new launcher
-5. copies `assets/` over the rootfs
+5. copies `assets/` over the rootfs, then installs `usr/bin/sonix_launch` and
+   has the launcher exec it (skipped with a warning if it is not there)
 6. deletes the stock interface's own resources — `litegui`, `layout`, `str`,
    `fonts`.
 7. writes the build stamp into `system-info.json`
@@ -274,6 +283,8 @@ sonix-player/
 │   │   ├── fonts/ 					 the four faces: default, bold, Korean, Thai
 │   │   └── icons/                   191 SVGs and PNGs, baked into src/gui/shell/icons.c
 │   │   
+│   │
+│   ├── launcher/                    sonix_launch.c: runs the player, reboots when it exits
 │   │
 │   ├── rockboxdev/                  builds the MIPS cross toolchain, first `make target` only
 │   │   ├── toolchain-patches/       three patches gcc and binutils needed on a modern host

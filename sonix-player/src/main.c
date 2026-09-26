@@ -156,7 +156,8 @@ static void sigint_handler(int sig) {
 // ---------------------------------------------------------------------------
 // staying alive
 //
-// /usr/bin/hiby_player.sh runs the player and then does `sleep 1; reboot`.
+// sonix_player.sh starts the player through sonix_launch, which does
+// `sleep 1; reboot` when it exits (the shell does it on a rootfs without it).
 // Whatever the reason -- a clean exit, a failed display init, a segfault, a
 // stray SIGPIPE -- the moment this process goes away the device reboots, so a
 // bug that would be a crash on a PC is a boot loop here, with no console.
