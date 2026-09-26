@@ -214,20 +214,25 @@ jobs:
           rm -rf sonix-packer/hiby-v1.6-download
           mkdir -p sonix-packer/hiby-v1.6-download
 
-          # Use a virtual environment so Ubuntu 24.04's
-          # system Python is not modified.
           python3 -m venv "$RUNNER_TEMP/gdown-env"
 
           "$RUNNER_TEMP/gdown-env/bin/python" \
             -m pip install --upgrade pip
 
           "$RUNNER_TEMP/gdown-env/bin/python" \
-            -m pip install gdown
+            -m pip install "gdown==6.4.0"
+
+          echo
+          echo "gdown version:"
+          "$RUNNER_TEMP/gdown-env/bin/gdown" --version
+
+          echo
+          echo "Downloading HiBy R1 v1.6 folder..."
 
           "$RUNNER_TEMP/gdown-env/bin/gdown" \
-            --folder "$HIBY_R1_V16_FOLDER" \
+            "$HIBY_R1_V16_FOLDER" \
             --output sonix-packer/hiby-v1.6-download \
-            --remaining-ok
+            --folder
 
           echo
           echo "Downloaded files:"
@@ -235,8 +240,6 @@ jobs:
             -type f \
             -printf '%p\n' \
             | sort
-
-
       # ============================================================
       # EXTRACT / FIND r1.upt FROM V1.6
       # ============================================================
