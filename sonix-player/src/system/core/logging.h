@@ -11,12 +11,17 @@
 // mounted yet, and moves onto the card once there is one -- next to the other
 // things the player generates, under .local.
 //
+// Every line starts with the local time it was printed, to the millisecond,
+// and a line with the date goes out first and whenever the day changes. Only
+// what goes through stdio is stamped: the crash handler and child processes
+// write to the descriptors directly and come out as they are.
+//
 // Writing to the card can be turned off (Settings > Developer options): it is
 // a constant trickle of writes to the user's music card, worth having only
 // while something is being debugged.
 
-// Redirects output to the tmpfs. Call first thing in main(), before anything
-// can print.
+// Starts the stamping and redirects output to the tmpfs. Call first thing in
+// main(), before anything can print: it replaces stdout and stderr.
 void logging_init(void);
 
 // Moves the log onto the card, if that is what the settings ask for. Call once

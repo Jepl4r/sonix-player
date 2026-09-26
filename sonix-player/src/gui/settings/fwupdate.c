@@ -305,10 +305,11 @@ static void strip_marks(char *text) {
 static lv_obj_t *notes_rich(lv_obj_t *parent, const char *text) {
 	lv_obj_t *group = lv_spangroup_create(parent);
 	lv_obj_remove_flag(group, LV_OBJ_FLAG_CLICKABLE);
-	lv_spangroup_set_mode(group, LV_SPAN_MODE_BREAK);
+	// The width of the notes and the height of the content: the lines wrap.
+	// A bullet narrows it to what is left beside the bullet.
+	lv_obj_set_size(group, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_add_style(group, &theme_style_text, 0);
 	lv_obj_set_style_text_font(group, &font_ui_20, 0);
-	lv_obj_set_height(group, LV_SIZE_CONTENT);
 
 	bool bold = false;
 	const char *p = text;
@@ -425,7 +426,6 @@ static void render_notes(const char *md) {
 				continue;
 			}
 			item = notes_rich(notes_content, notes_line);
-			lv_obj_set_width(item, lv_pct(100));
 		}
 
 		if (gap) {
