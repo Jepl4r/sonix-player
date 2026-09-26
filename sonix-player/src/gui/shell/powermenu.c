@@ -16,6 +16,7 @@
 #include "src/system/playback/device_state.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
+#include "src/system/device/system.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/tidalcache.h"
@@ -134,6 +135,8 @@ static void do_power_off(void) {
 	// the next cable with a charger that does nothing.
 	power_charging_release();
 
+	// Last, after everything above that writes to the card.
+	storage_release_for_shutdown();
 	sync();
 
 	int rc = system("poweroff");
@@ -154,13 +157,13 @@ static void do_reboot(void) {
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
 	power_screen_off(); // same instant-feedback trick as the shutdown
+	storage_release_for_shutdown();
 	sync();
 
 	// Through init, the same way down as the shutdown above. `reboot(RB_AUTOBOOT)`
 	// restarts the machine from inside this process: init's shutdown hooks never
 	// run, so the daemons are not stopped and nothing is remounted read-only or
-	// unmounted -- and the player does not unmount the card itself either, so on
-	// that route nobody does.
+	// unmounted, apart from the card, which is released above either way.
 	//
 	// The syscall stays as the last resort, on the same eight-second guard, for
 	// a firmware whose init never gets there.
