@@ -65,6 +65,17 @@ static inline uint16_t rgb_to_rgb565(uint32_t r, uint32_t g, uint32_t b) {
 	return (uint16_t)(((r & 0xF8) << 8) | ((g & 0xFC) << 3) | (b >> 3));
 }
 
+// The same, rounded to the nearest 5- and 6-bit level instead of cut down to
+// the one below: round(v * 31 / 255) and round(v * 63 / 255), exact for every
+// input byte. Half the worst-case error of the cut, which on a flat grey is
+// the difference between grey and a faint tint.
+static inline uint16_t rgb_to_rgb565_rounded(uint32_t r, uint32_t g, uint32_t b) {
+	uint32_t r5 = (r * 249 + 1014) >> 11;
+	uint32_t g6 = (g * 253 + 505) >> 10;
+	uint32_t b5 = (b * 249 + 1014) >> 11;
+	return (uint16_t)((r5 << 11) | (g6 << 5) | b5);
+}
+
 static void raw_free(raw_image_t *img) {
 	if (!img)
 		return;
@@ -273,6 +284,151 @@ static crop_t crop_to_aspect(int src_w, int src_h, int dst_w, int dst_h) {
 	return c;
 }
 
+// ---------------------------------------------------------------------------
+// Shrinking by area
+//
+// Each output pixel is the average of the source area it covers, with the
+// pixels cut by its edges counted for the part that falls inside. The plain box
+// average below counts whole pixels only, so at a ratio that is not a whole
+// number its footprint alternates between one and two source pixels: 600 to 480
+// takes one column in four twice. Thin lines, circles and lettering then come
+// out uneven, a stroke thicker in one place and thinner a few pixels on.
+//
+// Weights are in 1/AREA_ONE of an output pixel along each axis, and add up to
+// exactly AREA_ONE, so a flat colour stays that colour. Two axes of 12 bits and
+// 8-bit samples fill 32 bits and no more: 4096 * 4096 * 255 plus the rounding
+// half is below 2^32.
+// ---------------------------------------------------------------------------
+
+#define AREA_SHIFT 12
+#define AREA_ONE (1 << AREA_SHIFT)
+
+// The source pixels under one output pixel: `count` of them from `first`, with
+// their weights from `weight_at` in the axis' weight table.
+typedef struct {
+	int first;
+	int count;
+	int weight_at;
+} area_span_t;
+
+// Fills the spans and weights of one axis, src_len source pixels onto dst_len
+// output pixels, dst_len <= src_len. `weights` holds src_len + dst_len entries,
+// which is enough: every source pixel belongs to one output pixel, except the
+// ones an edge cuts, which belong to two. False when a ratio is so large that the
+// weights cannot be made to add up; the caller then shrinks the old way.
+static bool area_axis(int src_len, int dst_len, area_span_t *spans, uint16_t *weights) {
+	int at = 0;
+	for (int d = 0; d < dst_len; d++) {
+		// Positions in 1/dst_len of a source pixel: output pixel d covers
+		// [lo, hi), source pixel s covers [s * dst_len, (s + 1) * dst_len).
+		int64_t lo = (int64_t)d * src_len;
+		int64_t hi = lo + src_len;
+		int first = (int)(lo / dst_len);
+		int last = (int)((hi - 1) / dst_len);
+		if (last >= src_len)
+			last = src_len - 1;
+
+		spans[d].first = first;
+		spans[d].count = last - first + 1;
+		spans[d].weight_at = at;
+
+		int sum = 0, biggest = at;
+		for (int s = first; s <= last; s++) {
+			int64_t s_lo = (int64_t)s * dst_len;
+			int64_t s_hi = s_lo + dst_len;
+			int64_t overlap = (hi < s_hi ? hi : s_hi) - (lo > s_lo ? lo : s_lo);
+			int w = (int)((overlap * AREA_ONE + src_len / 2) / src_len);
+			weights[at] = (uint16_t)w;
+			if (w > weights[biggest])
+				biggest = at;
+			sum += w;
+			at++;
+		}
+
+		// Rounding leaves the sum a little off AREA_ONE; the largest weight
+		// takes the difference.
+		int fixed = weights[biggest] + (AREA_ONE - sum);
+		if (fixed < 0 || fixed > AREA_ONE)
+			return false;
+		weights[biggest] = (uint16_t)fixed;
+	}
+	return true;
+}
+
+// resample_rgb() for a shrink, by area. NULL when a table cannot be had.
+static uint8_t *resample_area(const raw_image_t *src, const crop_t *crop, int dst_w, int dst_h, bool flip_v) {
+	if (dst_w > crop->w || dst_h > crop->h)
+		return NULL;
+
+	size_t row_len = (size_t)dst_w * 3;
+	area_span_t *xs = malloc((size_t)dst_w * sizeof(*xs));
+	area_span_t *ys = malloc((size_t)dst_h * sizeof(*ys));
+	uint16_t *xw = malloc((size_t)(crop->w + dst_w) * sizeof(*xw));
+	uint16_t *yw = malloc((size_t)(crop->h + dst_h) * sizeof(*yw));
+	uint32_t *acc = malloc(row_len * sizeof(*acc));
+	uint32_t *line = malloc(row_len * sizeof(*line));
+	uint8_t *dst = malloc((size_t)dst_h * row_len);
+
+	bool ok = xs && ys && xw && yw && acc && line && dst && area_axis(crop->w, dst_w, xs, xw) &&
+			  area_axis(crop->h, dst_h, ys, yw);
+	if (ok) {
+		int cached = -1; // the source row `line` holds, shrunk across
+
+		for (int y = 0; y < dst_h; y++) {
+			memset(acc, 0, row_len * sizeof(*acc));
+
+			for (int k = 0; k < ys[y].count; k++) {
+				int s = ys[y].first + k;
+				uint32_t wy = yw[ys[y].weight_at + k];
+
+				// One source row across: at most AREA_ONE * 255 per sample.
+				// Consecutive output rows share the row an edge cuts, so the
+				// last one is kept.
+				if (s != cached) {
+					const uint8_t *in = src->pixels + ((size_t)(crop->y + s) * src->w + crop->x) * 3;
+					uint32_t *o = line;
+					for (int x = 0; x < dst_w; x++) {
+						const uint8_t *px = in + (size_t)xs[x].first * 3;
+						const uint16_t *w = xw + xs[x].weight_at;
+						uint32_t r = 0, g = 0, b = 0;
+						for (int i = 0; i < xs[x].count; i++) {
+							r += w[i] * (uint32_t)px[0];
+							g += w[i] * (uint32_t)px[1];
+							b += w[i] * (uint32_t)px[2];
+							px += 3;
+						}
+						o[0] = r;
+						o[1] = g;
+						o[2] = b;
+						o += 3;
+					}
+					cached = s;
+				}
+
+				for (size_t i = 0; i < row_len; i++)
+					acc[i] += wy * line[i];
+			}
+
+			int out_row = flip_v ? (dst_h - 1 - y) : y;
+			uint8_t *out = dst + (size_t)out_row * row_len;
+			for (size_t i = 0; i < row_len; i++)
+				out[i] = (uint8_t)((acc[i] + (1u << (2 * AREA_SHIFT - 1))) >> (2 * AREA_SHIFT));
+		}
+	}
+
+	free(xs);
+	free(ys);
+	free(xw);
+	free(yw);
+	free(acc);
+	free(line);
+	if (!ok) {
+		free(dst);
+		return NULL;
+	}
+	return dst;
+}
+
 // Resamples a crop of the source into a dst_w x dst_h RGB888 buffer, optionally
 // upside down. It averages over the source footprint when shrinking, which
 // keeps thumbnails from turning into noise, and interpolates when growing, so
@@ -281,11 +437,19 @@ static uint8_t *resample_rgb(const raw_image_t *src, const crop_t *crop, int dst
 	if (dst_w < 1 || dst_h < 1)
 		return NULL;
 
+	bool magnify = (dst_w >= crop->w);
+
+	// A shrink goes by area (above). The loop below stays for the case where
+	// that cannot get its tables, and for growing.
+	if (!magnify) {
+		uint8_t *by_area = resample_area(src, crop, dst_w, dst_h, flip_v);
+		if (by_area)
+			return by_area;
+	}
+
 	uint8_t *dst = malloc((size_t)dst_w * dst_h * 3);
 	if (!dst)
 		return NULL;
-
-	bool magnify = (dst_w >= crop->w);
 
 	for (int y = 0; y < dst_h; y++) {
 		int out_row = flip_v ? (dst_h - 1 - y) : y;
@@ -491,7 +655,7 @@ static bool pack_rgb565(const uint8_t *rgb, int w, int h, cover_image_t *out) {
 		return false;
 
 	for (int i = 0; i < w * h; i++) {
-		buf[i] = rgb_to_rgb565(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
+		buf[i] = rgb_to_rgb565_rounded(rgb[i * 3], rgb[i * 3 + 1], rgb[i * 3 + 2]);
 	}
 
 	memset(out, 0, sizeof(*out));

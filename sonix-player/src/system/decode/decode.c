@@ -13,6 +13,7 @@
 #include "opusdec.h"
 #include "sndfile.h"
 #include "wavpackdec.h"
+#include "apedec.h"
 
 #include <stdio.h>
 #include <stdlib.h>
@@ -407,6 +408,7 @@ struct decoder {
 		sndfile_t *snd;
 		opusdec_t *opus;
 		wavpackdec_t *wv;
+		apedec_t *ape;
 		adts_state_t *adts;
 	} impl;
 
@@ -494,6 +496,8 @@ decode_format_t decode_detect_format(const char *filepath) {
 		return DECODE_FORMAT_OPUS;
 	if (has_extension(filepath, ".wv"))
 		return DECODE_FORMAT_WAVPACK;
+	if (has_extension(filepath, ".ape"))
+		return DECODE_FORMAT_APE;
 	if (has_extension(filepath, ".aac"))
 		return DECODE_FORMAT_AAC_ADTS;
 	// Last, and only if the library is really there: an unplayable extension
@@ -1322,6 +1326,17 @@ static decoder_t *decoder_open_file(const char *filepath, decode_format_t format
 		dec->total_pcm_frames = wavpackdec_total_frames(dec->impl.wv);
 		break;
 
+	case DECODE_FORMAT_APE:
+		dec->impl.ape = apedec_open(filepath);
+		if (!dec->impl.ape) {
+			free(dec);
+			return NULL;
+		}
+		dec->channels = apedec_channels(dec->impl.ape);
+		dec->sample_rate = apedec_sample_rate(dec->impl.ape);
+		dec->total_pcm_frames = apedec_total_frames(dec->impl.ape);
+		break;
+
 	case DECODE_FORMAT_AAC_MP4: {
 		// The container is opened before deciding which decoder to build: .m4a
 		// and .m4b can hold either AAC or ALAC, and the sample entry is the
@@ -1467,6 +1482,9 @@ int decoder_source_bits(const decoder_t *dec) {
 	if (dec->format == DECODE_FORMAT_WAVPACK) {
 		return wavpackdec_bits(dec->impl.wv);
 	}
+	if (dec->format == DECODE_FORMAT_APE) {
+		return apedec_bits(dec->impl.ape);
+	}
 	return 16;
 }
 
@@ -1508,6 +1526,8 @@ const char *decoder_codec_name(const decoder_t *dec) {
 		return "Opus";
 	case DECODE_FORMAT_WAVPACK:
 		return "WavPack";
+	case DECODE_FORMAT_APE:
+		return "APE";
 	default:
 		// DSD has a line of its own (DSD64/DoP), and for the libsndfile
 		// formats the right name is the container's, i.e. the extension: say
@@ -1581,6 +1601,9 @@ static uint64_t decoder_read_s16_inner(decoder_t *dec, uint64_t frame_count, sho
 
 	case DECODE_FORMAT_WAVPACK:
 		return wavpackdec_read_s16(dec->impl.wv, frame_count, pBuffer);
+
+	case DECODE_FORMAT_APE:
+		return apedec_read_s16(dec->impl.ape, frame_count, pBuffer);
 
 	case DECODE_FORMAT_ALAC_MP4: {
 		// The samples are already left-justified in 32 bits: they are narrowed
@@ -1673,6 +1696,9 @@ static uint64_t decoder_read_s32_inner(decoder_t *dec, uint64_t frame_count, int
 	case DECODE_FORMAT_WAVPACK:
 		// Same contract: left-justified by the wrapper.
 		return wavpackdec_read_s32(dec->impl.wv, frame_count, pBuffer);
+
+	case DECODE_FORMAT_APE:
+		return apedec_read_s32(dec->impl.ape, frame_count, pBuffer);
 
 	case DECODE_FORMAT_ALAC_MP4: {
 		// Here the decoder already produces what is wanted, so this is a plain
@@ -1814,6 +1840,9 @@ int decoder_seek_to_frame(decoder_t *dec, uint64_t frame_index) {
 	case DECODE_FORMAT_WAVPACK:
 		return wavpackdec_seek(dec->impl.wv, frame_index) ? 1 : 0;
 
+	case DECODE_FORMAT_APE:
+		return apedec_seek(dec->impl.ape, frame_index) ? 1 : 0;
+
 	case DECODE_FORMAT_ALAC_MP4: {
 		alac_state_t *s = dec->impl.alac;
 		if (dec->sample_rate <= 0)
@@ -1941,6 +1970,9 @@ void decoder_close(decoder_t *dec) {
 		break;
 	case DECODE_FORMAT_WAVPACK:
 		wavpackdec_close(dec->impl.wv);
+		break;
+	case DECODE_FORMAT_APE:
+		apedec_close(dec->impl.ape);
 		break;
 	case DECODE_FORMAT_DSD:
 		dsd_close(dec->impl.dsd);

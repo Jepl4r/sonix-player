@@ -6,6 +6,7 @@
 #include "src/system/decode/mp4.h"
 #include "src/system/decode/stb_vorbis_decl.h"
 #include "src/system/decode/wavpackdec.h"
+#include "src/system/decode/apedec.h"
 #include "src/system/core/utils.h"
 
 #include <opusfile.h>
@@ -1003,6 +1004,18 @@ static void read_wavpack_metadata(const char *filepath, song_metadata_t *out) {
 	wavpackdec_tags(filepath, wavpack_tag_cb, out);
 }
 
+// An .ape carries the same APEv2 tags, and sometimes an ID3v1 tag after them,
+// which fills whatever the APEv2 one left empty.
+static void read_ape_metadata(const char *filepath, song_metadata_t *out) {
+	apedec_tags(filepath, wavpack_tag_cb, out);
+
+	FILE *f = fopen(filepath, "rb");
+	if (f) {
+		read_id3v1(f, out);
+		fclose(f);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // Sidecar files
 //
@@ -1139,6 +1152,9 @@ void metadata_read(const char *filepath, song_metadata_t *out) {
 		break;
 	case DECODE_FORMAT_WAVPACK:
 		read_wavpack_metadata(filepath, out);
+		break;
+	case DECODE_FORMAT_APE:
+		read_ape_metadata(filepath, out);
 		break;
 	default:
 		if (has_extension(filepath, ".wav")) {

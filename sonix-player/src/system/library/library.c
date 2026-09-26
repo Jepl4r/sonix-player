@@ -17,6 +17,7 @@
 #include "src/system/db/sqlite3.h"
 #include "src/system/library/cue.h"
 #include "src/system/decode/mp4.h"
+#include "src/system/decode/apedec.h"
 #include "src/system/library/metadata.h"
 #include "src/system/core/utils.h"
 
@@ -43,6 +44,7 @@
 #define FORMAT_OPUS 6
 #define FORMAT_WAVPACK 7
 #define FORMAT_ALAC 8
+#define FORMAT_APE 9
 
 static const char *const SCHEMA[] = {
 	"CREATE TABLE IF NOT EXISTS MEDIA_TABLE(id INT,path TEXT COLLATE NOCASE,name TEXT COLLATE NOCASE,"
@@ -1356,6 +1358,7 @@ library_quality_t library_track_quality(const char *path, int *rate_out, int *bi
 	case FORMAT_FLAC:
 	case FORMAT_WAVPACK:
 	case FORMAT_ALAC:
+	case FORMAT_APE:
 		break;
 	default:
 		return LIBRARY_QUALITY_NONE; // no row, or a code from an older index
@@ -2327,7 +2330,7 @@ static void namelist_free(namelist_t *l) {
 static bool is_playable(const char *name) {
 	static const char *const EXTENSIONS[] = {".wav",  ".mp3", ".flac", ".ogg",  ".dsf",  ".dff",
 											 ".aif",  ".aiff", ".aifc", ".caf", ".opus", ".wv",
-											 ".m4a",  ".alac", ".aac",  ".cue"};
+											 ".m4a",  ".alac", ".aac",  ".ape",  ".cue"};
 
 	for (size_t i = 0; i < sizeof(EXTENSIONS) / sizeof(EXTENSIONS[0]); i++) {
 		if (has_extension(name, EXTENSIONS[i])) {
@@ -2355,6 +2358,7 @@ static bool is_playable(const char *name) {
 //   WAV   the `fmt ` chunk, found by walking the chunk list
 //   DSF   the `fmt ` chunk of a DSD stream, at a fixed offset
 //   MP4   through the parser the player already has (rate, and ALAC's depth)
+//   APE   the Monkey's Audio header, through apedec_probe()
 //
 // Anything else keeps zeros, and a row with zeros gets no badge: a wrong badge
 // is worse than none. That is mp3, ogg, opus, raw aac -- all lossy, so the
@@ -2454,6 +2458,14 @@ static void probe_stream_format(const char *path, const char *filename, int *rat
 	bool flac = has_extension(filename, ".flac");
 	bool wav = has_extension(filename, ".wav");
 	bool dsf = has_extension(filename, ".dsf");
+
+	if (has_extension(filename, ".ape")) {
+		if (!apedec_probe(path, rate, bits)) {
+			*rate = 0;
+			*bits = 0;
+		}
+		return;
+	}
 	bool mp4 = has_extension(filename, ".m4a") || has_extension(filename, ".alac") || has_extension(filename, ".mp4");
 
 	if (mp4) {
@@ -2520,6 +2532,9 @@ static int format_of(const char *name) {
 	}
 	if (has_extension(name, ".wv")) {
 		return FORMAT_WAVPACK;
+	}
+	if (has_extension(name, ".ape")) {
+		return FORMAT_APE;
 	}
 	return FORMAT_WAV;
 }

@@ -3,6 +3,8 @@
 # Target executables
 HOST_BIN = sonix_player_host
 TARGET_BIN = sonix_player
+# Built from launcher/, see "sonix_launch" below.
+LAUNCH_BIN = sonix_launch
 
 # The unstripped copy of the target binary, kept beside the stripped one.
 #
@@ -72,7 +74,18 @@ HOST_CFLAGS = $(CFLAGS) -DHOST_BUILD=1 $(shell sdl2-config --cflags) $(shell pkg
 #
 # -mno-madd4: no madd.s/msub.s. Every float multiply and add stays a separate,
 # separately rounded instruction, as in a MIPS I build.
-TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
+#
+# -mplt: the player is an executable at a fixed address, so its code need not
+# be position-independent. Without this GCC compiles it as if it were a shared
+# library: every function that calls another sets up $gp, every call loads its
+# target from the GOT and jumps through a register, $gp is reloaded after each
+# call, and every global is two loads. With it a call is a plain jal and a
+# global is lui+lw; calls into the shared libraries go through a PLT the linker
+# builds, and their data (stdout, stderr) is copied into the executable. The
+# arithmetic is untouched: only how code and data are reached. Needs a dynamic
+# linker with MIPS PLT support, which glibc has had since 2.9 (the device has
+# 2.22). Ignored for anything built with -fPIC.
+TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -mplt -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
 				-I$(AUDIO_PREFIX)/include -I$(AUDIO_PREFIX)/include/opus \
 				-include src/system/core/glibc_compat.h
 
@@ -204,13 +217,32 @@ build_host/lvgl/%.o: $(LVGL_DIR)/%.c
 	@mkdir -p $(dir $@)
 	$(CC) $(HOST_CFLAGS) -c $< -o $@
 
-target: $(TARGET_BIN) compile_commands.json
+target: $(TARGET_BIN) $(LAUNCH_BIN) compile_commands.json
 
 $(TARGET_BIN): $(TARGET_OBJS)
 	$(TARGET_LD) -o $@ $(TARGET_OBJS) $(TARGET_LDFLAGS)
 	@$(MAKE) --no-print-directory check-abi
 	@$(MAKE) --no-print-directory strip-target
 	@echo "Target build complete: File ready at '$(TARGET_BIN)'"
+
+# ---------------------------------------------------------------------------
+# sonix_launch
+#
+# The process sonix_player.sh hands itself over to: it starts the player and
+# reboots the device when the player exits (launcher/sonix_launch.c). No libc
+# and no loader, so it is built on its own: static, freestanding, non-PIC, and
+# with the loop idioms GCC would turn into memset or strlen calls left as loops.
+# The packer takes it from next to itself, like sonix_player.
+# ---------------------------------------------------------------------------
+
+LAUNCH_CFLAGS = -Os -Wall -Wextra -march=mips32r2 -mno-abicalls -fno-pic -G0 -static -nostdlib \
+				-ffreestanding -fno-builtin -fno-tree-loop-distribute-patterns -fno-stack-protector \
+				-fno-asynchronous-unwind-tables -Wl,-e,__start
+
+$(LAUNCH_BIN): launcher/sonix_launch.c $(CROSS_CC)
+	$(CROSS_CC) $(LAUNCH_CFLAGS) -o $@ $<
+	@if [ -x "$(CROSS_STRIP)" ]; then $(CROSS_STRIP) $@; fi
+	@echo "sonix_launch: $$(wc -c < $@) bytes"
 
 # ---------------------------------------------------------------------------
 # Splitting the link output in two
@@ -244,7 +276,7 @@ strip-target:
 #
 # The toolchain compiles against glibc 2.27, the device has 2.22. A binary
 # asking for a newer versioned symbol links without a word and then refuses to
-# start, and on this device that means a boot loop: sonix_player.sh runs
+# start, and on this device that means a boot loop: sonix_launch runs
 # `sleep 1; reboot` as soon as the player exits.
 #
 # glibc_compat.h holds the known functions down; this catches the next ones.
@@ -307,7 +339,7 @@ compile_commands.json:
 	@python3 generate_compile_commands.py
 
 clean:
-	rm -rf build_host build_target $(HOST_BIN) $(TARGET_BIN) $(TARGET_DEBUG_BIN) compile_commands.json compile_flags.txt
+	rm -rf build_host build_target $(HOST_BIN) $(TARGET_BIN) $(TARGET_DEBUG_BIN) $(LAUNCH_BIN) compile_commands.json compile_flags.txt
 
 # The bundled libraries and their extracted sources. The downloaded tarballs stay.
 .PHONY: libs-clean
@@ -323,10 +355,11 @@ $(CROSS_CC):
 	@echo "Building Rockbox toolchain..."
 	./rockboxdev/rockboxdev.sh
 
-# The flags FreeType and the audio libraries are built with. -march as in
-# TARGET_CFLAGS. They are built once: `make libs-clean` removes them, with their
-# extracted sources, so the next `make target` builds them again.
-LIB_CFLAGS = -O2 -march=mips32r2
+# The flags FreeType and the audio libraries are built with. -march and -mplt as
+# in TARGET_CFLAGS: they are static, so they end up in the same executable. They
+# are built once: `make libs-clean` removes them, with their extracted sources,
+# so the next `make target` builds them again.
+LIB_CFLAGS = -O2 -march=mips32r2 -mplt
 
 # Cross-build FreeType, once. configure needs the toolchain on PATH for
 # ranlib/ar to be found under their host-triplet names.

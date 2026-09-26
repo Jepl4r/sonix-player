@@ -43,6 +43,9 @@ typedef enum {
 	// boundaries itself. Duration and seeking have to be built here by walking
 	// the headers, because a raw stream carries no index.
 	DECODE_FORMAT_AAC_ADTS,
+	// Monkey's Audio: .ape files, 8 to 24 bit, every compression level. The
+	// codec is FFmpeg's, compiled in; see apedec.h.
+	DECODE_FORMAT_APE,
 } decode_format_t;
 
 typedef struct decoder decoder_t;
@@ -77,7 +80,7 @@ bool decoder_is_lossy(const decoder_t *dec);
 // that visibly climbs.
 int decoder_bitrate_kbps(const decoder_t *dec);
 
-// "MP3", "AAC", "FLAC", "ALAC", "Opus", "Vorbis", "WavPack". Empty string when
+// "MP3", "AAC", "FLAC", "ALAC", "Opus", "Vorbis", "WavPack", "APE". Empty string when
 // the right name is the container's (the libsndfile formats) or when someone
 // else writes the line (DSD).
 //

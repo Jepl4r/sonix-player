@@ -131,6 +131,8 @@ typedef struct {
 	lv_obj_t *quality;	// ...the badge, on track rows; NULL elsewhere
 	lv_obj_t *artist;	// ...and the artist, where "Show artist" asks for it
 	lv_obj_t *menu_btn; // the ellipsis on track rows; NULL on name lists
+	lv_obj_t *chevron;	// the chevron on name rows; NULL on track rows
+	lv_obj_t *check;	// the tick on a chosen row in selection mode
 	lv_obj_t *playmark; // the accent bar shown on the playing row
 	int index;
 
@@ -217,7 +219,27 @@ typedef struct {
 	// the strip's rather than the page's. Until it has, nothing moves.
 	lv_point_t index_press;
 	bool index_engaged;
+
+	// Selection mode, on the lists panel_selectable() allows: a long press on
+	// a row starts it, taps then choose rows, and the corner holds the way out
+	// and "add to playlist" in place of its usual buttons. `corner_shown` is
+	// which of those usual buttons to bring back, `corner_slots` how many.
+	bool selecting;
+	struct sel_item *sel;
+	int sel_count;
+	int sel_cap;
+	lv_obj_t *sel_add_btn;
+	lv_obj_t *sel_close_btn;
+	unsigned corner_shown;
+	int corner_slots;
 } panel_t;
+
+// A chosen row: where it was in the list, and what it stands for -- a track's
+// path, or the name of an album or an artist.
+struct sel_item {
+	int index;
+	char *key;
+};
 
 static panel_t panel_names;
 static panel_t panel_tracks;
@@ -755,6 +777,357 @@ static void row_update_detail(panel_t *p, row_t *row, int index, const char *pat
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Selection
+// ---------------------------------------------------------------------------
+
+static void play_menu_hide(void);
+static library_filter_t filter_for(library_list_t kind);
+
+// The lists rows can be chosen on: tracks, albums, artists and album artists,
+// read from the index. Not playlists, favourites or genres, and not a list
+// handed in as paths.
+static bool panel_selectable(const panel_t *p) {
+	if (p->from_paths) {
+		return false;
+	}
+	return p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_ALBUMS || p->kind == LIBRARY_LIST_ARTISTS ||
+		   p->kind == LIBRARY_LIST_ALBUM_ARTISTS;
+}
+
+// What a row stands for in the selection: the track on a track list, the name
+// on the others.
+static const char *row_key(const panel_t *p, const char *name, const char *path) {
+	return p->is_tracks ? path : name;
+}
+
+static int sel_find(const panel_t *p, const char *key) {
+	if (!key) {
+		return -1;
+	}
+	for (int i = 0; i < p->sel_count; i++) {
+		if (strcmp(p->sel[i].key, key) == 0) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+static void row_update_selection(panel_t *p, row_t *row, const char *name, const char *path) {
+	bool chosen = p->selecting && sel_find(p, row_key(p, name, path)) >= 0;
+	if (chosen) {
+		lv_obj_set_style_image_recolor(row->check, theme()->accent, 0);
+		lv_obj_remove_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+	}
+	lv_obj_t *usual = row->menu_btn ? row->menu_btn : row->chevron;
+	if (usual) {
+		if (p->selecting) {
+			lv_obj_add_flag(usual, LV_OBJ_FLAG_HIDDEN);
+		} else {
+			lv_obj_remove_flag(usual, LV_OBJ_FLAG_HIDDEN);
+		}
+	}
+}
+
+static void rows_update_selection(panel_t *p) {
+	for (int i = 0; i < ROW_POOL; i++) {
+		row_t *row = &p->rows[i];
+		const char *name = NULL, *path = NULL;
+		if (row->index >= 0 && row->index < p->count && row_at(p, row->index, &name, &path)) {
+			row_update_selection(p, row, name, path);
+		} else {
+			lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
+		}
+	}
+}
+
+static void sel_clear(panel_t *p) {
+	for (int i = 0; i < p->sel_count; i++) {
+		free(p->sel[i].key);
+	}
+	free(p->sel);
+	p->sel = NULL;
+	p->sel_count = 0;
+	p->sel_cap = 0;
+}
+
+// The corner's usual buttons, in the order medialist_open() shows them, for
+// saving and bringing back around the mode.
+static lv_obj_t **corner_usual(panel_t *p, int *count) {
+	static lv_obj_t *buttons[5];
+	buttons[0] = p->album_btn;
+	buttons[1] = p->reorder_btn;
+	buttons[2] = p->play_btn;
+	buttons[3] = p->reverse_btn;
+	buttons[4] = p->sort_btn;
+	*count = 5;
+	return buttons;
+}
+
+static void selection_stop(panel_t *p) {
+	if (!p->selecting) {
+		return;
+	}
+	p->selecting = false;
+	sel_clear(p);
+
+	int n = 0;
+	lv_obj_t **buttons = corner_usual(p, &n);
+	for (int i = 0; i < n; i++) {
+		if (buttons[i] && (p->corner_shown & (1u << i))) {
+			lv_obj_remove_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
+		}
+	}
+	lv_obj_add_flag(p->sel_add_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_add_flag(p->sel_close_btn, LV_OBJ_FLAG_HIDDEN);
+	settingsrow_title_corner_slots(p->title_label, p->cfg, p->corner_slots);
+	rows_update_selection(p);
+}
+
+static void selection_start(panel_t *p) {
+	if (p->selecting) {
+		return;
+	}
+	play_menu_hide();
+	p->selecting = true;
+
+	p->corner_shown = 0;
+	int n = 0;
+	lv_obj_t **buttons = corner_usual(p, &n);
+	for (int i = 0; i < n; i++) {
+		if (buttons[i] && !lv_obj_has_flag(buttons[i], LV_OBJ_FLAG_HIDDEN)) {
+			p->corner_shown |= 1u << i;
+			lv_obj_add_flag(buttons[i], LV_OBJ_FLAG_HIDDEN);
+		}
+	}
+	lv_obj_remove_flag(p->sel_add_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_remove_flag(p->sel_close_btn, LV_OBJ_FLAG_HIDDEN);
+	settingsrow_title_corner_slots(p->title_label, p->cfg, 2);
+	lv_obj_move_foreground(p->corner);
+	rows_update_selection(p);
+}
+
+// Chooses the row at `index`, or lets it go. Letting go of the last one leaves
+// the mode.
+static void selection_toggle(panel_t *p, row_t *row, int index) {
+	const char *name = NULL, *path = NULL;
+	if (!row_at(p, index, &name, &path)) {
+		return;
+	}
+	const char *key = row_key(p, name, path);
+	if (!key || !key[0]) {
+		return;
+	}
+
+	int at = sel_find(p, key);
+	if (at >= 0) {
+		free(p->sel[at].key);
+		p->sel[at] = p->sel[--p->sel_count];
+		if (p->sel_count == 0) {
+			selection_stop(p);
+			return;
+		}
+	} else {
+		if (p->sel_count == p->sel_cap) {
+			int cap = p->sel_cap ? p->sel_cap * 2 : 16;
+			struct sel_item *grown = realloc(p->sel, (size_t)cap * sizeof(*grown));
+			if (!grown) {
+				return;
+			}
+			p->sel = grown;
+			p->sel_cap = cap;
+		}
+		char *copy = strdup(key);
+		if (!copy) {
+			return;
+		}
+		p->sel[p->sel_count].index = index;
+		p->sel[p->sel_count].key = copy;
+		p->sel_count++;
+	}
+	if (row) {
+		row_update_selection(p, row, name, path);
+	}
+}
+
+static row_t *row_of_button(panel_t *p, lv_obj_t *button) {
+	for (int i = 0; i < ROW_POOL; i++) {
+		if (p->rows[i].button == button) {
+			return &p->rows[i];
+		}
+	}
+	return NULL;
+}
+
+static void row_long_pressed_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	panel_t *p = lv_event_get_user_data(e);
+	if (!panel_selectable(p) || p->reordering) {
+		return;
+	}
+	row_t *row = row_of_button(p, lv_event_get_current_target(e));
+	if (!row || row->index < 0 || row->index >= p->count) {
+		return;
+	}
+
+	// The lift that ends this press would otherwise arrive as a click and
+	// take the row straight back out of the selection.
+	lv_indev_t *indev = lv_indev_active();
+	if (indev) {
+		lv_indev_wait_release(indev);
+	}
+
+	bool starting = !p->selecting;
+	if (starting) {
+		selection_start(p);
+	}
+	const char *name = NULL, *path = NULL;
+	bool chosen = row_at(p, row->index, &name, &path) && sel_find(p, row_key(p, name, path)) >= 0;
+	if (starting || !chosen) {
+		selection_toggle(p, row, row->index);
+	}
+}
+
+static void sel_close_cb(lv_event_t *e) { selection_stop(lv_event_get_user_data(e)); }
+
+static int sel_by_index(const void *a, const void *b) {
+	const struct sel_item *x = a, *y = b;
+	return (x->index > y->index) - (x->index < y->index);
+}
+
+// The paths gathered for "add to playlist", in the order they go in.
+typedef struct {
+	char **paths;
+	int count;
+	int cap;
+} path_list_t;
+
+#define SELECTION_MAX_TRACKS 20000
+
+static bool path_list_add(path_list_t *l, const char *path) {
+	if (!path || !path[0] || l->count >= SELECTION_MAX_TRACKS) {
+		return l->count < SELECTION_MAX_TRACKS;
+	}
+	if (l->count == l->cap) {
+		int cap = l->cap ? l->cap * 2 : 64;
+		char **grown = realloc(l->paths, (size_t)cap * sizeof(*grown));
+		if (!grown) {
+			return false;
+		}
+		l->paths = grown;
+		l->cap = cap;
+	}
+	char *copy = strdup(path);
+	if (!copy) {
+		return false;
+	}
+	l->paths[l->count++] = copy;
+	return true;
+}
+
+static bool collect_path_cb(const char *name, const char *path, const char *artist, void *user) {
+	(void)name;
+	(void)artist;
+	return path_list_add(user, path);
+}
+
+static void path_list_free(path_list_t *l) {
+	for (int i = 0; i < l->count; i++) {
+		free(l->paths[i]);
+	}
+	free(l->paths);
+	l->paths = NULL;
+	l->count = l->cap = 0;
+}
+
+// Positions into a path list, sorted by path, for finding the repeats.
+static char **dedupe_base;
+static int dedupe_cmp(const void *a, const void *b) {
+	int x = *(const int *)a, y = *(const int *)b;
+	int c = strcmp(dedupe_base[x], dedupe_base[y]);
+	return c ? c : (x > y) - (x < y);
+}
+
+// Drops every path already seen earlier in the list, keeping the order.
+static void path_list_dedupe(path_list_t *l) {
+	if (l->count < 2) {
+		return;
+	}
+	int *order = malloc((size_t)l->count * sizeof(*order));
+	bool *drop = calloc((size_t)l->count, sizeof(*drop));
+	if (!order || !drop) {
+		free(order);
+		free(drop);
+		return;
+	}
+	for (int i = 0; i < l->count; i++) {
+		order[i] = i;
+	}
+	dedupe_base = l->paths;
+	qsort(order, (size_t)l->count, sizeof(*order), dedupe_cmp);
+	for (int i = 1; i < l->count; i++) {
+		if (strcmp(l->paths[order[i]], l->paths[order[i - 1]]) == 0) {
+			drop[order[i]] = true; // the later of the two, since ties sort by position
+		}
+	}
+	int kept = 0;
+	for (int i = 0; i < l->count; i++) {
+		if (drop[i]) {
+			free(l->paths[i]);
+		} else {
+			l->paths[kept++] = l->paths[i];
+		}
+	}
+	l->count = kept;
+	free(order);
+	free(drop);
+}
+
+// The tracks behind the chosen rows, in list order: the rows themselves on a
+// track list; on the others, each album's tracks in its running order, each
+// artist's gathered by record.
+static void sel_add_cb(lv_event_t *e) {
+	panel_t *p = lv_event_get_user_data(e);
+	if (!p || !p->selecting || p->sel_count == 0) {
+		return;
+	}
+	qsort(p->sel, (size_t)p->sel_count, sizeof(*p->sel), sel_by_index);
+
+	path_list_t list = {NULL, 0, 0};
+	for (int i = 0; i < p->sel_count; i++) {
+		if (p->is_tracks) {
+			if (!path_list_add(&list, p->sel[i].key)) {
+				break;
+			}
+			continue;
+		}
+		library_order_t order = p->kind == LIBRARY_LIST_ALBUMS ? LIBRARY_ORDER_DEFAULT : LIBRARY_ORDER_ALBUM;
+		library_index_t *ix = library_index_open(LIBRARY_LIST_TRACKS, filter_for(p->kind), p->sel[i].key, order, false);
+		int total = library_index_count(ix);
+		bool more = true;
+		for (int first = 0; first < total && more; first += 256) {
+			int want = total - first < 256 ? total - first : 256;
+			int got = library_index_window(ix, first, want, collect_path_cb, &list);
+			more = got == want && list.count < SELECTION_MAX_TRACKS;
+		}
+		library_index_close(ix);
+	}
+	path_list_dedupe(&list);
+
+	selection_stop(p);
+	if (list.count == 0) {
+		gui_notify_popup("playlist_cannot_add_the_tracks");
+		path_list_free(&list);
+		return;
+	}
+	playlistpage_add_tracks((const char *const *)list.paths, list.count);
+	path_list_free(&list);
+}
+
 static void row_bind(panel_t *p, row_t *row, int index) {
 	if (row->index == index) {
 		return;
@@ -792,6 +1165,7 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 	}
 	row_update_playmark(p, row);
 	row_update_detail(p, row, index, path);
+	row_update_selection(p, row, name, path);
 }
 
 // Requests artwork for the visible rows and collects what the worker has
@@ -1465,6 +1839,14 @@ static void row_clicked_cb(lv_event_t *e) {
 	}
 	lv_obj_t *button = lv_event_get_current_target(e);
 
+	if (p->selecting) {
+		row_t *row = row_of_button(p, button);
+		if (row && row->index >= 0 && row->index < p->count) {
+			selection_toggle(p, row, row->index);
+		}
+		return;
+	}
+
 	// Which pool row was hit.
 	int index = -1;
 	for (int i = 0; i < ROW_POOL; i++) {
@@ -1826,7 +2208,10 @@ static void reorder_stop(panel_t *p) {
 	}
 }
 
-static void screen_unloaded_cb(lv_event_t *e) { reorder_stop(lv_event_get_user_data(e)); }
+static void screen_unloaded_cb(lv_event_t *e) {
+	reorder_stop(lv_event_get_user_data(e));
+	selection_stop(lv_event_get_user_data(e));
+}
 
 // Reopens whatever this panel is showing, under whatever the ordering now is.
 // The signature is cleared first so the list comes back at the top: after a
@@ -2466,6 +2851,13 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	p->sort_btn = corner_button(p->corner, &icon_sort_az, sort_clicked_cb, p);
 	p->sort_icon = lv_obj_get_child(p->sort_btn, 0);
 
+	// Selection mode's pair, last so that they sit at the right edge: add the
+	// chosen rows to a playlist, and leave the mode.
+	p->sel_add_btn = corner_button(p->corner, &icon_list_plus, sel_add_cb, p);
+	p->sel_close_btn = corner_button(p->corner, &icon_close, sel_close_cb, p);
+	lv_obj_add_flag(p->sel_add_btn, LV_OBJ_FLAG_HIDDEN);
+	lv_obj_add_flag(p->sel_close_btn, LV_OBJ_FLAG_HIDDEN);
+
 	p->empty = lv_label_create(p->list);
 	lv_label_set_text(p->empty, tr("library_empty_note"));
 	lv_obj_set_style_text_align(p->empty, LV_TEXT_ALIGN_CENTER, 0);
@@ -2486,6 +2878,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
 		lv_obj_add_flag(row->button, LV_OBJ_FLAG_EVENT_BUBBLE); // so the player sheet can be dragged in
 		lv_obj_add_event_cb(row->button, row_clicked_cb, LV_EVENT_CLICKED, p);
+		lv_obj_add_event_cb(row->button, row_long_pressed_cb, LV_EVENT_LONG_PRESSED, p);
 
 		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -2564,13 +2957,14 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_add_flag(row->playmark, LV_OBJ_FLAG_HIDDEN);
 
 		row->menu_btn = NULL;
+		row->chevron = NULL;
 		if (!is_tracks) {
 			// Name rows (album, artist, genre...) open another list: say so
 			// with the chevron, like every other page-opening row.
-			lv_obj_t *chev = lv_image_create(row->button);
-			lv_image_set_src(chev, &icon_chevron_right);
-			lv_obj_add_style(chev, &theme_style_icon, 0);
-			lv_obj_set_style_image_opa(chev, LV_OPA_60, 0);
+			row->chevron = lv_image_create(row->button);
+			lv_image_set_src(row->chevron, &icon_chevron_right);
+			lv_obj_add_style(row->chevron, &theme_style_icon, 0);
+			lv_obj_set_style_image_opa(row->chevron, LV_OPA_60, 0);
 		}
 		if (is_tracks) {
 			// The per-track menu, riding the right edge of the row.
@@ -2596,6 +2990,15 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 			lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
 			lv_obj_center(dots);
 		}
+
+		// The tick of a chosen row, in the place of the ellipsis or the
+		// chevron while the list is in selection mode.
+		row->check = lv_image_create(row->button);
+		lv_image_set_src(row->check, &icon_check);
+		lv_obj_add_style(row->check, &theme_style_icon, 0);
+		lv_obj_set_style_image_recolor_opa(row->check, LV_OPA_COVER, 0);
+		lv_obj_remove_flag(row->check, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_add_flag(row->check, LV_OBJ_FLAG_HIDDEN);
 
 		row->index = -1;
 		row->has_thumb = false;
@@ -2706,6 +3109,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 
 	// Whatever this panel was showing before, it is not showing it now.
 	reorder_stop(p);
+	selection_stop(p);
 
 	show_corner(p->reorder_btn, want_reorder);
 	show_corner(p->album_btn, want_album);
@@ -2720,6 +3124,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// runs under them.
 	int corner_buttons = (want_album ? 1 : 0) + (want_play ? 1 : 0) + (want_sort ? 1 : 0) + (want_reverse ? 1 : 0) +
 						 (want_reorder ? 1 : 0);
+	p->corner_slots = corner_buttons;
 	settingsrow_title_corner_slots(p->title_label, p->cfg, corner_buttons);
 
 	if (p->album_btn) {
@@ -2799,6 +3204,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 void medialist_open_paths(const char *title, const char *const *paths, const char *const *names,
 						  const char *const *artists, int count, const char *playlist) {
 	panel_t *p = &panel_tracks;
+	selection_stop(p);
 	p->kind = LIBRARY_LIST_TRACKS;
 	p->filter = LIBRARY_FILTER_NONE;
 	p->from_paths = true;
@@ -2817,6 +3223,7 @@ void medialist_open_paths(const char *title, const char *const *paths, const cha
 	show_corner(p->sort_btn, false);
 	show_corner(p->album_btn, false);
 	show_corner(p->reverse_btn, false);
+	p->corner_slots = 1;
 	settingsrow_title_corner_slots(p->title_label, p->cfg, 1);
 
 	for (int i = 0; i < ROW_POOL; i++) {

@@ -260,6 +260,7 @@ static uint32_t album_tone; // the sleeve's colour, 0 when there is no sleeve
 
 static lv_obj_t *song_text_obj; // the title and artist, wherever they live now
 static lv_obj_t *song_side_obj; // the star and the format, likewise
+static void align_title_with_star(void);
 static lv_obj_t *alt_text_col;	// the two pills, stacked at the foot of the sleeve
 static lv_obj_t *alt_title_pill;
 static lv_obj_t *alt_artist_pill;
@@ -1307,6 +1308,51 @@ static void studio_refresh_cover(void) {
 	}
 }
 
+// In the standard arrangement the title is lowered until the middle of its
+// capitals meets the middle of the star beside it. Only the title moves: the
+// star, the format under it and the artist stay where the row puts them, and a
+// translation is not layout, so nothing else on the page moves either. The
+// middle of the capitals is read from the font, so it holds at either text
+// size. In the pills, in Studio, and beside no star (a book), the title is not
+// moved.
+static void align_title_with_star(void) {
+	if (!song_title_label) {
+		return;
+	}
+	int32_t shift = 0;
+	if (song_text_obj && song_side_obj && fav_btn_obj && lv_obj_get_parent(song_title_label) == song_text_obj &&
+		lv_obj_get_parent(fav_btn_obj) == song_side_obj && !lv_obj_has_flag(fav_btn_obj, LV_OBJ_FLAG_HIDDEN) &&
+		!lv_obj_has_flag(song_side_obj, LV_OBJ_FLAG_HIDDEN)) {
+		const lv_font_t *font = lv_obj_get_style_text_font(song_title_label, 0);
+		int32_t line = lv_font_get_line_height(font);
+		int32_t title_mid = line / 2;
+		lv_font_glyph_dsc_t g;
+		if (lv_font_get_glyph_dsc(font, &g, 'H', 0) && g.box_h > 0) {
+			// A glyph's box is placed box_h + ofs_y above the baseline, which is
+			// base_line up from the bottom of the line.
+			int32_t cap_top = line - font->base_line - g.box_h - g.ofs_y;
+			title_mid = cap_top + g.box_h / 2;
+		}
+		// Where the row put the title, without the shift already on it.
+		lv_area_t title, star;
+		lv_obj_get_coords(song_title_label, &title);
+		lv_obj_get_coords(fav_btn_obj, &star);
+		int32_t title_top = title.y1 - lv_obj_get_style_translate_y(song_title_label, 0) +
+							lv_obj_get_style_pad_top(song_title_label, 0);
+		shift = (star.y1 + star.y2) / 2 - (title_top + title_mid);
+	}
+	// Only when it changes: a new translation lays the column out again, and
+	// that comes back here.
+	if (lv_obj_get_style_translate_y(song_title_label, 0) != shift) {
+		lv_obj_set_style_translate_y(song_title_label, shift, 0);
+	}
+}
+
+static void song_info_layout_cb(lv_event_t *e) {
+	(void)e;
+	align_title_with_star();
+}
+
 // Puts the ellipsis and the star back where every other arrangement keeps them,
 // and takes the panel down. Called before each arrangement is laid out, so the
 // two that know nothing about Studio find the page as they left it.
@@ -1530,6 +1576,7 @@ static void apply_layout(void) {
 	if (layout_studio_now) {
 		studio_put();
 	}
+	align_title_with_star(); // the title may have just left its row, or come back to it
 
 	paint_alt_tint();
 }
@@ -3414,6 +3461,10 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(song_info, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_remove_flag(song_info, LV_OBJ_FLAG_SCROLLABLE);
+	// Every time the row is laid out (a new text size, the star shown or
+	// hidden, the row coming back from another arrangement) the title is lined
+	// up with the star again.
+	lv_obj_add_event_cb(song_info, song_info_layout_cb, LV_EVENT_LAYOUT_CHANGED, NULL);
 
 	lv_obj_t *song_text = lv_obj_create(song_info);
 	song_text_obj = song_text;

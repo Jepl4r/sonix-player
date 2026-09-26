@@ -9,6 +9,8 @@
 #   r3proii_original.upt       the stock firmware of the R3 Pro II
 #   r1_original.upt            the stock firmware of the R1
 #   sonix_player               the binary to install, the same one for both
+#   sonix_launch               waits for the player and reboots when it exits
+#                              (optional: without it the launcher's shell does)
 #   assets/
 #       R3PII/
 #       R1/
@@ -57,6 +59,7 @@ die()  { echo -e "${RED}Error:${NC} $*" >&2; exit 1; }
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" >/dev/null 2>&1 && pwd)"
 
 PLAYER_BIN="$SCRIPT_DIR/sonix_player"
+LAUNCH_BIN="$SCRIPT_DIR/sonix_launch"
 
 # The models, one line each: the assets folder, the stock firmware to start
 # from, the image to write, and the device-name the player will read out of
@@ -209,6 +212,19 @@ TODAY="$(date +%d%m%Y)"
 say "    binary:  sonix_player, $(get_size "$PLAYER_BIN") bytes, built $BUILD_STAMP"
 if [ "${BUILD_STAMP:0:8}" != "$TODAY" ]; then
 	warn "sonix_player was not built today; build_version will still say when it was."
+fi
+
+# sonix_launch has to be a 32-bit little-endian MIPS executable: the launcher
+# execs it, and a busybox shell that cannot exec it exits without starting the
+# player. The first 20 bytes of the ELF header say so.
+if [ -f "$LAUNCH_BIN" ]; then
+	ELF_HEAD="$(od -An -tx1 -N20 "$LAUNCH_BIN" | tr -d ' \n')"
+	[ "${ELF_HEAD:0:12}" = "7f454c460101" ] && [ "${ELF_HEAD:32:8}" = "02000800" ] ||
+		die "sonix_launch is not a 32-bit little-endian MIPS executable.
+	  Build it with \`make target\` (or \`make sonix_launch\`) in sonix-player."
+	say "    launch:  sonix_launch, $(get_size "$LAUNCH_BIN") bytes"
+else
+	warn "sonix_launch is not next to this script: the launcher keeps its shell for the whole session."
 fi
 say ""
 
@@ -364,6 +380,42 @@ build_one() {
 	  Nothing would start the player and the device would sit on its boot logo."
 	done
 	say ""
+
+	# ==========================================================================
+	# 5c. sonix_launch
+	# ==========================================================================
+	#
+	# The launcher execs sonix_launch just before the line that starts the
+	# player, so the shell is replaced by a process of a few kB that does what
+	# the rest of the script does: runs the player, then `sleep 1; reboot`. The
+	# original lines stay under it and still run on a rootfs without the binary.
+	if [ -f "$LAUNCH_BIN" ]; then
+		step "[$MODEL_NAME] starting the player through sonix_launch"
+
+		cp -f "$LAUNCH_BIN" "$SQUASH_DIR/usr/bin/sonix_launch"
+		chmod 755 "$SQUASH_DIR/usr/bin/sonix_launch"
+		say "    usr/bin/sonix_launch installed (755)"
+
+		LAUNCHER_FILE="$SQUASH_DIR/$NEW_LAUNCHER"
+		if grep -q "sonix_launch" "$LAUNCHER_FILE"; then
+			say "    $NEW_LAUNCHER already calls it"
+		else
+			PLAYER_LINES="$(grep -c '^/usr/bin/sonix_player$' "$LAUNCHER_FILE" || true)"
+			if [ "$PLAYER_LINES" = "1" ]; then
+				awk '$0 == "/usr/bin/sonix_player" { print "[ -x /usr/bin/sonix_launch ] && exec /usr/bin/sonix_launch /usr/bin/sonix_player" } { print }' \
+					"$LAUNCHER_FILE" > "$LAUNCHER_FILE.new"
+				mv -f "$LAUNCHER_FILE.new" "$LAUNCHER_FILE"
+				chmod 755 "$LAUNCHER_FILE"
+				grep -q "exec /usr/bin/sonix_launch" "$LAUNCHER_FILE" || die "$NEW_LAUNCHER was not rewritten."
+				say "    $NEW_LAUNCHER execs sonix_launch"
+			else
+				rm -f "$SQUASH_DIR/usr/bin/sonix_launch"
+				warn "$NEW_LAUNCHER has $PLAYER_LINES lines that are exactly /usr/bin/sonix_player, not one:
+	  left as it is, and sonix_launch not installed."
+			fi
+		fi
+		say ""
+	fi
 
 	# ==========================================================================
 	# 6. The stock interface's resources
