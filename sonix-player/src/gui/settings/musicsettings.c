@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <string.h>
 
 #include "lvgl/lvgl.h"
 
@@ -18,6 +19,7 @@
 #include "src/gui/library/medialist.h"
 #include "src/gui/library/music.h"
 #include "src/gui/shell/settingsrow.h"
+#include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/audio/alsa-controls.h"
@@ -30,9 +32,260 @@
 #include "src/system/audio/replaygain.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/system/lastfm/lastfm.h"
 #include "src/system/library/library.h"
 
 lv_obj_t *musicsettings_screen;
+
+
+// ---------------------------------------------------------------------------
+// Last.fm
+//
+// Kept in this existing Music settings file so the developer's other settings
+// pages, language files and layout code remain untouched. The service itself
+// lives in src/system/lastfm and runs off the GUI thread.
+// ---------------------------------------------------------------------------
+
+static lv_obj_t *lastfm_screen;
+static lv_obj_t *lastfm_enabled_switch;
+static lv_obj_t *lastfm_api_key_value;
+static lv_obj_t *lastfm_api_secret_value;
+static lv_obj_t *lastfm_login_value;
+static lv_obj_t *lastfm_status_value;
+static lv_timer_t *lastfm_refresh_timer;
+
+static lv_obj_t *lastfm_input_screen;
+static lv_obj_t *lastfm_input_field;
+static keyboard_t *lastfm_input_keyboard;
+static enum { LASTFM_INPUT_API_KEY, LASTFM_INPUT_API_SECRET } lastfm_input_mode;
+
+static lv_obj_t *lastfm_login_screen;
+static lv_obj_t *lastfm_user_field;
+static lv_obj_t *lastfm_password_field;
+static keyboard_t *lastfm_login_keyboard;
+static uint64_t lastfm_seen_message_serial;
+
+static void lastfm_refresh_ui(void) {
+	if (!lastfm_screen) {
+		return;
+	}
+
+	lastfm_snapshot_t snap;
+	lastfm_get_snapshot(&snap);
+
+	if (lastfm_enabled_switch) {
+		if (snap.enabled) {
+			lv_obj_add_state(lastfm_enabled_switch, LV_STATE_CHECKED);
+		} else {
+			lv_obj_remove_state(lastfm_enabled_switch, LV_STATE_CHECKED);
+		}
+	}
+	if (lastfm_api_key_value) {
+		lv_label_set_text(lastfm_api_key_value, snap.api_key_configured ? "Present" : "Not set");
+	}
+	if (lastfm_api_secret_value) {
+		lv_label_set_text(lastfm_api_secret_value, snap.api_secret_configured ? "Present" : "Not set");
+	}
+	if (lastfm_login_value) {
+		lv_label_set_text(lastfm_login_value, snap.logged_in && snap.username[0] ? snap.username : "Not logged in");
+	}
+	if (lastfm_status_value) {
+		lv_label_set_text(lastfm_status_value, snap.status[0] ? snap.status : "Not logged in");
+	}
+
+	if (snap.message_serial && snap.message_serial != lastfm_seen_message_serial) {
+		lastfm_seen_message_serial = snap.message_serial;
+		if (snap.last_message[0] &&
+			(strstr(snap.last_message, "Logged in") || strstr(snap.last_message, "login failed") ||
+			 strstr(snap.last_message, "Logged out") || strstr(snap.last_message, "Could not start"))) {
+			gui_notify_popup(snap.last_message);
+		}
+	}
+}
+
+static void lastfm_refresh_timer_cb(lv_timer_t *timer) {
+	(void)timer;
+	lastfm_refresh_ui();
+}
+
+static void lastfm_enabled_cb(lv_event_t *e) {
+	(void)e;
+	lastfm_set_enabled(lv_obj_has_state(lastfm_enabled_switch, LV_STATE_CHECKED));
+	lastfm_refresh_ui();
+}
+
+static void lastfm_input_accept_cb(lv_event_t *e) {
+	(void)e;
+	const char *value = lv_textarea_get_text(lastfm_input_field);
+	if (!value || !value[0]) {
+		gui_notify_popup("Last.fm: value required");
+		return;
+	}
+
+	if (lastfm_input_mode == LASTFM_INPUT_API_KEY) {
+		lastfm_set_api_key(value);
+	} else {
+		lastfm_set_api_secret(value);
+	}
+
+	lv_textarea_set_text(lastfm_input_field, "");
+	keyboard_set_visible(lastfm_input_keyboard, false);
+	switch_screen(lastfm_screen);
+	lastfm_refresh_ui();
+}
+
+static void lastfm_build_input_screen(gui_config_t *cfg) {
+	lastfm_input_screen = lv_obj_create(NULL);
+	lv_obj_add_style(lastfm_input_screen, &theme_style_screen, 0);
+	settingsrow_title(lastfm_input_screen, cfg, "Last.fm");
+	int top = settingsrow_content_top(cfg);
+
+	lastfm_input_field = lv_textarea_create(lastfm_input_screen);
+	lv_textarea_set_one_line(lastfm_input_field, true);
+	lv_textarea_set_max_length(lastfm_input_field, 127);
+	lv_textarea_set_placeholder_text(lastfm_input_field, "Enter value");
+	lv_obj_set_size(lastfm_input_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_scrollbar_mode(lastfm_input_field, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_align(lastfm_input_field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
+	lv_obj_add_style(lastfm_input_field, &theme_style_card, 0);
+	lv_obj_set_style_radius(lastfm_input_field, 12, 0);
+	lv_obj_set_style_border_width(lastfm_input_field, 0, 0);
+	lv_obj_set_style_shadow_width(lastfm_input_field, 0, 0);
+	lv_obj_set_style_pad_all(lastfm_input_field, 14, 0);
+	lv_obj_set_style_text_font(lastfm_input_field, &font_ui_24, 0);
+	keyboard_style_caret(lastfm_input_field);
+
+	lastfm_input_keyboard = keyboard_create(lastfm_input_screen, cfg->screen_width, 316, lastfm_input_field, NULL, "ok",
+											 lastfm_input_accept_cb, NULL);
+	keyboard_set_visible(lastfm_input_keyboard, false);
+	switcher_attach_back_gesture(lastfm_input_screen);
+}
+
+static void lastfm_open_input(lv_event_t *e) {
+	(void)e;
+	char value[128];
+	if (lastfm_input_mode == LASTFM_INPUT_API_KEY) {
+		lastfm_get_api_key(value, sizeof(value));
+	} else {
+		lastfm_get_api_secret(value, sizeof(value));
+	}
+	lv_textarea_set_text(lastfm_input_field, value);
+	keyboard_reset(lastfm_input_keyboard);
+	keyboard_set_visible(lastfm_input_keyboard, true);
+	lv_obj_add_state(lastfm_input_field, LV_STATE_FOCUSED);
+	lv_obj_send_event(lastfm_input_field, LV_EVENT_FOCUSED, NULL);
+	switch_screen(lastfm_input_screen);
+}
+
+static void lastfm_api_key_cb(lv_event_t *e) {
+	lastfm_input_mode = LASTFM_INPUT_API_KEY;
+	lastfm_open_input(e);
+}
+
+static void lastfm_api_secret_cb(lv_event_t *e) {
+	lastfm_input_mode = LASTFM_INPUT_API_SECRET;
+	lastfm_open_input(e);
+}
+
+static void lastfm_login_focus(lv_obj_t *field) {
+	lv_obj_t *other = field == lastfm_user_field ? lastfm_password_field : lastfm_user_field;
+	keyboard_set_field(lastfm_login_keyboard, field);
+	lv_obj_add_state(field, LV_STATE_FOCUSED);
+	lv_obj_remove_state(other, LV_STATE_FOCUSED);
+	keyboard_show_caret(field, true);
+	keyboard_show_caret(other, false);
+}
+
+static void lastfm_login_field_cb(lv_event_t *e) {
+	lastfm_login_focus(lv_event_get_target(e));
+}
+
+static void lastfm_login_accept_cb(lv_event_t *e) {
+	(void)e;
+	const char *user = lv_textarea_get_text(lastfm_user_field);
+	const char *password = lv_textarea_get_text(lastfm_password_field);
+	if (!user || !user[0] || !password || !password[0]) {
+		gui_notify_popup("Last.fm: username and password required");
+		return;
+	}
+
+	lastfm_login(user, password);
+	lv_textarea_set_text(lastfm_password_field, "");
+	keyboard_set_visible(lastfm_login_keyboard, false);
+	switch_screen(lastfm_screen);
+	lastfm_refresh_ui();
+}
+
+static lv_obj_t *lastfm_make_field(lv_obj_t *parent, gui_config_t *cfg, const char *placeholder, int y) {
+	lv_obj_t *field = lv_textarea_create(parent);
+	lv_textarea_set_one_line(field, true);
+	lv_textarea_set_placeholder_text(field, placeholder);
+	lv_textarea_set_max_length(field, 255);
+	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_scrollbar_mode(field, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_align(field, LV_ALIGN_TOP_LEFT, cfg->padding, y);
+	lv_obj_add_style(field, &theme_style_card, 0);
+	lv_obj_set_style_radius(field, 12, 0);
+	lv_obj_set_style_border_width(field, 0, 0);
+	lv_obj_set_style_shadow_width(field, 0, 0);
+	lv_obj_set_style_pad_all(field, 14, 0);
+	lv_obj_set_style_text_font(field, &font_ui_24, 0);
+	keyboard_style_caret(field);
+	lv_obj_add_event_cb(field, lastfm_login_field_cb, LV_EVENT_CLICKED, NULL);
+	return field;
+}
+
+static void lastfm_build_login_screen(gui_config_t *cfg) {
+	lastfm_login_screen = lv_obj_create(NULL);
+	lv_obj_add_style(lastfm_login_screen, &theme_style_screen, 0);
+	settingsrow_title(lastfm_login_screen, cfg, "Last.fm Login");
+	int top = settingsrow_content_top(cfg);
+	lastfm_user_field = lastfm_make_field(lastfm_login_screen, cfg, "Username", top);
+	lastfm_password_field = lastfm_make_field(lastfm_login_screen, cfg, "Password", top + 78);
+	keyboard_style_password(lastfm_password_field, 0);
+	lastfm_login_keyboard = keyboard_create(lastfm_login_screen, cfg->screen_width, 316, lastfm_user_field, NULL, "ok",
+											 lastfm_login_accept_cb, NULL);
+	keyboard_set_visible(lastfm_login_keyboard, false);
+	switcher_attach_back_gesture(lastfm_login_screen);
+}
+
+static void lastfm_auth_cb(lv_event_t *e) {
+	(void)e;
+	lastfm_snapshot_t snap;
+	lastfm_get_snapshot(&snap);
+	if (snap.logged_in) {
+		lastfm_logout();
+		lastfm_refresh_ui();
+		return;
+	}
+	lv_textarea_set_text(lastfm_user_field, "");
+	lv_textarea_set_text(lastfm_password_field, "");
+	lv_textarea_set_password_mode(lastfm_password_field, true);
+	keyboard_reset(lastfm_login_keyboard);
+	lastfm_login_focus(lastfm_user_field);
+	keyboard_set_visible(lastfm_login_keyboard, true);
+	switch_screen(lastfm_login_screen);
+}
+
+static void build_lastfm_page(gui_config_t *cfg) {
+	lastfm_screen = lv_obj_create(NULL);
+	lv_obj_t *container = settingsrow_page(lastfm_screen, cfg, "Last.fm");
+	settingsrow_title_corner_slots(settingsrow_page_title(lastfm_screen), cfg, 0);
+
+	settingsrow_toggle(container, "Enabled", &lastfm_enabled_switch, lastfm_enabled_cb);
+	settingsrow_add(container, "API Key", &lastfm_api_key_value, lastfm_api_key_cb, NULL);
+	settingsrow_add(container, "API Secret", &lastfm_api_secret_value, lastfm_api_secret_cb, NULL);
+	settingsrow_add(container, "Log In", &lastfm_login_value, lastfm_auth_cb, NULL);
+	settingsrow_add(container, "Status", &lastfm_status_value, NULL, NULL);
+
+	lastfm_build_input_screen(cfg);
+	lastfm_build_login_screen(cfg);
+	lastfm_refresh_ui();
+
+	if (!lastfm_refresh_timer) {
+		lastfm_refresh_timer = lv_timer_create(lastfm_refresh_timer_cb, 500, NULL);
+	}
+}
 
 // ---------------------------------------------------------------------------
 // Filters: the CS43198's four digital filters, the same set the stock player
@@ -1411,6 +1664,9 @@ static void build_playback_page(gui_config_t *cfg) {
 		lv_obj_add_state(gapless_switch, LV_STATE_CHECKED);
 	}
 
+	build_lastfm_page(cfg);
+	settingsrow_add(container, "Last.fm", NULL, switch_screen_cb, lastfm_screen);
+
 	// ReplayGain: off, corrected per track, corrected per album or corrected per track when shuffled.
 	rg_card = settingsrow_toggle_pills(container, "musicsettings_replay_gain", rg_toggle_cb, &rg_switch, &rg_pills);
 	rg_track_pill = settingsrow_pill(rg_pills, "track", REPLAYGAIN_TRACK, rg_pick_cb);
@@ -1487,6 +1743,8 @@ void musicsettings_init(gui_config_t *cfg) {
 
 	build_playback_page(cfg);
 	settingsrow_add(container, "musicsettings_playback_options", NULL, switch_screen_cb, playback_screen);
+	lastfm_init(cfg->sd_root_path);
+	lastfm_refresh_ui();
 
 	build_display_page(cfg);
 	settingsrow_add(container, "musicsettings_display_options", NULL, switch_screen_cb, display_screen);
