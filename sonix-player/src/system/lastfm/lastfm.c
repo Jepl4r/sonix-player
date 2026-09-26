@@ -919,6 +919,14 @@ void lastfm_get_api_secret(char *out, size_t out_size) {
 	pthread_mutex_unlock(&state_mutex);
 }
 
+bool lastfm_network_wanted(void) {
+	pthread_mutex_lock(&state_mutex);
+	bool wanted = enabled && (session_key[0] != '\0' || logging_in || login_pending ||
+		now_playing_pending || scrobble_pending);
+	pthread_mutex_unlock(&state_mutex);
+	return wanted;
+}
+
 void lastfm_get_snapshot(lastfm_snapshot_t *out) {
 	if (!out) return;
 	memset(out, 0, sizeof(*out));
