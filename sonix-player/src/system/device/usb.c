@@ -825,12 +825,15 @@ static void storage_restore(void) {
 		if (sysserver_available() && sysserver_mount(sd_device, sd_mount) == 0) {
 			continue;
 		}
-		// ntfs-3g first, for the same reason as at startup (see mount_ntfs_rw in
-		// system.c): the kernel's ntfs module mounts read-only and would win,
-		// leaving the card browsable and nothing else after every USB session.
+		// The same order as at startup (mount_sd_directly in system.c): NTFS
+		// last, and ntfs-3g before the kernel's ntfs module, which mounts
+		// read-only and would leave the card browsable and nothing else after
+		// every USB session. The types are named rather than guessed: busybox
+		// guessing tries ntfs like any other type.
 		char remount[1600];
 		snprintf(remount, sizeof(remount),
-				 "mount %s %s 2>/dev/null || ntfs-3g %s %s 2>/dev/null || mount -t vfat,exfat,ntfs3,ntfs %s %s",
+				 "mount -t exfat,vfat,ext4,ext3,ext2,ntfs3 %s %s 2>/dev/null || "
+				 "ntfs-3g %s %s -o big_writes,noatime 2>/dev/null || mount -t ntfs %s %s",
 				 sd_device, sd_mount, sd_device, sd_mount, sd_device, sd_mount);
 		int mrc = system(remount);
 		(void)mrc;
