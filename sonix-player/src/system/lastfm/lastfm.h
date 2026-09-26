@@ -32,9 +32,8 @@ void lastfm_logout(void);
 void lastfm_get_api_key(char *out, size_t out_size);
 void lastfm_get_api_secret(char *out, size_t out_size);
 
-// True while Last.fm has a logged-in session or an authentication request
-// is in progress. The power manager uses this to prevent idle Wi-Fi parking
-// while Last.fm needs the network, including with the screen off.
+// True when Last.fm currently needs the Wi-Fi radio to remain available.
+// This is intentionally independent of the screen/standby state.
 bool lastfm_network_wanted(void);
 
 void lastfm_get_snapshot(lastfm_snapshot_t *out);

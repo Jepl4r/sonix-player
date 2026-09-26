@@ -647,8 +647,7 @@ static void park_bluetooth_now(void) {
 // the Wi-Fi radio staying associated while headphones are connected and quiet;
 // the alternative is dropping the link the user is wearing.
 static bool wifi_wanted(void) {
-	return wifi_in_use() || lastfm_network_wanted() || bluetooth_busy() || bluetooth_audio_active() ||
-		bluetooth_connected_device(NULL);
+	return wifi_in_use() || lastfm_network_wanted() || bluetooth_busy() || bluetooth_audio_active() || bluetooth_connected_device(NULL);
 }
 
 // A minute after a radio stops being wanted, it goes off. Not "unless something
@@ -1086,8 +1085,8 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 	// device from scratch, route included, which is the path every unpause
 	// exercises. What must not cross the suspend is a live ALSA object, not a
 	// remembered position: that sits in RAM, and RAM is preserved.
-	if (wifi_in_use()) {
-		mem_skip("something is using the network");
+	if (wifi_in_use() || lastfm_network_wanted()) {
+		mem_skip(lastfm_network_wanted() ? "Last.fm needs Wi-Fi" : "something is using the network");
 		return;
 	}
 	// Busy first, so the log tells the truth: bluetooth_in_use() counts a job in

@@ -921,10 +921,32 @@ void lastfm_get_api_secret(char *out, size_t out_size) {
 
 bool lastfm_network_wanted(void) {
 	pthread_mutex_lock(&state_mutex);
-	bool wanted = enabled && (session_key[0] != '\0' || logging_in || login_pending ||
-		now_playing_pending || scrobble_pending);
+	bool lastfm_enabled = enabled;
+	bool auth_in_flight = login_pending || logging_in;
+	bool request_in_flight = now_playing_pending || scrobble_pending || scrobble_in_flight;
+	bool authenticated = session_key[0] != '\0';
 	pthread_mutex_unlock(&state_mutex);
-	return wanted;
+
+	if (!lastfm_enabled) {
+		return false;
+	}
+
+	/*
+	 * Last.fm needs Wi-Fi continuously while music is actually playing so a
+	 * newly-started track can be announced and a qualifying play can be
+	 * scrobbled. During a paused track, however, there is no reason to hold the
+	 * radio up once any active Last.fm request has completed. That lets the
+	 * existing power.c idle timer park Wi-Fi after its normal 60-second
+	 * RADIO_PARK_AFTER_MS_DEFAULT delay.
+	 *
+	 * Authentication and request-in-flight states remain network-wanted even if
+	 * playback is paused, so an operation that is already underway is allowed to
+	 * finish cleanly.
+	 */
+	audio_status_t status = audio_get_status();
+	bool playback_active = status == AUDIO_STATUS_PLAYING;
+
+	return playback_active && authenticated || auth_in_flight || request_in_flight;
 }
 
 void lastfm_get_snapshot(lastfm_snapshot_t *out) {
