@@ -1,8 +1,27 @@
 ﻿# Sonix Player
 
-A replacement player for the **HiBy R3 Pro II**, written on LVGL.
+A replacement player for the **HiBy R3 Pro II** and the **HiBy R1**, written on
+LVGL.
 
-**Other devices**: only the R3 Pro II is supported today. Support for the R1 is planned.
+## Supported players
+
+One binary runs on both. It reads which player it is on from
+`system-info.json` at startup, and the firmware packer writes a different one
+into each image.
+
+| | HiBy R3 Pro II | HiBy R1 |
+|---|---|---|
+| panel | 480x720 | 480x800 |
+| DAC | two Cirrus Logic CS43198 | one Cirrus Logic CS43131 |
+| headphone outputs | 3.5 mm, 4.4 mm balanced | 3.5 mm |
+| DAC controls | digital filters, DRE, NOS | digital filters |
+| touch | Goodix gt9xx, patched for multitouch | Hynitron CST8xx, patched for two fingers |
+| double tap to wake | yes | no |
+| buttons | volume on the left flank, playback on the right | all on the right flank, one skip key |
+| firmware image | `r3proii.upt` | `r1.upt` |
+
+Each player only looks for its own image, and never offers the other's: the
+recovery system does not check what it is given.
 
 There are two builds from one tree:
 
@@ -64,9 +83,15 @@ usr/
     └── sonix/
         ├── language/                    the 7 .ini files
         ├── components/
-        │   └── streaming-keys.ini       Tidal / Qobuz / Podcast Index keys - Need to provide your own.
+        │   ├── streaming-keys.ini       Tidal / Qobuz / Podcast Index keys - Need to provide your own.
+        │   └── system-info.json         its device-name picks the player the simulator plays
         └── gui/                         some of the .png assets the UI loads at runtime - the rest are inside the binary.
 ```
+
+The easiest way to get one is to copy `usr/resource/` out of
+`sonix-packer/assets/R3PII/` or `sonix-packer/assets/R1/` into `usr/resource/`
+next to `sonix_player_host`: the language files, the fonts, the images and the
+`system-info.json` of that player come with it.
 
 Without the language files the interface draws raw tags instead of words, and says so on the first line of the log. Without `streaming-keys.ini` everything works except Tidal, Qobuz and podcasts.
 
@@ -79,7 +104,12 @@ Fonts are looked for in `usr/resource/sonix/fonts` first and fall back to
 ./sonix_player_host
 ```
 
-The window is 480x720, the mouse is the finger, and dragging scrolls.
+The window is the panel of the player named in `system-info.json`: 480x720 for
+the R3 Pro II, 480x800 for the R1, and 480x720 when the file is missing. The
+mouse is the finger, and dragging scrolls.
+
+`SONIX_PANEL=480x800` opens the window at a given size whatever the file says.
+The rest of the model (buttons, DAC, update file) still follows the file.
 
 The folder that stands in for the memory card is the **documents folder**,
 found from the desktop's own XDG setting. Point it elsewhere with:
@@ -95,14 +125,14 @@ cover cache, the playlists.
 
 The device's buttons are on the keyboard:
 
-| key | button |
-|---|---|
-| `p` | power — a tap toggles the screen, held opens the power menu |
-| `u` | volume up |
-| `i` | volume down |
-| `b` | previous track |
-| `n` | play / pause |
-| `m` | next track |
+| key | R3 Pro II | R1 |
+|---|---|---|
+| `p` | power — a tap toggles the screen, held opens the power menu | same |
+| `u` | volume up | same |
+| `i` | volume down | same |
+| `b` | previous track | the skip key: next track |
+| `n` | play / pause | same |
+| `m` | next track | previous track (no such key on the R1) |
 
 
 ### Other environment variables
@@ -110,6 +140,7 @@ The device's buttons are on the keyboard:
 | variable | what it does |
 |---|---|
 | `SONIX_SD_ROOT` | the folder standing in for the card |
+| `SONIX_PANEL` | the window size, e.g. `480x800` |
 | `SONIX_CONFIG` | where the settings file lives |
 | `SONIX_EBOOK_CONFIG` | the ebook reader's own settings file |
 | `SONIX_LANG_DIR` | the language directory, instead of the resource tree |
@@ -143,12 +174,13 @@ The first run takes a while and does four things by itself:
 Steps 1 to 3 happen once. Later builds go straight to step 4.
 
 Everything the device does not already carry is linked statically, so the
-result is one file to copy across with nothing to install beside it.
+result is one file to copy across with nothing to install beside it. The same
+file goes into both images.
 
 ### The ABI check
 
 The link is followed by a `readelf` pass that fails the build if the binary
-asks for a glibc symbol newer than the device's 2.22.
+asks for a glibc symbol newer than 2.22, the version both players carry.
 
 This is not decoration. A binary that asks for a newer symbol links without a
 word and then refuses to start, and the device reboots as soon as the player
@@ -169,32 +201,48 @@ The packer looks only next to itself:
 ```
 sonix-packer/
 ├── sonix_firmware_packer.sh
-├── r3proii_original.upt     the stock firmware, from HiBy
+├── r3proii_original.upt     the stock firmware of the R3 Pro II, from HiBy
+├── r1_original.upt          the stock firmware of the R1, from HiBy
 ├── sonix_player             the binary from `make target`
 ├── sonix_launch             also from `make target`; optional
-└── assets/                  an overlay copied onto the root of the rootfs
+└── assets/
+    ├── R3PII/               the overlay for the R3 Pro II
+    └── R1/                  the overlay for the R1
 ```
 
-`assets/` mirrors the rootfs from its root, so a file goes to the path it has
+It builds one image for each stock firmware it finds. With only one of the two
+`.upt` files next to it, it builds that player's image and says it skipped the
+other.
+
+Each model has a complete overlay of its own and nothing is shared.
+
+An overlay mirrors the rootfs from its root, so a file goes to the path it has
 inside the folder. That is how the resource tree gets installed:
 
 ```
-assets/
+assets/R3PII/                           (and assets/R1/, the same shape)
+├── etc/                             boot logos at the panel's size, D-Bus policy, certificates, S80_bt_init
 ├── usr/
+│   ├── bin/                         bluealsa
+│   ├── lib/                         the bluealsa ALSA plugin
 │   ├── resource/
 │   │   └── sonix/
-│   │       ├── language/          the 7 .ini files
+│   │       ├── language/            the 7 .ini files
 │   │       ├── components/
 │   │       │   ├── streaming-keys.ini	 Tidal / Qobuz / Podcast Index keys - Need to provide your own.
-│   │       │   └── system-info.json     required: the packer writes to it
-│   │       ├── fonts/             		 default.otf, bold.otf, Korean.ttf, Thai.ttf
-│   │       └── gui/               		 some of the .png assets the UI loads at runtime - the rest are inside the binary.
-│   └── data/                      		 anything else to ship on the device
-└── module_driver/                 		 patched drivers, if there are any
+│   │       │   ├── system-info.json     required: names the player, and the packer writes to it
+│   │       │   └── GB*-Database.dat     the Game Boy ROM databases
+│   │       ├── fonts/               default.otf, bold.otf, Korean.ttf, Thai.ttf
+│   │       └── gui/                 some of the .png assets the UI loads at runtime - the rest are inside the binary.
+│   └── share/web/                   icons and images for the Wi-Fi transfer page                        
+└── module_driver/                   the patched touch driver and its load script
 ```
 
-`system-info.json` has to be there. The packer writes the build stamp into its
-`build_version` key and stops if the file is missing.
+`system-info.json` has to be there, and its `device-name` has to be the model
+the folder is for: `HiBy R3 Pro II` in `R3PII/`, `HiBy R1` in `R1/`. The packer
+checks it, writes the build stamp into the `build_version` key, and stops if
+either is wrong. An image carrying the other player's name would offer that
+player's update to a device that cannot survive it.
 
 ### What it needs installed
 
@@ -212,20 +260,22 @@ sudo dnf install p7zip squashfs-tools genisoimage
 ./sonix_firmware_packer.sh
 ```
 
-It runs through without asking anything:
+It runs through without asking anything, once for each model:
 
 1. unpacks the `.upt`, joins the rootfs chunks and extracts the squashfs
 2. deletes `usr/bin/hiby_player` and installs `usr/bin/sonix_player`
 3. renames `hiby_player.sh` to `sonix_player.sh` and rewrites the name inside it
-4. points `etc/init.d/S92_03_start_music_player` at the new launcher
-5. copies `assets/` over the rootfs, then installs `usr/bin/sonix_launch` and
-   has the launcher exec it (skipped with a warning if it is not there)
-6. deletes the stock interface's own resources — `litegui`, `layout`, `str`,
+4. points `etc/init.d/S92_03_start_music_player` at the new launcher script
+5. copies `assets/<model>/` over the rootfs, then installs
+   `usr/bin/sonix_launch` and has the launcher script exec it (skipped with a warning
+   if it is not there)
+6. deletes the stock interface's own resources - `litegui`, `layout`, `str`,
    `fonts`.
-7. writes the build stamp into `system-info.json`
+7. checks the `device-name` in `system-info.json` and writes the build stamp
+   into it
 8. repacks the squashfs, splits it into 512 KB chunks and rebuilds the md5
    chain the recovery kernel checks
-9. writes `r3proii.upt`
+9. writes `r3proii.upt` or `r1.upt`
 
 The kernel is carried across untouched, size and md5 copied from the original
 rather than recomputed.
@@ -237,10 +287,16 @@ the overlay - any other file need to be in the respective folder mirroring the r
 
 ### Flashing
 
-1. Copy `r3proii.upt` to the **root of the microSD card.**
-2.  Insert the SD card into your HiBy R3 Pro II.
-3.  Hold **Volume Up** and press **Power** to enter the updater.
-4.  Let it flash - it will say "Upgrading..." then "Succeeded" and reboot by itself.
+1. Copy the image for your player to the **root of the microSD card**:
+   `r3proii.upt` for the R3 Pro II, `r1.upt` for the R1. Never the other one.
+2. Insert the SD card into the player.
+3. Start the update:
+   - **from the stock firmware** - use its firmware update from the microSD
+     card.
+   - **from Sonix Player** - Settings > System > Update firmware > From SD
+     card. *Via internet* downloads the right image from the latest release by
+     itself.
+4. Let it flash - it will say "Upgrading..." then "Succeeded" and reboot by itself.
 
 > It is recommended to **charge above 30%** first. 
 **Recovery from a failed flash:** If something goes wrong, you can always restore by flashing the original stock firmware from HiBy's website using the same procedure.
@@ -271,9 +327,15 @@ sonix-player/
 │
 ├── sonix-packer/
 │   ├── assets/
-│   │   ├── etc/					 bootlogo, sonix-player.conf, cert.pem, modified S80_bt_init
-│   │   ├── module_driver/			 patched gt9xx_touch.ko, gt9xx_touch.sh and leds_sgm31324_add.sh with 3 added LED registers
-│   │   └── usr/					 bluealsa 4.3.1, resources required by Sonix Player                      
+│   │   ├── R3PII/                   the R3 Pro II overlay
+│   │   │   ├── etc/                 boot logos (480x720), sonix-player.conf, cert.pem, modified S80_bt_init
+│   │   │   ├── module_driver/       patched gt9xx_touch.ko, gt9xx_touch.sh and leds_sgm31324_add.sh with 3 added LED registers
+│   │   │   └── usr/                 bluealsa 4.3.1, resources required by Sonix Player
+│   │   └── R1/                      the R1 overlay
+│   │       ├── etc/                 boot logos (480x800), sonix-player.conf, cert.pem, modified S80_bt_init
+│   │       ├── module_driver/       patched cst8xx_touch.ko and cst8xx_touch.sh
+│   │       └── usr/                 bluealsa 4.3.1, resources required by Sonix Player
+│   │                                
 │   └── sonix_firmware_packer.sh     
 │
 │
@@ -281,7 +343,7 @@ sonix-player/
 │   ├── assets/                      
 │   │   ├── gui/                     some of the .png assets the UI loads at runtime - the rest are inside the binary.
 │   │   ├── fonts/ 					 the four faces: default, bold, Korean, Thai
-│   │   └── icons/                   191 SVGs and PNGs, baked into src/gui/shell/icons.c
+│   │   └── icons/                   196 SVGs and PNGs, baked into src/gui/shell/icons.c
 │   │   
 │   │
 │   ├── launcher/                    sonix_launch.c: runs the player, reboots when it exits
@@ -328,7 +390,7 @@ sonix-player/
 │   │   │
 │   │   └── main.c                   entry point: display, input, and the startup order
 │   │
-│   ├── tools/                       generators, patches
+│   ├── tools/                       generators, and the multitouch patches for the two touch drivers
 │   │
 │   ├── web/                         Wi-Fi transfer page, source of src/system/net/webpage.h
 │   │   ├── icons/                   26 Lucide glyphs, inlined as <symbol>
