@@ -37,6 +37,7 @@
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
+#include "src/system/streaming/radio.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
@@ -852,6 +853,7 @@ static void card_databases_attach(const char *root) {
 static pthread_mutex_t card_lock = PTHREAD_MUTEX_INITIALIZER;
 static storage_config_t *g_storage_cfg;
 static system_runtime_t *g_runtime;
+static bool card_released; // under card_lock: set for the power-off, never cleared
 
 void storage_recheck_card(void) {
 	if (!g_storage_cfg || !g_storage_cfg->manage_mount || getenv("SONIX_NO_MOUNT")) {
@@ -865,7 +867,7 @@ void storage_recheck_card(void) {
 
 	pthread_mutex_lock(&card_lock);
 
-	if (sd_root[0] && is_mounted(sd_root) && mount_is_alive(sd_root)) {
+	if (card_released || (sd_root[0] && is_mounted(sd_root) && mount_is_alive(sd_root))) {
 		pthread_mutex_unlock(&card_lock); // nothing to do, the common case
 		return;
 	}
@@ -887,6 +889,79 @@ void storage_recheck_card(void) {
 	if (mount_sd(g_storage_cfg, g_runtime) == 0 && mount_is_alive(sd_root)) {
 		card_databases_attach(sd_root);
 		fprintf(stderr, "storage: the card is back on %s\n", sd_root);
+	}
+
+	pthread_mutex_unlock(&card_lock);
+}
+
+// Every descriptor of this process that points into the card, for the log
+// when the card cannot be released.
+static void log_open_on_card(void) {
+	char root[PATH_MAX];
+	if (!realpath(sd_root, root)) {
+		return;
+	}
+	size_t root_len = strlen(root);
+
+	DIR *dir = opendir("/proc/self/fd");
+	if (!dir) {
+		return;
+	}
+	struct dirent *de;
+	while ((de = readdir(dir)) != NULL) {
+		char link[16 + sizeof(de->d_name)], target[PATH_MAX];
+		snprintf(link, sizeof(link), "/proc/self/fd/%s", de->d_name);
+		ssize_t n = readlink(link, target, sizeof(target) - 1);
+		if (n <= 0) {
+			continue;
+		}
+		target[n] = '\0';
+		if (strncmp(target, root, root_len) == 0 && (target[root_len] == '/' || target[root_len] == '\0')) {
+			fprintf(stderr, "storage:   still open on the card: %s (fd %s)\n", target, de->d_name);
+		}
+	}
+	closedir(dir);
+}
+
+void storage_release_for_shutdown(void) {
+	if (!g_storage_cfg || !g_storage_cfg->manage_mount) {
+		return;
+	}
+
+	pthread_mutex_lock(&card_lock);
+	bool already = card_released;
+	card_released = true;
+
+	// A card handed to a computer is already off this device's hands.
+	if (already || !sd_root[0] || !is_mounted(sd_root) || usb_storage_active()) {
+		pthread_mutex_unlock(&card_lock);
+		return;
+	}
+
+	card_databases_detach(); // playback, the log, the library and audiobook databases
+	cover_set_cache_dir(NULL); // the thumbnail cache moves to /tmp
+	radio_store_close();
+	sync();
+
+	// Unmounting is what every driver leaves clean. When something still holds
+	// the card, a read-only remount clears the flag as well, and only needs
+	// nothing to be open for writing.
+	if (umount(sd_root) == 0) {
+		printf("storage: card unmounted for the power-off\n");
+	} else {
+		int busy = errno;
+		if (mount(NULL, sd_root, NULL, MS_REMOUNT | MS_RDONLY, NULL) == 0) {
+			printf("storage: card busy (%s), remounted read-only for the power-off\n", strerror(busy));
+		} else {
+			int err = errno;
+			// Still writable, so the log goes back onto it and says why.
+			logging_resume_after_usb();
+			fprintf(stderr, "storage: the card could not be released for the power-off: unmount %s, read-only %s\n",
+					strerror(busy), strerror(err));
+			log_open_on_card();
+			fflush(stderr);
+			sync();
+		}
 	}
 
 	pthread_mutex_unlock(&card_lock);
@@ -935,6 +1010,10 @@ void *sd_hotplug_thread(void *arg) {
 			if (strstr(buf, "add@")) {
 				printf("SD Card Inserted\n");
 				pthread_mutex_lock(&card_lock);
+				if (card_released) {
+					pthread_mutex_unlock(&card_lock);
+					continue;
+				}
 
 				// The uevent arrives before mdev has finished making the
 				// partition node, and a card produces two of these (the disk,

@@ -89,6 +89,14 @@ bool storage_card_attached(void);
 // under the export) and hardening each of them one at a time has not worked.
 void storage_recheck_card(void);
 
+// Before the machine is powered off or rebooted: playback stops, everything
+// kept open on the card is closed, and the card is unmounted, or remounted
+// read-only when something still holds it. From then on nothing mounts it
+// again. init's own `umount -a -r` runs while this process is alive and finds
+// the card busy, which leaves FAT and exFAT with their volume-dirty flag set.
+// Call it last, after anything that still writes to the card.
+void storage_release_for_shutdown(void);
+
 #ifdef HOST_BUILD
 // Feeds one key press or release to the button thread, as if it had come off
 // an evdev node. `code` is a KEY_* from linux/input.h.

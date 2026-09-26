@@ -128,6 +128,8 @@ void firmware_update_start(void) {
 	// time would otherwise be whatever the RTC last knew.
 	clock_shutdown();
 
+	// The recovery kernel reads the update off the card: it finds it clean.
+	storage_release_for_shutdown();
 	sync();
 	sleep(1);
 
