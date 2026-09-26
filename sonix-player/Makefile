@@ -72,7 +72,18 @@ HOST_CFLAGS = $(CFLAGS) -DHOST_BUILD=1 $(shell sdl2-config --cflags) $(shell pkg
 #
 # -mno-madd4: no madd.s/msub.s. Every float multiply and add stays a separate,
 # separately rounded instruction, as in a MIPS I build.
-TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
+#
+# -mplt: the player is an executable at a fixed address, so its code need not
+# be position-independent. Without this GCC compiles it as if it were a shared
+# library: every function that calls another sets up $gp, every call loads its
+# target from the GOT and jumps through a register, $gp is reloaded after each
+# call, and every global is two loads. With it a call is a plain jal and a
+# global is lui+lw; calls into the shared libraries go through a PLT the linker
+# builds, and their data (stdout, stderr) is copied into the executable. The
+# arithmetic is untouched: only how code and data are reached. Needs a dynamic
+# linker with MIPS PLT support, which glibc has had since 2.9 (the device has
+# 2.22). Ignored for anything built with -fPIC.
+TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -mplt -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
 				-I$(AUDIO_PREFIX)/include -I$(AUDIO_PREFIX)/include/opus \
 				-include src/system/core/glibc_compat.h
 
@@ -323,10 +334,11 @@ $(CROSS_CC):
 	@echo "Building Rockbox toolchain..."
 	./rockboxdev/rockboxdev.sh
 
-# The flags FreeType and the audio libraries are built with. -march as in
-# TARGET_CFLAGS. They are built once: `make libs-clean` removes them, with their
-# extracted sources, so the next `make target` builds them again.
-LIB_CFLAGS = -O2 -march=mips32r2
+# The flags FreeType and the audio libraries are built with. -march and -mplt as
+# in TARGET_CFLAGS: they are static, so they end up in the same executable. They
+# are built once: `make libs-clean` removes them, with their extracted sources,
+# so the next `make target` builds them again.
+LIB_CFLAGS = -O2 -march=mips32r2 -mplt
 
 # Cross-build FreeType, once. configure needs the toolchain on PATH for
 # ranlib/ar to be found under their host-triplet names.
