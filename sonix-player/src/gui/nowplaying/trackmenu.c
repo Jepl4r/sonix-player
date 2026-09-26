@@ -28,6 +28,7 @@
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/library/library.h"
+#include "src/system/library/playlists.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/core/utils.h"
 
@@ -774,7 +775,19 @@ void trackmenu_open(lv_obj_t *anchor) {
 	device_state_get(&state);
 	bool podcast = state.current_file[0] && podcastcache_is_episode(state.current_file);
 
-	popover_show(anchor, podcast ? ITEMS_PODCAST : ITEMS, 5);
+	// The card folder's playlists are read only, so a local track has nowhere
+	// to be added. A streamed one still goes to the account's.
+	bool streamed = qobuzcache_track_id(state.current_file) > 0 || tidalcache_track_id(state.current_file) > 0;
+	const popover_item_t *source = podcast ? ITEMS_PODCAST : ITEMS;
+	popover_item_t items[5];
+	int n = 0;
+	for (int i = 0; i < 5; i++) {
+		if (source[i].action == add_to_playlist_cb && playlists_card_folder_mode() && !streamed) {
+			continue;
+		}
+		items[n++] = source[i];
+	}
+	popover_show(anchor, items, n);
 }
 
 void trackmenu_init(gui_config_t *cfg) {

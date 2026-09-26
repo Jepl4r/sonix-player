@@ -41,6 +41,9 @@ void musicsettings_set_fade_enabled(bool enabled);
 // corner button, rather than the other way round.
 bool musicsettings_playlists_first(void);
 
+// Whether the playlists are the files in the card's Playlists folder.
+bool musicsettings_card_playlists(void);
+
 bool musicsettings_endless_shuffle(void);
 
 bool musicsettings_high_gain(void);

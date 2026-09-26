@@ -2109,6 +2109,21 @@ struct library_index {
 // typed so that the table is called what the playlist is called.
 // ---------------------------------------------------------------------------
 
+// Which set of tables "the playlists" means. The index's own are "M3U_"; the
+// ones mirrored from the card's Playlists folder are "SDM3U_", kept apart so
+// that turning the card folder on and off again leaves the index's untouched.
+static const char *playlist_prefix = LIBRARY_PLAYLIST_PREFIX;
+
+void library_playlists_use_card_folder(bool on) {
+	pthread_mutex_lock(&db_lock);
+	const char *wanted = on ? LIBRARY_CARD_PLAYLIST_PREFIX : LIBRARY_PLAYLIST_PREFIX;
+	if (playlist_prefix != wanted) {
+		playlist_prefix = wanted;
+		bump_generation(GEN_PLAYLISTS); // every playlist on screen is now another one
+	}
+	pthread_mutex_unlock(&db_lock);
+}
+
 // "M3U_<name>", quoted. False when the name is too long to be one, which is the
 // only thing that can go wrong here.
 static bool playlist_table(const char *name, char *out, size_t out_size) {
@@ -2117,7 +2132,7 @@ static bool playlist_table(const char *name, char *out, size_t out_size) {
 	}
 	size_t at = 0;
 	out[at++] = '"';
-	const char *prefix = LIBRARY_PLAYLIST_PREFIX;
+	const char *prefix = playlist_prefix;
 	while (*prefix && at + 2 < out_size) {
 		out[at++] = *prefix++;
 	}
@@ -6093,7 +6108,7 @@ static bool playlist_table_exists_locked(const char *name) {
 		return false;
 	}
 	// By value, not by name in the statement: this one can be bound.
-	snprintf(table, sizeof(table), LIBRARY_PLAYLIST_PREFIX "%s", name);
+	snprintf(table, sizeof(table), "%s%s", playlist_prefix, name);
 	sqlite3_stmt *stmt = NULL;
 	bool found = false;
 	if (sqlite3_prepare_v2(db, "SELECT 1 FROM sqlite_master WHERE type='table' AND name=?", -1, &stmt, NULL) ==
@@ -6125,12 +6140,15 @@ int library_playlist_names(char ***names_out) {
 	pthread_mutex_lock(&db_lock);
 	sqlite3_stmt *stmt = NULL;
 	// The underscore in the prefix is a wildcard to LIKE, hence the escape:
-	// without it "M3U_" would also match "M3UX...".
-	if (db && sqlite3_prepare_v2(db,
-								 "SELECT name FROM sqlite_master WHERE type='table'"
-								 " AND name LIKE 'M3U\\_%' ESCAPE '\\' ORDER BY name COLLATE listorder",
-								 -1, &stmt, NULL) == SQLITE_OK) {
-		size_t prefix_len = strlen(LIBRARY_PLAYLIST_PREFIX);
+	// without it "M3U_" would also match "M3UX...". LIKE is anchored at the
+	// start, so "M3U\_%" does not match the card's "SDM3U_" tables either.
+	char sql[160];
+	snprintf(sql, sizeof(sql),
+			 "SELECT name FROM sqlite_master WHERE type='table'"
+			 " AND name LIKE '%.*s\\_%%' ESCAPE '\\' ORDER BY name COLLATE listorder",
+			 (int)strlen(playlist_prefix) - 1, playlist_prefix);
+	if (db && sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+		size_t prefix_len = strlen(playlist_prefix);
 		while (sqlite3_step(stmt) == SQLITE_ROW) {
 			const char *table = (const char *)sqlite3_column_text(stmt, 0);
 			if (!table || strlen(table) <= prefix_len) {
