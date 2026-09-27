@@ -44,6 +44,12 @@ static void format_rate(unsigned rate, char *out, size_t size) {
 }
 
 static void refresh(void) {
+	// Start the receiver connection
+	//
+	// btreceiver_start() just returns early if it was already started, so it's
+	// not a problem to call it each refresh
+	btreceiver_start();
+
 	btreceiver_state_t st;
 	btreceiver_get_state(&st);
 
@@ -224,9 +230,7 @@ static bool back_guard(void) {
 static void loaded_cb(lv_event_t *e) {
 	(void)e;
 	last_serial = (unsigned)-1;
-	// Arriving is the switch: there is nothing else this page does, so a toggle
-	// on it would only repeat what opening it already said.
-	btreceiver_start();
+
 	refresh();
 }
 

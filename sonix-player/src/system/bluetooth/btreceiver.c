@@ -76,7 +76,7 @@ static int output_ms(void) {
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t thread;
-static bool running;
+static bool running;  // TODO: is there a point in having both `running` and `state.active`?
 
 // How many capture threads are alive, not whether one is. Leaving the mode
 // tells the thread to stop but does not wait for it -- the wait would be a read
@@ -596,6 +596,7 @@ bool btreceiver_start(void) {
 	}
 	pthread_mutex_unlock(&lock);
 
+	// exit early if there's no source connected
 	if (!btreceiver_available()) {
 		return false;
 	}
