@@ -382,7 +382,8 @@ jobs:
 
           python3 tools/seal_streamkeys.py seal
 
-          test -s streaming-keys.bin
+          test -s ../sonix-packer/assets/R1/usr/resource/sonix/components/streaming-keys.bin
+          test -s ../sonix-packer/assets/R3PII/usr/resource/sonix/components/streaming-keys.bin
           test -s streaming-keys.key
 
           echo "Streaming keys sealed successfully."
