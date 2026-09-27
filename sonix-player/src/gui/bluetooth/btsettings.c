@@ -35,6 +35,8 @@ static lv_obj_t *found_label;
 static lv_obj_t *found_list;
 static lv_obj_t *scan_btn;
 static lv_obj_t *scan_icon;
+static lv_obj_t *receiver_btn;
+static lv_obj_t *receiver_icon;
 static lv_timer_t *poll_timer;
 
 static uint32_t drawn_serial = 0xFFFFFFFFu;
@@ -481,7 +483,6 @@ static bool radio_ready(void) {
 static void receiver_clicked_cb(lv_event_t *e) {
 	(void)e;
 	if (!radio_ready()) {
-		gui_notify_popup(bluetooth_get_enabled() ? "turning_on" : "bt_turn_bluetooth_on_first");
 		return;
 	}
 	// With headphones on the other end this device is the source, and receiver
@@ -532,16 +533,20 @@ static void poll_cb(lv_timer_t *timer) {
 	// Scan button: disabled while the stack is still loading, faded while a
 	// sweep is running (tapping it then stops the sweep), solid otherwise.
 	bool ready = radio_ready();
-	if (scan_btn) {
+	if (scan_btn && receiver_btn) {
 		if (ready) {
 			lv_obj_remove_state(scan_btn, LV_STATE_DISABLED);
+			lv_obj_remove_state(receiver_btn, LV_STATE_DISABLED);
 		} else {
 			lv_obj_add_state(scan_btn, LV_STATE_DISABLED);
+			lv_obj_add_state(receiver_btn, LV_STATE_DISABLED);
 		}
 	}
 	if (scan_icon) {
 		lv_obj_set_style_image_opa(
 			scan_icon, !ready ? LV_OPA_20 : (bluetooth_scan_running() ? LV_OPA_50 : LV_OPA_COVER), 0);
+		lv_obj_set_style_image_opa(
+			receiver_icon, !ready ? LV_OPA_20 : (bluetooth_scan_running() ? LV_OPA_50 : LV_OPA_COVER), 0);
 	}
 
 	// While a pairing is in flight its own watcher owns the result: consuming
@@ -676,8 +681,10 @@ void btsettings_init(gui_config_t *cfg) {
 	lv_obj_t *settings_btn = corner_button(btsettings_screen, cfg, 0, &icon_music_settings, NULL);
 	lv_obj_add_event_cb(settings_btn, switch_screen_cb, LV_EVENT_CLICKED, btaudio_screen);
 
-	lv_obj_t *receiver_btn = corner_button(btsettings_screen, cfg, 1, &icon_bluetooth_receiver, NULL);
+	receiver_btn = corner_button(btsettings_screen, cfg, 1, &icon_bluetooth_receiver, &receiver_icon);
 	lv_obj_add_event_cb(receiver_btn, receiver_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_state(receiver_btn, LV_STATE_DISABLED); // enabled by the poll once the radio answers
+	lv_obj_set_style_image_opa(receiver_icon, LV_OPA_20, 0);
 
 	scan_btn = corner_button(btsettings_screen, cfg, 2, &icon_bluetooth_search, &scan_icon);
 	lv_obj_add_event_cb(scan_btn, scan_clicked_cb, LV_EVENT_CLICKED, NULL);
