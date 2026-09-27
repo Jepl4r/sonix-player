@@ -207,6 +207,11 @@ static const char *const SORT_INDEXES[] = {
 // those rows had anyway.
 #define TRACK_ORDER_IN_ALBUM "COALESCE(disc,1), dis_id"
 
+// When a file arrived. st_ctime, which the scan stores: on the FAT and exFAT
+// cards this player reads, that is when the file was written to the card, and
+// unlike mtime it is not carried over from wherever the file was copied from.
+#define TRACK_ORDER_ADDED "ctime"
+
 // Rows are committed in small batches. This is not a tuning knob: an open
 // transaction holds its dirty pages in memory, and on a device with ten
 // megabytes free a scan that only commits at the end is a scan that gets the
@@ -1694,6 +1699,8 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 		char order_sql[128];
 		if (order == LIBRARY_ORDER_ALBUM) {
 			snprintf(order_sql, sizeof(order_sql), "album COLLATE listorder, " TRACK_ORDER_IN_ALBUM ", %s", by_name);
+		} else if (order == LIBRARY_ORDER_ADDED) {
+			snprintf(order_sql, sizeof(order_sql), TRACK_ORDER_ADDED ", %s", by_name);
 		} else if (col && value && filter == LIBRARY_FILTER_ALBUM) {
 			snprintf(order_sql, sizeof(order_sql), TRACK_ORDER_IN_ALBUM ", %s", by_name);
 		} else {
@@ -1879,6 +1886,8 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 		char order_sql[128];
 		if (order == LIBRARY_ORDER_ALBUM) {
 			snprintf(order_sql, sizeof(order_sql), "album COLLATE listorder, " TRACK_ORDER_IN_ALBUM ", %s", by_name);
+		} else if (order == LIBRARY_ORDER_ADDED) {
+			snprintf(order_sql, sizeof(order_sql), TRACK_ORDER_ADDED ", %s", by_name);
 		} else if (col && value && filter == LIBRARY_FILTER_ALBUM) {
 			snprintf(order_sql, sizeof(order_sql), TRACK_ORDER_IN_ALBUM ", %s", by_name);
 		} else {
@@ -1917,6 +1926,28 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 				 "SELECT %s FROM ALBUM_TABLE WHERE album <> ''"
 				 " AND album IN (SELECT album FROM MEDIA_TABLE WHERE %s=?) ORDER BY %s",
 				 select, col, list_uses_sortkey(kind) ? "sortkey" : "album COLLATE listorder");
+		return;
+	}
+
+	// Every record, artist and album artist by when it arrived. Their tables
+	// have no date of their own, so each is as new as the newest of its files:
+	// a record topped up with a bonus track moves up with it, and so does an
+	// artist with a new album. One lookup per row on media_album_idx,
+	// media_artist_idx or media_album_artist_idx, the same price the cover
+	// subquery pays per row.
+	if (order == LIBRARY_ORDER_ADDED &&
+		(kind == LIBRARY_LIST_ALBUMS || kind == LIBRARY_LIST_ARTISTS || kind == LIBRARY_LIST_ALBUM_ARTISTS)) {
+		const char *table = kind == LIBRARY_LIST_ALBUMS	   ? "ALBUM_TABLE"
+							: kind == LIBRARY_LIST_ARTISTS ? "ARTIST_TABLE"
+														   : "ALBUM_ARTIST_TABLE";
+		const char *column = kind == LIBRARY_LIST_ALBUMS ? "album" : kind == LIBRARY_LIST_ARTISTS ? "artist" : "album_artist";
+		char by_name[64];
+		snprintf(by_name, sizeof(by_name), "%s%s", list_uses_sortkey(kind) ? "sortkey" : column,
+				 list_uses_sortkey(kind) ? "" : " COLLATE listorder");
+		snprintf(sql, size,
+				 "SELECT %s FROM %s WHERE %s <> ''"
+				 " ORDER BY (SELECT MAX(m.ctime) FROM MEDIA_TABLE m WHERE m.%s = %s.%s), %s",
+				 select, table, column, column, table, column, by_name);
 		return;
 	}
 
@@ -2131,7 +2162,7 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 		// album by disc position, an artist's records by album -- three lists
 		// whose order has nothing to do with the alphabet.
 		bool by_name = kind != LIBRARY_LIST_FAVOURITES && kind != LIBRARY_LIST_PLAYLIST &&
-					   order != LIBRARY_ORDER_ALBUM &&
+					   order != LIBRARY_ORDER_ALBUM && order != LIBRARY_ORDER_ADDED &&
 					   !(kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM);
 		ix->buckets_valid = by_name && ix->count > 0;
 	}

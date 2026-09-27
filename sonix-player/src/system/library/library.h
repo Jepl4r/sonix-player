@@ -117,6 +117,9 @@ typedef enum {
 	LIBRARY_ORDER_DEFAULT = 0, // the collation's order: by title, or by disc
 							   // position inside a single album
 	LIBRARY_ORDER_ALBUM,	   // grouped by album, each record in disc order
+	LIBRARY_ORDER_ADDED,	   // by when the file landed on the card, oldest
+							   // first; all tracks, albums, artists and album
+							   // artists only (a row is as new as its newest file)
 } library_order_t;
 int library_for_each_ordered(library_list_t kind, library_filter_t filter, const char *value, library_order_t order,
 							 library_row_cb cb, void *user);

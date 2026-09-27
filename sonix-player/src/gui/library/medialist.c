@@ -269,6 +269,9 @@ static lv_timer_t *thumb_timer;
 // ---------------------------------------------------------------------------
 
 static unsigned sort_desc_mask;
+// Which lists run by when their files arrived rather than by name. Same shape
+// as sort_desc_mask, and the two combine: "newest first" is by date, reversed.
+static unsigned sort_added_mask;
 static bool artist_album_order; // an artist's tracks grouped by record
 
 // Whether an artist opens as a list of their records. On by default: an artist
@@ -330,6 +333,29 @@ static void sort_set_desc(library_list_t kind, bool desc) {
 	}
 	config_set_int("library", "sort_desc", (long)sort_desc_mask);
 	config_save();
+}
+
+static bool sort_is_added(library_list_t kind) { return (sort_added_mask & (1u << (unsigned)kind)) != 0; }
+
+static void sort_set_added(library_list_t kind, bool added) {
+	if (added) {
+		sort_added_mask |= 1u << (unsigned)kind;
+	} else {
+		sort_added_mask &= ~(1u << (unsigned)kind);
+	}
+	config_set_int("library", "sort_added", (long)sort_added_mask);
+	config_save();
+}
+
+// The lists that can run by date as well as by name: every track, every
+// record, every artist and every album artist -- the last three by their
+// newest file, so an artist with a new record comes up with it. Genres have no
+// date worth going by, and a list inside one album or one artist is short
+// enough, and ordered by disc, so that a date there would only scramble it.
+static bool sort_can_date(library_list_t kind, library_filter_t filter) {
+	return (kind == LIBRARY_LIST_TRACKS || kind == LIBRARY_LIST_ALBUMS || kind == LIBRARY_LIST_ARTISTS ||
+			kind == LIBRARY_LIST_ALBUM_ARTISTS) &&
+		   filter == LIBRARY_FILTER_NONE;
 }
 
 // ---------------------------------------------------------------------------
@@ -1911,6 +1937,23 @@ static void reorder_icon_paint(panel_t *p) {
 	}
 }
 
+// Whether this panel's list runs by date rather than by name.
+static bool sort_by_date(const panel_t *p) { return sort_can_date(p->kind, p->filter) && sort_is_added(p->kind); }
+
+// The sort button's glyph says how the list runs now: by name or by date, and
+// which way. The arrow points the way the list reads in both.
+static void sort_icon_paint(panel_t *p) {
+	if (!p->sort_icon) {
+		return;
+	}
+	bool desc = sort_is_desc(p->kind);
+	if (sort_by_date(p)) {
+		lv_image_set_src(p->sort_icon, desc ? &icon_sort_date_new : &icon_sort_date_old);
+	} else {
+		lv_image_set_src(p->sort_icon, desc ? &icon_sort_za : &icon_sort_az);
+	}
+}
+
 // The strip's own tint is a hand-set colour, so it needs telling when the
 // palette moves; the letters and the card behind the big letter follow their
 // shared styles on their own.
@@ -2418,13 +2461,57 @@ static void reload_current(panel_t *p) {
 	medialist_open(title, p->kind, p->filter, value[0] ? value : NULL);
 }
 
+// The four ways a datable list can run, as the menu offers them. Each is a
+// pair of bits, and the menu's tick is whichever pair is set now.
+typedef enum {
+	SORT_NAME_AZ,
+	SORT_NAME_ZA,
+	SORT_ADDED_NEW,
+	SORT_ADDED_OLD,
+} sort_choice_t;
+
+static panel_t *sort_menu_panel;
+
+static void sort_picked(void *user) {
+	panel_t *p = sort_menu_panel;
+	if (!p) {
+		return;
+	}
+	sort_choice_t choice = (sort_choice_t)(intptr_t)user;
+	sort_set_added(p->kind, choice == SORT_ADDED_NEW || choice == SORT_ADDED_OLD);
+	sort_set_desc(p->kind, choice == SORT_NAME_ZA || choice == SORT_ADDED_NEW);
+	reload_current(p);
+}
+
 static void sort_clicked_cb(lv_event_t *e) {
 	panel_t *p = lv_event_get_user_data(e);
 	if (!p) {
 		return;
 	}
-	sort_set_desc(p->kind, !sort_is_desc(p->kind));
-	reload_current(p);
+	// A name list has one other way to run, so the button just flips to it: a
+	// menu with two entries would be a slower way of doing the same.
+	if (!sort_can_date(p->kind, p->filter)) {
+		sort_set_desc(p->kind, !sort_is_desc(p->kind));
+		reload_current(p);
+		return;
+	}
+
+	bool added = sort_is_added(p->kind);
+	bool desc = sort_is_desc(p->kind);
+	sort_choice_t current = added ? (desc ? SORT_ADDED_NEW : SORT_ADDED_OLD) : (desc ? SORT_NAME_ZA : SORT_NAME_AZ);
+
+	static const char *const labels[] = {
+		[SORT_NAME_AZ] = "medialist_sort_name_az",
+		[SORT_NAME_ZA] = "medialist_sort_name_za",
+		[SORT_ADDED_NEW] = "medialist_sort_added_new",
+		[SORT_ADDED_OLD] = "medialist_sort_added_old",
+	};
+	popover_item_t items[4];
+	for (int i = 0; i < 4; i++) {
+		items[i] = (popover_item_t){labels[i], sort_picked, (void *)(intptr_t)i, i == (int)current};
+	}
+	sort_menu_panel = p;
+	popover_show(lv_event_get_current_target(e), items, 4);
 }
 
 // Favourites reversed: the most recently starred track on top. The database
@@ -3340,7 +3427,8 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 		lv_obj_set_style_image_recolor(lv_obj_get_child(p->reverse_btn, 0),
 									   fav_reversed ? theme()->accent : theme()->text_primary, 0);
 	}
-	lv_image_set_src(p->sort_icon, sort_is_desc(kind) ? &icon_sort_za : &icon_sort_az);
+	bool by_date = sort_by_date(p);
+	sort_icon_paint(p);
 	lv_obj_move_foreground(p->corner);
 
 	// Every pool row lets go of its artwork *before* the entries under it are
@@ -3351,7 +3439,9 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	}
 
 	model_clear(p);
-	library_order_t order = (artist_tracks && artist_album_order) ? LIBRARY_ORDER_ALBUM : LIBRARY_ORDER_DEFAULT;
+	library_order_t order = (artist_tracks && artist_album_order) ? LIBRARY_ORDER_ALBUM
+							: by_date							   ? LIBRARY_ORDER_ADDED
+																   : LIBRARY_ORDER_DEFAULT;
 
 	// Z-A is the same list read backwards. The database has already done the
 	// hard part -- the collation groups by script, folds case and accents and
@@ -3380,9 +3470,9 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// letter at all (an artist's tracks gathered by record, Favourites in the
 	// order they were starred), and a strip of letters on those would point at
 	// rows that are not where it says.
-	p->index_wanted = (kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_NONE) ||
-					  (kind == LIBRARY_LIST_ALBUMS && !artist_albums) || kind == LIBRARY_LIST_ARTISTS ||
-					  kind == LIBRARY_LIST_ALBUM_ARTISTS;
+	p->index_wanted = !by_date && ((kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_NONE) ||
+								   (kind == LIBRARY_LIST_ALBUMS && !artist_albums) || kind == LIBRARY_LIST_ARTISTS ||
+								   kind == LIBRARY_LIST_ALBUM_ARTISTS);
 	index_rebuild(p, p->index_wanted, sortable && sort_is_desc(kind));
 
 	// The same list resumes at its old scroll position; a different one
@@ -3492,6 +3582,7 @@ void medialist_init(gui_config_t *cfg) {
 	coverloader_start();
 
 	sort_desc_mask = (unsigned)config_get_int("library", "sort_desc", 0);
+	sort_added_mask = (unsigned)config_get_int("library", "sort_added", 0);
 	artist_album_order = config_get_int("library", "artist_album_order", 0) != 0;
 	load_view_settings();
 	fav_reversed = config_get_int("library", "fav_reversed", 0) != 0;

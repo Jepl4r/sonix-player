@@ -119,6 +119,10 @@ ICONS = [
     # ways to start an artist.
     ("list-a-z.svg", "sort_az", 34),
     ("list-z-a.svg", "sort_za", 34),
+    # The same button when All tracks or Albums runs by when the files arrived:
+    # the arrow points the way the list reads, as it does on A-Z and Z-A.
+    ("calendar-arrow-up.svg", "sort_date_old", 34),
+    ("calendar-arrow-down.svg", "sort_date_new", 34),
     ("album.svg", "album_corner", 34),  # built, and currently unused
     # Cover Flow draws this in a 210 px square where a cover is missing.
     ("album.svg", "album_big", 96),
