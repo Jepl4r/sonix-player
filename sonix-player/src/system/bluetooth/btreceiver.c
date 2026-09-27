@@ -76,7 +76,6 @@ static int output_ms(void) {
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_t thread;
-static bool running;  // TODO: is there a point in having both `running` and `state.active`?
 
 // How many capture threads are alive, not whether one is. Leaving the mode
 // tells the thread to stop but does not wait for it -- the wait would be a read
@@ -322,7 +321,7 @@ static session_t capture_session(const char *mac, const char *name, bool may_gue
 
 	for (;;) {
 		pthread_mutex_lock(&lock);
-		bool go = running && session == session_id;
+		bool go = state.active && session == session_id;
 		pthread_mutex_unlock(&lock);
 		if (!go) {
 			break;
@@ -543,7 +542,7 @@ static void *capture_worker(void *arg) {
 		}
 
 		pthread_mutex_lock(&lock);
-		bool go = running && session == session_id;
+		bool go = state.active && session == session_id;
 		last_frame_ms = 0;
 		touch();
 		pthread_mutex_unlock(&lock);
@@ -577,7 +576,6 @@ done:
 		// not open -- takes the mode down with it, so the page does not show a
 		// receiver that is not receiving.
 		state.active = false;
-		running = false;
 		touch();
 	}
 	pthread_mutex_unlock(&lock);
@@ -590,7 +588,7 @@ bool btreceiver_start(void) {
 	// A session that is up, rather than a thread that exists: a thread still
 	// closing its handles from the previous visit is not a running receiver,
 	// and treating it as one is what left the mode dead on a quick re-entry.
-	if (state.active && running) {
+	if (state.active) {
 		pthread_mutex_unlock(&lock);
 		return true;
 	}
@@ -608,7 +606,6 @@ bool btreceiver_start(void) {
 	pthread_mutex_lock(&lock);
 	memset(&state, 0, sizeof(state));
 	state.active = true;
-	running = true;
 	unsigned mine = ++session_id;
 	threads_alive++;
 	touch();
@@ -617,7 +614,6 @@ bool btreceiver_start(void) {
 	if (pthread_create(&thread, NULL, capture_worker, (void *)(uintptr_t)mine) != 0) {
 		pthread_mutex_lock(&lock);
 		state.active = false;
-		running = false;
 		threads_alive--;
 		snprintf(state.error, sizeof(state.error), "%s", tr("btreceiver_not_enough_memory"));
 		touch();
@@ -631,7 +627,6 @@ bool btreceiver_start(void) {
 void btreceiver_stop(void) {
 	pthread_mutex_lock(&lock);
 	bool was = state.active || threads_alive > 0;
-	running = false;
 	state.active = false;
 	// Nothing of the sender survives the mode: what is left here is read by the
 	// page the next time it opens, and would name a phone that has gone.
