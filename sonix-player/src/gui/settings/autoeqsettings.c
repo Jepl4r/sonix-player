@@ -362,7 +362,16 @@ static void show_results(job_t *job) {
 	memcpy(result_items, job->results, sizeof(result_items));
 	lv_obj_clean(results_list);
 	for (int i = 0; i < result_count; i++) {
-		settingsrow_add(results_list, result_items[i].display, NULL, result_clicked, (void *)(intptr_t)i);
+		lv_obj_t *row = settingsrow_add(results_list, result_items[i].display, NULL, result_clicked,
+									(void *)(intptr_t)i);
+		lv_obj_update_layout(row);
+		lv_obj_t *label = settingsrow_name_label(row);
+		lv_obj_t *chevron = lv_obj_get_child(row, 1);
+		int32_t width = lv_obj_get_content_width(row) - (chevron ? lv_obj_get_width(chevron) + 12 : 0);
+		lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+		lv_obj_set_width(label, width);
+		lv_obj_set_height(label, lv_font_get_line_height(
+				lv_obj_get_style_text_font(label, LV_PART_MAIN)));
 	}
 	if (result_count) lv_obj_add_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
 	else lv_obj_remove_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
@@ -637,6 +646,9 @@ static void build_pages(gui_config_t *g) {
 	lv_obj_t *menu = settingsrow_page(menu_screen, g, "autoeq_page_title");
 	settingsrow_toggle(menu, "autoeq_enabled", &enabled_switch, enabled_cb);
 	settingsrow_add(menu, "autoeq_current_config", &current_value, current_cb, NULL);
+	lv_label_set_long_mode(current_value, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(current_value, g->screen_width / 2 - g->padding);
+	lv_obj_set_height(current_value, lv_font_get_line_height(&font_ui_24));
 	settingsrow_add(menu, "autoeq_find_apply_iem", NULL, search_open, NULL);
 	settingsrow_add(menu, "autoeq_saved_configs", NULL, saved_open, NULL);
 	settingsrow_add(menu, "autoeq_remove_saved_config", NULL, remove_open, NULL);
@@ -648,6 +660,7 @@ static void build_pages(gui_config_t *g) {
 	switcher_attach_back_gesture(menu_screen);
 
 	search_screen = lv_obj_create(NULL);
+	lv_obj_add_style(search_screen, &theme_style_screen, 0);
 	settingsrow_title(search_screen, g, "autoeq_search_iem");
 	search_field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(search_field, true);
