@@ -24,7 +24,7 @@ typedef struct {
 #define ALBUMART_CANDIDATES 2
 
 // Finds the cover art for an audio file. Tries the picture embedded in the
-// file's tags first (ID3v2 APIC for MP3, .dsf and AIFF, PICTURE block for FLAC,
+// file's tags first (ID3v2 APIC for MP3, .dsf, AIFF and WAV, PICTURE block for FLAC,
 // METADATA_BLOCK_PICTURE / COVERART for OGG and Opus, `covr` for MP4/ALAC),
 // then falls back to a cover image file sitting in the same folder (cover.jpg,
 // folder.jpg, front.png, ...). Returns true and fills `out` on success; `out`

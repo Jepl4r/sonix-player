@@ -10,6 +10,8 @@
 
 **CUE sheets** split a single ripped disc into up to 99 tracks, taking the format from the file the sheet points at. WAVs carrying their own RIFF markers work the same way.
 
+**WAV and AIFF tags** are read from the ID3 chunk taggers add to them, so titles in any script and the cover come through; a WAV's own INFO list fills in whatever that leaves empty.
+
 ## Audio
 
 - **Volume** - The same volume curve as the stock player is used.
@@ -49,6 +51,7 @@
 - **Sorting across alphabets** - a collation that groups by script, folds case and accents, and skips leading articles unless you turn that off.
 - **A–Z strip** - shown when scrolling a list.
 - **Search** across tracks, albums and artists.
+- **Albums with the same name stay apart** - an album is its name and whose it is: the album artist, the artist when there is none, and the folder when there is neither.
 - **Quality badges** under a title: lossy, CD, Hi-Fi, DSD.
 - **Playlists** - create, rename, reorder, delete. A long press on a row of All tracks, Albums, Artists or Album artists starts a selection, and the chosen tracks, albums or artists go into the queue, the favourites or a playlist together. Inside a playlist or the favourites the selection also takes the chosen tracks out, after asking. In the file browser the same works on tracks and folders, a folder bringing everything under it. A backup writes an extended M3U to the card that other players can read; import reads one back, resolves missing entries by file name, and reports what it found.
 - **Playback modes** - normal, repeat all, repeat one, shuffle, and a continuous shuffle that deals a fresh order each round.
@@ -147,8 +150,10 @@ certificate checking, and HLS.
   assignable to nothing, play/pause, previous, next, volume up or volume down.
 - **Keyboard layout** - six layouts: English, Italian, German, Spanish, French
   and Russian.
+- **Screenshots** - under More: volume up and the power key save the screen to
+  the card.
 - **System** - device, DAC, serial number, card space, OS version, firmware
   update from a `.upt` on the card, and factory reset.
-- **Developer options** - unlocked by tapping the build number: ADB,
-  screenshots, log to the card, database log, disabling the software volume
-  attenuation, and a page of running processes and memory.
+- **Developer options** - unlocked by tapping the build number: ADB, log to the
+  card, database log, disabling the software volume attenuation, and a page of
+  running processes and memory.

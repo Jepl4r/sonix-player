@@ -453,8 +453,13 @@ static void resolve_tcon_genre(const char *raw, char *out, size_t out_size) {
 // mean the walk has wandered into random data.
 #define ID3_MAX_FRAMES 256
 
-// Reads an ID3v2 tag at the start of the file, if present. Returns true if a
-// tag was found (regardless of whether any wanted frames were in it).
+// Reads an ID3v2 tag at the current position of `f` -- the start of an MP3, or
+// wherever a .dsf, a WAV or an AIFF keeps it. Returns true if a tag was found
+// (regardless of whether any wanted frames were in it).
+//
+// Positions are off_t: in a .dsf, a WAV and an AIFF the tag sits after the
+// audio, which in a long hi-res recording is past two gigabytes, where a
+// 32-bit ftell() has nothing to return.
 static bool read_id3v2(FILE *f, song_metadata_t *out) {
 	uint8_t header[10];
 	if (fread(header, 1, 10, f) != 10)
@@ -466,17 +471,19 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 	uint8_t flags = header[5];
 	uint32_t tag_size = syncsafe_to_uint32(&header[6]);
 
-	long tag_data_start = ftell(f);
-	long tag_end = tag_data_start + (long)tag_size;
+	off_t tag_data_start = ftello(f);
+	if (tag_data_start < 0)
+		return true;
+	off_t tag_end = tag_data_start + (off_t)tag_size;
 
 	if (flags & 0x40) { // extended header present
 		uint8_t ext_size_bytes[4];
 		if (fread(ext_size_bytes, 1, 4, f) != 4)
 			return true;
 		uint32_t ext_size = (major_version >= 4) ? syncsafe_to_uint32(ext_size_bytes) : plain_to_uint32(ext_size_bytes);
-		long remaining = (major_version >= 4) ? (long)ext_size - 4 : (long)ext_size;
+		off_t remaining = (major_version >= 4) ? (off_t)ext_size - 4 : (off_t)ext_size;
 		if (remaining > 0)
-			fseek(f, remaining, SEEK_CUR);
+			fseeko(f, remaining, SEEK_CUR);
 	}
 
 	// ID3v2.2 is a different shape: six-byte frame headers with three-character
@@ -486,8 +493,8 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 	bool v22 = major_version == 2;
 	int header_size = v22 ? 6 : 10;
 
-	for (int frames = 0; frames < ID3_MAX_FRAMES && ftell(f) < tag_end - header_size; frames++) {
-		long frame_at = ftell(f);
+	for (int frames = 0; frames < ID3_MAX_FRAMES && ftello(f) < tag_end - header_size; frames++) {
+		off_t frame_at = ftello(f);
 		uint8_t frame_header[10];
 		if (fread(frame_header, 1, (size_t)header_size, f) != (size_t)header_size)
 			break;
@@ -505,7 +512,7 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 				(major_version >= 4) ? syncsafe_to_uint32(&frame_header[4]) : plain_to_uint32(&frame_header[4]);
 		}
 
-		if (frame_size == 0 || (long)frame_size > tag_end - ftell(f))
+		if (frame_size == 0 || (off_t)frame_size > tag_end - ftello(f))
 			break;
 
 		// The allocation cap. The length field is 28 bits, so a damaged (or
@@ -516,13 +523,13 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 		// for. The jump to the next frame uses an absolute position computed
 		// from the start of this one, so the position always moves forward
 		// whatever happened in between.
-		long next_frame = frame_at + header_size + (long)frame_size;
+		off_t next_frame = frame_at + header_size + (off_t)frame_size;
 		if (next_frame <= frame_at) {
 			break; // arithmetic that does not add up: stop instead of spinning
 		}
 
 		if (frame_size > ID3_MAX_TEXT_FRAME) {
-			fseek(f, next_frame, SEEK_SET);
+			fseeko(f, next_frame, SEEK_SET);
 			continue;
 		}
 
@@ -547,7 +554,7 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 					  strcmp(frame_id, "TXXX") == 0;
 
 		if (!wanted) {
-			fseek(f, next_frame, SEEK_SET);
+			fseeko(f, next_frame, SEEK_SET);
 			continue;
 		}
 
@@ -801,8 +808,128 @@ static void read_dsd_metadata(const char *filepath, song_metadata_t *out) {
 }
 
 // ---------------------------------------------------------------------------
-// WAV (RIFF LIST/INFO chunk) parsing
+// WAV and AIFF
+//
+// WAV's own tags are the RIFF LIST/INFO chunk, and its text has no declared
+// encoding. Windows taggers write it in the machine's ANSI code page, and a
+// character that code page does not have -- every Chinese one on a Western
+// machine, most of the Vietnamese letters with a tone mark on any machine -- is
+// written as a literal "?". The bytes in the file are the question marks; no
+// font can bring the letters back.
+//
+// So the same taggers (Mp3tag, foobar2000, Picard, dBpoweramp) also keep a
+// whole ID3v2 tag in an "id3 " chunk, in UTF-16 or UTF-8, with every letter
+// intact. That tag is read first and INFO only fills in what it left empty.
+// INFO text is taken as UTF-8 when it is well-formed UTF-8, and otherwise as
+// the single-byte text an ID3v1 tag holds (Latin-1, or Windows-1251 -- see
+// id3_decode_text).
+//
+// AIFF has no tags of its own that anybody writes, only the same ID3 chunk.
 // ---------------------------------------------------------------------------
+
+// Whether `len` bytes, up to the first NUL, are well-formed UTF-8. Plain ASCII
+// is. A Latin-1 accent on its own is not: a high byte has to open a sequence of
+// the right length, and in Latin-1 text the byte after it is a letter.
+static bool text_is_utf8(const uint8_t *p, size_t len) {
+	size_t i = 0;
+	while (i < len && p[i]) {
+		uint8_t c = p[i];
+		size_t follow;
+		if (c < 0x80) {
+			follow = 0;
+		} else if (c >= 0xC2 && c <= 0xDF) {
+			follow = 1;
+		} else if (c >= 0xE0 && c <= 0xEF) {
+			follow = 2;
+		} else if (c >= 0xF0 && c <= 0xF4) {
+			follow = 3;
+		} else {
+			return false;
+		}
+		i++;
+		for (size_t k = 0; k < follow; k++, i++) {
+			if (i >= len || (p[i] & 0xC0) != 0x80) {
+				return false;
+			}
+		}
+	}
+	return true;
+}
+
+// One INFO value into `out` as UTF-8. The value is usually NUL-terminated and
+// sometimes padded with spaces; both are dropped.
+static void info_text(const char *raw, size_t len, char *out, size_t out_size) {
+	len = strnlen(raw, len);
+	while (len > 0 && raw[len - 1] == ' ') {
+		len--;
+	}
+	if (text_is_utf8((const uint8_t *)raw, len)) {
+		size_t copy_len = len < out_size - 1 ? len : out_size - 1;
+		memcpy(out, raw, copy_len);
+		out[copy_len] = '\0';
+	} else {
+		id3_decode_text(0x00, (const uint8_t *)raw, len, out, out_size);
+	}
+}
+
+// The fields of one INFO list, from just after its "INFO" to `list_end`.
+static void read_wav_info(FILE *f, off_t list_end, song_metadata_t *info) {
+	struct {
+		char id[4];
+		uint32_t size;
+	} sub;
+	while (ftello(f) + (off_t)sizeof(sub) <= list_end && fread(&sub, 1, sizeof(sub), f) == sizeof(sub)) {
+		char value[1024];
+		uint32_t read_size = sub.size < sizeof(value) - 1 ? sub.size : sizeof(value) - 1;
+		if (fread(value, 1, read_size, f) != read_size)
+			break;
+		value[read_size] = '\0';
+
+		if (memcmp(sub.id, "INAM", 4) == 0) {
+			info_text(value, read_size, info->title, sizeof(info->title));
+		} else if (memcmp(sub.id, "IART", 4) == 0) {
+			info_text(value, read_size, info->artist, sizeof(info->artist));
+		} else if (memcmp(sub.id, "IPRD", 4) == 0) {
+			info_text(value, read_size, info->album, sizeof(info->album));
+		} else if (memcmp(sub.id, "IGNR", 4) == 0) {
+			info_text(value, read_size, info->genre, sizeof(info->genre));
+		} else if (memcmp(sub.id, "ICRD", 4) == 0) {
+			info->year = (int)strtol(value, NULL, 10);
+		} else if (memcmp(sub.id, "ITRK", 4) == 0 || memcmp(sub.id, "IPRT", 4) == 0) {
+			// "3" or "3/12"; strtol stops at the slash.
+			if (info->track_number == 0) {
+				info->track_number = (int)strtol(value, NULL, 10);
+			}
+		}
+
+		off_t sub_data_start = ftello(f) - (off_t)read_size;
+		off_t next_sub_pos = sub_data_start + (off_t)sub.size + (sub.size & 1);
+		// Same rule as the outer walk: a sub-chunk that does not move the
+		// position forward would be read again forever.
+		if (next_sub_pos <= sub_data_start - (off_t)sizeof(sub) || next_sub_pos > list_end) {
+			break;
+		}
+		if (fseeko(f, next_sub_pos, SEEK_SET) != 0) {
+			break;
+		}
+	}
+}
+
+// What the ID3 tag left empty, from INFO.
+static void fill_from_info(song_metadata_t *out, const song_metadata_t *info) {
+	if (!out->title[0])
+		copy_bounded(out->title, sizeof(out->title), info->title);
+	if (!out->artist[0])
+		copy_bounded(out->artist, sizeof(out->artist), info->artist);
+	if (!out->album[0])
+		copy_bounded(out->album, sizeof(out->album), info->album);
+	if (!out->genre[0])
+		copy_bounded(out->genre, sizeof(out->genre), info->genre);
+	if (out->year == 0)
+		out->year = info->year;
+	if (out->track_number == 0)
+		out->track_number = info->track_number;
+}
 
 static void read_wav_metadata(const char *filepath, song_metadata_t *out) {
 	FILE *f = fopen(filepath, "rb");
@@ -835,6 +962,10 @@ static void read_wav_metadata(const char *filepath, song_metadata_t *out) {
 		uint32_t size;
 	} chunk;
 
+	song_metadata_t info;
+	memset(&info, 0, sizeof(info));
+	off_t id3_at = -1;
+
 	while (fread(&chunk, 1, sizeof(chunk), f) == sizeof(chunk)) {
 		off_t chunk_data_start = ftello(f);
 		if (chunk_data_start < 0) {
@@ -850,52 +981,10 @@ static void read_wav_metadata(const char *filepath, song_metadata_t *out) {
 		if (memcmp(chunk.id, "LIST", 4) == 0 && chunk.size >= 4) {
 			char list_type[4];
 			if (fread(list_type, 1, 4, f) == 4 && memcmp(list_type, "INFO", 4) == 0) {
-				off_t list_end = chunk_data_start + (off_t)chunk.size;
-
-				struct {
-					char id[4];
-					uint32_t size;
-				} sub;
-				while (ftello(f) + (off_t)sizeof(sub) <= list_end && fread(&sub, 1, sizeof(sub), f) == sizeof(sub)) {
-					char value[1024];
-					uint32_t read_size = sub.size < sizeof(value) - 1 ? sub.size : sizeof(value) - 1;
-					if (fread(value, 1, read_size, f) != read_size)
-						break;
-					value[read_size] = '\0';
-
-					char *dst = NULL;
-					size_t dst_size = 0;
-					if (memcmp(sub.id, "INAM", 4) == 0) {
-						dst = out->title;
-						dst_size = sizeof(out->title);
-					} else if (memcmp(sub.id, "IART", 4) == 0) {
-						dst = out->artist;
-						dst_size = sizeof(out->artist);
-					} else if (memcmp(sub.id, "IPRD", 4) == 0) {
-						dst = out->album;
-						dst_size = sizeof(out->album);
-					} else if (memcmp(sub.id, "IGNR", 4) == 0) {
-						dst = out->genre;
-						dst_size = sizeof(out->genre);
-					}
-					if (dst) {
-						size_t copy_len = read_size < dst_size - 1 ? read_size : dst_size - 1;
-						memcpy(dst, value, copy_len);
-						dst[copy_len] = '\0';
-					}
-
-					off_t sub_data_start = ftello(f) - (off_t)read_size;
-					off_t next_sub_pos = sub_data_start + (off_t)sub.size + (sub.size & 1);
-					// Same rule as the outer walk: a sub-chunk that does not
-					// move the position forward would be read again forever.
-					if (next_sub_pos <= sub_data_start - (off_t)sizeof(sub) || next_sub_pos > list_end) {
-						break;
-					}
-					if (fseeko(f, next_sub_pos, SEEK_SET) != 0) {
-						break;
-					}
-				}
+				read_wav_info(f, chunk_data_start + (off_t)chunk.size, &info);
 			}
+		} else if ((memcmp(chunk.id, "id3 ", 4) == 0 || memcmp(chunk.id, "ID3 ", 4) == 0) && id3_at < 0) {
+			id3_at = chunk_data_start;
 		}
 
 		off_t next_chunk_pos = (off_t)chunk_data_start + (off_t)chunk.size + (chunk.size & 1);
@@ -907,6 +996,42 @@ static void read_wav_metadata(const char *filepath, song_metadata_t *out) {
 		if (fseeko(f, next_chunk_pos, SEEK_SET) != 0) {
 			break;
 		}
+	}
+
+	if (id3_at >= 0 && fseeko(f, id3_at, SEEK_SET) == 0) {
+		read_id3v2(f, out);
+	}
+	fill_from_info(out, &info);
+
+	fclose(f);
+}
+
+static void read_aiff_metadata(const char *filepath, song_metadata_t *out) {
+	FILE *f = fopen(filepath, "rb");
+	if (!f)
+		return;
+
+	uint8_t form[12];
+	if (fread(form, 1, sizeof(form), f) != sizeof(form) || memcmp(form, "FORM", 4) != 0 || fseeko(f, 0, SEEK_END) != 0) {
+		fclose(f);
+		return;
+	}
+	off_t file_end = ftello(f);
+
+	// Sizes are big-endian here, and a chunk body is padded to an even length
+	// the size does not count. The guard stops a damaged file walking for ever.
+	off_t pos = 12;
+	for (int guard = 0; guard < 64 && pos + 8 <= file_end; guard++) {
+		uint8_t ch[8];
+		if (fseeko(f, pos, SEEK_SET) != 0 || fread(ch, 1, sizeof(ch), f) != sizeof(ch)) {
+			break;
+		}
+		uint32_t size = ((uint32_t)ch[4] << 24) | ((uint32_t)ch[5] << 16) | ((uint32_t)ch[6] << 8) | ch[7];
+		if (memcmp(ch, "ID3 ", 4) == 0 || memcmp(ch, "id3 ", 4) == 0) {
+			read_id3v2(f, out);
+			break;
+		}
+		pos += 8 + (off_t)size + (off_t)(size & 1);
 	}
 
 	fclose(f);
@@ -1159,6 +1284,8 @@ void metadata_read(const char *filepath, song_metadata_t *out) {
 	default:
 		if (has_extension(filepath, ".wav")) {
 			read_wav_metadata(filepath, out);
+		} else if (has_extension(filepath, ".aif") || has_extension(filepath, ".aiff") || has_extension(filepath, ".aifc")) {
+			read_aiff_metadata(filepath, out);
 		}
 		break;
 	}

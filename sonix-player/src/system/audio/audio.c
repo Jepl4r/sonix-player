@@ -298,7 +298,9 @@ void audio_park_output_before_suspend(void) {
 		return; // not one of the analogue sockets
 	}
 	int y = output_reinit_partner(x);
-	fprintf(stderr, "audio: output parked on %d before mem (was %d)\n", y, x);
+	// The balanced line-out flag with it: on the 4.4 mm socket headphone and
+	// line out are the same route, and a report of a pop has to say which.
+	fprintf(stderr, "audio: output parked on %d before mem (was %d, balanced line out %d)\n", y, x, alsa_output_key() & 1);
 #ifndef HOST_BUILD
 	alsa_set_control("Output Port Switch", y);
 	usleep(120 * 1000); // the driver's mute and route change, before the power goes
@@ -3955,6 +3957,13 @@ static int external_route = -1;			// alsa_output_key() at the open
 static char external_device[160];		// the ALSA name at the open
 static long external_checked_ms;		// when the two above were last compared
 
+// Underruns since the open, and when the last one was reported. A receiver
+// that stutters says so in the log, and how often -- which is the difference
+// between a thread that is not scheduled in time and a sender that stalls now
+// and then over the air.
+static unsigned external_underruns;
+static long external_underrun_logged_ms;
+
 // How often the check below is worth making. The jack is a sysfs read and the
 // device name a string compare under a mutex, so it is not expensive -- but at
 // 44.1 kHz a receiver hands over a chunk every eleven milliseconds, and doing
@@ -4014,6 +4023,8 @@ bool audio_external_begin_latency(int sample_rate, int channels, int bits, int b
 	external_bits = bits;
 	external_buffer_ms = buffer_ms;
 	external_checked_ms = log_ms();
+	external_underruns = 0;
+	external_underrun_logged_ms = 0;
 
 	bool ok = external_open_locked();
 
@@ -4132,7 +4143,12 @@ int audio_external_write(const void *frames, int count) {
 		if (got == -EPIPE) {
 			// An underrun: the sender stalled, which over a wireless link is
 			// ordinary. Prepare and carry on rather than tearing the stream
-			// down over a gap.
+			// down over a gap. Reported at most every two seconds.
+			external_underruns++;
+			if (external_underrun_logged_ms == 0 || log_ms() - external_underrun_logged_ms >= 2000) {
+				external_underrun_logged_ms = log_ms();
+				fprintf(stderr, "audio: the external source ran dry (%u underruns since it opened)\n", external_underruns);
+			}
 			snd_pcm_prepare(external_pcm);
 			continue;
 		}
@@ -4161,7 +4177,7 @@ void audio_external_end(void) {
 		pcm_device_open = false;
 		external_route = -1;
 		external_device[0] = '\0';
-		printf("audio: external source finished; device handed back\n");
+		printf("audio: external source finished; device handed back (%u underruns)\n", external_underruns);
 	}
 
 	pthread_mutex_unlock(&external_lock);

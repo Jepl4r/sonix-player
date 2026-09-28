@@ -336,36 +336,46 @@ static bool read_dsf_embedded(const char *filepath, albumart_t *out) {
 }
 
 // ---------------------------------------------------------------------------
-// AIFF: the ID3 chunk
+// AIFF and WAV: the ID3 chunk
 //
-// AIFF has no tag format of its own, so taggers park a whole ID3v2 tag in an
-// "ID3 " chunk. libsndfile plays these files but hands over no pictures, so the
-// chunk is walked here.
+// Neither has a place of its own for a picture, so taggers park a whole ID3v2
+// tag in an "ID3 " (AIFF) or "id3 " (WAV) chunk, APIC and all. libsndfile plays
+// these files but hands over no pictures, so the chunk is walked here. The two
+// containers differ only in the byte order of the chunk sizes.
+//
+// In a WAV the chunk follows the audio, which in a long hi-res recording is
+// past two gigabytes: the walk keeps its position in an off_t.
 // ---------------------------------------------------------------------------
 
-static bool read_aiff_embedded(const char *filepath, albumart_t *out) {
+static bool read_iff_embedded(const char *filepath, albumart_t *out) {
 	FILE *f = fopen(filepath, "rb");
 	if (!f)
 		return false;
 
 	bool found = false;
 	uint8_t form[12];
-	if (fread(form, 1, sizeof(form), f) == sizeof(form) && memcmp(form, "FORM", 4) == 0) {
-		// Chunk bodies are padded to an even length, which the size field does
-		// not count. The guard stops a corrupt file from walking for ever.
-		long pos = 12;
-		for (int guard = 0; guard < 64 && !found; guard++) {
-			uint8_t ch[8];
-			if (fseek(f, pos, SEEK_SET) != 0 || fread(ch, 1, sizeof(ch), f) != sizeof(ch)) {
-				break;
-			}
-			uint32_t size = be32(ch + 4);
-			if (memcmp(ch, "ID3 ", 4) == 0 || memcmp(ch, "id3 ", 4) == 0) {
-				found = read_id3v2_picture(f, out);
-				break;
-			}
-			pos += 8 + (long)size + (long)(size & 1);
+	bool aiff = false;
+	bool wav = false;
+	if (fread(form, 1, sizeof(form), f) == sizeof(form)) {
+		aiff = memcmp(form, "FORM", 4) == 0;
+		wav = memcmp(form, "RIFF", 4) == 0 && memcmp(form + 8, "WAVE", 4) == 0;
+	}
+	off_t file_end = (aiff || wav) && fseeko(f, 0, SEEK_END) == 0 ? ftello(f) : 0;
+
+	// Chunk bodies are padded to an even length, which the size field does not
+	// count. The guard stops a corrupt file from walking for ever.
+	off_t pos = 12;
+	for (int guard = 0; guard < 64 && !found && pos + 8 <= file_end; guard++) {
+		uint8_t ch[8];
+		if (fseeko(f, pos, SEEK_SET) != 0 || fread(ch, 1, sizeof(ch), f) != sizeof(ch)) {
+			break;
 		}
+		uint32_t size = aiff ? be32(ch + 4) : ((uint32_t)ch[4] | ((uint32_t)ch[5] << 8) | ((uint32_t)ch[6] << 16) | ((uint32_t)ch[7] << 24));
+		if (memcmp(ch, "ID3 ", 4) == 0 || memcmp(ch, "id3 ", 4) == 0) {
+			found = read_id3v2_picture(f, out);
+			break;
+		}
+		pos += 8 + (off_t)size + (off_t)(size & 1);
 	}
 
 	fclose(f);
@@ -827,11 +837,11 @@ static bool read_embedded(const char *filepath, albumart_t *out) {
 	case DECODE_FORMAT_SNDFILE:
 		// Of what libsndfile plays here, only AIFF has somewhere to put a
 		// picture.
-		return (has_extension(filepath, ".aif") || has_extension(filepath, ".aiff") ||
-				has_extension(filepath, ".aifc")) &&
-			   read_aiff_embedded(filepath, out);
+		return (has_extension(filepath, ".aif") || has_extension(filepath, ".aiff") || has_extension(filepath, ".aifc")) && read_iff_embedded(filepath, out);
 	default:
-		return false; // WAV has no standard place to put a picture
+		// A plain WAV is no decoder's format -- audio.c plays it itself -- but
+		// it can carry the same ID3 chunk.
+		return has_extension(filepath, ".wav") && read_iff_embedded(filepath, out);
 	}
 }
 

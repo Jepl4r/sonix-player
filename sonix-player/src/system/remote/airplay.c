@@ -17,6 +17,8 @@
 #include <unistd.h>
 
 #include "src/system/audio/audio.h"
+#include "src/system/core/config.h"
+#include "src/system/core/utils.h"
 #include "src/system/device/sysserver.h"
 
 // ---------------------------------------------------------------------------
@@ -581,6 +583,23 @@ static void *pcm_worker(void *unused) {
 
 static void *play_worker(void *unused) {
 	(void)unused;
+
+	// Real time, like the player's own playback thread and the Bluetooth
+	// receiver's: while a sender is playing this thread IS the playback path,
+	// and the only slack in front of the card is the 200 ms ALSA buffer. At the
+	// ordinary priority it takes turns with the interface on the one core, and
+	// a page being drawn, a list being scrolled or a picture being decoded
+	// holds it off long enough to empty that buffer -- an underrun, heard as a
+	// stutter. It cannot spin: it sleeps on the ring when there is nothing to
+	// play and in the write when the card is full.
+	//
+	//   [airplay]
+	//   rt_priority = 10   the playback thread's policy and priority
+	//               = 0    no real-time at all
+	int rt = (int)config_get_int("airplay", "rt_priority", 10);
+	if (rt > 0) {
+		thread_be_realtime("airplay", rt);
+	}
 
 	uint8_t chunk[CHUNK_BYTES];
 	int32_t wide[CHUNK_BYTES / 2];
