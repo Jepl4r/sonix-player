@@ -237,15 +237,15 @@ static void update_current(const char *name, const char *label) {
 	config_set("autoeq", "current", label ? label : "");
 	config_set_bool("autoeq", "enabled", true);
 	config_save();
-	if (current_value) lv_label_set_text(current_value, label && label[0] ? label : "None");
+	if (current_value) lv_label_set_text(current_value, label && label[0] ? label : tr("autoeq_none"));
 }
 
 static void refresh_menu(void) {
 	if (!menu_screen) return;
 	if (config_get_bool("autoeq", "enabled", false)) lv_obj_add_state(enabled_switch, LV_STATE_CHECKED);
 	else lv_obj_remove_state(enabled_switch, LV_STATE_CHECKED);
-	const char *name = config_get("autoeq", "current", "None");
-	lv_label_set_text(current_value, name && name[0] ? name : "None");
+	const char *name = config_get("autoeq", "current", "");
+	lv_label_set_text(current_value, name && name[0] ? name : tr("autoeq_none"));
 }
 
 static bool apply_job(job_t *job, const char *label, const char *profile, size_t size) {
@@ -253,7 +253,7 @@ static bool apply_job(job_t *job, const char *label, const char *profile, size_t
 	if (!cfg || !cfg->sd_root_path || !profile || !size ||
 		snprintf(peq_dir, sizeof(peq_dir), "%s/PEQ", cfg->sd_root_path) >= (int)sizeof(peq_dir) ||
 		!make_dir(peq_dir)) {
-		toast_error("Could not access the PEQ folder on the card.");
+		toast_error(tr("autoeq_error_peq_folder"));
 		return false;
 	}
 	uint32_t stage_hash = hash_text(job->preset) ^ hash_text(profile);
@@ -261,27 +261,27 @@ static bool apply_job(job_t *job, const char *label, const char *profile, size_t
 	if (snprintf(stage_path, sizeof(stage_path), "%s/%s.txt", peq_dir, stage_name) >= (int)sizeof(stage_path) ||
 		snprintf(preset_path, sizeof(preset_path), "%s/%s.txt", peq_dir, job->preset) >= (int)sizeof(preset_path) ||
 		!write_file(stage_path, profile, size)) {
-		toast_error("Could not save this AutoEq profile to PEQ.");
+		toast_error(tr("autoeq_error_save_profile"));
 		return false;
 	}
 	int ignored = 0;
 	if (!peq_preset_load(stage_name, &ignored)) {
 		remove(stage_path);
-		toast_error("This profile has no filters supported by the player.");
+		toast_error(tr("autoeq_error_unsupported_profile"));
 		return false;
 	}
 	if (rename(stage_path, preset_path) != 0) {
 		remove(stage_path);
-		toast_error("Could not save this AutoEq preset.");
+		toast_error(tr("autoeq_error_save_preset"));
 		return false;
 	}
 	peq_set_enabled(true);
 	update_current(job->preset, label);
 	if (ignored) {
 		char message[96];
-		snprintf(message, sizeof(message), "Applied profile; skipped %d unsupported filters.", ignored);
+		snprintf(message, sizeof(message), tr("peq_preset_loaded_partly"), ignored);
 		toast_success(message);
-	} else toast_success("AutoEq profile applied.");
+	} else toast_success(tr("autoeq_profile_applied"));
 	return true;
 }
 
@@ -290,18 +290,18 @@ static bool download_database(job_t *job) {
 	size_t index_size = 0, ranking_size = 0;
 	if (!http_get(INDEX_URL, &index, &index_size, INDEX_MAX, 35)) {
 		const char *error = http_last_error();
-		snprintf(job->error, sizeof(job->error), "%s", error && error[0] ? error : "Could not download AutoEq INDEX.md.");
+		snprintf(job->error, sizeof(job->error), "%s", error && error[0] ? error : tr("autoeq_error_index_download"));
 		free(index);
 		return false;
 	}
 	if (!http_get(RANKING_URL, &ranking, &ranking_size, RANKING_MAX, 35)) {
 		const char *error = http_last_error();
-		snprintf(job->error, sizeof(job->error), "%s", error && error[0] ? error : "Could not download AutoEq RANKING.md.");
+		snprintf(job->error, sizeof(job->error), "%s", error && error[0] ? error : tr("autoeq_error_ranking_download"));
 		free(index); free(ranking);
 		return false;
 	}
 	bool ok = write_file(index_file, index, index_size) && write_file(ranking_file, ranking, ranking_size);
-	if (!ok) snprintf(job->error, sizeof(job->error), "Could not save the AutoEq database to the card.");
+	if (!ok) snprintf(job->error, sizeof(job->error), tr("autoeq_error_database_save"));
 	if (ok && job->search_after_update) parse_index(index, job->query, job);
 	free(index); free(ranking);
 	return ok;
@@ -322,12 +322,12 @@ static void *worker(void *user) {
 		if (!text) {
 			char url[3072];
 			if (!make_profile_url(&job->selected, url, sizeof(url))) {
-				snprintf(job->error, sizeof(job->error), "Could not build the AutoEq profile URL.");
+				snprintf(job->error, sizeof(job->error), tr("autoeq_error_profile_url"));
 			} else if (!http_get(url, &text, &size, PROFILE_MAX, 30)) {
 				const char *error = http_last_error();
-				snprintf(job->error, sizeof(job->error), "%s", error && error[0] ? error : "Could not download this profile.");
+				snprintf(job->error, sizeof(job->error), "%s", error && error[0] ? error : tr("autoeq_error_profile_download"));
 			} else if (!write_file(job->cache, text, size)) {
-				snprintf(job->error, sizeof(job->error), "Could not cache this profile on the card.");
+				snprintf(job->error, sizeof(job->error), tr("autoeq_error_profile_cache"));
 			}
 		}
 		if (text && !job->error[0]) {
@@ -350,7 +350,7 @@ static bool start_job(job_t *job, const char *busy_text) {
 	toast_busy(busy_text);
 	pthread_t thread;
 	if (pthread_create(&thread, NULL, worker, job) != 0) {
-		end_job(); free(job); toast_busy_end(); toast_error("Could not start AutoEq.");
+		end_job(); free(job); toast_busy_end(); toast_error(tr("autoeq_error_start"));
 		return false;
 	}
 	pthread_detach(thread);
@@ -367,7 +367,7 @@ static void show_results(job_t *job) {
 	if (result_count) lv_obj_add_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
 	else lv_obj_remove_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
 	if (result_count) switch_screen(results_screen);
-	else toast_plain("No AutoEq IEM profile matched that name.");
+	else toast_plain(tr("autoeq_no_matching_profile"));
 }
 
 static void job_done(void *user) {
@@ -377,7 +377,7 @@ static void job_done(void *user) {
 	if (job->error[0]) toast_error(job->error);
 	else if (job->update) {
 		if (job->search_after_update) show_results(job);
-		else toast_success("AutoEq database updated.");
+		else toast_success(tr("autoeq_database_updated"));
 	} else apply_job(job, job->selected.display, job->profile_text, job->profile_size);
 	free(job->profile_text);
 	free(job);
@@ -388,11 +388,11 @@ static void result_clicked(lv_event_t *event) {
 	int index = (int)(intptr_t)lv_event_get_user_data(event);
 	if (index < 0 || index >= result_count) return;
 	job_t *job = calloc(1, sizeof(*job));
-	if (!job) { toast_error("Not enough memory for AutoEq."); return; }
+	if (!job) { toast_error(tr("out_of_memory")); return; }
 	job->selected = result_items[index];
 	preset_name(&job->selected, job->preset, sizeof(job->preset));
 	cache_path(job->preset, job->cache, sizeof(job->cache));
-	start_job(job, "Downloading AutoEq profile...");
+	start_job(job, tr("autoeq_downloading_profile"));
 }
 
 static void search_accept(lv_event_t *event) {
@@ -403,19 +403,19 @@ static void search_accept(lv_event_t *event) {
 	while (isspace((unsigned char)*start)) start++;
 	size_t len = strlen(start);
 	while (len && isspace((unsigned char)start[len-1])) start[--len] = '\0';
-	if (!*start) { toast_error("Enter an IEM name."); return; }
-	if (!ensure_dirs()) { toast_error("AutoEq needs a microSD card."); return; }
+	if (!*start) { toast_error(tr("autoeq_enter_iem_name")); return; }
+	if (!ensure_dirs()) { toast_error(tr("autoeq_need_card")); return; }
 	char *index = read_file(index_file, INDEX_MAX, NULL);
 	if (!index) {
 		job_t *job = calloc(1, sizeof(*job));
-		if (!job) { toast_error("Not enough memory for AutoEq."); return; }
+		if (!job) { toast_error(tr("out_of_memory")); return; }
 		job->update = job->search_after_update = true;
 		snprintf(job->query, sizeof(job->query), "%s", start);
-		start_job(job, "Downloading AutoEq database...");
+		start_job(job, tr("autoeq_downloading_database"));
 		return;
 	}
 	job_t *job = calloc(1, sizeof(*job));
-	if (!job) { free(index); toast_error("Not enough memory for AutoEq."); return; }
+	if (!job) { free(index); toast_error(tr("out_of_memory")); return; }
 	parse_index(index, start, job);
 	free(index);
 	show_results(job);
@@ -433,11 +433,11 @@ static void search_open(lv_event_t *event) {
 
 static void update_database(lv_event_t *event) {
 	(void)event;
-	if (!ensure_dirs()) { toast_error("AutoEq needs a microSD card."); return; }
+	if (!ensure_dirs()) { toast_error(tr("autoeq_need_card")); return; }
 	job_t *job = calloc(1, sizeof(*job));
-	if (!job) { toast_error("Not enough memory for AutoEq."); return; }
+	if (!job) { toast_error(tr("out_of_memory")); return; }
 	job->update = true;
-	start_job(job, "Updating AutoEq database...");
+	start_job(job, tr("autoeq_updating_database"));
 }
 
 static void row_name_delete(lv_event_t *event) { free(lv_event_get_user_data(event)); }
@@ -467,14 +467,14 @@ static void rebuild_saved(bool remove_mode) {
 
 static void saved_open(lv_event_t *event) {
 	(void)event;
-	if (!ensure_dirs()) { toast_error("AutoEq needs a microSD card."); return; }
+	if (!ensure_dirs()) { toast_error(tr("autoeq_need_card")); return; }
 	rebuild_saved(false);
 	switch_screen(saved_screen);
 }
 
 static void remove_open(lv_event_t *event) {
 	(void)event;
-	if (!ensure_dirs()) { toast_error("AutoEq needs a microSD card."); return; }
+	if (!ensure_dirs()) { toast_error(tr("autoeq_need_card")); return; }
 	rebuild_saved(true);
 	switch_screen(remove_screen);
 }
@@ -487,8 +487,8 @@ static void saved_clicked(lv_event_t *event) {
 		peq_set_enabled(true);
 		update_current(name, name);
 		refresh_menu();
-		toast_success("AutoEq preset loaded.");
-	} else toast_error("Could not load this AutoEq preset.");
+		toast_success(tr("autoeq_preset_loaded"));
+	} else toast_error(tr("autoeq_error_load_preset"));
 }
 
 static void remove_clicked(lv_event_t *event) {
@@ -506,7 +506,7 @@ static void remove_clicked(lv_event_t *event) {
 		config_set("autoeq", "preset", ""); config_set("autoeq", "current", ""); config_save();
 		refresh_menu();
 	}
-	toast_plain(removed ? "AutoEq preset removed." : "Could not remove this preset.");
+	toast_plain(removed ? tr("autoeq_preset_removed") : tr("autoeq_error_remove_preset"));
 	rebuild_saved(true);
 }
 
@@ -522,9 +522,9 @@ static void import_clicked(lv_event_t *event) {
 	if (!filename || snprintf(path, sizeof(path), "%s/%s", imports, filename) >= (int)sizeof(path)) return;
 	size_t size;
 	char *text = read_file(path, PROFILE_MAX, &size);
-	if (!text) { toast_error("Could not read this ParametricEQ.txt."); return; }
+	if (!text) { toast_error(tr("autoeq_error_read_parametric_eq")); return; }
 	job_t *job = calloc(1, sizeof(*job));
-	if (!job) { free(text); toast_error("Not enough memory for AutoEq."); return; }
+	if (!job) { free(text); toast_error(tr("out_of_memory")); return; }
 	profile_t item = {0};
 	snprintf(item.name, sizeof(item.name), "%s", filename);
 	char *dot = strrchr(item.name, '.'); if (dot) *dot = '\0';
@@ -559,7 +559,7 @@ static void rebuild_imports(void) {
 
 static void import_open(lv_event_t *event) {
 	(void)event;
-	if (!ensure_dirs()) { toast_error("AutoEq needs a microSD card."); return; }
+	if (!ensure_dirs()) { toast_error(tr("autoeq_need_card")); return; }
 	rebuild_imports();
 	switch_screen(import_screen);
 }
@@ -568,13 +568,13 @@ static void current_cb(lv_event_t *event) {
 	(void)event;
 	char preset[128];
 	snprintf(preset, sizeof(preset), "%s", config_get("autoeq", "preset", ""));
-	if (!preset[0] || !peq_preset_load(preset, NULL)) { toast_plain("Current Config: None"); return; }
+	if (!preset[0] || !peq_preset_load(preset, NULL)) { toast_plain(tr("autoeq_current_config_none")); return; }
 	peq_set_enabled(true);
 	char label[192];
 	snprintf(label, sizeof(label), "%s", config_get("autoeq", "current", preset));
 	update_current(preset, label);
 	refresh_menu();
-	toast_success("Current AutoEq preset loaded.");
+	toast_success(tr("autoeq_current_preset_loaded"));
 }
 
 static void enabled_cb(lv_event_t *event) {
@@ -582,19 +582,19 @@ static void enabled_cb(lv_event_t *event) {
 	if (!lv_obj_has_state(enabled_switch, LV_STATE_CHECKED)) {
 		peq_set_enabled(false);
 		config_set_bool("autoeq", "enabled", false); config_save();
-		toast_plain("AutoEq disabled.");
+		toast_plain(tr("autoeq_disabled"));
 		return;
 	}
 	char preset[128];
 	snprintf(preset, sizeof(preset), "%s", config_get("autoeq", "preset", ""));
 	if (!preset[0] || !peq_preset_load(preset, NULL)) {
 		lv_obj_remove_state(enabled_switch, LV_STATE_CHECKED);
-		toast_error("Choose an AutoEq profile before enabling it.");
+		toast_error(tr("autoeq_choose_profile"));
 		return;
 	}
 	peq_set_enabled(true);
 	config_set_bool("autoeq", "enabled", true); config_save();
-	toast_plain("AutoEq enabled.");
+	toast_plain(tr("autoeq_enabled_toast"));
 }
 
 static void reset_cb(lv_event_t *event) {
@@ -603,12 +603,12 @@ static void reset_cb(lv_event_t *event) {
 	config_set_bool("autoeq", "enabled", false);
 	config_set("autoeq", "preset", ""); config_set("autoeq", "current", ""); config_save();
 	refresh_menu();
-	toast_success("AutoEq reset to flat.");
+	toast_success(tr("autoeq_reset_done"));
 }
 
 static void about_cb(lv_event_t *event) {
 	(void)event;
-	toast_plain("AutoEq profiles use the native 10-band PEQ.");
+	toast_plain(tr("autoeq_about_note"));
 }
 
 static void menu_loaded(lv_event_t *event) {
@@ -621,7 +621,7 @@ static lv_obj_t *simple_page(lv_obj_t **screen, lv_obj_t **list, lv_obj_t **empt
 	*screen = lv_obj_create(NULL);
 	*list = settingsrow_page(*screen, g, title);
 	*empty = lv_label_create(*screen);
-	lv_label_set_text(*empty, empty_text);
+	lv_label_set_text(*empty, tr(empty_text));
 	lv_obj_add_style(*empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(*empty, &font_ui_24, 0);
 	lv_obj_set_width(*empty, g->screen_width - 2 * g->padding);
@@ -634,25 +634,25 @@ static lv_obj_t *simple_page(lv_obj_t **screen, lv_obj_t **list, lv_obj_t **empt
 
 static void build_pages(gui_config_t *g) {
 	menu_screen = lv_obj_create(NULL);
-	lv_obj_t *menu = settingsrow_page(menu_screen, g, "AutoEq");
-	settingsrow_toggle(menu, "AutoEq Enabled", &enabled_switch, enabled_cb);
-	settingsrow_add(menu, "Current Config", &current_value, current_cb, NULL);
-	settingsrow_add(menu, "Find & Apply IEM", NULL, search_open, NULL);
-	settingsrow_add(menu, "Saved Configs", NULL, saved_open, NULL);
-	settingsrow_add(menu, "Remove Saved Config", NULL, remove_open, NULL);
-	settingsrow_add(menu, "Import ParametricEQ.txt", NULL, import_open, NULL);
-	settingsrow_action(menu, "Update AutoEq Database", update_database, NULL);
-	settingsrow_action(menu, "Reset to Flat", reset_cb, NULL);
-	settingsrow_action(menu, "About", about_cb, NULL);
+	lv_obj_t *menu = settingsrow_page(menu_screen, g, "autoeq_page_title");
+	settingsrow_toggle(menu, "autoeq_enabled", &enabled_switch, enabled_cb);
+	settingsrow_add(menu, "autoeq_current_config", &current_value, current_cb, NULL);
+	settingsrow_add(menu, "autoeq_find_apply_iem", NULL, search_open, NULL);
+	settingsrow_add(menu, "autoeq_saved_configs", NULL, saved_open, NULL);
+	settingsrow_add(menu, "autoeq_remove_saved_config", NULL, remove_open, NULL);
+	settingsrow_add(menu, "autoeq_import_parametric_eq", NULL, import_open, NULL);
+	settingsrow_action(menu, "autoeq_update_database", update_database, NULL);
+	settingsrow_action(menu, "autoeq_reset_to_flat", reset_cb, NULL);
+	settingsrow_action(menu, "autoeq_about", about_cb, NULL);
 	lv_obj_add_event_cb(menu_screen, menu_loaded, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(menu_screen);
 
 	search_screen = lv_obj_create(NULL);
-	settingsrow_title(search_screen, g, "Search IEM");
+	settingsrow_title(search_screen, g, "autoeq_search_iem");
 	search_field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(search_field, true);
 	lv_textarea_set_max_length(search_field, 120);
-	lv_textarea_set_placeholder_text(search_field, "Headphone / IEM name");
+	lv_textarea_set_placeholder_text(search_field, tr("autoeq_headphone_name"));
 	lv_obj_set_size(search_field, g->screen_width - 2 * g->padding, 62);
 	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, g->padding, settingsrow_content_top(g));
 	lv_obj_add_style(search_field, &theme_style_card, 0);
@@ -661,23 +661,23 @@ static void build_pages(gui_config_t *g) {
 	lv_obj_set_style_pad_all(search_field, 14, 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
-	search_keyboard = keyboard_create(search_screen, g->screen_width, 316, search_field, NULL, "Search", search_accept, NULL);
+	search_keyboard = keyboard_create(search_screen, g->screen_width, 316, search_field, NULL, "autoeq_search_button", search_accept, NULL);
 	switcher_attach_back_gesture(search_screen);
 
 	results_screen = lv_obj_create(NULL);
-	results_list = settingsrow_page(results_screen, g, "AutoEq Results");
+	results_list = settingsrow_page(results_screen, g, "autoeq_results_title");
 	results_empty = lv_label_create(results_screen);
-	lv_label_set_text(results_empty, "No matching profiles.");
+	lv_label_set_text(results_empty, tr("autoeq_no_matching_profiles"));
 	lv_obj_add_style(results_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(results_empty, &font_ui_24, 0);
 	lv_obj_align(results_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(g) + 100);
 	lv_obj_add_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
 	switcher_attach_back_gesture(results_screen);
 
-	simple_page(&saved_screen, &saved_list, &saved_empty, g, "Saved Configs", "No saved AutoEq configs.");
-	simple_page(&remove_screen, &remove_list, &remove_empty, g, "Remove Saved Config", "No saved AutoEq configs.");
-	simple_page(&import_screen, &import_list, &import_empty, g, "Import ParametricEQ.txt",
-				"Copy ParametricEQ.txt files to SD/AutoEq/Imports.");
+	simple_page(&saved_screen, &saved_list, &saved_empty, g, "autoeq_saved_configs", "autoeq_no_saved_configs");
+	simple_page(&remove_screen, &remove_list, &remove_empty, g, "autoeq_remove_saved_config", "autoeq_no_saved_configs");
+	simple_page(&import_screen, &import_list, &import_empty, g, "autoeq_import_parametric_eq",
+				"autoeq_import_note");
 }
 
 void autoeqsettings_init(gui_config_t *config) {
