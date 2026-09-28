@@ -7,6 +7,7 @@
 void switch_screen(lv_obj_t *target_screen);
 void screen_history_reset(void); // forget the back-stack (back goes to the menu)
 void switch_screen_no_history(lv_obj_t *target_screen); // load without recording
+void switch_screen_return_to(lv_obj_t *target_screen); // discard newer history and load
 
 // Attach the iOS-style interactive swipe-back to a page surface (a screen or
 // a scrollable list/container that swallows presses): the page follows the

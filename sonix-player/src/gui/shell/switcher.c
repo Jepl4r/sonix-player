@@ -95,6 +95,18 @@ void screen_history_reset(void) {
 // was never really left -- the player sheet putting its opener back.
 void switch_screen_no_history(lv_obj_t *target_screen) { load_screen(target_screen); }
 
+// Return to a visited screen, dropping it and newer pages from history so its
+// next back action reaches the page that originally opened it.
+void switch_screen_return_to(lv_obj_t *target_screen) {
+	for (int i = screen_history_len - 1; i >= 0; i--) {
+		if (screen_history[i] == target_screen) {
+			screen_history_len = i;
+			break;
+		}
+	}
+	load_screen(target_screen);
+}
+
 // The page (queue, details, the music settings...) that was opened from the
 // player's own menu: leaving it goes back INTO the player, not to the page
 // the sheet originally slid over. Set by the opener, consumed by the back
