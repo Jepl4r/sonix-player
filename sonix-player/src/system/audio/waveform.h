@@ -25,7 +25,12 @@
 //
 // The decode is real work and the device has one core, so the worker is
 // deliberately timid: SCHED_IDLE, one track at a time, and dropped the moment
-// the track changes. It does NOT stop when the screen goes dark -- that is the
+// the track changes. It also waits for the audio side to be left alone for a
+// few seconds before it reads anything, and stops when a track starts or a PCM
+// opens: a whole file read off the card at that moment takes the free memory a
+// USB DAC's driver is allocating its buffers from. And it hands the file's
+// pages back to the kernel behind itself, so the read fills no cache.
+// It does NOT stop when the screen goes dark -- that is the
 // one moment nothing else wants the core, and the answer is kept, so the work
 // done then is work nobody ever waits for.
 // ---------------------------------------------------------------------------

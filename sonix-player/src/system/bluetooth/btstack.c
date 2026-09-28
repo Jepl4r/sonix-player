@@ -1043,6 +1043,27 @@ bool btstack_connect(const char *address, int timeout_ms) { return device_call(a
 
 bool btstack_disconnect(const char *address) { return device_call(address, "Disconnect", CALL_MS); }
 
+bool btstack_connect_a2dp(const char *address, int timeout_ms) {
+	char path[OBJECT_PATH_MAX];
+	if (!device_path(address, path, sizeof(path))) {
+		return false;
+	}
+	pthread_mutex_lock(&lock);
+	dbus_conn_t *c = conn;
+	pthread_mutex_unlock(&lock);
+	if (!c) {
+		return false;
+	}
+	dbus_writer_t *w = dbus_call_begin(c, BLUEZ_SERVICE, path, BLUEZ_DEVICE_IFACE, "ConnectProfile", "s");
+	dbus_w_string(w, UUID_A2DP_SINK);
+	char err[DBUS_NAME_MAX];
+	bool ok = dbus_call_send(c, timeout_ms, err, sizeof(err));
+	if (!ok) {
+		fprintf(stderr, "btstack: ConnectProfile(A2DP sink) on %s -> %s\n", address, err[0] ? err : "no reply");
+	}
+	return ok;
+}
+
 bool btstack_trust(const char *address, bool on) {
 	char path[OBJECT_PATH_MAX];
 	if (!device_path(address, path, sizeof(path))) {

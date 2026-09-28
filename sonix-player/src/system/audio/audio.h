@@ -84,6 +84,13 @@ bool audio_device_is_open(void);
 // the track is logged, and nothing plays". The watchdog reports it.
 long audio_play_request_age_ms(void);
 
+// How long the audio side has been left alone: milliseconds since a track last
+// finished starting or a PCM last finished opening, or -1 while one of those is
+// going on (a play request not yet taken counts). For background work that
+// reads a lot of the card at once -- the waveform -- and must stay out of the
+// way of an open, when a USB DAC's driver is asking the kernel for its buffers.
+long audio_quiet_ms(void);
+
 // A counter the decode loop steps once per turn. It wraps, and its value on its
 // own means nothing: what it is for is the difference between two readings a
 // second apart. The playback thread is real-time and the device has one core,

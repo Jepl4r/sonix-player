@@ -1,6 +1,7 @@
 #include "waveform.h"
 
 #include <errno.h>
+#include <fcntl.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -9,6 +10,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "src/system/audio/audio.h"
 #include "src/system/decode/decode.h"
 #include "src/system/decode/sndfile.h"
 #include "src/system/core/utils.h"
@@ -17,6 +19,26 @@
 // while the playback thread wants memory, large enough that the per-call cost
 // of the decoder disappears against the decoding itself.
 #define CHUNK_FRAMES 4096
+
+// How long the audio side must have been left alone before a shape is worked
+// out, and how often that is looked at while waiting.
+//
+// Working one out reads the whole file off the card as fast as it will come:
+// 30 MB for an album track, over 100 for a 24/192 one. Started at the track
+// change, as it used to be, it lands on the very moment a USB DAC is opened,
+// when snd-usb-audio is asking the kernel for its buffers -- and the fresh pages
+// the read takes are the free memory the driver needed in one piece. After three
+// seconds of playing it lands on nothing: the device is open, and a key held
+// down to skip through a shuffle never starts one at all.
+#define WAVE_QUIET_MS 3000
+#define WAVE_QUIET_POLL_US (250 * 1000)
+
+// The read leaves nothing behind it in the page cache: every WAVE_DROP_STEP of
+// the file, what lies more than WAVE_DROP_MARGIN behind the estimated read
+// position is handed back. The playback thread reads the same file at its own
+// pace, and gets it from the card, as it would have without the shape.
+#define WAVE_DROP_STEP (1024L * 1024L)
+#define WAVE_DROP_MARGIN (256L * 1024L)
 
 // The scale the columns are worked out on, and the highest value that ever
 // comes out of it. The ceiling is headroom: a column drawn at the full height
@@ -266,6 +288,88 @@ static bool still_wanted(const char *path) {
 	return same;
 }
 
+// Waits until the audio side has been left alone for WAVE_QUIET_MS. False when
+// the track stops being the one on screen in the meantime.
+static bool wait_for_quiet(const char *path) {
+	for (;;) {
+		if (!still_wanted(path)) {
+			return false;
+		}
+		if (audio_quiet_ms() >= WAVE_QUIET_MS) {
+			return true;
+		}
+		usleep(WAVE_QUIET_POLL_US);
+	}
+}
+
+// Where the page cache of the file being read is handed back from, and up to
+// where it has been. fd is -1 when there is no plain file to do it on.
+typedef struct {
+	int fd;
+	off_t upto;	 // how far it has been handed back
+	off_t start; // byte where the track begins in the file
+	off_t span;	 // bytes the track takes up in the file
+} wave_drop_t;
+
+static void drop_open(wave_drop_t *d, decoder_t *dec) {
+	memset(d, 0, sizeof(*d));
+	d->fd = -1;
+	char file[600];
+	double begin = 0.0, end = 1.0;
+	if (!decoder_source_span(dec, file, sizeof(file), &begin, &end)) {
+		return;
+	}
+	int fd = open(file, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		return;
+	}
+	struct stat st;
+	if (fstat(fd, &st) != 0 || st.st_size <= 0) {
+		close(fd);
+		return;
+	}
+	d->fd = fd;
+	d->start = (off_t)(begin * (double)st.st_size);
+	d->span = (off_t)((end - begin) * (double)st.st_size);
+	d->upto = d->start;
+}
+
+// `fraction` is how much of the track has been decoded. The byte it stands for
+// is an estimate -- compression is not even across a track -- which is what the
+// margin is for; an estimate ahead of the real read only costs a page read
+// twice.
+//
+// Every call hands back everything from the start of the track, not just the
+// last step: the kernel lets go of a block of the cache only when the range
+// covers all of it, and a kernel that caches in blocks larger than a page
+// leaves the ones straddling each step's edges behind for good otherwise. What
+// was already handed back costs nothing to name again.
+static void drop_behind(wave_drop_t *d, double fraction, bool all) {
+	if (d->fd < 0) {
+		return;
+	}
+	off_t upto = d->start + (off_t)(fraction * (double)d->span);
+	if (!all) {
+		upto -= WAVE_DROP_MARGIN;
+		if (upto - d->upto < WAVE_DROP_STEP) {
+			return;
+		}
+	}
+	if (upto > d->start) {
+		posix_fadvise(d->fd, d->start, upto - d->start, POSIX_FADV_DONTNEED);
+		d->upto = upto;
+	}
+}
+
+static void drop_close(wave_drop_t *d, double fraction) {
+	if (d->fd < 0) {
+		return;
+	}
+	drop_behind(d, fraction, true);
+	close(d->fd);
+	d->fd = -1;
+}
+
 static wave_build_t build(const char *path, uint8_t *bars) {
 	decode_format_t format = decode_detect_format(path);
 
@@ -304,6 +408,9 @@ static wave_build_t build(const char *path, uint8_t *bars) {
 		return WAVE_BUILD_UNAVAILABLE;
 	}
 
+	wave_drop_t drop;
+	drop_open(&drop, dec);
+
 	// One accumulator per column, filled as the file goes past.
 	//
 	// The mean power of the slice, and not its loudest sample: any record
@@ -334,7 +441,9 @@ static wave_build_t build(const char *path, uint8_t *bars) {
 
 	wave_build_t result = WAVE_BUILD_OK;
 	while (done < total) {
-		if (!still_wanted(path)) {
+		// A track starting, or a PCM opening, stops the read where it is: it
+		// starts over once things are quiet again. See WAVE_QUIET_MS.
+		if (!still_wanted(path) || audio_quiet_ms() < 0) {
 			result = WAVE_BUILD_CANCELLED;
 			break;
 		}
@@ -411,9 +520,11 @@ static wave_build_t build(const char *path, uint8_t *bars) {
 			pos += take;
 		}
 		done += got;
+		drop_behind(&drop, (double)done / (double)total, false);
 	}
 
 	free(buffer);
+	drop_close(&drop, result == WAVE_BUILD_OK ? 1.0 : (double)done / (double)total);
 	decoder_close(dec);
 	if (result != WAVE_BUILD_OK) {
 		return result;
@@ -474,6 +585,8 @@ static void *worker_main(void *arg) {
 			outcome = WAVE_BUILD_OK;
 			hot_store(key, bars);
 			fprintf(stderr, "waveform: '%s' was already worked out\n", path);
+		} else if (!wait_for_quiet(path)) {
+			outcome = WAVE_BUILD_CANCELLED;
 		} else {
 			long began = now_ms();
 			outcome = build(path, bars);

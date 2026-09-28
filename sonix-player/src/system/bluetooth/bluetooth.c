@@ -167,7 +167,13 @@ static char g_local_name[BT_NAME_MAX] = "HiBy Music";
 // back to the jack while they are still worn causes confusion, not choice.
 static bool g_volume_sync;	  // the player's volume drives the headphones'
 static bool g_a2dp_connected; // a bluealsa PCM exists: the only truthful source
+static unsigned g_output_generation; // see bluetooth_output_generation()
+static bool g_bluealsa_restarted;	 // worker only: the next sink is a new daemon's
 static char g_a2dp_mac[BT_MAC_MAX];
+// The rate the stream to the headphones runs at, as bluealsa last said; 0 when
+// it has not. Read by the worker, which owns the D-Bus connection, so that the
+// playback thread only has a number to look at. See bluetooth_sink_rate().
+static unsigned g_sink_rate;
 
 // The last answer bluez gave about the A2DP streams on the connected sink, and
 // when. Read on this thread and never on the playback thread: the question
@@ -1216,6 +1222,14 @@ static void set_op(bt_op_t op, const char *name) {
 }
 
 static void do_read_codecs(void);
+
+static void read_sink_rate(const char *mac) {
+	btstack_stream_t info;
+	unsigned rate = (mac && mac[0] && btstack_stream_info(mac, false, &info)) ? info.rate : 0;
+	pthread_mutex_lock(&lock);
+	g_sink_rate = rate;
+	pthread_mutex_unlock(&lock);
+}
 static void do_auto_codec(const char *mac);
 
 // The device the automatic codec choice has already been made for. Cleared when
@@ -1341,6 +1355,16 @@ static void refresh_audio_state(void) {
 
 	if (sink) {
 		a2dp_missing_since = 0;
+		if (g_bluealsa_restarted) {
+			g_bluealsa_restarted = false;
+			// Before the player is told: it opens the stream again at once, at
+			// the rate this reads. See below.
+			read_sink_rate(mac);
+			pthread_mutex_lock(&lock);
+			g_output_generation++;
+			pthread_mutex_unlock(&lock);
+			fprintf(stderr, "bluetooth: the stream is back on the new bluealsa; the player opens it again\n");
+		}
 	} else {
 		pthread_mutex_lock(&lock);
 		bool had_sink = g_a2dp_connected;
@@ -1394,8 +1418,17 @@ static void refresh_audio_state(void) {
 		if (btstack_audio_info(mac, path, sizeof(path))) {
 			fprintf(stderr, "bluetooth: bluealsa is encoding %s\n", path);
 		}
+
+		// The headphones' rate, before the output is pointed at them. The
+		// routing below is what makes the player reopen the track, and it does
+		// so from its own timer, possibly before do_read_codecs() at the end has
+		// run: a rate still at 0 then means no conversion, and a track at
+		// another rate makes bluealsa try to reconfigure the transport -- which
+		// some headphones answer by taking bluetoothd down.
+		read_sink_rate(mac);
 	} else {
 		codec_auto_done[0] = '\0'; // the next connection chooses again
+		read_sink_rate(NULL);
 	}
 	apply_output_routing();
 	do_read_codecs();
@@ -1677,6 +1710,16 @@ static bool connect_device(const char *mac) {
 		// are in pairing mode" on the screen, which is advice for a problem the
 		// user does not have.
 		bool audio = wait_for_a2dp(mac, A2DP_CONFIRM_MS);
+		if (!audio) {
+			// A link that was already up when Connect came in: bluez answers
+			// it at once and brings up nothing. What is missing is the stream
+			// alone, and it can be asked for alone -- once the Connect is over,
+			// which it is by now.
+			fprintf(stderr, "bluetooth: asking %s for its A2DP stream by itself\n", mac);
+			if (btstack_connect_a2dp(mac, CONNECT_TIMEOUT_MS)) {
+				audio = wait_for_a2dp(mac, A2DP_CONFIRM_MS);
+			}
+		}
 		fprintf(stderr, "bluetooth: audio profile on %s %s\n", mac, audio ? "came up" : "did NOT come up");
 	}
 	refresh_devices();
@@ -2230,6 +2273,7 @@ static void do_read_codecs(void) {
 		pthread_mutex_lock(&lock);
 		g_codec_count = 0;
 		g_codec_selected[0] = '\0';
+		g_sink_rate = 0;
 		g_serial++;
 		pthread_mutex_unlock(&lock);
 		return;
@@ -2238,6 +2282,8 @@ static void do_read_codecs(void) {
 	char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
 	char selected[BT_CODEC_MAX] = "";
 	int count = btstack_codecs(mac, codecs, BT_MAX_CODECS, selected, sizeof(selected));
+	// A codec chosen again can come with another rate.
+	read_sink_rate(mac);
 
 	pthread_mutex_lock(&lock);
 	memcpy(g_codecs, codecs, sizeof(char) * (size_t)count * BT_CODEC_MAX);
@@ -2705,11 +2751,34 @@ static void *bluetooth_worker(void *arg) {
 
 			case JOB_LDAC_QUALITY:
 				if (process_running("bluealsa")) {
+					// The headphones playing now, if any. bluez closes their A2DP
+					// stream when bluealsa's endpoints go and keeps only the link,
+					// and it opens nothing again by itself when the new daemon
+					// registers: some headphones ask for the stream again, others
+					// (a WF-1000XM5) wait, and the sound ends up on the jack.
+					pthread_mutex_lock(&lock);
+					char playing[BT_MAC_MAX];
+					copy_field(playing, sizeof(playing), g_a2dp_connected ? g_a2dp_mac : "", sizeof(g_a2dp_mac));
+					pthread_mutex_unlock(&lock);
+
 					fprintf(stderr, "bluetooth: restarting bluealsa for LDAC %s\n", bluetooth_ldac_quality());
+					g_bluealsa_restarted = playing[0] != '\0';
 					stop_process("bluealsa");
 					sleep_ms(300);
 					codec_auto_done[0] = '\0'; // the new daemon negotiates again
-					ensure_bluealsa();
+					if (ensure_bluealsa() && playing[0]) {
+						// Not at once: bluealsa takes its name on the bus first
+						// and registers its endpoints with bluez after, and a
+						// connect in between fails ("Failed": nothing to connect
+						// the stream to). A few tries a moment apart.
+						fprintf(stderr, "bluetooth: asking %s for its A2DP stream again\n", playing);
+						for (int attempt = 0; attempt < 4; attempt++) {
+							sleep_ms(attempt == 0 ? 800 : 1500);
+							if (btstack_connect_a2dp(playing, CONNECT_TIMEOUT_MS)) {
+								break;
+							}
+						}
+					}
 				}
 				break;
 
@@ -3055,6 +3124,13 @@ bool bluetooth_audio_active(void) {
 	return active;
 }
 
+unsigned bluetooth_sink_rate(void) {
+	pthread_mutex_lock(&lock);
+	unsigned rate = (g_enabled && g_a2dp_connected) ? g_sink_rate : 0;
+	pthread_mutex_unlock(&lock);
+	return rate;
+}
+
 void bluetooth_request_a2dp_streams(void) {
 	pthread_mutex_lock(&lock);
 	g_a2dp_streams_wanted = true;
@@ -3140,6 +3216,13 @@ int bluetooth_local_codecs(char out[][BT_CODEC_MAX], int max, bool receiving) {
 static bool ldac_quality_known(const char *mode) {
 	return strcmp(mode, "abr") == 0 || strcmp(mode, "high") == 0 || strcmp(mode, "standard") == 0 ||
 		   strcmp(mode, "mobile") == 0;
+}
+
+unsigned bluetooth_output_generation(void) {
+	pthread_mutex_lock(&lock);
+	unsigned g = g_output_generation;
+	pthread_mutex_unlock(&lock);
+	return g;
 }
 
 const char *bluetooth_ldac_quality(void) {

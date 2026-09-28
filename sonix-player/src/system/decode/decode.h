@@ -60,6 +60,13 @@ int decoder_channels(const decoder_t *dec);
 int decoder_source_bits(const decoder_t *dec); // 16 for mp3/ogg, the real depth for flac
 int decoder_sample_rate(const decoder_t *dec);
 
+// The file the frames are read from, and where the track lies inside it as
+// fractions of the file's frames: 0 and 1 for an ordinary file, the track's
+// stretch of the disc image for a CUE track. For work that reads a whole track
+// once and wants the kernel to forget it behind itself. False when there is no
+// plain file to name (a download still being written).
+bool decoder_source_span(const decoder_t *dec, char *file, size_t size, double *begin, double *end);
+
 // True for lossy formats (MP3, AAC, Vorbis, Opus).
 //
 // For whoever writes the format line. A lossy format has no bit depth of its
