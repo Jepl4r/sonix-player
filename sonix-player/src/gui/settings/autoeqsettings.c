@@ -3,7 +3,6 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
-#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -45,12 +44,10 @@ typedef struct {
 	profile_t selected;
 	profile_t results[RESULT_MAX];
 	int result_count;
-	peq_band_t bands[PEQ_BANDS];
-	int band_count;
-	int preamp;
-	bool truncated;
 	char preset[101];
 	char cache[768];
+	char *profile_text;
+	size_t profile_size;
 } job_t;
 
 static gui_config_t *cfg;
@@ -218,38 +215,6 @@ static bool make_profile_url(const profile_t *item, char *url, size_t capacity) 
 	return n > 0 && (size_t)n < capacity;
 }
 
-static int clamp_int(int v, int low, int high) { return v < low ? low : v > high ? high : v; }
-
-static bool parse_profile(char *text, job_t *job) {
-	job->preamp = 0;
-	job->band_count = 0;
-	for (char *save = NULL, *line = strtok_r(text, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-		double value;
-		if (sscanf(line, "Preamp: %lf dB", &value) == 1) {
-			job->preamp = clamp_int((int)lround(value * 10), PEQ_PREAMP_MIN_TENTHS, PEQ_PREAMP_MAX_TENTHS);
-			continue;
-		}
-		int number;
-		char state[8], type[8];
-		double freq, gain, q;
-		if (sscanf(line, "Filter %d: %7s %7s Fc %lf Hz Gain %lf dB Q %lf", &number, state, type, &freq, &gain, &q) != 7 ||
-			strcmp(state, "ON")) continue;
-		int shape = !strcmp(type, "PK") ? PEQ_TYPE_PEAK : !strcmp(type, "LSC") ? PEQ_TYPE_LOWSHELF :
-			!strcmp(type, "HSC") ? PEQ_TYPE_HIGHSHELF : -1;
-		if (shape < 0) continue;
-		if (job->band_count == PEQ_BANDS) { job->truncated = true; continue; }
-		int hz = (int)lround(freq);
-		if (hz < PEQ_FREQ_MIN || hz > PEQ_FREQ_MAX) continue;
-		job->bands[job->band_count++] = (peq_band_t){
-			.on = true, .type = shape, .freq = hz,
-			.gain_tenths = clamp_int((int)lround(gain * 10), PEQ_GAIN_MIN_TENTHS, PEQ_GAIN_MAX_TENTHS),
-			.q_cent = clamp_int((int)lround(q * 100), PEQ_Q_MIN, PEQ_Q_MAX),
-		};
-	}
-	if (!job->band_count) snprintf(job->error, sizeof(job->error), "No supported AutoEq filters were found.");
-	return job->band_count > 0;
-}
-
 static void preset_name(const profile_t *item, char *out, size_t size) {
 	char name[68];
 	snprintf(name, sizeof(name), "%.64s", item->name);
@@ -283,17 +248,40 @@ static void refresh_menu(void) {
 	lv_label_set_text(current_value, name && name[0] ? name : "None");
 }
 
-static bool apply_job(job_t *job, const char *label) {
-	peq_reset();
-	peq_set_preamp(job->preamp);
-	for (int i = 0; i < job->band_count; i++) peq_set_band(i, &job->bands[i]);
-	peq_set_enabled(true);
-	if (!peq_preset_save(job->preset) || !peq_preset_load(job->preset, NULL)) {
+static bool apply_job(job_t *job, const char *label, const char *profile, size_t size) {
+	char peq_dir[600], stage_name[64], stage_path[700], preset_path[700];
+	if (!cfg || !cfg->sd_root_path || !profile || !size ||
+		snprintf(peq_dir, sizeof(peq_dir), "%s/PEQ", cfg->sd_root_path) >= (int)sizeof(peq_dir) ||
+		!make_dir(peq_dir)) {
+		toast_error("Could not access the PEQ folder on the card.");
+		return false;
+	}
+	uint32_t stage_hash = hash_text(job->preset) ^ hash_text(profile);
+	snprintf(stage_name, sizeof(stage_name), "AutoEq Stage %08x", stage_hash);
+	if (snprintf(stage_path, sizeof(stage_path), "%s/%s.txt", peq_dir, stage_name) >= (int)sizeof(stage_path) ||
+		snprintf(preset_path, sizeof(preset_path), "%s/%s.txt", peq_dir, job->preset) >= (int)sizeof(preset_path) ||
+		!write_file(stage_path, profile, size)) {
+		toast_error("Could not save this AutoEq profile to PEQ.");
+		return false;
+	}
+	int ignored = 0;
+	if (!peq_preset_load(stage_name, &ignored)) {
+		remove(stage_path);
+		toast_error("This profile has no filters supported by the player.");
+		return false;
+	}
+	if (rename(stage_path, preset_path) != 0) {
+		remove(stage_path);
 		toast_error("Could not save this AutoEq preset.");
 		return false;
 	}
+	peq_set_enabled(true);
 	update_current(job->preset, label);
-	toast_success(job->truncated ? "Applied the first 10 AutoEq filters." : "AutoEq profile applied.");
+	if (ignored) {
+		char message[96];
+		snprintf(message, sizeof(message), "Applied profile; skipped %d unsupported filters.", ignored);
+		toast_success(message);
+	} else toast_success("AutoEq profile applied.");
 	return true;
 }
 
@@ -342,10 +330,15 @@ static void *worker(void *user) {
 				snprintf(job->error, sizeof(job->error), "Could not cache this profile on the card.");
 			}
 		}
-		if (text && !job->error[0] && !parse_profile(text, job)) remove(job->cache);
+		if (text && !job->error[0]) {
+			job->profile_text = text;
+			job->profile_size = size;
+			text = NULL;
+		}
 		free(text);
 	}
 	if (!gui_post(job_done, job)) {
+		free(job->profile_text);
 		free(job);
 		end_job();
 	}
@@ -385,7 +378,8 @@ static void job_done(void *user) {
 	else if (job->update) {
 		if (job->search_after_update) show_results(job);
 		else toast_success("AutoEq database updated.");
-	} else apply_job(job, job->selected.display);
+	} else apply_job(job, job->selected.display, job->profile_text, job->profile_size);
+	free(job->profile_text);
 	free(job);
 }
 
@@ -536,8 +530,7 @@ static void import_clicked(lv_event_t *event) {
 	char *dot = strrchr(item.name, '.'); if (dot) *dot = '\0';
 	snprintf(item.path, sizeof(item.path), "%s", filename);
 	preset_name(&item, job->preset, sizeof(job->preset));
-	if (!parse_profile(text, job)) { toast_error(job->error); free(job); free(text); return; }
-	if (apply_job(job, item.name)) {
+	if (apply_job(job, item.name, text, size)) {
 		cache_path(job->preset, job->cache, sizeof(job->cache));
 		write_file(job->cache, text, size);
 	}
