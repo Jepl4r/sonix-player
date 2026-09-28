@@ -58,7 +58,7 @@ ICONS = [
     ("folder-root.svg", "folder_root", 34), # browser corner: back to the card root
     ("file.svg", "file", 32),
     ("music-settings.svg", "music_settings", 34),
-    ("book-finished.svg", "book_finished", 34),
+    ("book-finished.svg", "book_finished", 34),  # the Audiobooks page's corner: the finished books
     ("audio-waveform.svg", "audio_waveform", 34),
     ("repeat.svg", "repeat_all", 30),
     ("repeat-1.svg", "repeat_one", 30),
@@ -125,6 +125,10 @@ ICONS = [
     # the arrow points the way the list reads, as it does on A-Z and Z-A.
     ("calendar-arrow-up.svg", "sort_date_old", 34),
     ("calendar-arrow-down.svg", "sort_date_new", 34),
+    # The audiobook lists also run by when a book was last listened to, and a
+    # series by the number of each book in it.
+    ("history.svg", "sort_played", 34),
+    ("list-ordered.svg", "sort_series", 34),
     ("album.svg", "album_corner", 34),  # built, and currently unused
     # Cover Flow draws this in a 210 px square where a cover is missing.
     ("album.svg", "album_big", 96),
@@ -382,6 +386,10 @@ COLOR_ICONS = [
     ("radio.png", "menu_radio", SECTION_ICON_SIZE),
     ("podcast.png", "menu_podcast", SECTION_ICON_SIZE),
     ("audiobooks.png", "menu_audiobooks", MAIN_MENU_ICON_SIZE),
+    ("audiobook-library.png", "menu_audiobook_library", SECTION_ICON_SIZE),
+    ("audiobook-series.png", "menu_audiobook_series", SECTION_ICON_SIZE),
+    ("audiobook-author.png", "menu_audiobook_author", SECTION_ICON_SIZE),
+    ("audiobook-continue.png", "menu_audiobook_continue", SECTION_ICON_SIZE),
     ("settings.png", "menu_settings", MAIN_MENU_ICON_SIZE),
     ("more.png", "menu_more", MAIN_MENU_ICON_SIZE),
     # What lives inside "More", at section size.

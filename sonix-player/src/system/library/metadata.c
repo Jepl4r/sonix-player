@@ -146,6 +146,12 @@ static void apply_vorbis_comment(song_metadata_t *out, const char *comment, size
 	} else if (strncmp(key, "REPLAYGAIN_", 11) == 0) {
 		replaygain_field(out, key, value, value_len);
 		return;
+	} else if (strcmp(key, "SERIES") == 0 || (strcmp(key, "MOVEMENTNAME") == 0 && !out->series[0])) {
+		dst = out->series;
+		dst_size = sizeof(out->series);
+	} else if (strcmp(key, "SERIES-PART") == 0 || strcmp(key, "SERIES_PART") == 0 || strcmp(key, "SERIESPART") == 0 || ((strcmp(key, "MOVEMENT") == 0 || strcmp(key, "MOVEMENTNUMBER") == 0) && !out->series_part[0])) {
+		dst = out->series_part;
+		dst_size = sizeof(out->series_part);
 	} else {
 		return;
 	}
@@ -443,6 +449,45 @@ static void resolve_tcon_genre(const char *raw, char *out, size_t out_size) {
 	copy_bounded(out, out_size, raw);
 }
 
+// TXXX:SERIES and TXXX:SERIES-PART, in any of the four encodings. The
+// description ends at a NUL, which in UTF-16 is two zero bytes on an even
+// offset; the value follows it. These win over MVNM / MVIN.
+static void txxx_series(song_metadata_t *out, uint8_t encoding, const uint8_t *data, size_t len) {
+	bool wide = encoding == 0x01 || encoding == 0x02;
+	size_t end = 0;
+	if (wide) {
+		while (end + 1 < len && (data[end] || data[end + 1])) {
+			end += 2;
+		}
+	} else {
+		while (end < len && data[end]) {
+			end++;
+		}
+	}
+	size_t value_at = end + (wide ? 2 : 1);
+	if (end >= len || value_at > len) {
+		return;
+	}
+
+	char key[48];
+	id3_decode_text(encoding, data, end, key, sizeof(key));
+	for (char *c = key; *c; c++) {
+		*c = (char)toupper((unsigned char)*c);
+	}
+	bool series = strcmp(key, "SERIES") == 0;
+	bool part = strcmp(key, "SERIES-PART") == 0 || strcmp(key, "SERIES_PART") == 0 || strcmp(key, "SERIESPART") == 0;
+	if (!series && !part) {
+		return;
+	}
+	char value[256];
+	id3_decode_text(encoding, data + value_at, len - value_at, value, sizeof(value));
+	if (series) {
+		copy_bounded(out->series, sizeof(out->series), value);
+	} else {
+		copy_bounded(out->series_part, sizeof(out->series_part), value);
+	}
+}
+
 // The largest text frame worth reading. A very long title of a few thousand
 // characters fits comfortably; cover art does not, but it is not wanted here
 // (APIC frames are skipped without being read), and a size larger than this
@@ -547,11 +592,7 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 			}
 		}
 
-		bool wanted = strcmp(frame_id, "TIT2") == 0 || strcmp(frame_id, "TPE1") == 0 ||
-					  strcmp(frame_id, "TPE2") == 0 || strcmp(frame_id, "TALB") == 0 || strcmp(frame_id, "TCON") == 0 ||
-					  strcmp(frame_id, "TRCK") == 0 || strcmp(frame_id, "TPOS") == 0 ||
-					  strcmp(frame_id, "TYER") == 0 || strcmp(frame_id, "TDRC") == 0 ||
-					  strcmp(frame_id, "TXXX") == 0;
+		bool wanted = strcmp(frame_id, "MVNM") == 0 || strcmp(frame_id, "MVIN") == 0 || strcmp(frame_id, "TIT2") == 0 || strcmp(frame_id, "TPE1") == 0 || strcmp(frame_id, "TPE2") == 0 || strcmp(frame_id, "TALB") == 0 || strcmp(frame_id, "TCON") == 0 || strcmp(frame_id, "TRCK") == 0 || strcmp(frame_id, "TPOS") == 0 || strcmp(frame_id, "TYER") == 0 || strcmp(frame_id, "TDRC") == 0 || strcmp(frame_id, "TXXX") == 0;
 
 		if (!wanted) {
 			fseeko(f, next_frame, SEEK_SET);
@@ -569,12 +610,11 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 		uint8_t encoding = buf[0];
 
 		// TXXX is a pair, not a value: an encoded description, a terminator,
-		// then the text. It is where every tagger writes ReplayGain on an MP3.
+		// then the text. It is where every tagger writes ReplayGain on an MP3,
+		// and where Mp3tag and its kin write an audiobook's series.
 		if (strcmp(frame_id, "TXXX") == 0) {
-			// Only the single-byte encodings are handled here. UTF-16 TXXX
-			// ReplayGain exists in theory and in no tagger anyone uses, and
-			// guessing at a two-byte terminator to find out would be worse
-			// than not reading it.
+			txxx_series(out, encoding, buf + 1, frame_size - 1);
+			// ReplayGain in the single-byte encodings only.
 			if (encoding == 0 || encoding == 3) {
 				const char *text = (const char *)buf + 1;
 				size_t left = frame_size - 1;
@@ -615,6 +655,12 @@ static bool read_id3v2(FILE *f, song_metadata_t *out) {
 		} else if (strcmp(frame_id, "TYER") == 0 || strcmp(frame_id, "TDRC") == 0) {
 			if (out->year == 0)
 				out->year = (int)strtol(decoded, NULL, 10);
+		} else if (strcmp(frame_id, "MVNM") == 0) {
+			if (!out->series[0])
+				copy_bounded(out->series, sizeof(out->series), decoded);
+		} else if (strcmp(frame_id, "MVIN") == 0) {
+			if (!out->series_part[0])
+				copy_bounded(out->series_part, sizeof(out->series_part), decoded);
 		}
 	}
 
@@ -1053,6 +1099,8 @@ static void read_mp4_metadata(const char *filepath, song_metadata_t *out) {
 	snprintf(out->album, sizeof(out->album), "%s", mp4_tag_album(m));
 	snprintf(out->genre, sizeof(out->genre), "%s", mp4_tag_genre(m));
 	out->year = mp4_tag_year(m);
+	snprintf(out->series, sizeof(out->series), "%s", mp4_tag_series(m));
+	snprintf(out->series_part, sizeof(out->series_part), "%s", mp4_tag_series_part(m));
 	out->track_number = mp4_tag_track_number(m);
 	out->disc_number = mp4_tag_disc_number(m);
 

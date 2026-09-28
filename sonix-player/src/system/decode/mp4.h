@@ -105,6 +105,10 @@ int mp4_tag_year(const mp4_file_t *m);
 // nowhere else. NULL when the file has no such tag; `name` is matched without
 // regard to case, as taggers disagree about it.
 const char *mp4_tag_freeform(const mp4_file_t *m, const char *name);
+// The series of an audiobook and its place in it: ----:SERIES and
+// ----:SERIES-PART, else the movement name and number. Empty when absent.
+const char *mp4_tag_series(const mp4_file_t *m);
+const char *mp4_tag_series_part(const mp4_file_t *m);
 int mp4_tag_track_number(const mp4_file_t *m);
 
 // The `disk` atom's first half. 0 when the file carries no disc tag.

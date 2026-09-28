@@ -429,8 +429,8 @@ static void apply_live_mode(bool live) {
 // and does nothing at all unless the answer changed.
 static void apply_audiobook_mode(bool book, bool podcast) {
 	// Whether this book is marked up decides what the chapter button does, not
-	// whether it is there.
-	bool chapters = book && audiobook_chapter_count() > 0;
+	// whether it is there. A folder book's files are its chapters.
+	bool chapters = book && (audiobook_chapter_count() > 0 || audiobook_part_count() > 1);
 
 	// Books and podcasts both get the second-jump buttons, but not the same
 	// pair of sizes: a book's forward jump steps over a pause, a podcast's

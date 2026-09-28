@@ -45,7 +45,6 @@
 #include "src/gui/library/music.h"
 #include "src/gui/audio/eqsettings.h"
 #include "src/gui/audio/peqsettings.h"
-#include "src/gui/audio/peqautoeq.h"
 #include "src/gui/settings/remap.h"
 #include "src/gui/audio/msebsettings.h"
 #include "src/gui/settings/musicsettings.h"
@@ -667,8 +666,7 @@ void gui_init(gui_config_t *cfg) {
 	libraryscan_init(cfg);
 	msebsettings_init(cfg); // before musicsettings: the MSEB page hangs its gear off it
 	eqsettings_init(cfg);	// and the equalizer page hangs its own off this
-	peqsettings_init(cfg); // the parametric page hangs its preset screen off the gear
-	peqautoeq_init(cfg);  // the waveform entry on that page searches AutoEq profiles
+	peqsettings_init(cfg); // and the parametric one hangs its own, same presets but its own files
 	musicsettings_init(cfg);
 	search_init(cfg);
 	medialist_init(cfg);

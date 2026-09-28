@@ -513,6 +513,29 @@ static void load_and_play_at(const char *filepath, double position) {
 
 static void load_and_play(const char *filepath) { load_and_play_at(filepath, -1.0); }
 
+// The same without starting: the track comes up paused at its beginning, and
+// play starts it. The queue is left as it is.
+static void load_paused(const char *filepath) {
+	scrub_cancel();
+	radio_clear();
+
+	if (filepath != current_metadata_file) {
+		snprintf(current_metadata_file, sizeof(current_metadata_file), "%s", filepath);
+	}
+	metadata_read(current_metadata_file, &current_metadata);
+	audiobook_track_changed(current_metadata_file);
+	replaygain_load(&current_metadata);
+	audio_set_speed(audiobook_is_playing() ? audiobook_speed() : 1.0);
+
+	audio_play_paused(current_metadata_file, 0);
+	audiobook_suppress_rewind_once();
+
+	interrupted_file[0] = '\0';
+	interrupted_pos = -1.0;
+
+	queue_persist();
+}
+
 // The boot-time "remember track" restore: the same folder queue and metadata a
 // tap on the file would build, but the track comes up paused at `position`
 // instead of playing.
@@ -775,7 +798,9 @@ void device_state_play_list(const char *const *list, int count, int start_index)
 
 // The same for a queue that already carries its own order: a podcast's
 // episodes. See playlist_load_paths_ordered().
-void device_state_play_list_ordered(const char *const *list, int count, int start_index) {
+void device_state_play_list_ordered(const char *const *list, int count, int start_index) { device_state_play_list_ordered_at(list, count, start_index, -1.0); }
+
+void device_state_play_list_ordered_at(const char *const *list, int count, int start_index, double position) {
 	if (!list || count <= 0) {
 		return;
 	}
@@ -783,7 +808,7 @@ void device_state_play_list_ordered(const char *const *list, int count, int star
 
 	char path[512];
 	if (playlist_current_path(path, sizeof(path))) {
-		load_and_play(path);
+		load_and_play_at(path, position);
 	}
 }
 
@@ -1023,13 +1048,32 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 		return false; // a stream never finishes, so there is nothing to advance to
 	}
 
-	// A book ends where it ends. The queue behind it is its own folder, and on
-	// a card that folder is a shelf of other books -- rolling straight into
-	// somebody else's novel at the end of this one is not what finishing a
-	// book should do. (The position was already cleared by then, so opening it
-	// again starts it over.)
+	// A book ends where it ends. The queue behind a book in one file is its
+	// folder, and on a card that folder is a shelf of other books -- rolling
+	// straight into somebody else's novel at the end of this one is not what
+	// finishing a book should do. (The position was already cleared by then,
+	// so opening it again starts it over.)
+	//
+	// A folder book goes on into its next file: its queue is its parts. With
+	// "stop at end of chapter" on, that file is loaded paused at its start,
+	// since for a book of this shape a file is a chapter.
 	if (audiobook_is_playing()) {
-		return false;
+		if (!audiobook_has_next_part()) {
+			return false;
+		}
+		char next[512];
+		if (!playlist_advance_auto(next, sizeof(next))) {
+			return false;
+		}
+		if (audiobook_stop_at_chapter_end()) {
+			load_paused(next);
+		} else {
+			load_and_play(next);
+		}
+		if (out_path && out_size > 0) {
+			snprintf(out_path, out_size, "%s", next);
+		}
+		return true;
 	}
 
 	char path[512];

@@ -14,6 +14,14 @@ typedef struct {
 	int year;		  // 0 if unknown
 	bool has_tags;	  // true if any tag field was found
 
+	// The series a book belongs to and its place in it, for the audiobook
+	// index: SERIES / SERIES-PART and MOVEMENTNAME / MOVEMENT in Vorbis and APE
+	// tags, TXXX:SERIES / TXXX:SERIES-PART, MVNM and MVIN in ID3v2, the same
+	// freeform names and the movement atoms in MP4. The part is kept as the
+	// text the tag holds ("3", "2.5", "3/12").
+	char series[128];
+	char series_part[32];
+
 	// ReplayGain, when the file carries it: the loudness the tagger measured,
 	// as a correction in dB, and the sample peak that correction has to stay
 	// clear of. Track and album are separate numbers on purpose -- normalising

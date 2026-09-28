@@ -8,7 +8,6 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/audio/peqsettings.h"
-#include "src/gui/audio/peqautoeq.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -640,11 +639,6 @@ static void open_settings_cb(lv_event_t *e) {
 	switch_screen(peqsettings_screen());
 }
 
-static void open_autoeq_cb(lv_event_t *e) {
-	(void)e;
-	peqautoeq_open();
-}
-
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
 
@@ -693,14 +687,14 @@ void peqpage_init(gui_config_t *cfg) {
 	main_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(main_screen, cfg, "peq");
 
-	// Reset, AutoEq search and the preset gear share the title's corner slots.
-	settingsrow_title_corner_slots(settingsrow_page_title(main_screen), cfg, 3);
+	// Two corner buttons, as on the graphic EQ and MSEB screens: reset and the
+	// preset gear. The title must be told two slots are taken, otherwise it
+	// runs under them.
+	settingsrow_title_corner_slots(settingsrow_page_title(main_screen), cfg, 2);
 	reset_btn = corner_button(main_screen, cfg, 0, &icon_reset, reset_cb);
 	corner_button(main_screen, cfg, 1, &icon_music_settings, open_settings_cb);
-	corner_button(main_screen, cfg, 2, &icon_audio_waveform, open_autoeq_cb);
 
 	peqsettings_set_reload_cb(reload_after_preset);
-	peqautoeq_set_reload_cb(reload_after_preset);
 
 	settingsrow_toggle(container, "on", &enable_switch, enable_cb);
 	if (peq_get_enabled()) {

@@ -5,6 +5,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/decode/mp4.h"
 #include "src/system/library/id3chap.h"
+#include "src/system/library/vorbischap.h"
 
 #include <pthread.h>
 #include <stdio.h>
@@ -28,10 +29,22 @@ typedef struct {
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 
 static char current_path[512];
+static char current_book[512]; // the file itself, or the folder of a folder book
 static bool current_is_book;
 static chapter_t *chapters;
 static int chapter_count;
 static unsigned serial;
+
+// The files of a folder book, in its order, and which of them is loaded.
+typedef struct {
+	char path[512];
+	char title[192];
+} part_t;
+
+static part_t *parts;
+static int part_count;
+static int part_capacity;
+static int part_index;
 
 static time_t last_save;
 static double last_saved_position;
@@ -41,8 +54,32 @@ static void clear_locked(void) {
 	free(chapters);
 	chapters = NULL;
 	chapter_count = 0;
+	free(parts);
+	parts = NULL;
+	part_count = 0;
+	part_capacity = 0;
+	part_index = -1;
 	current_is_book = false;
 	current_path[0] = '\0';
+	current_book[0] = '\0';
+}
+
+// Called with `lock` held, from audiobook_track_changed().
+static bool add_part(const char *path, const char *title, void *user) {
+	(void)user;
+	if (part_count == part_capacity) {
+		int grown = part_capacity ? part_capacity * 2 : 16;
+		part_t *bigger = realloc(parts, (size_t)grown * sizeof(*bigger));
+		if (!bigger) {
+			return false;
+		}
+		parts = bigger;
+		part_capacity = grown;
+	}
+	snprintf(parts[part_count].path, sizeof(parts[0].path), "%s", path);
+	snprintf(parts[part_count].title, sizeof(parts[0].title), "%s", title);
+	part_count++;
+	return true;
 }
 
 // The title a chapter is stored under. Both sources leave it empty when the
@@ -54,6 +91,28 @@ static void name_chapter(char *out, size_t size, const char *title, int index) {
 		return;
 	}
 	snprintf(out, size, tr("chapter_n"), index + 1);
+}
+
+// The chapters an Opus, Ogg Vorbis or FLAC file keeps in its comments.
+static void load_vorbis_chapters_locked(const char *filepath) {
+	int count = vorbischap_read(filepath, NULL, 0);
+	if (count <= 0) {
+		return;
+	}
+	vorbischap_t *found = calloc((size_t)count, sizeof(*found));
+	if (!found) {
+		return;
+	}
+	count = vorbischap_read(filepath, found, count);
+	chapters = count > 0 ? calloc((size_t)count, sizeof(*chapters)) : NULL;
+	if (chapters) {
+		for (int i = 0; i < count; i++) {
+			chapters[i].start = found[i].start;
+			name_chapter(chapters[i].title, sizeof(chapters[i].title), found[i].title, i);
+		}
+		chapter_count = count;
+	}
+	free(found);
 }
 
 // Reads the chapter marks out of the container. Done once per book rather than
@@ -69,6 +128,7 @@ static void load_chapters_locked(const char *filepath) {
 		// marks at all.
 		int count = id3chap_read(filepath, NULL, 0);
 		if (count <= 0) {
+			load_vorbis_chapters_locked(filepath);
 			return;
 		}
 		id3chap_t *found = calloc((size_t)count, sizeof(*found));
@@ -209,13 +269,24 @@ void audiobook_track_changed(const char *filepath) {
 	}
 
 	snprintf(current_path, sizeof(current_path), "%s", filepath);
+	snprintf(current_book, sizeof(current_book), "%s", book);
 	current_is_book = true;
 	last_save = 0;
 	last_saved_position = -1;
 	finished_marked = false;
 
+	if (strcmp(book, filepath) != 0) {
+		audiobookdb_parts_for_each(book, add_part, NULL);
+		for (int i = 0; i < part_count; i++) {
+			if (strcmp(parts[i].path, filepath) == 0) {
+				part_index = i;
+				break;
+			}
+		}
+	}
+
 	load_chapters_locked(filepath);
-	printf("audiobook: %s (%d chapters)\n", filepath, chapter_count);
+	printf("audiobook: %s (%d chapters, part %d of %d)\n", filepath, chapter_count, part_index + 1, part_count);
 
 	pthread_mutex_unlock(&lock);
 }
@@ -228,6 +299,102 @@ bool audiobook_is_playing(void) {
 }
 
 const char *audiobook_current_path(void) { return current_path; }
+
+struct resume_find {
+	const char *wanted;
+	char first[512];
+	bool found;
+};
+
+static bool resume_part_cb(const char *path, const char *title, void *user) {
+	(void)title;
+	struct resume_find *find = user;
+	if (!find->first[0]) {
+		snprintf(find->first, sizeof(find->first), "%s", path);
+	}
+	if (find->wanted[0] && strcmp(path, find->wanted) == 0) {
+		find->found = true;
+		return false;
+	}
+	return true;
+}
+
+int audiobook_part_count(void) {
+	pthread_mutex_lock(&lock);
+	int value = part_count;
+	pthread_mutex_unlock(&lock);
+	return value;
+}
+
+bool audiobook_part(int index, char *title_out, size_t title_size, char *path_out, size_t path_size) {
+	pthread_mutex_lock(&lock);
+	bool ok = index >= 0 && index < part_count;
+	if (ok) {
+		if (title_out && title_size) {
+			snprintf(title_out, title_size, "%s", parts[index].title);
+		}
+		if (path_out && path_size) {
+			snprintf(path_out, path_size, "%s", parts[index].path);
+		}
+	}
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+int audiobook_part_current(void) {
+	pthread_mutex_lock(&lock);
+	int value = part_count > 0 ? part_index : -1;
+	pthread_mutex_unlock(&lock);
+	return value;
+}
+
+bool audiobook_has_next_part(void) {
+	pthread_mutex_lock(&lock);
+	bool value = current_is_book && part_index >= 0 && part_index + 1 < part_count;
+	pthread_mutex_unlock(&lock);
+	return value;
+}
+
+bool audiobook_resume_point(const char *book, char *file_out, size_t file_size, double *seconds_out) {
+	if (file_out && file_size) {
+		file_out[0] = '\0';
+	}
+	if (seconds_out) {
+		*seconds_out = 0;
+	}
+	if (!book || !book[0] || !file_out || !file_size) {
+		return false;
+	}
+
+	char file[512];
+	double seconds = 0;
+	bool saved = audiobookdb_get_position(book, file, sizeof(file), &seconds);
+
+	if (!audiobookdb_is_folder_book(book)) {
+		snprintf(file_out, file_size, "%s", book);
+		if (seconds_out && saved && (!file[0] || strcmp(file, book) == 0) && seconds > 0) {
+			*seconds_out = seconds;
+		}
+		return true;
+	}
+
+	// A folder book comes back in the file it was left in, while that file is
+	// still one of its parts; otherwise from its first.
+	struct resume_find find = {saved ? file : "", "", false};
+	audiobookdb_parts_for_each(book, resume_part_cb, &find);
+	if (!find.first[0]) {
+		return false;
+	}
+	if (find.found) {
+		snprintf(file_out, file_size, "%s", file);
+		if (seconds_out && seconds > 0) {
+			*seconds_out = seconds;
+		}
+	} else {
+		snprintf(file_out, file_size, "%s", find.first);
+	}
+	return true;
+}
 
 int audiobook_chapter_count(void) {
 	pthread_mutex_lock(&lock);
@@ -299,13 +466,22 @@ void audiobook_note_position(double seconds, double total, bool force) {
 	// goes back to zero. Both halves matter: keeping the position would drop
 	// anyone returning to it into its last few seconds, and zeroing it without
 	// the shelf mark would make a finished book look like one never opened.
-	if (total > FINISHED_MARGIN && seconds >= total - FINISHED_MARGIN) {
+	//
+	// In a folder book only the end of the last part is the end of the book,
+	// and the book starts over from its first part.
+	bool last_part = part_count == 0 || part_index == part_count - 1;
+	char resume_file[512];
+	snprintf(resume_file, sizeof(resume_file), "%s", current_path);
+	if (last_part && total > FINISHED_MARGIN && seconds >= total - FINISHED_MARGIN) {
 		seconds = 0;
 		force = true;
+		if (part_count > 0) {
+			snprintf(resume_file, sizeof(resume_file), "%s", parts[0].path);
+		}
 		if (!finished_marked) {
 			finished_marked = true;
 			char done[512];
-			snprintf(done, sizeof(done), "%s", current_path);
+			snprintf(done, sizeof(done), "%s", current_book);
 			pthread_mutex_unlock(&lock);
 			audiobookdb_mark_finished(done);
 			printf("audiobook: finished %s\n", done);
@@ -322,14 +498,11 @@ void audiobook_note_position(double seconds, double total, bool force) {
 		return;
 	}
 
-	char path[512];
-	snprintf(path, sizeof(path), "%s", current_path);
+	char book[512];
+	snprintf(book, sizeof(book), "%s", current_book);
 	last_save = now;
 	last_saved_position = seconds;
 	pthread_mutex_unlock(&lock);
 
-	char book[512];
-	if (audiobookdb_book_for_file(path, book, sizeof(book))) {
-		audiobookdb_save_position(book, path, seconds);
-	}
+	audiobookdb_save_position(book, resume_file, seconds);
 }

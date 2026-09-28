@@ -85,6 +85,21 @@ void audiobook_track_changed(const char *filepath);
 bool audiobook_is_playing(void);
 const char *audiobook_current_path(void);
 
+// The parts of the folder book playing now: its files, one per chapter, in
+// order. Zero parts for a book in one file. `path_out` is the file.
+int audiobook_part_count(void);
+bool audiobook_part(int index, char *title_out, size_t title_size, char *path_out, size_t path_size);
+// Which part is loaded, or -1 for a book in one file.
+int audiobook_part_current(void);
+// Whether the book goes on into another file when this one ends.
+bool audiobook_has_next_part(void);
+
+// Where to start `book` (a file, or a folder book's folder): the file and the
+// second it was left at. The book's first file from its beginning when it was
+// never opened, was finished, or was left in a file that has gone. False when
+// the book has no file to play.
+bool audiobook_resume_point(const char *book, char *file_out, size_t file_size, double *seconds_out);
+
 // The chapters of the book playing now. Zero when it has none -- plenty of
 // books are a single unmarked file, and the interface has to cope with that
 // rather than inventing chapters.
@@ -100,8 +115,9 @@ int audiobook_chapter_at(double seconds);
 unsigned audiobook_serial(void);
 
 // Where this book was left last time, in seconds. 0 when it is new, when it
-// is not a book, or when it was heard to the end -- a finished book starts
-// over, and is listed as finished so that fact is not simply lost.
+// is not a book, when it was heard to the end -- a finished book starts over,
+// and is listed as finished so that fact is not simply lost -- or when `filepath`
+// is a part of a folder book other than the one it was left in.
 double audiobook_saved_position(const char *filepath);
 
 // Notes how far into the book playback has got. Throttled: a write every ten

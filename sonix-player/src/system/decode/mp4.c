@@ -96,6 +96,8 @@ struct mp4_file {
 	int year;
 	int track_number;
 	int disc_number;
+	char series[256];	  // ----:SERIES, else the movement name
+	char series_part[32]; // ----:SERIES-PART, else the movement number
 
 	uint64_t cover_off;
 	uint32_t cover_size;
@@ -537,7 +539,7 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 		// to be a `data` box and would discard every one of these.
 		if (item.type == FOURCC('-', '-', '-', '-')) {
 			char name[40] = "";
-			char value[40] = "";
+			char value[256] = "";
 			uint64_t child = item.content;
 			uint64_t child_end = item.content + item.body_size;
 			while (child < child_end) {
@@ -555,7 +557,7 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 						copy_text(name, sizeof(name), buf, len);
 					}
 				} else if (c.type == FOURCC('d', 'a', 't', 'a') && c.body_size > 8) {
-					unsigned char buf[64];
+					unsigned char buf[255];
 					size_t len = (size_t)(c.body_size - 8);
 					if (len > sizeof(buf)) {
 						len = sizeof(buf);
@@ -566,7 +568,11 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 				}
 				child = c.next;
 			}
-			if (name[0] && value[0] && m->freeform_count < MAX_FREEFORM) {
+			if (name[0] && value[0] && strcasecmp(name, "SERIES") == 0) {
+				snprintf(m->series, sizeof(m->series), "%s", value);
+			} else if (name[0] && value[0] && (strcasecmp(name, "SERIES-PART") == 0 || strcasecmp(name, "SERIES_PART") == 0)) {
+				snprintf(m->series_part, sizeof(m->series_part), "%s", value);
+			} else if (name[0] && value[0] && m->freeform_count < MAX_FREEFORM) {
 				snprintf(m->freeform[m->freeform_count].name, sizeof(m->freeform[0].name), "%s", name);
 				snprintf(m->freeform[m->freeform_count].value, sizeof(m->freeform[0].value), "%s", value);
 				m->freeform_count++;
@@ -618,6 +624,18 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 			break;
 		case FOURCC(0xA9, 'g', 'e', 'n'):
 			copy_text(m->genre, sizeof(m->genre), value, value_len);
+			break;
+		// The movement pair, which audiobook taggers use for the series: a name,
+		// and a 16-bit number.
+		case FOURCC(0xA9, 'm', 'v', 'n'):
+			if (!m->series[0]) {
+				copy_text(m->series, sizeof(m->series), value, value_len);
+			}
+			break;
+		case FOURCC(0xA9, 'm', 'v', 'i'):
+			if (!m->series_part[0] && value_len >= 2) {
+				snprintf(m->series_part, sizeof(m->series_part), "%u", (unsigned)be16(value + value_len - 2));
+			}
 			break;
 		case FOURCC('g', 'n', 'r', 'e'):
 			if (value_len >= 2) {
@@ -1457,6 +1475,10 @@ const char *mp4_tag_album_artist(const mp4_file_t *m) { return m ? m->album_arti
 const char *mp4_tag_album(const mp4_file_t *m) { return m ? m->album : ""; }
 const char *mp4_tag_genre(const mp4_file_t *m) { return m ? m->genre : ""; }
 int mp4_tag_year(const mp4_file_t *m) { return m ? m->year : 0; }
+
+const char *mp4_tag_series(const mp4_file_t *m) { return m ? m->series : ""; }
+
+const char *mp4_tag_series_part(const mp4_file_t *m) { return m ? m->series_part : ""; }
 
 const char *mp4_tag_freeform(const mp4_file_t *m, const char *name) {
 	if (!m || !name) {
