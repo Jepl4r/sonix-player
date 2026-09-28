@@ -352,10 +352,25 @@ static void routing_watch_cb(lv_timer_t *timer) {
 	volume_profile_set_output(out);
 
 	static char known[160];
+	static unsigned known_generation;
 	if (!known[0]) {
 		snprintf(known, sizeof(known), "%s", now); // first look: nothing to reload
+		known_generation = bluetooth_output_generation();
 		return;
 	}
+
+	// The same headphones behind a bluealsa that was restarted: same name, dead
+	// PCM. Reloading opens it again on the new daemon.
+	unsigned generation = bluetooth_output_generation();
+	if (generation != known_generation) {
+		known_generation = generation;
+		if (now_bt && strcmp(known, now) == 0) {
+			printf("btaudio: '%s' is a new bluealsa's now; reloading the track\n", now);
+			restart_playback_if_running();
+			return;
+		}
+	}
+
 	if (strcmp(known, now) == 0) {
 		return;
 	}

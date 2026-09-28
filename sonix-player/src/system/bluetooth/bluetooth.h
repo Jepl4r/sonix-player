@@ -211,6 +211,12 @@ void bluetooth_set_discoverable(bool on);
 // moment the option is read. The link comes back by itself; the audio stops for
 // as long as that takes.
 const char *bluetooth_ldac_quality(void);
+
+// Moves on each time the headphones' stream came back under a bluealsa this
+// player restarted (a new LDAC quality). The device name is the same, so the
+// output does not look changed, but a PCM opened before the restart talks to
+// a daemon that is gone: whoever plays has to open it again.
+unsigned bluetooth_output_generation(void);
 void bluetooth_set_ldac_quality(const char *mode);
 
 // ---------------------------------------------------------------------------
