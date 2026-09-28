@@ -1,6 +1,7 @@
 #include "peqautoeq.h"
 
 #include <ctype.h>
+#include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
@@ -94,15 +95,10 @@ static bool set_paths(void) {
 	if (!cfg || !cfg->sd_root_path || !cfg->sd_root_path[0]) {
 		return false;
 	}
-	return path_join(local_dir, sizeof(local_dir), cfg->sd_root_path, ".local") &&
-		   path_join(autoeq_dir, sizeof(autoeq_dir), local_dir, "autoeq") &&
-		   path_join(profiles_dir, sizeof(profiles_dir), autoeq_dir, "profiles") &&
-		   path_join(index_file, sizeof(index_file), autoeq_dir, "INDEX.md");
+	return path_join(local_dir, sizeof(local_dir), cfg->sd_root_path, ".local") && path_join(autoeq_dir, sizeof(autoeq_dir), local_dir, "autoeq") && path_join(profiles_dir, sizeof(profiles_dir), autoeq_dir, "profiles") && path_join(index_file, sizeof(index_file), autoeq_dir, "INDEX.md");
 }
 
-static bool ensure_dirs(void) {
-	return set_paths() && make_dir(local_dir) && make_dir(autoeq_dir) && make_dir(profiles_dir);
-}
+static bool ensure_dirs(void) { return set_paths() && make_dir(local_dir) && make_dir(autoeq_dir) && make_dir(profiles_dir); }
 
 static bool write_file(const char *path, const char *data, size_t size) {
 	char temp[800];
@@ -243,8 +239,7 @@ static void profile_source(profile_t *item, const char *meta, const char *path) 
 			while (parent_start > path && parent_start[-1] != '/') {
 				parent_start--;
 			}
-			copy_trimmed(item->source, sizeof(item->source), parent_start,
-						 (size_t)(parent_end - parent_start));
+			copy_trimmed(item->source, sizeof(item->source), parent_start, (size_t)(parent_end - parent_start));
 		}
 	}
 	if (!item->source[0]) {
@@ -262,14 +257,15 @@ static void finish_result_names(job_t *job) {
 		}
 		job->results[i].duplicate_name = job->results[i].duplicate_name || matches > 1;
 		if (job->results[i].duplicate_name) {
-			snprintf(job->results[i].display, sizeof(job->results[i].display), "%s [%s]",
-					 job->results[i].name, job->results[i].source);
+			snprintf(job->results[i].display, sizeof(job->results[i].display), "%s [%s]", job->results[i].name, job->results[i].source);
 		} else {
 			snprintf(job->results[i].display, sizeof(job->results[i].display), "%s", job->results[i].name);
 		}
 	}
 }
 
+// INDEX.md is Markdown; balance parentheses so profile paths containing them
+// remain intact while parsing the link target.
 static void parse_index(const char *text, const char *query, job_t *job) {
 	for (const char *line = text; *line;) {
 		const char *end = strchr(line, '\n');
@@ -300,8 +296,7 @@ static void parse_index(const char *text, const char *query, job_t *job) {
 			if (start && name_end && path_end && has_text(start + 3, query)) {
 				size_t name_len = (size_t)(name_end - start - 3);
 				size_t path_len = (size_t)(path_end - name_end - 2);
-				if (name_len && name_len < sizeof(job->results[0].name) && path_len &&
-					path_len < sizeof(job->results[0].path)) {
+				if (name_len && name_len < sizeof(job->results[0].name) && path_len && path_len < sizeof(job->results[0].path)) {
 					profile_t item = {0};
 					memcpy(item.name, start + 3, name_len);
 					memcpy(item.path, name_end + 2, path_len);
@@ -309,8 +304,7 @@ static void parse_index(const char *text, const char *query, job_t *job) {
 
 					bool duplicate = false;
 					for (int i = 0; i < job->result_count; i++) {
-						if (!strcasecmp(job->results[i].name, item.name) &&
-							!strcmp(job->results[i].path, item.path)) {
+						if (!strcasecmp(job->results[i].name, item.name) && !strcmp(job->results[i].path, item.path)) {
 							duplicate = true;
 							break;
 						}
@@ -410,13 +404,15 @@ static size_t copy_name_part(char *out, size_t capacity, const char *source, siz
 }
 
 static void preset_name(const profile_t *item, char *out, size_t size) {
-	char model[101];
-	char source[31];
-	copy_name_part(model, sizeof(model), item->name, item->duplicate_name ? 66 : 100);
 	if (!item->duplicate_name) {
+		char model[101];
+		copy_name_part(model, sizeof(model), item->name, 100);
 		snprintf(out, size, "%s", model);
 		return;
 	}
+	char model[67];
+	char source[25];
+	copy_name_part(model, sizeof(model), item->name, 66);
 	copy_name_part(source, sizeof(source), item->source, 24);
 	if (!source[0]) {
 		snprintf(source, sizeof(source), "%s", "AutoEq");
@@ -425,6 +421,7 @@ static void preset_name(const profile_t *item, char *out, size_t size) {
 }
 
 static void cache_path(const profile_t *item, char *out, size_t size) {
+	// Hash the profile name and source path to keep same-name profiles separate.
 	uint32_t hash = hash_text(item->name) ^ hash_text(item->path);
 	snprintf(out, size, "%s/%08x.txt", profiles_dir, hash);
 }
@@ -439,8 +436,7 @@ static bool download_index(job_t *job) {
 	http_stream_t stream;
 	if (!http_stream_open(&stream, INDEX_URL, 35)) {
 		const char *error = http_last_error();
-		snprintf(job->error, sizeof(job->error), "%s",
-				 error && error[0] ? error : tr("peq_autoeq_error_index_download"));
+		snprintf(job->error, sizeof(job->error), "%s", error && error[0] ? error : tr("peq_autoeq_error_index_download"));
 		return false;
 	}
 	if (stream.content_length > (long)INDEX_MAX) {
@@ -521,6 +517,30 @@ static bool load_search_results(job_t *job) {
 	return true;
 }
 
+static bool clear_profile_cache(void) {
+	DIR *dir = opendir(profiles_dir);
+	if (!dir) {
+		return false;
+	}
+
+	bool ok = true;
+	struct dirent *entry;
+	while ((entry = readdir(dir)) != NULL) {
+		if (!strcmp(entry->d_name, ".") || !strcmp(entry->d_name, "..")) {
+			continue;
+		}
+		char path[768];
+		int n = snprintf(path, sizeof(path), "%s/%s", profiles_dir, entry->d_name);
+		if (n < 0 || (size_t)n >= sizeof(path) || remove(path) != 0) {
+			ok = false;
+		}
+	}
+	if (closedir(dir) != 0) {
+		ok = false;
+	}
+	return ok;
+}
+
 static bool download_profile(job_t *job) {
 	size_t size = 0;
 	char *text = read_file(job->cache, PROFILE_MAX, &size);
@@ -537,8 +557,7 @@ static bool download_profile(job_t *job) {
 	}
 	if (!http_get(url, &text, &size, PROFILE_MAX, 30)) {
 		const char *error = http_last_error();
-		snprintf(job->error, sizeof(job->error), "%s",
-				 error && error[0] ? error : tr("peq_autoeq_error_profile_download"));
+		snprintf(job->error, sizeof(job->error), "%s", error && error[0] ? error : tr("peq_autoeq_error_profile_download"));
 		free(text);
 		return false;
 	}
@@ -557,7 +576,9 @@ static void *worker(void *user) {
 	} else if (job->action == JOB_SEARCH) {
 		load_search_results(job);
 	} else if (job->action == JOB_UPDATE_DATABASE) {
-		download_index(job);
+		if (download_index(job) && !clear_profile_cache()) {
+			snprintf(job->error, sizeof(job->error), "%s", tr("peq_autoeq_error_clear_profile_cache"));
+		}
 	} else {
 		download_profile(job);
 	}
@@ -594,8 +615,7 @@ static bool save_and_apply(job_t *job) {
 	char stage_name[40];
 	char stage_path[700];
 	char preset_path[700];
-	if (!cfg || !cfg->sd_root_path || !cfg->sd_root_path[0] ||
-		!path_join(peq_dir, sizeof(peq_dir), cfg->sd_root_path, "PEQ") || !make_dir(peq_dir)) {
+	if (!cfg || !cfg->sd_root_path || !cfg->sd_root_path[0] || !path_join(peq_dir, sizeof(peq_dir), cfg->sd_root_path, "PEQ") || !make_dir(peq_dir)) {
 		toast_error(tr("peq_autoeq_error_peq_folder"));
 		return false;
 	}
@@ -604,16 +624,24 @@ static bool save_and_apply(job_t *job) {
 	snprintf(stage_name, sizeof(stage_name), "AutoEq Stage %08x", id);
 	int n = snprintf(stage_path, sizeof(stage_path), "%s/%s.txt", peq_dir, stage_name);
 	int p = snprintf(preset_path, sizeof(preset_path), "%s/%s.txt", peq_dir, job->preset);
-	if (n < 0 || (size_t)n >= sizeof(stage_path) || p < 0 || (size_t)p >= sizeof(preset_path) ||
-		!write_file(stage_path, job->profile_text, job->profile_size)) {
+	if (n < 0 || (size_t)n >= sizeof(stage_path) || p < 0 || (size_t)p >= sizeof(preset_path) || !write_file(stage_path, job->profile_text, job->profile_size)) {
 		toast_error(tr("peq_autoeq_error_save_profile"));
 		return false;
 	}
 
+	// Load the stage file through the regular PEQ parser before renaming it, so
+	// a download with no supported filters cannot replace an existing preset.
 	int ignored = 0;
 	if (!peq_preset_load(stage_name, &ignored)) {
 		remove(stage_path);
 		toast_error(tr("peq_autoeq_error_unsupported_profile"));
+		return false;
+	}
+	struct stat existing;
+	bool replaced = stat(preset_path, &existing) == 0;
+	if (!replaced && errno != ENOENT) {
+		remove(stage_path);
+		toast_error(tr("peq_autoeq_error_save_preset"));
 		return false;
 	}
 	if (rename(stage_path, preset_path) != 0) {
@@ -626,12 +654,18 @@ static bool save_and_apply(job_t *job) {
 	if (reload_cb) {
 		reload_cb();
 	}
-	if (ignored) {
+	if (replaced && ignored) {
+		char message[512];
+		snprintf(message, sizeof(message), "%s %s", tr("peq_autoeq_unsupported_filters"), tr("peq_autoeq_profile_applied_replaced"));
+		toast_success(message);
+	} else if (replaced) {
+		toast_success(tr("peq_autoeq_profile_applied_replaced"));
+	} else if (ignored) {
 		toast_success(tr("peq_autoeq_unsupported_filters"));
 	} else {
 		toast_success(tr("peq_autoeq_profile_applied"));
 	}
-	switch_screen(peqpage_screen());
+	switch_screen_return_to(peqpage_screen());
 	return true;
 }
 
@@ -640,8 +674,7 @@ static void rebuild_results(job_t *job) {
 	memcpy(result_items, job->results, sizeof(result_items));
 	lv_obj_clean(search_list);
 	for (int i = 0; i < result_count; i++) {
-		lv_obj_t *row = settingsrow_add(search_list, result_items[i].display, NULL, result_clicked,
-									(void *)(intptr_t)i);
+		lv_obj_t *row = settingsrow_add(search_list, result_items[i].display, NULL, result_clicked, (void *)(intptr_t)i);
 		lv_obj_update_layout(row);
 		lv_obj_t *label = settingsrow_name_label(row);
 		lv_obj_t *chevron = lv_obj_get_child(row, 1);
@@ -666,7 +699,9 @@ static void job_done(void *user) {
 	if (job->error[0]) {
 		toast_error(job->error);
 	} else if (job->action == JOB_SEARCH) {
-		rebuild_results(job);
+		if (lv_screen_active() == search_screen) {
+			rebuild_results(job);
+		}
 	} else if (job->action == JOB_UPDATE_DATABASE) {
 		toast_success(tr("peq_autoeq_database_updated"));
 	} else {
@@ -755,8 +790,7 @@ static void build_pages(gui_config_t *config) {
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 	settingsrow_action(search_container, "peq_autoeq_update_database", update_database, NULL);
-	search_keyboard = keyboard_create(search_screen, config->screen_width, 316, search_field, NULL,
-									 "peq_autoeq_search_button", search_accept, NULL);
+	search_keyboard = keyboard_create(search_screen, config->screen_width, 316, search_field, NULL, "peq_autoeq_search_button", search_accept, NULL);
 
 	results_screen = lv_obj_create(NULL);
 	search_list = settingsrow_page(results_screen, config, "peq_autoeq_results");
@@ -776,13 +810,9 @@ void peqautoeq_init(gui_config_t *config) {
 	build_pages(config);
 }
 
-lv_obj_t *peqautoeq_screen(void) {
-	return search_screen;
-}
+lv_obj_t *peqautoeq_screen(void) { return search_screen; }
 
-void peqautoeq_set_reload_cb(void (*cb)(void)) {
-	reload_cb = cb;
-}
+void peqautoeq_set_reload_cb(void (*cb)(void)) { reload_cb = cb; }
 
 void peqautoeq_open(void) {
 	lv_textarea_set_text(search_field, "");
