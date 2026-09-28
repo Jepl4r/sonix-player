@@ -99,10 +99,13 @@ certificate checking, and HLS.
 
 ## Audiobooks
 
-> `.m4b` and `.mp3` files with chapters need to be inside the `Audiobooks` folder.
+> Audiobooks go in the `Audiobooks` folder, in any subfolder: `Audiobooks/Author/Series/...` is read as the author and the series when the tags do not say.
 
-- The position is remembered per book.
-- Chapters from the container or from ID3 frames.
+- **Library, Series, Authors and Continue** - four sections, each sorted A-Z, Z-A or by date; the library also by recently listened, a series by the number of each book in it. Continue holds the books started and not finished, last listened first; the finished ones are behind the button beside the options.
+- **A book is a file or a folder** - an `.m4b`, an `.mp3`, `.opus`, `.ogg` or `.flac` with chapters, or a single audio file is a book; audio files of one folder with the same album tag are one book whose files are its chapters, `CD 1` / `Disc 2` subfolders included, so several books side by side in a folder stay apart.
+- **Author and series from the tags** - album artist or artist, `SERIES` / `SERIES-PART` and the movement name and number, in MP4, ID3v2 and Vorbis tags.
+- The position is remembered per book, and survives a rescan.
+- Chapters from the MP4 container, from ID3 frames, or from the `CHAPTERxxx` comments of Opus, Ogg Vorbis and FLAC.
 - The two transport buttons are set independently to 10, 30 or 60 seconds.
 - Speed 0.5x to 2.0x with the pitch preserved.
 - Stop at the end of a chapter, and rewind a few seconds after a pause.
