@@ -50,15 +50,12 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           echo "Current ref: ${GITHUB_REF}"
           echo "Current branch: ${GITHUB_REF_NAME}"
-
           if [ "${GITHUB_REF_NAME}" != "beta-releases" ]; then
             echo "ERROR: This workflow must run from beta-releases."
             exit 1
           fi
-
       # ============================================================
       # INSTALL BUILD DEPENDENCIES
       # ============================================================
@@ -66,9 +63,7 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           sudo apt-get update
-
           sudo apt-get install -y --no-install-recommends \
             autoconf \
             automake \
@@ -104,9 +99,7 @@ jobs:
             unzip \
             wget \
             xz-utils
-
           echo "Build dependencies installed."
-
       # ============================================================
       # VERIFY PROJECT STRUCTURE
       # ============================================================
@@ -114,19 +107,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           test -f sonix-player/Makefile
           test -f sonix-player/rockboxdev/rockboxdev.sh
           test -d sonix-player/rockboxdev/toolchain-patches
-
           test -f sonix-packer/sonix_firmware_packer.sh
           test -d sonix-packer/assets/R1
-
           chmod +x sonix-player/rockboxdev/rockboxdev.sh
           chmod +x sonix-packer/sonix_firmware_packer.sh
-
           echo "Project structure verified."
-
       # ============================================================
       # RESTORE ROCKBOX TOOLCHAIN CACHE
       # ============================================================
@@ -164,36 +152,27 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           echo "============================================"
           echo "DOWNLOADING OFFICIAL HIBY R1 V1.6"
           echo "============================================"
-
           rm -rf sonix-packer/hiby-v1.6-download
           mkdir -p sonix-packer/hiby-v1.6-download
-
           python3 -m venv "$RUNNER_TEMP/gdown-env"
-
           "$RUNNER_TEMP/gdown-env/bin/python" \
             -m pip install --upgrade pip
-
           "$RUNNER_TEMP/gdown-env/bin/python" \
             -m pip install "gdown==6.4.0"
-
           echo "gdown version:"
           "$RUNNER_TEMP/gdown-env/bin/gdown" --version
-
           "$RUNNER_TEMP/gdown-env/bin/gdown" \
             "$HIBY_R1_V16_FOLDER" \
             --output sonix-packer/hiby-v1.6-download \
             --folder
-
           echo "Downloaded files:"
           find sonix-packer/hiby-v1.6-download \
             -type f \
             -printf '%p\n' \
             | sort
-
       # ============================================================
       # EXTRACT / FIND r1.upt FROM V1.6
       # ============================================================
@@ -201,22 +180,17 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           BASE_DIR="sonix-packer/hiby-v1.6-download"
           OUTPUT="sonix-packer/r1_original.upt"
-
           rm -f "$OUTPUT"
-
           echo "============================================"
           echo "LOCATING OFFICIAL R1 V1.6 r1.upt"
           echo "============================================"
-
           DIRECT_UPT=$(find "$BASE_DIR" \
             -type f \
             \( -iname 'r1.upt' -o -iname 'R1.upt' \) \
             -print \
             -quit || true)
-
           if [ -n "$DIRECT_UPT" ]; then
             echo "Found direct r1.upt:"
             echo "$DIRECT_UPT"
@@ -227,24 +201,19 @@ jobs:
               \( -iname '*.zip' -o -iname '*.ZIP' \) \
               -print \
               -quit || true)
-
             if [ -n "$ZIP_FILE" ]; then
               echo "Found firmware ZIP:"
               echo "$ZIP_FILE"
-
               rm -rf "$RUNNER_TEMP/hiby-r1-v16-extracted"
               mkdir -p "$RUNNER_TEMP/hiby-r1-v16-extracted"
-
               unzip -o "$ZIP_FILE" \
                 -d "$RUNNER_TEMP/hiby-r1-v16-extracted"
-
               EXTRACTED_UPT=$(find \
                 "$RUNNER_TEMP/hiby-r1-v16-extracted" \
                 -type f \
                 \( -iname 'r1.upt' -o -iname 'R1.upt' \) \
                 -print \
                 -quit || true)
-
               if [ -n "$EXTRACTED_UPT" ]; then
                 echo "Found r1.upt inside ZIP:"
                 echo "$EXTRACTED_UPT"
@@ -252,50 +221,37 @@ jobs:
               fi
             fi
           fi
-
           if [ ! -s "$OUTPUT" ]; then
             TXT_UPT=$(find "$BASE_DIR" \
               -type f \
               \( -iname 'r1.upt.txt' -o -iname 'R1.upt.txt' \) \
               -print \
               -quit || true)
-
             if [ -n "$TXT_UPT" ]; then
               echo "Found r1.upt.txt:"
               echo "$TXT_UPT"
               cp -f "$TXT_UPT" "$OUTPUT"
             fi
           fi
-
           if [ ! -s "$OUTPUT" ]; then
             echo "ERROR: Official HiBy R1 v1.6 r1.upt was not found."
             find "$BASE_DIR" -type f -printf '%p\n' | sort
             exit 1
           fi
-
           echo "============================================"
           echo "OFFICIAL HIBY R1 V1.6 FOUND"
           echo "============================================"
-
           ls -lh "$OUTPUT"
-
           echo "File type:"
           file "$OUTPUT"
-
           echo "SHA256:"
           sha256sum "$OUTPUT"
-
           echo "Size:"
           stat -c '%s bytes' "$OUTPUT"
-
           echo "UPT contents:"
           7z l "$OUTPUT"
-
           7z l "$OUTPUT" | grep -q 'ota_v0'
-
           echo "Official HiBy R1 v1.6 firmware is ready."
-
-
       # ============================================================
       # CREATE / SEAL STREAMING KEYS
       # ============================================================
@@ -307,88 +263,78 @@ jobs:
           LASTFM_API_SECRET: ${{ secrets.LASTFM_API_SECRET }}
         run: |
           set -euo pipefail
-
           echo "============================================"
           echo "PREPARING LAST.FM STREAMING KEYS"
           echo "============================================"
-
           test -f streaming-keys.ini.example
           test -f tools/seal_streamkeys.py
-
           cp -f streaming-keys.ini.example streaming-keys.ini
-
           python3 - <<'PY'
           import os
           import re
           from pathlib import Path
-
           path = Path("streaming-keys.ini")
           text = path.read_text(encoding="utf-8")
-
           api_key = os.environ["LASTFM_API_KEY"].strip()
           api_secret = os.environ["LASTFM_API_SECRET"].strip()
-
           if not api_key:
               raise SystemExit("ERROR: LASTFM_API_KEY GitHub Secret is empty.")
           if not api_secret:
               raise SystemExit("ERROR: LASTFM_API_SECRET GitHub Secret is empty.")
-
+          if "\n" in api_key or "\r" in api_key:
+              raise SystemExit("ERROR: LASTFM_API_KEY must be a single line.")
+          if "\n" in api_secret or "\r" in api_secret:
+              raise SystemExit("ERROR: LASTFM_API_SECRET must be a single line.")
           match = re.search(
-              r"(?ms)^\[lastfm\]\s*$.*?(?=^\[[^]]+\]\s*$|\Z)",
+              r"(?ms)^\[lastfm\][ \t]*\r?$.*?(?=^\[[^]]+\][ \t]*\r?$|\Z)",
               text,
           )
-
           if not match:
               raise SystemExit(
                   "ERROR: [lastfm] section was not found in streaming-keys.ini.example."
               )
-
           section = match.group(0)
-
-          if not re.search(r"(?m)^\s*api_key\s*=", section):
+          if not re.search(r"(?m)^[ \t]*api_key[ \t]*=", section):
               raise SystemExit(
                   "ERROR: api_key entry was not found in the [lastfm] section."
               )
-
-          if not re.search(r"(?m)^\s*api_secret\s*=", section):
+          if not re.search(r"(?m)^[ \t]*api_secret[ \t]*=", section):
               raise SystemExit(
                   "ERROR: api_secret entry was not found in the [lastfm] section."
               )
-
           section = re.sub(
-              r"(?m)^(\s*api_key\s*=\s*).*$",
+              r"(?m)^([ \t]*api_key[ \t]*=[ \t]*)[^\r\n]*$",
               lambda m: m.group(1) + api_key,
               section,
               count=1,
           )
-
           section = re.sub(
-              r"(?m)^(\s*api_secret\s*=\s*).*$",
+              r"(?m)^([ \t]*api_secret[ \t]*=[ \t]*)[^\r\n]*$",
               lambda m: m.group(1) + api_secret,
               section,
               count=1,
           )
-
           path.write_text(
               text[:match.start()] + section + text[match.end():],
               encoding="utf-8",
           )
           PY
-
           chmod 600 streaming-keys.ini
-
           echo "Last.fm credentials inserted into streaming-keys.ini."
           echo "Sealing streaming keys..."
-
           python3 tools/seal_streamkeys.py seal
-
-          test -s ../sonix-packer/assets/R1/usr/resource/sonix/components/streaming-keys.bin
-          test -s ../sonix-packer/assets/R3PII/usr/resource/sonix/components/streaming-keys.bin
           test -s streaming-keys.key
-
+          for PACKED_KEYS in \
+            ../sonix-packer/assets/R1/usr/resource/sonix/components/streaming-keys.bin \
+            ../sonix-packer/assets/R3PII/usr/resource/sonix/components/streaming-keys.bin
+          do
+            test -s "$PACKED_KEYS" || {
+              echo "ERROR: Sealed streaming keys were not found: $PACKED_KEYS"
+              exit 1
+            }
+          done
           echo "Streaming keys sealed successfully."
           echo "The credential values themselves are not printed."
-
       # ============================================================
       # BUILD SONIX PLAYER
       # ============================================================
@@ -397,41 +343,30 @@ jobs:
         shell: bash
         run: |
           set -uo pipefail
-
           echo "============================================"
           echo "BUILDING SONIX PLAYER FOR HIBY R1"
           echo "============================================"
-
           make -j2 BOARD=r1 target
           STATUS=$?
-
           if [ "$STATUS" -ne 0 ]; then
             echo "SONIX PLAYER BUILD FAILED"
-
             find .cache/rbdev-build \
               -type f \
               -name '*.log' \
               -print 2>/dev/null || true
-
             for LOG in .cache/rbdev-build/build-*.log; do
               [ -f "$LOG" ] || continue
-
               echo "--------------------------------------------"
               echo "$LOG"
               echo "--------------------------------------------"
-
               tail -n 250 "$LOG" || true
             done
-
             exit "$STATUS"
           fi
-
           test -x sonix_player
           test -s sonix_player
-
           ls -lh sonix_player
           file sonix_player
-
       # ============================================================
       # SAVE TOOLCHAIN CACHE
       # ============================================================
@@ -469,28 +404,21 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           cp -f \
             sonix-player/sonix_player \
             sonix-packer/sonix_player
-
           chmod +x sonix-packer/sonix_player
           chmod +x sonix-packer/sonix_firmware_packer.sh
-
           test -s sonix-packer/sonix_player
           test -s sonix-packer/r1_original.upt
-
           echo "Official base:"
           ls -lh sonix-packer/r1_original.upt
-
           echo "Sonix Player:"
           ls -lh sonix-packer/sonix_player
-
           echo "SHA256:"
           sha256sum \
             sonix-packer/r1_original.upt \
             sonix-packer/sonix_player
-
       # ============================================================
       # VERIFY PACKAGING TOOLS
       # ============================================================
@@ -498,7 +426,6 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           for TOOL in \
             7z \
             unsquashfs \
@@ -513,9 +440,7 @@ jobs:
               exit 1
             }
           done
-
           ISO_TOOL=""
-
           for TOOL in \
             mkisofs \
             genisoimage \
@@ -526,12 +451,9 @@ jobs:
               break
             fi
           done
-
           test -n "$ISO_TOOL"
-
           echo "Packaging tools verified."
           echo "ISO writer: $ISO_TOOL"
-
       # ============================================================
       # BUILD CUSTOM R1.UPT
       # ============================================================
@@ -540,19 +462,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           echo "============================================"
           echo "PACKING SONIX PLAYER INTO HIBY R1 V1.6"
           echo "============================================"
-
           ./sonix_firmware_packer.sh
-
           test -s r1.upt
-
           ls -lh r1.upt
           file r1.upt
           sha256sum r1.upt
-
       # ============================================================
       # VERIFY CUSTOM UPT
       # ============================================================
@@ -561,42 +478,30 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           echo "============================================"
           echo "VERIFYING CUSTOM R1.UPT"
           echo "============================================"
-
           test -f r1.upt
           test -s r1.upt
-
           SIZE=$(stat -c '%s' r1.upt)
-
           echo "Size: $SIZE bytes"
-
           if [ "$SIZE" -lt 1048576 ]; then
             echo "ERROR: r1.upt is unexpectedly small."
             exit 1
           fi
-
           7z l r1.upt
           7z l r1.upt | grep -q 'ota_v0'
-
           rm -rf "$RUNNER_TEMP/r1-verify"
           mkdir -p "$RUNNER_TEMP/r1-verify"
-
           7z x r1.upt \
             -o"$RUNNER_TEMP/r1-verify" \
             -y \
             >/dev/null
-
           OTA_DIR="$RUNNER_TEMP/r1-verify/ota_v0"
-
           test -d "$OTA_DIR"
           test -f "$OTA_DIR/ota_update.in"
-
           echo "ota_update.in:"
           cat "$OTA_DIR/ota_update.in"
-
           ROOTFS_COUNT=$(
             find "$OTA_DIR" \
               -maxdepth 1 \
@@ -604,16 +509,66 @@ jobs:
               -name 'rootfs.squashfs.*' \
               | wc -l
           )
-
           echo "Rootfs chunks: $ROOTFS_COUNT"
-
           if [ "$ROOTFS_COUNT" -lt 1 ]; then
             echo "ERROR: No rootfs chunks found."
             exit 1
           fi
-
+          ROOTFS_IMAGE="$RUNNER_TEMP/r1-verify/rootfs.squashfs"
+          ( cd "$OTA_DIR" && cat rootfs.squashfs.* ) > "$ROOTFS_IMAGE"
+          KEYS_BIN="$RUNNER_TEMP/r1-verify/streaming-keys.bin"
+          unsquashfs -cat "$ROOTFS_IMAGE" \
+            usr/resource/sonix/components/streaming-keys.bin \
+            > "$KEYS_BIN"
+          python3 - "$KEYS_BIN" <<'PY'
+          import configparser
+          import importlib.util
+          import re
+          import sys
+          from pathlib import Path
+          keys_bin = Path(sys.argv[1]).read_bytes()
+          ini_path = Path("../sonix-player/streaming-keys.ini")
+          key_path = Path("../sonix-player/streaming-keys.key")
+          header_path = Path("../sonix-player/build_gen/streamkeys_key.h")
+          spec = importlib.util.spec_from_file_location(
+              "seal_streamkeys", "../sonix-player/tools/seal_streamkeys.py"
+          )
+          seal_tool = importlib.util.module_from_spec(spec)
+          spec.loader.exec_module(seal_tool)
+          seal_key = seal_tool.read_key(str(key_path))
+          if seal_key is None:
+              raise SystemExit("ERROR: streaming-keys.key is missing.")
+          plain = seal_tool.unseal(seal_key, keys_bin).decode("utf-8")
+          packaged = configparser.ConfigParser(interpolation=None)
+          source = configparser.ConfigParser(interpolation=None)
+          packaged.read_string(plain)
+          source.read(ini_path)
+          for name in ("api_key", "api_secret"):
+              actual = packaged.get("lastfm", name, fallback="").strip()
+              expected = source.get("lastfm", name, fallback="").strip()
+              if not actual or actual != expected:
+                  raise SystemExit(
+                      "ERROR: final R1 firmware has missing or mismatched Last.fm credentials."
+                  )
+          header = header_path.read_text(encoding="utf-8")
+          if "#define STREAMKEYS_KEY_LEN 32" not in header:
+              raise SystemExit("ERROR: player build has no 32-byte streaming key.")
+          match = re.search(
+              r"streamkeys_key\[STREAMKEYS_KEY_LEN\]\s*=\s*\{([^}]*)\}", header
+          )
+          if not match:
+              raise SystemExit("ERROR: player build key could not be verified.")
+          compiled_key = bytes(
+              int(value, 16)
+              for value in re.findall(r"0x([0-9a-fA-F]{2})", match.group(1))
+          )
+          if compiled_key != seal_key:
+              raise SystemExit(
+                  "ERROR: player and firmware use different streaming keys."
+              )
+          print("Final R1 firmware contains the Last.fm keys; player and firmware keys match.")
+          PY
           echo "Custom R1 firmware passed structural validation."
-
       # ============================================================
       # CREATE RELEASE FILES
       # ============================================================
@@ -621,32 +576,24 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-
           rm -rf release
           mkdir -p release
-
           cp -f \
             sonix-packer/r1.upt \
             release/r1.upt
-
           cp -f \
             sonix-player/sonix_player \
             release/sonix_player
-
           sha256sum \
             release/r1.upt \
             release/sonix_player \
             > release/SHA256SUMS
-
           echo "============================================"
           echo "RELEASE FILES"
           echo "============================================"
-
           ls -lh release
-
           echo "SHA256SUMS:"
           cat release/SHA256SUMS
-
       # ============================================================
       # UPLOAD R1 ARTIFACT
       # ============================================================
@@ -692,48 +639,36 @@ jobs:
           GH_TOKEN: ${{ github.token }}
         run: |
           set -euo pipefail
-
           TAG="$LATEST_BETA_RELEASE_TAG"
           TITLE="Latest R1 Beta Firmware"
-
           # --------------------------------------------------------
           # Indian Standard Time
           # --------------------------------------------------------
           IST_TIME=$(TZ=Asia/Kolkata date '+%Y-%m-%d %I:%M:%S %p IST')
-
           NOTES=$(cat <<EOF
           # Sonix Player for HiBy R1 — Latest Beta
-
           Automatically generated from the latest successful
           \`beta-releases\` branch build.
-
           ## Build Information
-
           - Branch: \`beta-releases\`
           - Commit: \`${GITHUB_SHA}\`
           - Workflow run: \`${GITHUB_RUN_NUMBER}\`
           - Run ID: \`${GITHUB_RUN_ID}\`
           - Build time: \`${IST_TIME}\`
           - Base firmware: Official HiBy R1 Firmware V1.6
-
           ## Files
-
           - \`r1.upt\` — latest HiBy R1 beta firmware
           - \`sonix_player\` — Sonix Player executable
           - \`SHA256SUMS\` — SHA-256 checksums
-
           **Beta build — use for testing.**
           EOF
           )
-
           echo "============================================"
           echo "PUBLISHING LATEST BETA RELEASE"
           echo "============================================"
-
           echo "Release tag:  $TAG"
           echo "Release name: $TITLE"
           echo "Indian time:  $IST_TIME"
-
           # --------------------------------------------------------
           # CREATE RELEASE IF IT DOES NOT EXIST.
           # OTHERWISE UPDATE THE SAME RELEASE.
@@ -743,11 +678,9 @@ jobs:
             --repo "$GITHUB_REPOSITORY" \
             >/dev/null 2>&1
           then
-
             echo ""
             echo "Existing beta release found."
             echo "Updating release assets..."
-
             gh release upload \
               "$TAG" \
               release/r1.upt \
@@ -755,19 +688,15 @@ jobs:
               release/SHA256SUMS \
               --repo "$GITHUB_REPOSITORY" \
               --clobber
-
             gh release edit \
               "$TAG" \
               --repo "$GITHUB_REPOSITORY" \
               --title "$TITLE" \
               --notes "$NOTES"
-
           else
-
             echo ""
             echo "Latest beta release does not exist."
             echo "Creating it..."
-
             gh release create \
               "$TAG" \
               release/r1.upt \
@@ -778,19 +707,15 @@ jobs:
               --notes "$NOTES" \
               --prerelease \
               --target "$GITHUB_SHA"
-
           fi
-
           echo ""
           echo "============================================"
           echo "LATEST BETA RELEASE PUBLISHED"
           echo "============================================"
-
           echo "Tag:          $TAG"
           echo "Build time:   $IST_TIME"
           echo "Commit:       $GITHUB_SHA"
           echo "Run:          $GITHUB_RUN_NUMBER"
-
       # ============================================================
       # FAILURE DIAGNOSTICS
       # ============================================================
