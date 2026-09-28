@@ -22,6 +22,7 @@ extern const lv_image_dsc_t icon_folder_corner;
 extern const lv_image_dsc_t icon_folder_root;
 extern const lv_image_dsc_t icon_file;
 extern const lv_image_dsc_t icon_music_settings;
+extern const lv_image_dsc_t icon_audio_waveform;
 extern const lv_image_dsc_t icon_repeat_all;
 extern const lv_image_dsc_t icon_repeat_one;
 extern const lv_image_dsc_t icon_repeat_off;
