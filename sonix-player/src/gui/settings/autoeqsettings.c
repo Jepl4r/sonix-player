@@ -157,7 +157,17 @@ static void parse_index(const char *text, const char *query, job_t *job) {
 			row[length] = '\0';
 			while (length && isspace((unsigned char)row[length - 1])) row[--length] = '\0';
 			char *start = strstr(row, "- ["), *name_end = start ? strstr(start + 3, "](") : NULL;
-			char *path_end = name_end ? strchr(name_end + 2, ')') : NULL;
+			char *path_end = NULL;
+			if (name_end) {
+				int depth = 1;
+				for (char *p = name_end + 2; *p; p++) {
+					if (*p == '(') depth++;
+					else if (*p == ')' && --depth == 0) {
+						path_end = p;
+						break;
+					}
+				}
+			}
 			if (start && name_end && path_end) {
 				size_t name_len = (size_t)(name_end - start - 3), path_len = (size_t)(path_end - name_end - 2);
 				const char *path = name_end + 2;
