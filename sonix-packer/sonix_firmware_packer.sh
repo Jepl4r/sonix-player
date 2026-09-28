@@ -322,6 +322,19 @@ build_one() {
 	MODEL_N="$(cd "$ASSETS_DIR/$MODEL_DIR" && find . -type f | wc -l | tr -d ' ')"
 	say "    $MODEL_DIR/: $MODEL_N files"
 
+	# The bundled BlueALSA is linked against the unversioned LDAC decoder name
+	# (libldacdec.so), while the stock rootfs carries the decoder as
+	# libldacdec.so.1. Some stock images also contain a stale link into a build
+	# directory, which makes the daemon fail before it can claim org.bluealsa.
+	# Replace that link in the temporary rootfs with one that resolves on the
+	# device. Without this, pairing can succeed but every audio connection is
+	# refused because BlueALSA never starts.
+	if [ -f "$SQUASH_DIR/usr/bin/bluealsa" ] && [ -f "$SQUASH_DIR/usr/lib/libldacdec.so.1" ]; then
+		rm -f "$SQUASH_DIR/usr/lib/libldacdec.so"
+		ln -s "libldacdec.so.1" "$SQUASH_DIR/usr/lib/libldacdec.so"
+		say "    usr/lib/libldacdec.so -> libldacdec.so.1"
+	fi
+
 	# The streaming keys go in sealed, as streaming-keys.bin. One left in the
 	# clear in the assets is not shipped: an image is unpacked by anyone who
 	# downloads it. See tools/seal_streamkeys.py in sonix-player.

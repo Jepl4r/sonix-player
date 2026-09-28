@@ -1275,51 +1275,39 @@ static bool name_is_just_address(const char *name, const char *mac) {
 	}
 }
 
-// The template the firmware keeps at /usr/data/alsa.conf, whose device address
-// the stock player rewrites whenever a sink connects. Kept in step here for the
-// same reason: it is the file the patched bluealsa reads its LDAC and UAT
-// quality settings from.
+// libasound in the stock rootfs is built with /usr/data as its configuration
+// directory, so its main file is /usr/data/alsa.conf rather than the usual
+// /usr/share/alsa/alsa.conf. That path is on the writable userdata mount and
+// hides the copy in the read-only rootfs. Keep a small include there so ALSA
+// still gets the stock hardware and pcm.bluealsa definitions. The latter is
+// parameterized, so the device address belongs in the PCM name and does not
+// need a generated per-device stanza.
 #define BT_ALSA_CONF "/usr/data/alsa.conf"
 
-static void rewrite_alsa_conf(const char *mac) {
-	char before[4096];
-	if (!slurp(BT_ALSA_CONF, before, sizeof(before))) {
-		return; // no template on this firmware; nothing to keep in step
-	}
+static const char BT_ALSA_TEMPLATE[] =
+		"# Sonix Player ALSA configuration.\n"
+		"# libasound uses this file as its main configuration.\n"
+		"</usr/share/alsa/alsa.conf>\n";
 
-	char after[4096];
-	size_t used = 0;
-	char *save = NULL;
-
-	for (char *line = strtok_r(before, "\n", &save); line; line = strtok_r(NULL, "\n", &save)) {
-		char rewritten[256];
-		const char *emit = line;
-
-		if (strncmp(line, "pcm.", 4) == 0) {
-			snprintf(rewritten, sizeof(rewritten), "pcm.bluealsa:DEV=%s {", mac);
-			emit = rewritten;
-		} else {
-			const char *device = strstr(line, "device ");
-			if (device) {
-				int keep = (int)(device - line) + (int)strlen("device ");
-				snprintf(rewritten, sizeof(rewritten), "%.*s%s", keep, line, mac);
-				emit = rewritten;
-			}
-		}
-
-		int written = snprintf(after + used, sizeof(after) - used, "%s\n", emit);
-		if (written < 0 || (size_t)written >= sizeof(after) - used) {
-			return; // would not fit: leave the file exactly as it was
-		}
-		used += (size_t)written;
+static void ensure_alsa_conf(void) {
+	char current[sizeof(BT_ALSA_TEMPLATE) + 64];
+	if (slurp(BT_ALSA_CONF, current, sizeof(current)) && strstr(current, "</usr/share/alsa/alsa.conf>")) {
+		return;
 	}
 
 	FILE *f = fopen(BT_ALSA_CONF, "w");
 	if (!f) {
+		fprintf(stderr, "bluetooth: cannot create %s: %s\n", BT_ALSA_CONF, strerror(errno));
 		return;
 	}
-	fwrite(after, 1, used, f);
+	fputs(BT_ALSA_TEMPLATE, f);
 	fclose(f);
+	fprintf(stderr, "bluetooth: initialized %s\n", BT_ALSA_CONF);
+}
+
+static void rewrite_alsa_conf(const char *mac) {
+	(void)mac;
+	ensure_alsa_conf();
 }
 
 // The bluealsa PCM object is the truth for "is there anything to write to", and
@@ -1407,9 +1395,11 @@ static void refresh_audio_state(void) {
 		// settings out of that file and the choice below can land on LDAC.
 		rewrite_alsa_conf(mac);
 
-		// Then the choice, while nothing is playing yet: making it is a
-		// teardown and a rebuild of the transport.
-		do_auto_codec(mac);
+		// Leave the codec selected by BlueZ/BlueALSA during initial connection.
+		// Selecting LDAC (or another codec) here tears down and rebuilds the
+		// A2DP transport; some headsets, including the Liberty 4 NC, disconnect
+		// while that renegotiation is still settling. Codec changes remain
+		// available through the explicit codec control below.
 
 		// And what came of it. Without this line the player only ever logs its
 		// own side -- "PCM open 96000 Hz S32_LE" -- and says nothing about the
@@ -2858,6 +2848,11 @@ static void *bluetooth_worker(void *arg) {
 // ---------------------------------------------------------------------------
 
 void bluetooth_init(void) {
+	// /usr/data is mounted over the rootfs before this process starts, so the
+	// packaged template may be hidden. Create the writable copy before audio can
+	// open either the default PCM or the parameterized BlueALSA PCM.
+	ensure_alsa_conf();
+
 	if (worker_running) {
 		return;
 	}
