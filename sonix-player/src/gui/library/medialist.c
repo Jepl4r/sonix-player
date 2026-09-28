@@ -1368,7 +1368,11 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 
 	lv_obj_remove_flag(row->button, LV_OBJ_FLAG_HIDDEN);
 	lv_obj_set_y(row->button, index * ROW_PITCH);
-	lv_label_set_text(row->label, name);
+	// An album row is named by its value -- name and key, see library.h -- and
+	// only the name is for reading.
+	char shown[sizeof(((winrow_t *)0)->name)];
+	library_album_title(name, shown, sizeof(shown));
+	lv_label_set_text(row->label, shown);
 	// Decided here and not at construction, because the same panel serves
 	// Artists, Albums and Genres in turn: only the bind knows which list is
 	// loaded right now.
@@ -2971,7 +2975,7 @@ static void menu_btn_cb(lv_event_t *e) {
 	menu_index = index;
 
 	menu_album[0] = '\0';
-	if (!library_track_album(menu_path, menu_album, sizeof(menu_album))) {
+	if (!library_track_album_value(menu_path, menu_album, sizeof(menu_album))) {
 		menu_album[0] = '\0';
 	}
 
@@ -2996,7 +3000,7 @@ static void menu_btn_cb(lv_event_t *e) {
 
 	// Only when there is an album to show, and not when this list already IS
 	// that album: offering to open the page already on screen is noise.
-	if (menu_album[0] && !(p->filter == LIBRARY_FILTER_ALBUM && strcmp(p->filter_value, menu_album) == 0)) {
+	if (menu_album[0] && !(p->filter == LIBRARY_FILTER_ALBUM && library_album_same(p->filter_value, menu_album))) {
 		items[n++] = (popover_item_t){"show_album", menu_album_action, NULL};
 	}
 
@@ -3350,7 +3354,9 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	p->filter = filter;
 	p->from_paths = false;
 	snprintf(p->filter_value, sizeof(p->filter_value), "%s", filter_value ? filter_value : "");
-	snprintf(p->title, sizeof(p->title), "%s", title ? title : "");
+	// Callers hand an album's value in as its title as well; the heading shows
+	// the name.
+	library_album_title(title, p->title, sizeof(p->title));
 	if (kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM) {
 		library_album_artist(p->filter_value, p->album_artist, sizeof(p->album_artist));
 	} else {
@@ -3364,7 +3370,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	bool same_list = strcmp(signature, p->signature) == 0;
 	snprintf(p->signature, sizeof(p->signature), "%s", signature);
 
-	lv_label_set_text(p->title_label, title ? title : "");
+	lv_label_set_text(p->title_label, p->title);
 
 	// Which of the corner buttons this list has a use for.
 	//

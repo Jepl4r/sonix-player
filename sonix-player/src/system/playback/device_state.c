@@ -562,7 +562,9 @@ static void restore_queue_album(void) {
 	char album[256];
 	if (library_queue_load_album(album, (int)sizeof(album))) {
 		playlist_set_album(album);
-		fprintf(stderr, "queue: the restored queue is the record \"%s\"\n", album);
+		char shown[sizeof(album)];
+		library_album_title(album, shown, sizeof(shown));
+		fprintf(stderr, "queue: the restored queue is the record \"%s\"\n", shown);
 	}
 	playlist_note_album_restored();
 }
@@ -850,7 +852,7 @@ static bool album_walk_cb(const char *name, const char *path, const char *artist
 	if (w->seen_current && !w->found_next) {
 		snprintf(w->next, sizeof(w->next), "%s", name);
 		w->found_next = true;
-	} else if (!w->seen_current && strcmp(name, w->current) == 0) {
+	} else if (!w->seen_current && library_album_same(name, w->current)) {
 		// Whatever came immediately before is the previous record; nothing
 		// before it means the current one is the first, and the wrap uses
 		// `last` instead.
@@ -860,7 +862,7 @@ static bool album_walk_cb(const char *name, const char *path, const char *artist
 		}
 	}
 
-	if (strcmp(name, w->current) == 0) {
+	if (library_album_same(name, w->current)) {
 		w->seen_current = true;
 	}
 	snprintf(w->last, sizeof(w->last), "%s", name);
@@ -910,13 +912,13 @@ static bool play_album_beside(const char *album, bool forward) {
 	if (forward) {
 		if (walk.found_next) {
 			wanted = walk.next;
-		} else if (walk.first[0] && strcmp(walk.first, album) != 0) {
+		} else if (walk.first[0] && !library_album_same(walk.first, album)) {
 			wanted = walk.first; // the current record was the last: round to the top
 		}
 	} else {
 		if (walk.found_prev) {
 			wanted = walk.prev;
-		} else if (walk.last[0] && strcmp(walk.last, album) != 0) {
+		} else if (walk.last[0] && !library_album_same(walk.last, album)) {
 			wanted = walk.last; // the current record was the first: round to the bottom
 		}
 	}
@@ -933,8 +935,9 @@ static bool play_album_beside(const char *album, bool forward) {
 		device_state_play_list((const char *const *)tracks.paths, tracks.count,
 							   forward ? 0 : tracks.count - 1);
 		playlist_set_album(wanted); // so the record beyond that one can follow too
-		fprintf(stderr, "album: %s \"%s\" (%d tracks)\n", forward ? "on to" : "back to", wanted,
-				tracks.count);
+		char shown[256];
+		library_album_title(wanted, shown, sizeof(shown));
+		fprintf(stderr, "album: %s \"%s\" (%d tracks)\n", forward ? "on to" : "back to", shown, tracks.count);
 		started = true;
 	}
 

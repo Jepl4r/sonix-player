@@ -128,9 +128,33 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 // False when the file is not in the index; `out` untouched then.
 bool library_track_title(const char *path, char *out, size_t out_size);
 
-// The album a track belongs to, for the "Show album" menu item. False when
-// the file is not indexed or carries no album tag.
+// An album is its name AND whose it is: two records called "Greatest Hits" by
+// two different artists are two albums. Whose is the album artist, the artist
+// on a file that has no album artist, and the folder on a file that has
+// neither.
+//
+// Everything that names one album -- a row of the Albums list, the value a
+// track list is filtered by, the record a queue remembers -- carries both, as
+// the name, this separator and a short key. A value without the separator is
+// a name alone and matches every album of that name, which is what a value
+// saved before albums were told apart still means.
+#define LIBRARY_ALBUM_KEY_SEP '\x1f'
+
+// The part of such a value a person reads: the name, without the key.
+void library_album_title(const char *value, char *out, size_t size);
+
+// Whether two album values name the same record. A name alone matches either
+// form of it, so a record remembered before albums were told apart is still
+// found.
+bool library_album_same(const char *a, const char *b);
+
+// The album a track belongs to, as its name. False when the file is not
+// indexed or carries no album tag.
 bool library_track_album(const char *path, char *out, size_t out_size);
+
+// The same album as a value that names the record and not every album of its
+// name: what "Show album" opens.
+bool library_track_album_value(const char *path, char *out, size_t out_size);
 
 // Finds indexed tracks by file name alone -- the whole batch in one pass over
 // the table, because a name without its folders cannot use an index and would
@@ -152,7 +176,7 @@ bool library_track_names(const char *path, char *title_out, size_t title_size, c
 
 // The artist an album is credited to: the album artist of its first track, or
 // that track's artist when it has none -- the name the album list shows. False
-// when the album has no tracks.
+// when the album has no tracks. `album` is an album value (see above).
 bool library_album_artist(const char *album, char *out, size_t size);
 
 // --- Audio quality ---

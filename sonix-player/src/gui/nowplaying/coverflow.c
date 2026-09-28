@@ -1006,7 +1006,10 @@ static void relayout(void) {
 
 static void refresh_title(void) {
 	const cf_row_t *album = album_at(centre);
-	scrolltext_set(title_label, album ? album->name : "");
+	// The row's name is the album's value (name and key, see library.h).
+	char shown[256];
+	library_album_title(album ? album->name : "", shown, sizeof(shown));
+	scrolltext_set(title_label, shown);
 	if (album_count <= 0) {
 		lv_obj_remove_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
 	} else {
@@ -1207,7 +1210,9 @@ static void back_fill(const char *album) {
 	lv_obj_clean(back_list);
 	back_close_index();
 	snprintf(back_album, sizeof(back_album), "%s", album ? album : "");
-	lv_label_set_text(back_title, back_album);
+	char shown[sizeof(back_album)];
+	library_album_title(back_album, shown, sizeof(shown));
+	lv_label_set_text(back_title, shown);
 	lv_label_set_text(back_sub, "");
 	if (!back_album[0]) {
 		return;

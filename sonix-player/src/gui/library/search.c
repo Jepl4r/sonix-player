@@ -268,7 +268,10 @@ static void make_row(const char *name, const lv_image_dsc_t *glyph, lv_event_cb_
 	}
 
 	lv_obj_t *label = lv_label_create(row);
-	lv_label_set_text(label, name);
+	// An album comes named by its value (name and key, see library.h).
+	char shown[256];
+	library_album_title(name, shown, sizeof(shown));
+	lv_label_set_text(label, shown);
 	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 	lv_obj_set_flex_grow(label, 1);
 	lv_obj_set_height(label, 30);
