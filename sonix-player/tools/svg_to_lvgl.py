@@ -10,6 +10,13 @@ new one is added:
     pip install cairosvg pillow
     python3 tools/svg_to_lvgl.py
 
+It also writes build_gen/icons-<num>-<den>.bin for every scale other than 1:1
+that a model in src/system/device/sysinfo.c is laid out at (its ui_scale_num
+and ui_scale_den, see src/gui/shell/uiscale.h): every icon again, drawn at that
+scale. A set goes beside the other resources (usr/resource/sonix/) on the
+players with that scale alone, and icons_load_scaled() swaps it in at startup;
+no other player carries it, in the binary or on disk.
+
 Two kinds of icon come out of this:
 
   * SVGs are emitted as ARGB8888 *white* shapes. The colour comes from LVGL at
@@ -29,11 +36,43 @@ except ImportError:
     sys.exit("needs cairosvg and pillow: pip install cairosvg pillow")
 
 import io
+import re
+import struct
 
 REPO_ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 ICON_DIR = os.path.join(REPO_ROOT, "assets", "icons")
 OUT_C = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons.c")
 OUT_H = os.path.join(REPO_ROOT, "src", "gui", "shell", "icons.h")
+
+# The scaled sets: which scales come from the models, and each is written to
+# OUT_BIN % (num, den). Their layout is read by src/gui/shell/iconscale.c,
+# which says what each field is for.
+SYSINFO_C = os.path.join(REPO_ROOT, "src", "system", "device", "sysinfo.c")
+OUT_BIN = os.path.join(REPO_ROOT, "build_gen", "icons-%d-%d.bin")
+BIN_MAGIC = b"SXIC"
+BIN_VERSION = 1
+
+
+def model_scales():
+    """The (num, den) of every model in sysinfo.c's MODELS[] laid out at other
+    than 1:1, once each. A model gives both or neither: one without the other
+    is a mistake in sysinfo.c, and the script stops on it rather than guess."""
+    with open(SYSINFO_C) as f:
+        text = f.read()
+    table = re.search(r"MODELS\[\]\s*=\s*\{(.*?)\n\};", text, re.S)
+    if not table:
+        sys.exit("no MODELS[] table in %s" % SYSINFO_C)
+    scales = []
+    for model in re.split(r"\n\t\},", table.group(1)):
+        num = re.search(r"\.ui_scale_num\s*=\s*(\d+)", model)
+        den = re.search(r"\.ui_scale_den\s*=\s*(\d+)", model)
+        if bool(num) != bool(den):
+            sys.exit("%s: a model has ui_scale_num or ui_scale_den but not both" % SYSINFO_C)
+        if num:
+            scale = (int(num.group(1)), int(den.group(1)))
+            if scale[0] > 0 and scale[1] > 0 and scale[0] != scale[1] and scale not in scales:
+                scales.append(scale)
+    return scales
 
 # (svg file, C identifier, pixel size).
 #
@@ -434,14 +473,18 @@ def render(svg_path, size):
 
 
 def render_color(path, size):
-    """PNG or SVG -> list of BGRA bytes with the original colours kept."""
+    """PNG or SVG -> list of BGRA bytes with the original colours kept.
+
+    `size` is a side or a (width, height), as for render().
+    """
+    width, height = size if isinstance(size, tuple) else (size, size)
     if path.lower().endswith(".svg"):
-        png = cairosvg.svg2png(url=path, output_width=size, output_height=size)
+        png = cairosvg.svg2png(url=path, output_width=width, output_height=height)
         img = Image.open(io.BytesIO(png)).convert("RGBA")
     else:
         img = Image.open(path).convert("RGBA")
-    if img.size != (size, size):
-        img = img.resize((size, size), Image.LANCZOS)
+    if img.size != (width, height):
+        img = img.resize((width, height), Image.LANCZOS)
 
     raw = img.tobytes()  # RGBA, 4 bytes per pixel
     out = bytearray()
@@ -449,6 +492,23 @@ def render_color(path, size):
         # LVGL's ARGB8888 is stored blue, green, red, alpha in memory.
         out += bytes((raw[i + 2], raw[i + 1], raw[i], raw[i + 3]))
     return bytes(out), img.width, img.height
+
+
+def scaled(size, num, den):
+    """A side or a (width, height) at num/den, rounded the way ui_px() rounds."""
+    def one(v):
+        return (v * num + den // 2) // den
+    return (one(size[0]), one(size[1])) if isinstance(size, tuple) else one(size)
+
+
+def list_hash(names_sizes):
+    """FNV-1a over the names and sizes, in order: a set drawn from another list
+    of icons than the binary's is refused rather than shown in the wrong places."""
+    h = 0x811C9DC5
+    for name, w, h_px in names_sizes:
+        for b in ("%s:%d:%d\n" % (name, w, h_px)).encode():
+            h = ((h ^ b) * 0x01000193) & 0xFFFFFFFF
+    return h
 
 
 def c_array(data, per_line=12):
@@ -462,6 +522,9 @@ def c_array(data, per_line=12):
 def main():
     parts_c = []
     parts_h = []
+    listed = []  # (name, w, h) of every icon, in the order of icons_all[]
+    scales = model_scales()
+    small = {scale: [] for scale in scales}  # (w, h, data) of the same icons at each scale
 
     entries = [(f, n, s, False) for f, n, s in ICONS]
     entries += [(f, n, size, True) for f, n, size in COLOR_ICONS]
@@ -472,11 +535,16 @@ def main():
             sys.exit("missing icon: %s" % path)
 
         data, w, h = render_color(path, size) if keep_colour else render(path, size)
+        listed.append((name, w, h))
+        for num, den in scales:
+            ssize = scaled(size, num, den)
+            sdata, sw, sh = render_color(path, ssize) if keep_colour else render(path, ssize)
+            small[(num, den)].append((sw, sh, sdata))
 
         parts_c.append(
             "// %s, %dx%d\n"
             "static const uint8_t icon_%s_data[] = {\n%s\n};\n\n"
-            "const lv_image_dsc_t icon_%s = {\n"
+            "lv_image_dsc_t icon_%s = {\n"
             "\t.header = {\n"
             "\t\t.magic = LV_IMAGE_HEADER_MAGIC,\n"
             "\t\t.cf = LV_COLOR_FORMAT_ARGB8888,\n"
@@ -489,7 +557,7 @@ def main():
             "};\n"
             % (filename, w, h, name, c_array(data), name, w, h, w * 4, name, name)
         )
-        parts_h.append("extern const lv_image_dsc_t icon_%s;" % name)
+        parts_h.append("extern lv_image_dsc_t icon_%s;" % name)
 
     header = (
         "/*\n"
@@ -504,15 +572,42 @@ def main():
         f.write(header)
         f.write('#include "icons.h"\n\n#include <stdint.h>\n\n')
         f.write("\n".join(parts_c))
+        f.write("\nlv_image_dsc_t *const icons_all[ICONS_COUNT] = {\n%s\n};\n"
+                % "\n".join("\t&icon_%s," % name for name, _, _ in listed))
 
+    hashed = list_hash(listed)
     with open(OUT_H, "w") as f:
         f.write(header)
         f.write("#ifndef ICONS_H\n#define ICONS_H\n\n")
         f.write('#include "lvgl/lvgl.h"\n\n')
         f.write("\n".join(parts_h))
-        f.write("\n\n#endif // ICONS_H\n")
+        f.write(
+            "\n\n// Every icon above, in the order of the scaled sets (iconscale.h), and\n"
+            "// what tells a set drawn from this list from one drawn from another.\n"
+            "#define ICONS_COUNT %d\n"
+            "#define ICONS_LIST_HASH 0x%08xu\n"
+            "extern lv_image_dsc_t *const icons_all[ICONS_COUNT];\n" % (len(listed), hashed)
+        )
+        f.write("\n#endif // ICONS_H\n")
 
-    print("wrote %s and %s" % (OUT_C, OUT_H))
+    # Header, one entry per icon, then the pixels, each one starting on a
+    # 4-byte boundary (every size is w * h * 4, so they all do). Little-endian,
+    # as both the players and the simulator are.
+    written = [OUT_C, OUT_H]
+    for (num, den), icons in small.items():
+        head = struct.pack("<4sIIIHH", BIN_MAGIC, BIN_VERSION, len(icons), hashed, num, den)
+        offset = len(head) + 12 * len(icons)
+        table = b""
+        for sw, sh, sdata in icons:
+            table += struct.pack("<HHII", sw, sh, offset, len(sdata))
+            offset += len(sdata)
+        out = OUT_BIN % (num, den)
+        os.makedirs(os.path.dirname(out), exist_ok=True)
+        with open(out, "wb") as f:
+            f.write(head + table + b"".join(sdata for _, _, sdata in icons))
+        written.append(out)
+
+    print("wrote " + ", ".join(written))
 
 
 if __name__ == "__main__":

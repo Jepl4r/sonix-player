@@ -20,6 +20,7 @@
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/iconscale.h"
 #include "src/gui/shell/uiscale.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
@@ -1885,6 +1886,11 @@ int main(int argc, char **argv) {
 		const sysinfo_model_t *model = sysinfo_model();
 		if (model && model->ui_scale_num > 0 && model->ui_scale_den > 0) {
 			ui_scale_set(model->ui_scale_num, model->ui_scale_den);
+			// The icons are bitmaps, drawn at one scale each: this one's
+			// come from a file of their own (iconscale.h).
+			if (model->ui_scale_num != model->ui_scale_den) {
+				icons_load_scaled(model->ui_scale_num, model->ui_scale_den);
+			}
 		}
 	}
 
