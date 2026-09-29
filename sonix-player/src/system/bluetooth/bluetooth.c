@@ -1279,19 +1279,29 @@ static bool name_is_just_address(const char *name, const char *mac) {
 // directory, so its main file is /usr/data/alsa.conf rather than the usual
 // /usr/share/alsa/alsa.conf. That path is on the writable userdata mount and
 // hides the copy in the read-only rootfs. Keep a small include there so ALSA
-// still gets the stock hardware and pcm.bluealsa definitions. The latter is
-// parameterized, so the device address belongs in the PCM name and does not
-// need a generated per-device stanza.
+// still gets the stock hardware and pcm.bluealsa definitions. The stock
+// pcm.default points at cards.pcm.default, whose data files libasound looks
+// for under /usr/data/cards rather than /usr/share/alsa/cards. Define the
+// wired default directly so the jacks work without those missing files.
 #define BT_ALSA_CONF "/usr/data/alsa.conf"
 
 static const char BT_ALSA_TEMPLATE[] =
 		"# Sonix Player ALSA configuration.\n"
 		"# libasound uses this file as its main configuration.\n"
-		"</usr/share/alsa/alsa.conf>\n";
+		"</usr/share/alsa/alsa.conf>\n"
+		"pcm.!default {\n"
+		"\ttype plug\n"
+		"\tslave.pcm \"hw:0,0\"\n"
+		"}\n"
+		"ctl.!default {\n"
+		"\ttype hw\n"
+		"\tcard 0\n"
+		"}\n";
 
 static void ensure_alsa_conf(void) {
 	char current[sizeof(BT_ALSA_TEMPLATE) + 64];
-	if (slurp(BT_ALSA_CONF, current, sizeof(current)) && strstr(current, "</usr/share/alsa/alsa.conf>")) {
+	if (slurp(BT_ALSA_CONF, current, sizeof(current)) &&
+		strstr(current, "</usr/share/alsa/alsa.conf>") && strstr(current, "slave.pcm \"hw:0,0\"")) {
 		return;
 	}
 
