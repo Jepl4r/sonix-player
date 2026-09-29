@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stddef.h>
 
+#include "src/system/streaming/podcast.h"
+
 // Podcast episodes downloaded to the card and then played like any other file.
 //
 // The third twin of qobuzcache.h and tidalcache.h, and the reasons for
@@ -93,6 +95,7 @@ void podcastcache_abandon_all(void);
 
 // The id of the episode downloading right now (0 = none).
 long long podcastcache_downloading_id(void);
+int podcastcache_progress_percent(long long episode_id);
 
 // "Podcasts need the network", even when nothing is downloading at this
 // instant: between one episode and the next there is a window with no download
@@ -127,7 +130,7 @@ const char *podcastcache_dir(void);
 // (ensure_cover, from the loader).
 void podcastcache_write_sidecars(long long episode_id, const char *mime, const char *title, const char *feed_title,
 								 long long feed_id, const char *feed_author, const char *feed_image,
-								 const char *cover_url, bool fetch_cover_now);
+								 const char *cover_url, long published, int duration_secs, bool fetch_cover_now);
 
 // The episode cover, fetched when the episode's turn comes: if the jpg beside
 // the file is not there yet, it is downloaded now from the tags' cover_url (or
@@ -156,6 +159,10 @@ long long podcastcache_episode_id(const char *path);
 #define PODCASTCACHE_CLEAR_EVERY 10
 void podcastcache_note_played(const char *path);
 
+// Episode IDs that have reached at least half their length, kept on the card.
+bool podcastcache_is_listened(long long episode_id);
+void podcastcache_note_position(const char *path, double seconds, double total);
+
 // Queued episodes the pruning must not touch.
 #define PODCASTCACHE_PROTECTED_MAX 64
 void podcastcache_set_protected(const char *const *paths, int count);
@@ -164,6 +171,15 @@ void podcastcache_set_protected(const char *const *paths, int count);
 void podcastcache_clear_on_exit(void);
 
 long long podcastcache_bytes(void);
+long long podcastcache_saved_bytes(void);
+long long podcastcache_temporary_bytes(void);
+bool podcastcache_is_saved(long long episode_id);
+bool podcastcache_is_pending(long long episode_id);
+bool podcastcache_set_saved(long long episode_id, bool saved);
+bool podcastcache_remove_download(long long episode_id);
+int podcastcache_saved_episodes(podcast_episode_t *out, int max);
+void podcastcache_clear_temporary(void);
+void podcastcache_clear_downloads(void);
 void podcastcache_clear(void);
 
 #endif /* PODCASTCACHE_H */

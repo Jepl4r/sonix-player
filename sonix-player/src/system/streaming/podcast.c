@@ -32,6 +32,13 @@ static void set_error(const char *what) { snprintf(last_error, sizeof(last_error
 
 bool podcast_configured(void) { return streamkeys_podcast_key() && streamkeys_podcast_secret(); }
 
+bool podcast_oldest_first(void) { return config_get_bool("podcast", "oldest_first", false); }
+
+void podcast_set_oldest_first(bool oldest_first) {
+	config_set_bool("podcast", "oldest_first", oldest_first);
+	config_save();
+}
+
 // The ceiling the directory accepts for `max`: a thousand, per its docs. The
 // lists ask for more than one screenful at a time when scrolled to the bottom,
 // since the directory has no offset, so the right limit here is the API's and

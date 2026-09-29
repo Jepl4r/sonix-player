@@ -6,6 +6,7 @@
 #include <string.h>
 #include <time.h>
 #include <malloc.h>
+#include <sys/stat.h>
 
 #include "src/gui/fonts/fonts.h"
 #include "src/system/playback/sleeptimer.h"
@@ -13,6 +14,7 @@
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/popover.h"
+#include "src/gui/shell/confirm.h"
 #include "src/gui/streaming/qobuzart.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
@@ -69,6 +71,7 @@ lv_obj_t *podcast_list_screen; // the same object: see podcastpage.h
 #define list_screen podcast_screen
 static lv_obj_t *search_screen;
 static lv_obj_t *settings_screen;
+static lv_obj_t *storage_screen;
 
 static lv_obj_t *busy_layer;
 static lv_obj_t *busy_label;
@@ -82,6 +85,7 @@ static lv_obj_t *settings_btn;
 static lv_obj_t *pill_row;
 static lv_obj_t *pill_followed;
 static lv_obj_t *pill_trending;
+static lv_obj_t *pill_downloads;
 
 // The notice that takes the list's place when the section cannot work: the
 // keys are missing, or the Wi-Fi is.
@@ -99,7 +103,9 @@ typedef enum {
 	JOB_TRENDING, // the current chart
 	JOB_EPISODES, // one podcast's episodes
 	JOB_FOLLOWED, // the followed podcasts, which live on the card
+	JOB_DOWNLOADS, // saved episodes from the card; works offline
 	JOB_PLAY,	  // download an episode and start it
+	JOB_DOWNLOAD,  // save or remove the episode at the tapped row
 } job_kind_t;
 
 typedef struct {
@@ -107,6 +113,8 @@ typedef struct {
 	char text[160];	 // the query, or the title the list will carry
 	long long id;	 // the podcast's or the episode's id (64 bit: see podcast.h)
 	int index;		 // for JOB_PLAY: which row was tapped
+	bool download_library; // queue only saved episodes from this feed
+	bool retry_download;
 	int want;		 // how many entries in all; 0 means one page
 	// Whether this is the SAME list continuing rather than a new one. Set only
 	// by the paging at the bottom of the list, never inferred from `want`: a
@@ -143,6 +151,30 @@ static char result_title[160];
 // was still being drawn.
 static bool result_pending;
 
+// One feed-wide download at a time. This thread never touches the list arrays:
+// the user can keep browsing while it downloads episodes in the background.
+static pthread_mutex_t batch_lock = PTHREAD_MUTEX_INITIALIZER;
+static bool batch_active;
+static bool batch_cancel;
+static long long batch_feed_id;
+static long long batch_episode_id;
+static int batch_done;
+static int batch_total;
+
+typedef struct {
+	podcast_feed_t feed;
+	int target_new; // 0 = every episode returned by the catalogue
+} batch_request_t;
+
+typedef struct {
+	int done;
+	int failed;
+	bool cancelled;
+	bool limited;
+	bool no_new;
+	char error[192];
+} batch_result_t;
+
 // Kept for the heading, whose reserved width follows the corner buttons.
 static gui_config_t *g_cfg;
 
@@ -150,9 +182,11 @@ static void *worker_main(void *arg);
 static void refresh_page_state(void);
 static bool refresh_notes(void);
 static void refresh_corner_buttons(void);
+static void run_home_view(job_kind_t kind);
 static bool network_up(void);
 static void paint_pill(lv_obj_t *btn, bool on);
 static void row_clicked_cb(lv_event_t *e);
+static bool kind_has_episodes(job_kind_t kind);
 static bool job_is_list(job_kind_t kind);
 static void list_nav_drop(void);
 static void list_nav_commit(void);
@@ -286,6 +320,8 @@ typedef struct {
 	lv_obj_t *title;
 	lv_obj_t *detail;
 	lv_obj_t *menu_btn;
+	lv_obj_t *download_btn;
+	lv_obj_t *download_icon;
 	// The entry drawn on it: -1 for a row with nothing to show, and -2 for one
 	// that must be redrawn even though its number has not changed -- the list
 	// reloaded underneath it to the same length.
@@ -301,6 +337,7 @@ static lv_obj_t *list_body;
 
 static char row_cover_url[PODCAST_MAX_HELD][QOBUZART_URL_MAX];
 static cover_image_t row_images[PODCAST_MAX_HELD];
+static cover_image_t gray_images[PODCAST_MAX_HELD];
 static bool row_has_image[PODCAST_MAX_HELD];
 
 // Which row the picture on this one belongs to, or -1 for a row showing the
@@ -376,7 +413,29 @@ static void paint_thumb(lv_obj_t *thumb, int index) {
 		lv_obj_set_style_image_recolor_opa(thumb, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_radius(thumb, 6, 0);
 		lv_obj_set_style_clip_corner(thumb, true, 0);
-		lv_image_set_src(thumb, &row_images[row_image_source[index]].dsc);
+		int owner = row_image_source[index];
+		bool listened = kind_has_episodes(list_kind) && podcastcache_is_listened(result_episodes[index].id);
+		if (listened && !gray_images[owner].pixels && row_images[owner].dsc.header.cf == LV_COLOR_FORMAT_RGB565) {
+			const cover_image_t *src = &row_images[owner];
+			size_t bytes = src->dsc.data_size;
+			uint8_t *pixels = malloc(bytes);
+			if (pixels) {
+				memcpy(pixels, src->pixels, bytes);
+				uint16_t *rgb = (uint16_t *)pixels;
+				for (size_t p = 0; p < bytes / sizeof(uint16_t); p++) {
+					uint16_t c = rgb[p];
+					unsigned r = ((c >> 11) & 31) * 255 / 31;
+					unsigned g = ((c >> 5) & 63) * 255 / 63;
+					unsigned b = (c & 31) * 255 / 31;
+					unsigned y = (77 * r + 150 * g + 29 * b) >> 8;
+					rgb[p] = ((y * 31 / 255) << 11) | ((y * 63 / 255) << 5) | (y * 31 / 255);
+				}
+				gray_images[owner].dsc = src->dsc;
+				gray_images[owner].pixels = pixels;
+				gray_images[owner].dsc.data = pixels;
+			}
+		}
+		lv_image_set_src(thumb, listened && gray_images[owner].pixels ? &gray_images[owner].dsc : &row_images[owner].dsc);
 		return;
 	}
 	// The microphone, not the musical note: a podcast row without a cover is
@@ -471,6 +530,7 @@ static void art_poll_cb(lv_timer_t *timer) {
 		}
 
 		cover_free(&row_images[row]);
+		cover_free(&gray_images[row]);
 		row_images[row] = image;
 		show_cover(row, row);
 		lend_cover(row);
@@ -529,13 +589,29 @@ static void art_request_visible(void) {
 
 		slot_owner[free_slot] = row;
 		art_wake();
-		qobuzart_request(&podcast_art_owner, free_slot, row_cover_url[row], ROW_THUMB);
+		bool loaded_local = false;
+		if (list_kind == JOB_DOWNLOADS && podcastcache_is_saved(result_episodes[row].id)) {
+			char audio[512], local_cover[560];
+			if (podcastcache_find(result_episodes[row].id, audio, sizeof(audio))) {
+				const char *dot = strrchr(audio, '.');
+				int n = snprintf(local_cover, sizeof(local_cover), "%.*s.jpg",
+							 dot ? (int)(dot - audio) : (int)strlen(audio), audio);
+				struct stat st;
+				if (n > 0 && (size_t)n < sizeof(local_cover) && stat(local_cover, &st) == 0 && st.st_size > 0) {
+					qobuzart_request_file(&podcast_art_owner, free_slot, local_cover, ROW_THUMB);
+					loaded_local = true;
+				}
+			}
+		}
+		if (!loaded_local) qobuzart_request(&podcast_art_owner, free_slot, row_cover_url[row], ROW_THUMB);
 	}
 }
 
 static void maybe_load_more(void);
 static void row_detail(int index, char *out, size_t size);
 static bool kind_has_row_menu(job_kind_t kind);
+static void refresh_download_buttons(void);
+static void download_clicked_cb(lv_event_t *e);
 
 // Puts entry `index` on one pooled widget, or hides it when there is no entry.
 // Nothing is created here: the widgets were built once and only ever change
@@ -569,7 +645,7 @@ static void row_bind(row_t *row, int index) {
 	lv_obj_set_y(row->button, index * ROW_PITCH);
 
 	const char *title =
-		list_kind == JOB_EPISODES ? result_episodes[index].title : result_feeds[index].title;
+		kind_has_episodes(list_kind) ? result_episodes[index].title : result_feeds[index].title;
 	lv_label_set_text(row->title, title);
 
 	char detail[200];
@@ -589,8 +665,23 @@ static void row_bind(row_t *row, int index) {
 	} else {
 		lv_obj_add_flag(row->menu_btn, LV_OBJ_FLAG_HIDDEN);
 	}
+	if (kind_has_episodes(list_kind)) {
+		lv_obj_remove_flag(row->download_btn, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(row->download_btn, LV_OBJ_FLAG_HIDDEN);
+	}
 
 	paint_thumb(row->thumb, index);
+	if (kind_has_episodes(list_kind)) {
+		long long id = result_episodes[index].id;
+		bool saved = podcastcache_is_saved(id);
+		bool pending_download = podcastcache_is_pending(id) || podcastcache_downloading_id() == id;
+		int progress = podcastcache_progress_percent(id);
+		lv_image_set_src(row->download_icon, saved ? &icon_circle_check : progress >= 0 ? &icon_loader_small : &icon_import);
+		lv_obj_set_style_image_recolor_opa(row->download_icon, LV_OPA_COVER, 0);
+		lv_obj_set_style_image_recolor(row->download_icon,
+									   saved || pending_download ? theme()->accent : theme()->text_secondary, 0);
+	}
 }
 
 // Slides the pool to wherever the list has been scrolled to.
@@ -652,6 +743,7 @@ static void art_forget_rows(void) {
 		// Only an owner has pixels of its own; a row that borrowed one holds a
 		// zeroed image, and freeing that is nothing.
 		cover_free(&row_images[row]);
+		cover_free(&gray_images[row]);
 	}
 }
 
@@ -670,6 +762,7 @@ static void art_drop_pictures(void) {
 		row_has_image[row] = false;
 		row_image_source[row] = -1;
 		cover_free(&row_images[row]);
+		cover_free(&gray_images[row]);
 	}
 	// Back to the microphone, after the state says there is no picture and
 	// before anything can draw the freed pixels.
@@ -710,6 +803,9 @@ static void list_loaded_cb(lv_event_t *e) {
 	// when nothing was dropped: every row still holding its picture is skipped.
 	art_wake();
 	window_update();
+	for (int i = 0; i < ROW_POOL; i++) {
+		if (rows[i].index >= 0) paint_thumb(rows[i].thumb, rows[i].index);
+	}
 }
 
 static void list_unloaded_cb(lv_event_t *e) {
@@ -730,6 +826,8 @@ static void list_unloaded_cb(lv_event_t *e) {
 static bool kind_has_row_menu(job_kind_t kind) {
 	return kind == JOB_SEARCH || kind == JOB_TRENDING || kind == JOB_FOLLOWED;
 }
+
+static bool kind_has_episodes(job_kind_t kind) { return kind == JOB_EPISODES || kind == JOB_DOWNLOADS; }
 
 static void row_menu_cb(lv_event_t *e);
 
@@ -812,6 +910,20 @@ static void build_rows(int width) {
 		lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
 		lv_obj_center(dots);
 
+		row->download_btn = lv_btn_create(row->button);
+		lv_obj_set_size(row->download_btn, 44, 44);
+		lv_obj_set_style_bg_opa(row->download_btn, LV_OPA_TRANSP, 0);
+		lv_obj_set_style_border_width(row->download_btn, 0, 0);
+		lv_obj_set_style_shadow_width(row->download_btn, 0, 0);
+		lv_obj_set_style_pad_all(row->download_btn, 0, 0);
+		lv_obj_add_flag(row->download_btn, LV_OBJ_FLAG_HIDDEN);
+		lv_obj_add_event_cb(row->download_btn, download_clicked_cb, LV_EVENT_CLICKED, NULL);
+		row->download_icon = lv_image_create(row->download_btn);
+		lv_image_set_src(row->download_icon, &icon_import);
+		lv_obj_add_style(row->download_icon, &theme_style_icon, 0);
+		lv_obj_set_style_image_recolor_opa(row->download_icon, LV_OPA_COVER, 0);
+		lv_obj_center(row->download_icon);
+
 		row->index = -1;
 	}
 }
@@ -835,6 +947,35 @@ static int menu_index_of(const lv_obj_t *menu_btn) {
 		}
 	}
 	return -1;
+}
+
+static int download_index_of(const lv_obj_t *download_btn) {
+	for (int i = 0; i < ROW_POOL; i++) {
+		if (rows[i].download_btn == download_btn) return rows[i].index;
+	}
+	return -1;
+}
+
+static void refresh_download_buttons(void) {
+	if (!kind_has_episodes(list_kind)) return;
+	for (int i = 0; i < ROW_POOL; i++) {
+		row_t *row = &rows[i];
+		int index = row->index;
+		if (index < 0 || index >= list_count) continue;
+		long long id = result_episodes[index].id;
+		bool saved = podcastcache_is_saved(id);
+		bool pending_download = podcastcache_is_pending(id) || podcastcache_downloading_id() == id;
+		int progress = podcastcache_progress_percent(id);
+		lv_image_set_src(row->download_icon, saved ? &icon_circle_check : progress >= 0 ? &icon_loader_small : &icon_import);
+		lv_obj_set_style_image_recolor_opa(row->download_icon, LV_OPA_COVER, 0);
+		lv_obj_set_style_image_recolor(row->download_icon,
+									   saved || pending_download ? theme()->accent : theme()->text_secondary, 0);
+		char detail[200];
+		row_detail(index, detail, sizeof(detail));
+		lv_label_set_text(row->detail, detail);
+		if (detail[0]) lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_HIDDEN);
+		else lv_obj_add_flag(row->detail, LV_OBJ_FLAG_HIDDEN);
+	}
 }
 
 // "1 h 12 min", "43 min", "" when the catalogue does not say.
@@ -879,12 +1020,22 @@ static void row_detail(int index, char *out, size_t size) {
 	if (index < 0 || index >= list_count) {
 		return;
 	}
-	if (list_kind == JOB_EPISODES) {
+	if (kind_has_episodes(list_kind)) {
 		const podcast_episode_t *e = &result_episodes[index];
 		char when[48];
 		char duration[32];
 		format_date(e->published, when, sizeof(when));
 		format_duration(e->duration_secs, duration, sizeof(duration));
+		int progress = podcastcache_progress_percent(e->id);
+		if (podcastcache_is_pending(e->id)) {
+			if (progress >= 0) {
+				const char *separator = when[0] && duration[0] ? " · " : "";
+				snprintf(out, size, "%s%s%s%d%%", when, separator, duration, progress);
+			} else {
+				snprintf(out, size, "%s", tr("podcast_download_incomplete"));
+			}
+			return;
+		}
 		if (when[0] && duration[0]) {
 			snprintf(out, size, "%s \xC2\xB7 %s", when, duration);
 		} else {
@@ -893,6 +1044,15 @@ static void row_detail(int index, char *out, size_t size) {
 		return;
 	}
 	const podcast_feed_t *f = &result_feeds[index];
+	pthread_mutex_lock(&batch_lock);
+	bool downloading_feed = batch_active && batch_feed_id == f->id;
+	int done = batch_done;
+	int total = batch_total;
+	pthread_mutex_unlock(&batch_lock);
+	if (downloading_feed) {
+		snprintf(out, size, tr("podcast_download_all_progress"), done, total);
+		return;
+	}
 	if (f->episode_count > 0 && f->author[0]) {
 		snprintf(out, size, tr("podcast_episodes"), f->author, f->episode_count);
 	} else if (f->episode_count > 0) {
@@ -918,7 +1078,7 @@ static void fill_list(int from) {
 	// for a row that already holds this address and the row that holds it is
 	// usually one nobody can see.
 	for (int i = from; i < result_count && i < PODCAST_MAX_HELD; i++) {
-		const char *url = list_kind == JOB_EPISODES ? result_episodes[i].image : result_feeds[i].image;
+		const char *url = kind_has_episodes(list_kind) ? result_episodes[i].image : result_feeds[i].image;
 		snprintf(row_cover_url[i], sizeof(row_cover_url[0]), "%s", url ? url : "");
 	}
 
@@ -939,7 +1099,7 @@ static void fill_list(int from) {
 	// there, because the lit pill already says which of the two is on screen;
 	// elsewhere it says what is on screen, which is the query or the podcast's
 	// name.
-	bool home_view = list_kind == JOB_FOLLOWED || list_kind == JOB_TRENDING;
+	bool home_view = list_kind == JOB_FOLLOWED || list_kind == JOB_TRENDING || list_kind == JOB_DOWNLOADS;
 	if (pill_row) {
 		if (home_view) {
 			lv_obj_remove_flag(pill_row, LV_OBJ_FLAG_HIDDEN);
@@ -953,6 +1113,7 @@ static void fill_list(int from) {
 	refresh_corner_buttons();
 	paint_pill(pill_followed, list_kind == JOB_FOLLOWED);
 	paint_pill(pill_trending, list_kind == JOB_TRENDING);
+	paint_pill(pill_downloads, list_kind == JOB_DOWNLOADS);
 	if (list_title) {
 		lv_label_set_text(list_title, home_view ? tr("podcasts") : result_title);
 	}
@@ -963,7 +1124,8 @@ static void fill_list(int from) {
 		// whose list really is empty, rather than as a subtitle that stays over
 		// a full one.
 		lv_label_set_text(list_empty,
-						  list_kind == JOB_FOLLOWED ? tr("podcast_none_followed") : tr("nothing_to_show"));
+						  list_kind == JOB_FOLLOWED ? tr("podcast_none_followed") :
+						  list_kind == JOB_DOWNLOADS ? tr("podcast_no_downloads") : tr("nothing_to_show"));
 		lv_obj_remove_flag(list_empty, LV_OBJ_FLAG_HIDDEN);
 	} else {
 		lv_obj_add_flag(list_empty, LV_OBJ_FLAG_HIDDEN);
@@ -1000,7 +1162,9 @@ static bool inflight_valid;
 static bool inflight_is_back; // a back step consumes a rung instead of adding one
 static bool inflight_is_root; // a pill: the stack restarts from there
 
-static bool job_is_list(job_kind_t kind) { return kind != JOB_PLAY && kind != JOB_NONE; }
+static bool job_is_list(job_kind_t kind) {
+	return kind != JOB_PLAY && kind != JOB_DOWNLOAD && kind != JOB_NONE;
+}
 
 static bool same_list(const job_t *a, const job_t *b) {
 	return a->kind == b->kind && a->id == b->id && strcmp(a->text, b->text) == 0;
@@ -1063,6 +1227,25 @@ static void list_nav_commit(void) {
 static void run(const job_t *job);
 static void start_worker(void);
 static void busy_show(void);
+
+static bool episode_before(const podcast_episode_t *a, const podcast_episode_t *b, bool oldest_first) {
+	if (a->published <= 0) return false;
+	if (b->published <= 0) return true;
+	return oldest_first ? a->published < b->published : a->published > b->published;
+}
+
+static void sort_episodes(podcast_episode_t *episodes, int count) {
+	bool oldest_first = podcast_oldest_first();
+	for (int i = 1; i < count; i++) {
+		podcast_episode_t value = episodes[i];
+		int j = i;
+		while (j > 0 && episode_before(&value, &episodes[j - 1], oldest_first)) {
+			episodes[j] = episodes[j - 1];
+			j--;
+		}
+		episodes[j] = value;
+	}
+}
 
 // The back step is prepared by hand rather than through run(), so that
 // inflight_is_back stays raised until list_nav_commit() reads it. run() only
@@ -1304,11 +1487,22 @@ static char browsing_image[PODCAST_URL_MAX];
 
 // Downloads an episode and writes the sidecars, with the local path in `out`.
 static bool fetch_episode(const podcast_episode_t *e, char *out, size_t size) {
-	if (!podcastcache_start(e->id, e->enclosure, e->mime, e->duration_secs, out, size)) {
-		return false;
+	bool already_complete = podcastcache_find(e->id, out, size);
+	if (!already_complete) {
+		podcast_episode_t fresh;
+		const podcast_episode_t *details = e;
+		if (!e->enclosure[0]) {
+			if (!podcast_episode(e->id, &fresh)) return false;
+			details = &fresh;
+		}
+		if (!podcastcache_start(details->id, details->enclosure, details->mime, details->duration_secs, out, size)) {
+			return false;
+		}
+		e = details;
 	}
 	podcastcache_write_sidecars(e->id, e->mime, e->title, e->feed_title[0] ? e->feed_title : NULL, e->feed_id,
-								browsing_author, browsing_image[0] ? browsing_image : e->image, e->image, true);
+								browsing_author, browsing_image[0] ? browsing_image : e->image, e->image,
+								e->published, e->duration_secs, !already_complete);
 	return true;
 }
 
@@ -1413,6 +1607,7 @@ static void job_done_cb(void *user) {
 		list_nav_drop();
 		gui_notify_popup(result_error);
 		page_loading = false;
+		refresh_download_buttons();
 		job_result_taken();
 		refresh_notes();
 		return;
@@ -1420,7 +1615,9 @@ static void job_done_cb(void *user) {
 
 
 
-	if (result_kind == JOB_PLAY) {
+	if (result_kind == JOB_PLAY || result_kind == JOB_DOWNLOAD) {
+		result_kind = list_kind;
+		refresh_download_buttons();
 		job_result_taken();
 		return;
 	}
@@ -1507,11 +1704,11 @@ static void *worker_main(void *arg) {
 		bool grow = job.more;
 		int kept = result_count;
 
-		if (job.kind != JOB_PLAY && !grow) {
+		if (job.kind != JOB_PLAY && job.kind != JOB_DOWNLOAD && !grow) {
 			result_count = 0;
 			snprintf(result_title, sizeof(result_title), "%s", job.text);
 		}
-		if (job.kind != JOB_PLAY) {
+		if (job.kind != JOB_PLAY && job.kind != JOB_DOWNLOAD) {
 			result_from = grow ? kept : 0;
 			result_want = want;
 		}
@@ -1544,6 +1741,7 @@ static void *worker_main(void *arg) {
 			if (n < 0) {
 				snprintf(result_error, sizeof(result_error), "%s", podcast_last_error());
 			} else {
+				sort_episodes(result_episodes, n);
 				result_count = n;
 				result_raw = podcast_last_raw_count();
 				// The episodes that just arrived become the ones the downloader
@@ -1555,6 +1753,19 @@ static void *worker_main(void *arg) {
 				// the whole feed: there is nothing left to go and get.
 				queued_complete = want >= PODCAST_MAX_HELD;
 			}
+			break;
+		}
+
+		case JOB_DOWNLOADS: {
+			int n = podcastcache_saved_episodes(result_episodes, PODCAST_MAX_HELD);
+			sort_episodes(result_episodes, n);
+			result_count = n;
+			result_raw = n;
+			result_want = PODCAST_MAX_HELD;
+			result_from = 0;
+			memcpy(queued_episodes, result_episodes, sizeof(result_episodes[0]) * (size_t)n);
+			queued_count = n;
+			queued_complete = true;
 			break;
 		}
 
@@ -1589,6 +1800,7 @@ static void *worker_main(void *arg) {
 				long long feed = queued_episodes[index].feed_id;
 				int n = podcast_episodes(feed, result_episodes, PODCAST_MAX_HELD);
 				if (n > queued_count) {
+					sort_episodes(result_episodes, n);
 					memcpy(queued_episodes, result_episodes, sizeof(result_episodes[0]) * (size_t)n);
 					queued_count = n;
 					queued_complete = true;
@@ -1630,6 +1842,9 @@ static void *worker_main(void *arg) {
 			static const char *path_ptr[PODCAST_MAX_HELD];
 			int count = 0;
 			for (int i = index; i < queued_count && count < PODCAST_MAX_HELD; i++) {
+				if (job.download_library && i != index &&
+					(queued_episodes[i].feed_id != queued_episodes[index].feed_id ||
+					 !podcastcache_is_saved(queued_episodes[i].id))) continue;
 				if (i == index) {
 					snprintf(paths[count], sizeof(paths[0]), "%s", path);
 				} else if (!podcastcache_find(queued_episodes[i].id, paths[count], sizeof(paths[0]))) {
@@ -1646,17 +1861,56 @@ static void *worker_main(void *arg) {
 					const podcast_episode_t *q = &queued_episodes[i];
 					podcastcache_write_sidecars(q->id, q->mime, q->title,
 												q->feed_title[0] ? q->feed_title : NULL, q->feed_id,
-												browsing_author, browsing_image, q->image, false);
+								browsing_author, browsing_image, q->image, q->published, q->duration_secs, false);
 				}
 				path_ptr[count] = paths[count];
 				count++;
 			}
 
-			// _ordered: a podcast queue already has its order, newest first
-			// going back. Plain device_state_play_list would shuffle the
+			// _ordered: the chosen date order is also the queue order. Plain
+			// device_state_play_list would shuffle the
 			// episodes whenever the play mode is random.
 			device_state_play_list_ordered(path_ptr, count, 0);
 			gui_post(play_started_async, NULL);
+			break;
+		}
+
+		case JOB_DOWNLOAD: {
+			podcast_episode_t episode;
+			bool known = false;
+			for (int i = 0; i < queued_count && !known; i++) {
+				if (queued_episodes[i].id == job.id) {
+					episode = queued_episodes[i];
+					known = true;
+				}
+			}
+			if (!known || !episode.title[0] || (job.retry_download && !episode.enclosure[0])) {
+				if (!podcast_episode(job.id, &episode)) {
+					snprintf(result_error, sizeof(result_error), "%s", podcast_last_error());
+					break;
+				}
+			}
+			if (!job.retry_download && (podcastcache_is_saved(job.id) || podcastcache_is_pending(job.id))) {
+				if (!podcastcache_remove_download(job.id)) {
+					snprintf(result_error, sizeof(result_error), "%s", tr("podcast_download_in_use"));
+				}
+				break;
+			}
+			if (!job.retry_download) podcastcache_write_sidecars(episode.id, episode.mime, episode.title,
+										episode.feed_title, episode.feed_id, browsing_author,
+									browsing_image[0] ? browsing_image : episode.image, episode.image,
+									episode.published, episode.duration_secs, false);
+			if (!job.retry_download && !podcastcache_set_saved(job.id, true)) {
+				snprintf(result_error, sizeof(result_error), "%s", tr("cache_folder_failed"));
+				break;
+			}
+			podcastcache_set_network_wanted(true);
+			char path[512];
+			if (!fetch_episode(&episode, path, sizeof(path))) {
+				snprintf(result_error, sizeof(result_error), "%s", podcastcache_last_error());
+			} else if (!podcastcache_set_saved(job.id, true)) {
+				snprintf(result_error, sizeof(result_error), "%s", tr("cache_folder_failed"));
+			}
 			break;
 		}
 
@@ -1701,13 +1955,20 @@ static void row_clicked_cb(lv_event_t *e) {
 	}
 
 	job_t job = {0};
-	if (list_kind == JOB_EPISODES) {
+	if (kind_has_episodes(list_kind)) {
+		job.id = result_episodes[index].id;
+		if (list_kind == JOB_DOWNLOADS && podcastcache_is_pending(job.id)) {
+			job.kind = JOB_DOWNLOAD;
+			job.retry_download = true;
+			run(&job);
+			return;
+		}
 		// No toast: a timed one would leave while the download it is about
 		// carries on. run_ex() puts the veil up instead, with the same words on
 		// it, and takes it down when the episode actually starts.
 		job.kind = JOB_PLAY;
 		job.index = index;
-		job.id = result_episodes[index].id;
+		job.download_library = list_kind == JOB_DOWNLOADS;
 		run(&job);
 		return;
 	}
@@ -1730,6 +1991,18 @@ static void row_clicked_cb(lv_event_t *e) {
 	// by the time anything is tapped the queue is complete.
 	job.want = PODCAST_MAX_HELD;
 	snprintf(job.text, sizeof(job.text), "%s", result_feeds[index].title);
+	run(&job);
+}
+
+static void download_clicked_cb(lv_event_t *e) {
+	lv_event_stop_bubbling(e);
+	if (switcher_back_drag_active() || player_sheet_drag_active()) return;
+	int index = download_index_of(lv_event_get_current_target(e));
+	if (index < 0 || index >= list_count || !kind_has_episodes(list_kind)) return;
+	job_t job = {0};
+	job.kind = JOB_DOWNLOAD;
+	job.index = index;
+	job.id = result_episodes[index].id;
 	run(&job);
 }
 
@@ -1765,6 +2038,158 @@ static void unfollow_cb(void *user) {
 	}
 }
 
+static void batch_finished_async(void *user) {
+	batch_result_t *result = user;
+	if (!result) return;
+	char message[256];
+	if (result->error[0]) {
+		snprintf(message, sizeof(message), "%s", result->error);
+	} else if (result->cancelled) {
+		snprintf(message, sizeof(message), tr("podcast_download_all_cancelled"), result->done);
+	} else if (result->limited) {
+		snprintf(message, sizeof(message), tr("podcast_download_all_limited"), result->done, result->failed);
+	} else if (result->no_new) {
+		snprintf(message, sizeof(message), "%s", tr("podcast_download_5_current"));
+	} else {
+		snprintf(message, sizeof(message), tr("podcast_download_all_finished"), result->done, result->failed);
+	}
+	gui_notify_popup(message);
+	if (list_kind == JOB_DOWNLOADS && !page_loading) run_home_view(JOB_DOWNLOADS);
+	free(result);
+}
+
+static void *batch_download_main(void *arg) {
+	batch_request_t *request = arg;
+	thread_be_background("podcast batch");
+	batch_result_t *result = calloc(1, sizeof(*result));
+	podcast_episode_t *episodes = malloc(sizeof(*episodes) * PODCAST_MAX_HELD);
+	if (!result || !episodes) {
+		if (result) snprintf(result->error, sizeof(result->error), "%s", tr("out_of_memory"));
+		goto done;
+	}
+
+	int count = podcast_episodes(request->feed.id, episodes, PODCAST_MAX_HELD);
+	if (count < 0) {
+		snprintf(result->error, sizeof(result->error), "%s", podcast_last_error());
+		goto done;
+	}
+	sort_episodes(episodes, count);
+	int wanted = count;
+	if (request->target_new > 0) {
+		wanted = 0;
+		for (int i = 0; i < count && wanted < request->target_new; i++) {
+			if (!podcastcache_is_saved(episodes[i].id)) wanted++;
+		}
+	}
+	result->limited = podcast_last_raw_count() >= PODCAST_MAX_HELD &&
+		(request->target_new == 0 || wanted < request->target_new);
+	result->no_new = request->target_new > 0 && wanted == 0;
+	pthread_mutex_lock(&batch_lock);
+	batch_total = wanted;
+	pthread_mutex_unlock(&batch_lock);
+
+	int processed = 0;
+	for (int i = 0; i < count; i++) {
+		if (request->target_new > 0 && podcastcache_is_saved(episodes[i].id)) continue;
+		if (request->target_new > 0 && processed >= wanted) break;
+		pthread_mutex_lock(&batch_lock);
+		bool cancelled = batch_cancel;
+		batch_episode_id = episodes[i].id;
+		pthread_mutex_unlock(&batch_lock);
+		if (cancelled) break;
+
+		podcast_episode_t *episode = &episodes[i];
+		bool ok = podcastcache_is_saved(episode->id);
+		if (!ok) {
+			podcastcache_write_sidecars(episode->id, episode->mime, episode->title, episode->feed_title,
+									 episode->feed_id, request->feed.author, request->feed.image,
+									 episode->image, episode->published, episode->duration_secs, false);
+			ok = podcastcache_set_saved(episode->id, true);
+			if (ok) {
+				char path[512];
+				ok = podcastcache_start(episode->id, episode->enclosure, episode->mime,
+											 episode->duration_secs, path, sizeof(path));
+				if (ok) {
+					podcastcache_wait_idle();
+					ok = podcastcache_is_saved(episode->id);
+				}
+			}
+		}
+		if (!ok) {
+			fprintf(stderr, "podcast batch: %lld failed: %s\n", episode->id, podcastcache_last_error());
+			result->failed++;
+		} else {
+			result->done++;
+		}
+		processed++;
+		pthread_mutex_lock(&batch_lock);
+		batch_done = request->target_new > 0 ? processed : i + 1;
+		batch_episode_id = 0;
+		pthread_mutex_unlock(&batch_lock);
+	}
+
+done:
+	pthread_mutex_lock(&batch_lock);
+	if (result) result->cancelled = batch_cancel;
+	batch_active = false;
+	batch_episode_id = 0;
+	pthread_mutex_unlock(&batch_lock);
+	if (result) gui_post(batch_finished_async, result);
+	free(episodes);
+	free(request);
+	return NULL;
+}
+
+static void download_batch_cb(void *user) {
+	if (menu_row_index < 0 || menu_row_index >= list_count || list_kind != JOB_FOLLOWED) return;
+	if (!network_up() || !podcastcache_ready()) {
+		gui_notify_popup(tr("podcast_download_all_unavailable"));
+		return;
+	}
+	batch_request_t *request = malloc(sizeof(*request));
+	if (!request) {
+		gui_notify_popup(tr("out_of_memory"));
+		return;
+	}
+	request->feed = result_feeds[menu_row_index];
+	request->target_new = (int)(intptr_t)user;
+	int target_new = request->target_new;
+	pthread_mutex_lock(&batch_lock);
+	if (batch_active) {
+		pthread_mutex_unlock(&batch_lock);
+		free(request);
+		gui_notify_popup(tr("podcast_download_all_busy"));
+		return;
+	}
+	batch_active = true;
+	batch_cancel = false;
+	batch_feed_id = request->feed.id;
+	batch_episode_id = 0;
+	batch_done = 0;
+	batch_total = 0;
+	pthread_mutex_unlock(&batch_lock);
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, batch_download_main, request) != 0) {
+		pthread_mutex_lock(&batch_lock);
+		batch_active = false;
+		pthread_mutex_unlock(&batch_lock);
+		free(request);
+		gui_notify_popup(tr("out_of_memory"));
+		return;
+	}
+	pthread_detach(thread);
+	gui_notify_popup(tr(target_new > 0 ? "podcast_download_5_started" : "podcast_download_all_started"));
+}
+
+static void cancel_download_all_cb(void *user) {
+	(void)user;
+	pthread_mutex_lock(&batch_lock);
+	batch_cancel = true;
+	long long episode_id = batch_episode_id;
+	pthread_mutex_unlock(&batch_lock);
+	if (episode_id > 0 && podcastcache_downloading_id() == episode_id) podcastcache_abandon_all();
+}
+
 static void row_menu_cb(lv_event_t *e) {
 	menu_row_index = menu_index_of(lv_event_get_current_target(e));
 	if (menu_row_index < 0 || menu_row_index >= list_count) {
@@ -1776,9 +2201,26 @@ static void row_menu_cb(lv_event_t *e) {
 	// not assignments.
 	static const popover_item_t FOLLOW[] = {{"podcast_follow", follow_cb, NULL}};
 	static const popover_item_t UNFOLLOW[] = {{"podcast_unfollow", unfollow_cb, NULL}};
+	static const popover_item_t FOLLOWED_DOWNLOAD[] = {
+		{"podcast_download_5", download_batch_cb, (void *)(intptr_t)5},
+		{"podcast_download_all", download_batch_cb, NULL},
+		{"podcast_unfollow", unfollow_cb, NULL},
+	};
+	static const popover_item_t FOLLOWED_CANCEL[] = {
+		{"podcast_cancel_download_all", cancel_download_all_cb, NULL},
+		{"podcast_unfollow", unfollow_cb, NULL},
+	};
 
 	bool followed = podcastsubs_is_followed(result_feeds[menu_row_index].id);
-	popover_show(lv_event_get_current_target(e), followed ? UNFOLLOW : FOLLOW, 1);
+	if (list_kind == JOB_FOLLOWED) {
+		pthread_mutex_lock(&batch_lock);
+		bool this_batch = batch_active && batch_feed_id == result_feeds[menu_row_index].id;
+		pthread_mutex_unlock(&batch_lock);
+		popover_show(lv_event_get_current_target(e), this_batch ? FOLLOWED_CANCEL : FOLLOWED_DOWNLOAD,
+					 this_batch ? 2 : 3);
+	} else {
+		popover_show(lv_event_get_current_target(e), followed ? UNFOLLOW : FOLLOW, 1);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1798,8 +2240,8 @@ static void pill_clicked_cb(lv_event_t *e);
 
 static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, job_kind_t kind) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-	lv_obj_set_style_pad_hor(btn, 20, 0);
+	lv_obj_set_size(btn, lv_pct(31), 56);
+	lv_obj_set_style_pad_hor(btn, 6, 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita-style pill
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -1807,7 +2249,10 @@ static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, job_kind_t kind) 
 
 	lv_obj_t *label = lv_label_create(btn);
 	lv_label_set_text(label, tr(text));
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
+	lv_obj_set_width(label, lv_pct(100));
+	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_set_style_text_font(label, &font_ui_20, 0);
 	lv_obj_center(label);
 
 	return btn;
@@ -1829,21 +2274,22 @@ static void paint_pill(lv_obj_t *btn, bool on) {
 // the section's controls, not the list's; and over the Wi-Fi notice neither
 // does anything, since both lead to pages that need the catalogue.
 static void refresh_corner_buttons(void) {
-	bool home_view = list_kind == JOB_FOLLOWED || list_kind == JOB_TRENDING || list_kind == JOB_NONE;
-	bool show = podcast_configured() && network_up() && home_view;
+	bool home_view = list_kind == JOB_FOLLOWED || list_kind == JOB_TRENDING || list_kind == JOB_DOWNLOADS || list_kind == JOB_NONE;
+	bool show_search = podcast_configured() && network_up() && home_view && list_kind != JOB_DOWNLOADS;
+	bool show_settings = home_view && (show_search || list_kind == JOB_DOWNLOADS);
 	if (list_title && g_cfg) {
 		// The heading gets the width the buttons are not using.
-		settingsrow_title_corner_slots(list_title, g_cfg, show ? 2 : 0);
+		settingsrow_title_corner_slots(list_title, g_cfg, show_search ? 2 : show_settings ? 1 : 0);
 	}
 	if (search_btn) {
-		if (show) {
+		if (show_search) {
 			lv_obj_remove_flag(search_btn, LV_OBJ_FLAG_HIDDEN);
 		} else {
 			lv_obj_add_flag(search_btn, LV_OBJ_FLAG_HIDDEN);
 		}
 	}
 	if (settings_btn) {
-		if (show) {
+		if (show_settings) {
 			lv_obj_remove_flag(settings_btn, LV_OBJ_FLAG_HIDDEN);
 		} else {
 			lv_obj_add_flag(settings_btn, LV_OBJ_FLAG_HIDDEN);
@@ -1856,6 +2302,7 @@ static void refresh_corner_buttons(void) {
 static void refresh_pills(void) {
 	paint_pill(pill_followed, list_kind == JOB_FOLLOWED);
 	paint_pill(pill_trending, list_kind == JOB_TRENDING);
+	paint_pill(pill_downloads, list_kind == JOB_DOWNLOADS);
 }
 
 static void build_page(gui_config_t *cfg) {
@@ -1904,6 +2351,7 @@ static void build_page(gui_config_t *cfg) {
 
 	pill_followed = make_pill(pill_row, "podcast_my_podcasts", JOB_FOLLOWED);
 	pill_trending = make_pill(pill_row, "podcast_trending", JOB_TRENDING);
+	pill_downloads = make_pill(pill_row, "podcast_downloads", JOB_DOWNLOADS);
 	refresh_pills();
 	theme_register_refresh(refresh_pills);
 
@@ -2132,6 +2580,9 @@ static void run_home_view(job_kind_t kind) {
 	case JOB_FOLLOWED:
 		snprintf(job.text, sizeof(job.text), "%s", tr("podcast_my_podcasts"));
 		break;
+	case JOB_DOWNLOADS:
+		snprintf(job.text, sizeof(job.text), "%s", tr("podcast_downloads"));
+		break;
 	default:
 		return;
 	}
@@ -2243,6 +2694,11 @@ static bool note_network_up;
 // from the return of a failed job, where starting a job would be an endless
 // loop.
 static bool refresh_notes(void) {
+	note_network_up = network_up();
+	if (list_kind == JOB_DOWNLOADS) {
+		show_note(NULL);
+		return true;
+	}
 	if (!note_label) {
 		return false;
 	}
@@ -2250,8 +2706,6 @@ static bool refresh_notes(void) {
 	// Recorded before anything can return: the watcher below compares against
 	// it, and leaving it behind on the path where the keys are missing would
 	// have it find a difference on every tick.
-	note_network_up = network_up();
-
 	refresh_corner_buttons();
 
 	if (!podcast_configured()) {
@@ -2272,6 +2726,15 @@ static bool refresh_notes(void) {
 }
 
 static void refresh_page_state(void) {
+	// Downloads and storage are local functions, and must remain reachable when
+	// the card has no saved episodes yet. The empty Downloads view still provides
+	// the cache controls and makes the offline destination explicit.
+	if (!network_up()) {
+		note_network_up = network_up();
+		show_note(NULL);
+		run_home_view(JOB_DOWNLOADS);
+		return;
+	}
 	if (!refresh_notes()) {
 		return;
 	}
@@ -2310,7 +2773,11 @@ static void wifi_watch_cb(lv_timer_t *timer) {
 	}
 
 	if (!up) {
-		refresh_notes(); // the network went: the notice takes the page
+		// Downloads also contains storage management, so route here even when
+		// there are no saved episodes yet.
+		note_network_up = up;
+		show_note(NULL);
+		run_home_view(JOB_DOWNLOADS);
 		return;
 	}
 	if (!refresh_notes()) {
@@ -2322,7 +2789,8 @@ static void wifi_watch_cb(lv_timer_t *timer) {
 	// and only filling a list puts them back. Whichever of the two home views
 	// was showing is the one to return to; anything deeper was a step whose
 	// result the drop threw away.
-	run_home_view(current_list_job.kind == JOB_TRENDING ? JOB_TRENDING : JOB_FOLLOWED);
+	run_home_view(current_list_job.kind == JOB_TRENDING ? JOB_TRENDING :
+				   current_list_job.kind == JOB_DOWNLOADS ? JOB_DOWNLOADS : JOB_FOLLOWED);
 }
 
 // ---------------------------------------------------------------------------
@@ -2451,7 +2919,9 @@ static void build_controls_page(gui_config_t *cfg) {
 }
 
 static lv_obj_t *stop_episode_switch;
+static lv_obj_t *sort_oldest_switch;
 static settingsrow_duration_t sleep_row;
+static lv_obj_t *storage_usage;
 
 static void refresh_settings_rows(void) {
 	if (stop_episode_switch) {
@@ -2460,6 +2930,10 @@ static void refresh_settings_rows(void) {
 		} else {
 			lv_obj_remove_state(stop_episode_switch, LV_STATE_CHECKED);
 		}
+	}
+	if (sort_oldest_switch) {
+		if (podcast_oldest_first()) lv_obj_add_state(sort_oldest_switch, LV_STATE_CHECKED);
+		else lv_obj_remove_state(sort_oldest_switch, LV_STATE_CHECKED);
 	}
 	settingsrow_duration_expanded(&sleep_row, sleeptimer_enabled(SLEEPTIMER_PODCAST));
 	settingsrow_duration_repaint(&sleep_row);
@@ -2474,6 +2948,20 @@ static void stop_episode_cb(lv_event_t *e) {
 	podcast_set_stop_at_episode_end(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+static void sort_oldest_cb(lv_event_t *e) {
+	bool oldest = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+	podcast_set_oldest_first(oldest);
+	if (kind_has_episodes(list_kind)) {
+		sort_episodes(result_episodes, result_count);
+		memcpy(queued_episodes, result_episodes, sizeof(result_episodes[0]) * (size_t)result_count);
+		queued_count = result_count;
+		queued_complete = true;
+		result_from = 0;
+		fill_list(0);
+	}
+	refresh_settings_rows();
+}
+
 static void sleep_toggle_cb(lv_event_t *e) {
 	(void)e;
 	sleeptimer_set_enabled(SLEEPTIMER_PODCAST, lv_obj_has_state(sleep_row.toggle, LV_STATE_CHECKED));
@@ -2485,13 +2973,81 @@ static void sleep_wheel_cb(lv_event_t *e) {
 	sleeptimer_set_minutes(SLEEPTIMER_PODCAST, settingsrow_duration_minutes(&sleep_row));
 }
 
+static void format_cache_size(long long bytes, char *out, size_t size) {
+	if (bytes >= 1024LL * 1024 * 1024) {
+		snprintf(out, size, "%.1f GB", (double)bytes / (1024.0 * 1024.0 * 1024.0));
+	} else {
+		snprintf(out, size, "%.0f MB", (double)bytes / (1024.0 * 1024.0));
+	}
+}
+
+static void refresh_storage_usage(void) {
+	if (!storage_usage) return;
+	char saved[32], temporary[32], text[256];
+	format_cache_size(podcastcache_saved_bytes(), saved, sizeof(saved));
+	format_cache_size(podcastcache_temporary_bytes(), temporary, sizeof(temporary));
+	snprintf(text, sizeof(text), "%s: %s\n%s: %s\n%s", tr("podcast_storage_saved_downloads"), saved,
+			 tr("podcast_storage_temporary_cache"), temporary, tr("podcast_storage_note"));
+	lv_label_set_text(storage_usage, text);
+}
+
+static void storage_loaded_cb(lv_event_t *e) {
+	(void)e;
+	refresh_storage_usage();
+}
+
+static void clear_temp_cache_confirmed(void *user) {
+	(void)user;
+	podcastcache_clear_temporary();
+	refresh_storage_usage();
+	gui_notify_popup(tr("podcast_temporary_cache_cleared"));
+}
+
+static void clear_downloads_confirmed(void *user) {
+	(void)user;
+	podcastcache_clear_downloads();
+	refresh_storage_usage();
+	if (list_kind == JOB_DOWNLOADS) run_home_view(JOB_DOWNLOADS);
+	gui_notify_popup(tr("podcast_downloads_removed"));
+}
+
+static void clear_temp_cache_cb(lv_event_t *e) {
+	(void)e;
+	confirm_show("podcast_clear_temporary_cache", "podcast_clear_temporary_cache_confirm",
+				 "clear", clear_temp_cache_confirmed, NULL);
+}
+
+static void clear_downloads_cb(lv_event_t *e) {
+	(void)e;
+	confirm_show("podcast_remove_all_downloads", "podcast_remove_all_downloads_confirm",
+				 "delete", clear_downloads_confirmed, NULL);
+}
+
+static void build_storage_page(gui_config_t *cfg) {
+	storage_screen = lv_obj_create(NULL);
+	lv_obj_t *container = settingsrow_page(storage_screen, cfg, "podcast_storage");
+	storage_usage = lv_label_create(container);
+	lv_obj_set_width(storage_usage, lv_pct(100));
+	lv_label_set_long_mode(storage_usage, LV_LABEL_LONG_WRAP);
+	lv_obj_add_style(storage_usage, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(storage_usage, &font_ui_20, 0);
+	settingsrow_action(container, "podcast_clear_temporary_cache", clear_temp_cache_cb, NULL);
+	settingsrow_action(container, "podcast_remove_all_downloads", clear_downloads_cb, NULL);
+	refresh_storage_usage();
+	lv_obj_add_event_cb(storage_screen, storage_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	switcher_attach_back_gesture(storage_screen);
+}
+
 static void build_settings_page(gui_config_t *cfg) {
 	build_controls_page(cfg);
+	build_storage_page(cfg);
 
 	settings_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(settings_screen, cfg, "podcast_settings");
 
 	settingsrow_add(container, "change_controls", NULL, switch_screen_cb, controls_screen);
+	settingsrow_add(container, "podcast_manage_storage", NULL, switch_screen_cb, storage_screen);
+	settingsrow_toggle(container, "podcast_sort_oldest_first", &sort_oldest_switch, sort_oldest_cb);
 	settingsrow_toggle(container, "podcast_stop_at_end_of_episode", &stop_episode_switch, stop_episode_cb);
 	// Its own, and not the music one: a stretch set for falling asleep to a
 	// podcast should not be counting down over an album the next morning.
@@ -2531,6 +3087,18 @@ bool podcastpage_open_feed(long long feed_id, const char *title) {
 // not a podcast.
 static void queue_watch_cb(lv_timer_t *timer) {
 	(void)timer;
+	refresh_download_buttons();
+	if (list_kind == JOB_FOLLOWED) {
+		for (int i = 0; i < ROW_POOL; i++) {
+			int index = rows[i].index;
+			if (index < 0 || index >= list_count) continue;
+			char detail[200];
+			row_detail(index, detail, sizeof(detail));
+			lv_label_set_text(rows[i].detail, detail);
+			if (detail[0]) lv_obj_remove_flag(rows[i].detail, LV_OBJ_FLAG_HIDDEN);
+			else lv_obj_add_flag(rows[i].detail, LV_OBJ_FLAG_HIDDEN);
+		}
+	}
 	// A queue that is a library list holds no cache files, and walking it here
 	// would be a database read per entry, once a second, for nothing. The
 	// bookkeeping below still runs: a download already in flight keeps the

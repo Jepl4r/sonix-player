@@ -5,6 +5,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <sys/stat.h>
 #include <unistd.h>
 
@@ -23,7 +24,32 @@
 #define FETCH_TIMEOUT_SECS 20
 #define FETCH_CHUNK 32768
 
+static bool ensure_dir(void);
+
 static char cache_dir[512];
+static char listened_path[512];
+static long long listened_ids[4096];
+static int listened_count;
+
+bool podcastcache_is_listened(long long episode_id) {
+	if (episode_id <= 0) return false;
+	for (int i = 0; i < listened_count; i++) {
+		if (listened_ids[i] == episode_id) return true;
+	}
+	return false;
+}
+
+void podcastcache_note_position(const char *path, double seconds, double total) {
+	if (total <= 0 || seconds < total * 0.5 || !listened_path[0]) return;
+	long long id = podcastcache_episode_id(path);
+	if (id <= 0 || podcastcache_is_listened(id) || listened_count >= 4096) return;
+	FILE *file = fopen(listened_path, "a");
+	if (!file) return;
+	bool written = fprintf(file, "%lld\n", id) > 0;
+	if (fclose(file) == 0 && written) {
+		listened_ids[listened_count++] = id;
+	}
+}
 
 // Every error exit records what went wrong, and the page shows that instead of
 // the generic phrase. Before, any failure -- no card, no network, card full --
@@ -49,11 +75,22 @@ static void register_abandon_once(void) {
 
 void podcastcache_set_root(const char *sd_root) {
 	register_abandon_once();
+	listened_path[0] = '\0';
+	listened_count = 0;
 	if (!sd_root || !*sd_root) {
 		cache_dir[0] = '\0';
 		return;
 	}
 	snprintf(cache_dir, sizeof(cache_dir), "%s/%s", sd_root, PODCASTCACHE_DIR);
+	snprintf(listened_path, sizeof(listened_path), "%s/.podcast-listened", sd_root);
+	FILE *file = fopen(listened_path, "r");
+	if (file) {
+		long long id;
+		while (listened_count < 4096 && fscanf(file, "%lld", &id) == 1) {
+			if (id > 0 && !podcastcache_is_listened(id)) listened_ids[listened_count++] = id;
+		}
+		fclose(file);
+	}
 }
 
 bool podcastcache_ready(void) { return cache_dir[0] != '\0'; }
@@ -144,6 +181,53 @@ bool podcastcache_find(long long episode_id, char *out, size_t size) {
 	return false;
 }
 
+static void saved_marker_path(long long episode_id, const char *suffix, char *out, size_t size) {
+	if (!out || size == 0) return;
+	if (!podcastcache_ready() || episode_id <= 0) {
+		out[0] = '\0';
+		return;
+	}
+	snprintf(out, size, "%.460s/%lld.%s", cache_dir, episode_id, suffix);
+}
+
+static bool marker_exists(long long episode_id, const char *suffix) {
+	char marker[512];
+	saved_marker_path(episode_id, suffix, marker, sizeof(marker));
+	struct stat st;
+	return marker[0] && stat(marker, &st) == 0;
+}
+
+static bool saved_id(long long episode_id) { return marker_exists(episode_id, "saved"); }
+static bool pending_id(long long episode_id) { return marker_exists(episode_id, "pending"); }
+
+bool podcastcache_is_pending(long long episode_id) { return pending_id(episode_id); }
+
+bool podcastcache_is_saved(long long episode_id) {
+	return saved_id(episode_id) && podcastcache_find(episode_id, NULL, 0);
+}
+
+bool podcastcache_set_saved(long long episode_id, bool saved) {
+	if (!podcastcache_ready() || episode_id <= 0 || !ensure_dir()) return false;
+	char complete[512], pending[512];
+	saved_marker_path(episode_id, "saved", complete, sizeof(complete));
+	saved_marker_path(episode_id, "pending", pending, sizeof(pending));
+	if (!saved) {
+		remove(complete);
+		remove(pending);
+		return true;
+	}
+	if (podcastcache_find(episode_id, NULL, 0)) {
+		FILE *file = fopen(complete, "w");
+		if (!file) return false;
+		bool ok = fclose(file) == 0;
+		if (ok) remove(pending);
+		return ok;
+	}
+	FILE *file = fopen(pending, "w");
+	if (!file) return false;
+	return fclose(file) == 0;
+}
+
 // mkdir -p over the two levels needed (.local, then the cache directory).
 static bool ensure_dir(void) {
 	if (!podcastcache_ready()) {
@@ -202,6 +286,10 @@ static int scan(entry_t *out, int max, long long *total_out) {
 		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
 			continue;
 		}
+		long long episode_id = podcastcache_episode_id(path);
+		// Explicit downloads have their own storage budget and are never
+		// candidates for automatic cache pruning.
+		if (episode_id > 0 && saved_id(episode_id)) continue;
 		total += st.st_size;
 
 		// Whatever is downloading right now cannot be deleted, nor can its
@@ -286,6 +374,10 @@ static void prune(long long keep_room_for) {
 	for (int i = 0; i < count && total + keep_room_for > PODCASTCACHE_MAX_BYTES; i++) {
 		char path[640];
 		snprintf(path, sizeof(path), "%.500s/%.63s", cache_dir, entries[i].name);
+		long long episode_id = podcastcache_episode_id(path);
+		// Keep user-requested downloads, including interrupted ones, intact
+		// until they complete or the user removes them explicitly.
+		if (episode_id > 0 && pending_id(episode_id)) continue;
 
 		// Episodes still ahead in the queue are off limits, and so are their
 		// sidecars. Pruning is meant to make room, not to dismantle the queue
@@ -346,7 +438,7 @@ static bool is_protected_stem(const char *stem) {
 // `keep_playing` true spares what is downloading right now, plus its sidecars.
 // The periodic clear needs it because it runs while something is playing; a
 // clear the user asked for takes everything.
-static void clear_files(bool keep_playing) {
+static void clear_files(bool keep_playing, bool keep_recent) {
 	if (!podcastcache_ready()) {
 		return;
 	}
@@ -364,6 +456,9 @@ static void clear_files(bool keep_playing) {
 		if ((size_t)snprintf(path, sizeof(path), "%s/%s", cache_dir, e->d_name) >= sizeof(path)) {
 			continue;
 		}
+		long long episode_id = podcastcache_episode_id(path);
+		if (episode_id > 0 && saved_id(episode_id)) continue;
+		if (episode_id > 0 && pending_id(episode_id)) continue;
 		if (keep_playing) {
 			char stem[640];
 			snprintf(stem, sizeof(stem), "%.500s/%.63s", cache_dir, e->d_name);
@@ -371,7 +466,8 @@ static void clear_files(bool keep_playing) {
 			if (dot) {
 				*dot = '\0';
 			}
-			if (growfile_prefix_is_growing(stem) || is_protected_stem(stem) || is_recent_stem(stem)) {
+			if (growfile_prefix_is_growing(stem) || is_protected_stem(stem) ||
+				(keep_recent && is_recent_stem(stem))) {
 				continue;
 			}
 		}
@@ -383,7 +479,8 @@ static void clear_files(bool keep_playing) {
 	printf("podcastcache: cleared (%d files)\n", removed);
 }
 
-void podcastcache_clear(void) { clear_files(false); }
+void podcastcache_clear(void) { clear_files(true, false); }
+void podcastcache_clear_temporary(void) { clear_files(true, false); }
 
 // ---------------------------------------------------------------------------
 // the periodic clear
@@ -439,7 +536,7 @@ void podcastcache_note_played(const char *path) {
 	}
 	played_since_clear = 0;
 	printf("podcastcache: %d episodes since the last sweep, cleaning up\n", PODCASTCACHE_CLEAR_EVERY);
-	clear_files(true);
+	clear_files(true, true);
 }
 
 // Cover art lives in a sibling directory of the episodes (.local/podcast-art
@@ -483,7 +580,7 @@ void podcastcache_clear_on_exit(void) {
 		return;
 	}
 	printf("podcastcache: shutting down, clearing the cache\n");
-	clear_files(false);
+	clear_files(false, false);
 	clear_art_files();
 }
 
@@ -538,6 +635,180 @@ bool podcastcache_tag(const char *path, const char *key, char *out, size_t size)
 	}
 	out[0] = '\0';
 	return read_tag(path, key, out, size);
+}
+
+static bool audio_extension(const char *name) {
+	const char *dot = strrchr(name, '.');
+	if (!dot) return false;
+	dot++;
+	return strcasecmp(dot, "mp3") == 0 || strcasecmp(dot, "m4a") == 0 ||
+		   strcasecmp(dot, "opus") == 0 || strcasecmp(dot, "wav") == 0 || strcasecmp(dot, "flac") == 0;
+}
+
+static bool find_audio_path(long long episode_id, char *out, size_t size) {
+	if (!podcastcache_find(episode_id, out, size)) {
+		static const char *const EXT[] = {"mp3", "m4a", "opus", "wav", "flac"};
+		for (size_t i = 0; i < sizeof(EXT) / sizeof(EXT[0]); i++) {
+			char candidate[512], marker[544];
+			snprintf(candidate, sizeof(candidate), "%.450s/%lld.%s", cache_dir, episode_id, EXT[i]);
+			marker_path(candidate, marker, sizeof(marker));
+			struct stat st;
+			if (stat(candidate, &st) == 0 && st.st_size > 0 && stat(marker, &st) == 0) {
+				snprintf(out, size, "%s", candidate);
+				return true;
+			}
+		}
+		if (out && size) out[0] = '\0';
+		return false;
+	}
+	return true;
+}
+
+int podcastcache_saved_episodes(podcast_episode_t *out, int max) {
+	if (!out || max <= 0 || !podcastcache_ready()) return 0;
+	DIR *d = opendir(cache_dir);
+	if (!d) return 0;
+	int count = 0;
+	long long seen[PODCAST_PAGE_LIMIT * 4];
+	int seen_count = 0;
+	struct dirent *e;
+	while (count < max && (e = readdir(d)) != NULL) {
+		const char *dot = strrchr(e->d_name, '.');
+		if (!dot || (strcmp(dot, ".saved") != 0 && strcmp(dot, ".pending") != 0)) continue;
+		char *end = NULL;
+		long long id = strtoll(e->d_name, &end, 10);
+		if (id <= 0 || end != dot) continue;
+		bool saved = saved_id(id);
+		bool pending = pending_id(id);
+		// A saved marker is authoritative only while its complete audio file is
+		// still present. Interrupted downloads are listed as pending so they
+		// remain visible and retryable, but never enter offline playback queues.
+		if (!pending && (!saved || !podcastcache_find(id, NULL, 0))) continue;
+		bool duplicate = false;
+		for (int i = 0; i < seen_count; i++) duplicate |= seen[i] == id;
+		if (duplicate) continue;
+		if (seen_count < (int)(sizeof(seen) / sizeof(seen[0]))) seen[seen_count++] = id;
+
+		char path[512], value[512];
+		if (!find_audio_path(id, path, sizeof(path))) continue;
+		podcast_episode_t *episode = &out[count];
+		memset(episode, 0, sizeof(*episode));
+		episode->id = id;
+		if (read_tag(path, "title", episode->title, sizeof(episode->title))) {
+			read_tag(path, "album", episode->feed_title, sizeof(episode->feed_title));
+			read_tag(path, "mime", episode->mime, sizeof(episode->mime));
+			read_tag(path, "cover_url", episode->image, sizeof(episode->image));
+			if (!episode->image[0]) read_tag(path, "feed_image", episode->image, sizeof(episode->image));
+			if (read_tag(path, "feed_id", value, sizeof(value))) episode->feed_id = strtoll(value, NULL, 10);
+			if (read_tag(path, "published", value, sizeof(value))) episode->published = strtol(value, NULL, 10);
+			if (read_tag(path, "duration", value, sizeof(value))) episode->duration_secs = (int)strtol(value, NULL, 10);
+			count++;
+		}
+	}
+	closedir(d);
+	return count;
+}
+
+long long podcastcache_saved_bytes(void) {
+	if (!podcastcache_ready()) return 0;
+	DIR *d = opendir(cache_dir);
+	if (!d) return 0;
+	long long total = 0;
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL) {
+		if (!audio_extension(e->d_name)) continue;
+		char path[640];
+		snprintf(path, sizeof(path), "%.500s/%.63s", cache_dir, e->d_name);
+		long long id = podcastcache_episode_id(path);
+		struct stat st;
+		if (id > 0 && saved_id(id) && stat(path, &st) == 0 && S_ISREG(st.st_mode)) total += st.st_size;
+	}
+	closedir(d);
+	return total;
+}
+
+long long podcastcache_temporary_bytes(void) {
+	if (!podcastcache_ready()) return 0;
+	DIR *d = opendir(cache_dir);
+	if (!d) return 0;
+	long long total = 0;
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL) {
+		if (!audio_extension(e->d_name)) continue;
+		char path[640];
+		snprintf(path, sizeof(path), "%.500s/%.63s", cache_dir, e->d_name);
+		long long id = podcastcache_episode_id(path);
+		struct stat st;
+		if (id > 0 && !saved_id(id) && stat(path, &st) == 0 && S_ISREG(st.st_mode)) total += st.st_size;
+	}
+	closedir(d);
+	return total;
+}
+
+static bool episode_in_use(long long id) {
+	// A background full-file transfer is not necessarily growing yet (it may
+	// still be waiting for the shared network turn), so protect it by ID too.
+	if (podcastcache_downloading_id() == id) return true;
+	DIR *d = opendir(cache_dir);
+	if (!d) return false;
+	char prefix[32];
+	snprintf(prefix, sizeof(prefix), "%lld.", id);
+	struct dirent *e;
+	bool in_use = false;
+	while (!in_use && (e = readdir(d)) != NULL) {
+		if (strncmp(e->d_name, prefix, strlen(prefix)) != 0) continue;
+		char stem[640];
+		snprintf(stem, sizeof(stem), "%.500s/%.63s", cache_dir, e->d_name);
+		char *dot = strrchr(stem + strlen(cache_dir) + 1, '.');
+		if (dot) *dot = '\0';
+		in_use = growfile_prefix_is_growing(stem) || is_protected_stem(stem);
+	}
+	closedir(d);
+	return in_use;
+}
+
+static bool remove_episode_files(long long id, bool require_saved) {
+	if (!podcastcache_ready() || id <= 0 || episode_in_use(id)) return false;
+	if (require_saved && !saved_id(id)) return false;
+	DIR *d = opendir(cache_dir);
+	if (!d) return false;
+	char prefix[32];
+	snprintf(prefix, sizeof(prefix), "%lld.", id);
+	struct dirent *e;
+	bool removed = false;
+	while ((e = readdir(d)) != NULL) {
+		if (strncmp(e->d_name, prefix, strlen(prefix)) != 0) continue;
+		char path[640];
+		snprintf(path, sizeof(path), "%.500s/%.63s", cache_dir, e->d_name);
+		if (remove(path) == 0) removed = true;
+	}
+	closedir(d);
+	return removed;
+}
+
+bool podcastcache_remove_download(long long episode_id) {
+	return remove_episode_files(episode_id, false);
+}
+
+void podcastcache_clear_downloads(void) {
+	if (!podcastcache_ready()) return;
+	DIR *d = opendir(cache_dir);
+	if (!d) return;
+	long long ids[PODCAST_PAGE_LIMIT * 8];
+	int count = 0;
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL && count < (int)(sizeof(ids) / sizeof(ids[0]))) {
+		const char *dot = strrchr(e->d_name, '.');
+		if (!dot || (strcmp(dot, ".saved") != 0 && strcmp(dot, ".pending") != 0)) continue;
+		char *end = NULL;
+		long long id = strtoll(e->d_name, &end, 10);
+		if (id <= 0 || end != dot) continue;
+		bool duplicate = false;
+		for (int i = 0; i < count; i++) duplicate |= ids[i] == id;
+		if (!duplicate) ids[count++] = id;
+	}
+	closedir(d);
+	for (int i = 0; i < count; i++) remove_episode_files(ids[i], false);
 }
 
 // The episode id from the local path: the file name is the id and nothing else
@@ -616,12 +887,25 @@ static http_stream_t *active_stream;
 // already downloading?" is answered from this, by id, rather than from growfile
 // by path: an id is exact, while two paths for the same episode can differ.
 static long long active_episode_id;
+static long long active_done;
+static long long active_total;
 
 long long podcastcache_downloading_id(void) {
 	pthread_mutex_lock(&active_lock);
 	long long id = active_episode_id;
 	pthread_mutex_unlock(&active_lock);
 	return id;
+}
+
+int podcastcache_progress_percent(long long episode_id) {
+	pthread_mutex_lock(&active_lock);
+	int value = -1;
+	if (episode_id > 0 && active_episode_id == episode_id && active_total > 0) {
+		long long pct = active_done * 100 / active_total;
+		value = pct > 100 ? 100 : (int)pct;
+	}
+	pthread_mutex_unlock(&active_lock);
+	return value;
 }
 
 // See podcastcache.h. A single bool, written by the interface thread and read
@@ -667,6 +951,8 @@ static void clear_active(long long episode_id) {
 	pthread_mutex_lock(&active_lock);
 	if (active_episode_id == episode_id) {
 		active_episode_id = 0;
+		active_done = 0;
+		active_total = 0;
 	}
 	pthread_mutex_unlock(&active_lock);
 }
@@ -681,6 +967,8 @@ static void download_end(download_t *d, bool ok) {
 	}
 	if (active_episode_id == d->episode_id) {
 		active_episode_id = 0;
+		active_done = 0;
+		active_total = 0;
 	}
 	pthread_mutex_unlock(&active_lock);
 
@@ -705,6 +993,12 @@ static void download_end(download_t *d, bool ok) {
 
 	if (ok) {
 		remove(d->marker); // complete now
+		char pending[512], saved[512];
+		saved_marker_path(d->episode_id, "pending", pending, sizeof(pending));
+		saved_marker_path(d->episode_id, "saved", saved, sizeof(saved));
+		if (pending[0] && saved[0] && rename(pending, saved) == 0) {
+			printf("podcastcache: %lld saved for offline playback\n", d->episode_id);
+		}
 		printf("podcastcache: %lld complete (%ld KB)\n", d->episode_id, d->done / 1024);
 	} else {
 		// The marker stays: next time podcastcache_has() says no and the
@@ -750,6 +1044,9 @@ static bool download_pump(download_t *d, long until, bool *finished) {
 		// go looking on disk for bytes still sitting in the stdio buffer.
 		fflush(d->f);
 		d->done += n;
+		pthread_mutex_lock(&active_lock);
+		if (active_episode_id == d->episode_id) active_done = d->done;
+		pthread_mutex_unlock(&active_lock);
 		growfile_progress(d->path, d->done);
 
 		if (until == 0 && *finished) {
@@ -846,6 +1143,8 @@ bool podcastcache_start(long long episode_id, const char *url, const char *mime,
 	// download in the meantime.
 	pthread_mutex_lock(&active_lock);
 	active_episode_id = d->episode_id;
+	active_done = 0;
+	active_total = 0;
 	pthread_mutex_unlock(&active_lock);
 
 	if (!http_stream_open(&d->stream, url, FETCH_TIMEOUT_SECS)) {
@@ -860,6 +1159,9 @@ bool podcastcache_start(long long episode_id, const char *url, const char *mime,
 	}
 
 	d->total = d->stream.content_length;
+	pthread_mutex_lock(&active_lock);
+	if (active_episode_id == d->episode_id) active_total = d->total;
+	pthread_mutex_unlock(&active_lock);
 	prune(d->total > 0 ? d->total : 0);
 
 	// The marker before the file: if power is lost between the two lines, an
@@ -1059,7 +1361,7 @@ static bool fetch_cover_to(const char *path, const char *url); // defined below
 
 void podcastcache_write_sidecars(long long episode_id, const char *mime, const char *title, const char *feed_title,
 								 long long feed_id, const char *feed_author, const char *feed_image,
-								 const char *cover_url, bool fetch_cover_now) {
+								 const char *cover_url, long published, int duration_secs, bool fetch_cover_now) {
 	if (!podcastcache_ready()) {
 		return;
 	}
@@ -1094,6 +1396,9 @@ void podcastcache_write_sidecars(long long episode_id, const char *mime, const c
 		// makes "Mostra podcast" in the episode menu work, since without it
 		// there is no way to know which podcast to reopen.
 		fprintf(f, "feed_id=%lld\n", feed_id);
+		fprintf(f, "mime=%s\n", mime ? mime : "audio/mpeg");
+		fprintf(f, "published=%ld\n", published);
+		fprintf(f, "duration=%d\n", duration_secs);
 		// Two more fields nobody displays: they let the player's star follow
 		// the podcast without asking the catalogue anything.
 		fprintf(f, "feed_author=%s\n", feed_author ? feed_author : "");

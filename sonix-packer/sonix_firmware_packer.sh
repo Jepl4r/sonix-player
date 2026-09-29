@@ -183,6 +183,14 @@ fi
 
 [ -f "$PLAYER_BIN" ] || die "sonix_player is not next to this script."
 
+# make target writes the binary in sonix-player/. Catch the easy-to-miss copy
+# before building an image around an older binary next to this script.
+LOCAL_BUILD="$SCRIPT_DIR/../sonix-player/sonix_player"
+if [ -f "$LOCAL_BUILD" ] && ! cmp -s "$LOCAL_BUILD" "$PLAYER_BIN"; then
+	die "sonix-packer/sonix_player differs from the current target build.
+  Copy sonix-player/sonix_player to sonix-packer/sonix_player before packing."
+fi
+
 ASSETS_DIR="$SCRIPT_DIR/assets"
 [ -d "$ASSETS_DIR" ] || die "there is no assets folder next to this script."
 

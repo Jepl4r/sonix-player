@@ -51,6 +51,10 @@ void qobuzart_set_root(const char *sd_root);
 // immediately. Any earlier request on this slot is abandoned.
 void qobuzart_request(const void *owner, int slot, const char *url, int size);
 
+// Decode an image already stored on the card. Used for user-saved podcast
+// episodes, whose adjacent artwork survives temporary-cache cleanup.
+void qobuzart_request_file(const void *owner, int slot, const char *path, int size);
+
 // Forgets the slot: anything in flight is abandoned and anything ready is
 // freed. Does nothing when the slots are owned by someone else.
 void qobuzart_release(const void *owner, int slot);

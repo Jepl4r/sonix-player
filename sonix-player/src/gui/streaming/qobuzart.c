@@ -22,6 +22,8 @@
 
 typedef struct {
 	char url[QOBUZART_URL_MAX];
+	char file_path[600];
+	bool local_file;
 	int size;
 
 	uint32_t generation; // bumped by every request and every release
@@ -161,7 +163,10 @@ static void *worker_main(void *arg) {
 
 		slot_t *slot = &slots[index];
 		char url[QOBUZART_URL_MAX];
+		char file_path[600];
+		bool local_file = slot->local_file;
 		memcpy(url, slot->url, sizeof(url));
+		snprintf(file_path, sizeof(file_path), "%s", slot->file_path);
 		int size = slot->size;
 		uint32_t generation = slot->generation;
 
@@ -169,17 +174,20 @@ static void *worker_main(void *arg) {
 		slot->running = true;
 		pthread_mutex_unlock(&lock);
 
-		char path[600];
+		char path[600] = {0};
 		cover_image_t image;
 		memset(&image, 0, sizeof(image));
 		bool found = false;
-		if (art_path(url, path, sizeof(path)) && fetch(url, path)) {
+		if (local_file) {
+			snprintf(path, sizeof(path), "%s", file_path);
 			found = cover_load_image_file(path, size, size, COVER_FIT_COVER, &image);
-			if (!found) {
-				// Downloaded but undecodable is a different fault from never
-				// downloaded, and both look like the same grey square.
-				fprintf(stderr, "art: '%s' downloaded but does not decode\n", path);
-			}
+		} else if (art_path(url, path, sizeof(path)) && fetch(url, path)) {
+			found = cover_load_image_file(path, size, size, COVER_FIT_COVER, &image);
+		}
+		if (!found && path[0]) {
+			// Downloaded but undecodable is a different fault from never
+			// downloaded, and both look like the same grey square.
+			fprintf(stderr, "art: '%s' does not decode\n", path);
 		}
 
 		pthread_mutex_lock(&lock);
@@ -215,6 +223,8 @@ static void start_worker(void) {
 static void reset_locked(slot_t *slot) {
 	slot->generation++;
 	slot->pending = false;
+	slot->local_file = false;
+	slot->file_path[0] = '\0';
 	if (slot->done && slot->found) {
 		cover_free(&slot->image);
 	}
@@ -271,6 +281,27 @@ void qobuzart_request(const void *owner, int slot_index, const char *url, int si
 
 	reset_locked(slot);
 	snprintf(slot->url, sizeof(slot->url), "%s", url);
+	slot->size = size;
+	slot->pending = true;
+	pthread_cond_signal(&wakeup);
+	pthread_mutex_unlock(&lock);
+}
+
+void qobuzart_request_file(const void *owner, int slot_index, const char *path, int size) {
+	if (slot_index < 0 || slot_index >= QOBUZART_SLOTS || !path || !path[0] || size <= 0) return;
+	pthread_mutex_lock(&lock);
+	take_pool_locked(owner);
+	start_worker();
+	slot_t *slot = &slots[slot_index];
+	if (slot->done && slot->found && slot->local_file && slot->size == size &&
+		strcmp(slot->file_path, path) == 0) {
+		pthread_mutex_unlock(&lock);
+		return;
+	}
+	reset_locked(slot);
+	slot->url[0] = '\0';
+	snprintf(slot->file_path, sizeof(slot->file_path), "%s", path);
+	slot->local_file = true;
 	slot->size = size;
 	slot->pending = true;
 	pthread_cond_signal(&wakeup);

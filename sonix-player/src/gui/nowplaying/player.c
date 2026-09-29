@@ -2660,6 +2660,9 @@ static void update_progress(void) {
 	// A podcast lights purple instead of the sample-rate colour.
 	led_update_playback(state.status == AUDIO_STATUS_PLAYING, state.stream_sample_rate,
 						!state.live && podcastcache_owns(state.current_file));
+	if (!state.live && podcastcache_owns(state.current_file)) {
+		podcastcache_note_position(state.current_file, state.progress_current_secs, state.progress_total_secs);
+	}
 
 	// Where the book got to. Not the same thing as "remember track" below and
 	// not subject to its switch: that setting is about which track comes back

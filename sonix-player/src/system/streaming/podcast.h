@@ -114,6 +114,10 @@ int podcast_skip_forward(void);
 void podcast_set_skip_back(int seconds);
 void podcast_set_skip_forward(int seconds);
 
+// The episode list defaults to the catalogue's reverse chronological order.
+bool podcast_oldest_first(void);
+void podcast_set_oldest_first(bool oldest_first);
+
 // Stop at the end of the episode: when this one finishes, the queue stays where
 // it is instead of starting the next. The audiobook's chapter-end switch under
 // another name, and for the same listener -- somebody following one thing at a

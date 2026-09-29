@@ -871,6 +871,7 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 							 char *location, size_t location_size) {
 	url_t u;
 	if (!url_parse(url, &u)) {
+		set_last_error("Invalid audio address");
 		return false;
 	}
 
@@ -912,10 +913,13 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 	if (status >= 300 && status < 400) {
 		location[0] = '\0';
 		header_value(headers, "Location", location, location_size);
+		if (!location[0]) set_last_error(tr("http_server_answered"), status);
 		conn_close(&conn);
 		return false;
 	}
 	if (status != 200) {
+		fprintf(stderr, "http: audio at %s answered %d\n", u.host, status);
+		set_last_error(tr("http_server_answered"), status);
 		conn_close(&conn);
 		return false;
 	}
