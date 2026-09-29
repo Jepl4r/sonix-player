@@ -1,5 +1,6 @@
 #include "fonts.h"
 
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/respath.h"
 
 #include <stdint.h>
@@ -145,16 +146,17 @@ static const text_step_t LARGE_STEPS[] = {
 
 static bool large_text;
 
+// At the interface's scale (uiscale.h): 24 is 18 on the original R3.
 static int drawn_size(int size, bool large) {
-	if (!large) {
-		return size;
-	}
-	for (size_t i = 0; i < sizeof(LARGE_STEPS) / sizeof(LARGE_STEPS[0]); i++) {
-		if (LARGE_STEPS[i].size == size) {
-			return LARGE_STEPS[i].large;
+	if (large) {
+		for (size_t i = 0; i < sizeof(LARGE_STEPS) / sizeof(LARGE_STEPS[0]); i++) {
+			if (LARGE_STEPS[i].size == size) {
+				size = LARGE_STEPS[i].large;
+				break;
+			}
 		}
 	}
-	return size;
+	return (int)ui_px(size);
 }
 
 bool fonts_large_text(void) { return large_text; }
@@ -311,7 +313,7 @@ static bool build_set(bool large) {
 	for (size_t i = 0; i < UI_FONT_COUNT; i++) {
 		const ui_font_t *ui = &ui_fonts[i];
 		int size = drawn_size(ui->size, large);
-		if (size == ui->size && set_built[!large] && drawn_size(ui->size, !large) == size) {
+		if (set_built[!large] && drawn_size(ui->size, !large) == size) {
 			sets[large][i] = sets[!large][i];
 			continue;
 		}

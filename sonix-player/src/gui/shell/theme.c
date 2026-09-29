@@ -5,6 +5,7 @@
 
 #include <stdio.h>
 #include <stdlib.h>
+#include "src/gui/shell/uiscale.h"
 
 lv_style_t theme_style_screen;
 lv_style_t theme_style_panel;
@@ -246,7 +247,7 @@ void theme_apply_slider_knob(lv_obj_t *slider) {
 	bool dark = theme()->dark;
 	lv_obj_set_style_border_color(slider, dark ? lv_color_black() : lv_color_make(120, 120, 120), LV_PART_KNOB);
 	lv_obj_set_style_border_opa(slider, dark ? LV_OPA_10 : LV_OPA_COVER, LV_PART_KNOB);
-	lv_obj_set_style_border_width(slider, dark ? 1 : 2, LV_PART_KNOB);
+	lv_obj_set_style_border_width(slider, dark ? ui_px(1) : ui_px(2), LV_PART_KNOB);
 }
 
 void theme_register_refresh(theme_refresh_cb_t cb) {

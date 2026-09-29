@@ -29,6 +29,7 @@
 #include "src/system/library/library.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/core/utils.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *queue_screen;
 lv_obj_t *details_screen;
@@ -37,9 +38,9 @@ lv_obj_t *details_screen;
 // widgets rides the scroll position, and each row looks up its title (one
 // indexed database lookup) at the moment it binds. Opening the page costs a
 // dozen binds, not hundreds, which is what makes it instant.
-#define QUEUE_THUMB_SIZE 56
-#define QUEUE_ROW_HEIGHT 72
-#define QUEUE_ROW_GAP 8
+#define QUEUE_THUMB_SIZE ui_px(56)
+#define QUEUE_ROW_HEIGHT ui_px(72)
+#define QUEUE_ROW_GAP ui_px(8)
 #define QUEUE_ROW_PITCH (QUEUE_ROW_HEIGHT + QUEUE_ROW_GAP)
 #define QUEUE_ROW_POOL 12
 
@@ -279,7 +280,7 @@ static void build_queue_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(queue_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(queue_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(queue_empty, &font_ui_24, 0);
-	lv_obj_align(queue_empty, LV_ALIGN_TOP_MID, 0, 120);
+	lv_obj_align(queue_empty, LV_ALIGN_TOP_MID, 0, ui_px(120));
 	lv_obj_add_flag(queue_empty, LV_OBJ_FLAG_HIDDEN);
 
 	for (int i = 0; i < QUEUE_ROW_POOL; i++) {
@@ -290,11 +291,11 @@ static void build_queue_page(gui_config_t *cfg) {
 		lv_obj_set_x(row->button, 0);
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row->button, 12, 0);
+		lv_obj_set_style_radius(row->button, ui_px(12), 0);
 		lv_obj_set_style_border_width(row->button, 0, 0);
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
-		lv_obj_set_style_pad_all(row->button, 8, 0);
-		lv_obj_set_style_pad_column(row->button, 14, 0);
+		lv_obj_set_style_pad_all(row->button, ui_px(8), 0);
+		lv_obj_set_style_pad_column(row->button, ui_px(14), 0);
 		lv_obj_add_flag(row->button, LV_OBJ_FLAG_HIDDEN);
 		lv_obj_add_flag(row->button, LV_OBJ_FLAG_EVENT_BUBBLE);
 		lv_obj_add_event_cb(row->button, queue_row_clicked_cb, LV_EVENT_CLICKED, NULL);
@@ -308,7 +309,7 @@ static void build_queue_page(gui_config_t *cfg) {
 		row->label = lv_label_create(row->button);
 		lv_label_set_long_mode(row->label, LV_LABEL_LONG_DOT);
 		lv_obj_set_flex_grow(row->label, 1);
-		lv_obj_set_height(row->label, 32);
+		lv_obj_set_height(row->label, ui_px(32));
 		lv_obj_add_style(row->label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(row->label, &font_ui_24, 0);
 
@@ -336,7 +337,7 @@ static void details_add_row(const char *name, const char *value) {
 	lv_obj_set_style_bg_opa(row, 0, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, 2, 0);
+	lv_obj_set_style_pad_gap(row, ui_px(2), 0);
 	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 	// Presses over the text must climb to the scroll surface, or the swipe
 	// gestures can never start on the card's content.
@@ -556,11 +557,11 @@ static void build_details_page(gui_config_t *cfg) {
 	lv_obj_set_width(details_card, lv_pct(100));
 	lv_obj_set_height(details_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(details_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(details_card, 12, 0);
+	lv_obj_set_style_radius(details_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(details_card, 0, 0);
 	lv_obj_set_style_shadow_width(details_card, 0, 0);
-	lv_obj_set_style_pad_all(details_card, 18, 0);
-	lv_obj_set_style_pad_gap(details_card, 14, 0);
+	lv_obj_set_style_pad_all(details_card, ui_px(18), 0);
+	lv_obj_set_style_pad_gap(details_card, ui_px(14), 0);
 	lv_obj_remove_flag(details_card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(details_card, LV_OBJ_FLAG_EVENT_BUBBLE);
 	lv_obj_set_flex_flow(details_card, LV_FLEX_FLOW_COLUMN);

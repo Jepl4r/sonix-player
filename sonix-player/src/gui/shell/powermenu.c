@@ -22,6 +22,7 @@
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/streaming/radio.h"
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // The power menu, iOS-style: two slide-to-confirm pills over a near-opaque
@@ -30,9 +31,9 @@
 // take a deliberate gesture, not a stray tap.
 // ---------------------------------------------------------------------------
 
-#define SLIDE_WIDTH 380
-#define SLIDE_HEIGHT 76
-#define SLIDE_KNOB 64
+#define SLIDE_WIDTH ui_px(380)
+#define SLIDE_HEIGHT ui_px(76)
+#define SLIDE_KNOB ui_px(64)
 // How far along (as a fraction of the track) the knob has to be on release.
 #define SLIDE_COMMIT_PCT 88
 
@@ -41,7 +42,7 @@
 // the track by half a knob (plus a hair of margin) keeps it inside.
 #define SLIDE_INSET (SLIDE_KNOB / 2 + 6)
 
-#define CANCEL_SIZE 76
+#define CANCEL_SIZE ui_px(76)
 
 static lv_obj_t *panel;
 
@@ -264,7 +265,7 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	lv_obj_set_style_bg_color(s->slider, lv_color_white(), LV_PART_KNOB);
 	lv_obj_set_style_bg_opa(s->slider, LV_OPA_COVER, LV_PART_KNOB);
 	lv_obj_set_style_pad_all(s->slider, (SLIDE_KNOB - SLIDE_HEIGHT) / 2, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(s->slider, 10, LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(s->slider, ui_px(10), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(s->slider, LV_OPA_40, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(s->slider, lv_color_black(), LV_PART_KNOB);
 
@@ -316,11 +317,11 @@ void powermenu_init(gui_config_t *cfg) {
 	// The two pills, upper third of the screen, like the real thing.
 	lv_obj_t *pills = lv_obj_create(panel);
 	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_align(pills, LV_ALIGN_TOP_MID, 0, cfg->top_bar_height + 70);
+	lv_obj_align(pills, LV_ALIGN_TOP_MID, 0, cfg->top_bar_height + ui_px(70));
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 26, 0);
+	lv_obj_set_style_pad_gap(pills, ui_px(26), 0);
 	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -335,7 +336,7 @@ void powermenu_init(gui_config_t *cfg) {
 	// finger, with its label floating underneath.
 	lv_obj_t *cancel = lv_btn_create(panel);
 	lv_obj_set_size(cancel, CANCEL_SIZE, CANCEL_SIZE);
-	lv_obj_align(cancel, LV_ALIGN_BOTTOM_MID, 0, -84);
+	lv_obj_align(cancel, LV_ALIGN_BOTTOM_MID, 0, -ui_px(84));
 	lv_obj_set_style_radius(cancel, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(cancel, lv_color_white(), 0);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_30, 0);
@@ -355,6 +356,6 @@ void powermenu_init(gui_config_t *cfg) {
 	lv_label_set_text(cancel_label, tr("cancel"));
 	lv_obj_set_style_text_font(cancel_label, &font_ui_24, 0);
 	lv_obj_set_style_text_color(cancel_label, lv_color_white(), 0);
-	lv_obj_align(cancel_label, LV_ALIGN_BOTTOM_MID, 0, -44);
+	lv_obj_align(cancel_label, LV_ALIGN_BOTTOM_MID, 0, -ui_px(44));
 
 }

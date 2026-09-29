@@ -13,9 +13,10 @@
 #include "src/system/device/ota.h"
 #include "src/system/device/power.h"
 #include "src/system/device/sysinfo.h"
+#include "src/gui/shell/uiscale.h"
 
-#define CARD_W 420
-#define BUTTON_H 64
+#define CARD_W ui_px(420)
+#define BUTTON_H ui_px(64)
 #define BUTTONS 3
 #define POLL_MS 200
 
@@ -81,15 +82,15 @@ static void build(void) {
 	lv_obj_add_event_cb(veil, veil_cb, LV_EVENT_CLICKED, NULL);
 
 	card = lv_obj_create(veil);
-	lv_obj_set_width(card, CARD_W < screen_w - 40 ? CARD_W : screen_w - 40);
+	lv_obj_set_width(card, CARD_W < screen_w - ui_px(40) ? CARD_W : screen_w - ui_px(40));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 18, 0);
+	lv_obj_set_style_radius(card, ui_px(18), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 22, 0);
-	lv_obj_set_style_pad_gap(card, 14, 0);
+	lv_obj_set_style_pad_all(card, ui_px(22), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(14), 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -127,13 +128,13 @@ static void build(void) {
 	lv_obj_set_style_bg_opa(notes_content, 0, 0);
 	lv_obj_set_style_border_width(notes_content, 0, 0);
 	lv_obj_set_style_pad_all(notes_content, 0, 0);
-	lv_obj_set_style_pad_row(notes_content, 2, 0);
+	lv_obj_set_style_pad_row(notes_content, ui_px(2), 0);
 	lv_obj_remove_flag(notes_content, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(notes_content, LV_FLEX_FLOW_COLUMN);
 
 	bar = lv_bar_create(card);
 	lv_obj_set_width(bar, lv_pct(100));
-	lv_obj_set_height(bar, 12);
+	lv_obj_set_height(bar, ui_px(12));
 	lv_bar_set_range(bar, 0, 1000);
 	lv_obj_set_style_radius(bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
 	lv_obj_set_style_bg_opa(bar, LV_OPA_40, LV_PART_MAIN);
@@ -145,7 +146,7 @@ static void build(void) {
 	lv_obj_set_style_bg_opa(column, 0, 0);
 	lv_obj_set_style_border_width(column, 0, 0);
 	lv_obj_set_style_pad_all(column, 0, 0);
-	lv_obj_set_style_pad_gap(column, 12, 0);
+	lv_obj_set_style_pad_gap(column, ui_px(12), 0);
 	lv_obj_remove_flag(column, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
 
@@ -153,7 +154,7 @@ static void build(void) {
 		lv_obj_t *btn = lv_btn_create(column);
 		lv_obj_set_width(btn, lv_pct(100));
 		lv_obj_set_height(btn, BUTTON_H);
-		lv_obj_set_style_radius(btn, 12, 0);
+		lv_obj_set_style_radius(btn, ui_px(12), 0);
 		lv_obj_set_style_border_width(btn, 0, 0);
 		lv_obj_set_style_shadow_width(btn, 0, 0);
 		lv_obj_add_event_cb(btn, button_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -297,8 +298,8 @@ static void strip_marks(char *text) {
 }
 
 // Space above a heading, and above whatever follows a blank line.
-#define NOTES_GAP 10
-#define BULLET_INDENT 18
+#define NOTES_GAP ui_px(10)
+#define BULLET_INDENT ui_px(18)
 
 // A paragraph in font_ui_20, the stretches between bold marks in
 // font_ui_20_bold, wrapping at the width it is given.
@@ -356,13 +357,13 @@ static lv_obj_t *notes_bullet(const char *text, int depth) {
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
 	lv_obj_set_style_pad_left(row, depth * BULLET_INDENT, 0);
-	lv_obj_set_style_pad_column(row, 8, 0);
+	lv_obj_set_style_pad_column(row, ui_px(8), 0);
 	lv_obj_remove_flag(row, LV_OBJ_FLAG_CLICKABLE | LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 
 	notes_text_label(row, "\xE2\x80\xA2", &font_ui_20); // U+2022
 	lv_obj_t *body = notes_rich(row, text);
-	lv_obj_set_width(body, 1);
+	lv_obj_set_width(body, ui_px(1));
 	lv_obj_set_flex_grow(body, 1);
 	return row;
 }

@@ -11,6 +11,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/shell/icons.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // The two codes
@@ -33,11 +34,11 @@
 
 #define QR_KOFI SONIX_RESOURCE_DIR "/gui/ko-fi-qr-code.png"
 #define QR_BOOSTY SONIX_RESOURCE_DIR "/gui/boosty-qr-code.png"
-#define QR_SIZE 380
+#define QR_SIZE ui_px(380)
 
 // White border around the code. The file has its own quiet zone; this is the
 // card's margin, so the rounded corners do not eat into it.
-#define QR_PAD 14
+#define QR_PAD ui_px(14)
 
 // Taps before the press that opens it.
 #define EASTEREGG_TAPS 5
@@ -202,7 +203,7 @@ static void qr_open(void) {
 	lv_obj_set_style_bg_color(card, lv_color_white(), 0);
 	lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_radius(card, 18, 0);
+	lv_obj_set_style_radius(card, ui_px(18), 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, QR_PAD, 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);

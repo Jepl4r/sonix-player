@@ -14,6 +14,7 @@
 #include "src/system/core/lang.h"
 
 #include <string.h>
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // The keyboard, built by hand out of real buttons: the stock LVGL keyboard
@@ -645,7 +646,7 @@ static void kb_preview_show(keyboard_t *kb, lv_obj_t *key, const char *text) {
 	if (x < 2) {
 		x = 2;
 	}
-	lv_obj_set_pos(kb->preview, x, coords.y1 - host_coords.y1 - h - 6);
+	lv_obj_set_pos(kb->preview, x, coords.y1 - host_coords.y1 - h - ui_px(6));
 }
 
 static void kb_preview_cb(lv_event_t *e) {
@@ -675,7 +676,7 @@ static lv_obj_t *kb_make_row(lv_obj_t *parent, int height) {
 	lv_obj_set_style_bg_opa(row, 0, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, 6, 0);
+	lv_obj_set_style_pad_gap(row, ui_px(6), 0);
 	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -692,12 +693,12 @@ static lv_obj_t *kb_make_key(lv_obj_t *row, int width, lv_event_cb_t cb, void *u
 	}
 	lv_obj_add_style(btn, &theme_style_card, 0);
 	lv_obj_add_style(btn, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(btn, 10, 0);
+	lv_obj_set_style_radius(btn, ui_px(10), 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_set_style_shadow_width(btn, 2, 0);
+	lv_obj_set_style_shadow_width(btn, ui_px(2), 0);
 	lv_obj_set_style_shadow_opa(btn, LV_OPA_20, 0);
 	lv_obj_set_style_shadow_color(btn, lv_color_black(), 0);
-	lv_obj_set_style_shadow_offset_y(btn, 1, 0);
+	lv_obj_set_style_shadow_offset_y(btn, ui_px(1), 0);
 	lv_obj_set_style_pad_all(btn, 0, 0);
 	if (cb) {
 		lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user);
@@ -769,8 +770,8 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_set_style_bg_opa(kb->tray, LV_OPA_COVER, 0);
 	lv_obj_set_style_border_width(kb->tray, 0, 0);
 	lv_obj_set_style_radius(kb->tray, 0, 0);
-	lv_obj_set_style_pad_all(kb->tray, 8, 0);
-	lv_obj_set_style_pad_gap(kb->tray, 7, 0);
+	lv_obj_set_style_pad_all(kb->tray, ui_px(8), 0);
+	lv_obj_set_style_pad_gap(kb->tray, ui_px(7), 0);
 	lv_obj_remove_flag(kb->tray, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(kb->tray, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb->tray, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -787,7 +788,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_set_style_bg_opa(kb->qwerty, 0, 0);
 	lv_obj_set_style_border_width(kb->qwerty, 0, 0);
 	lv_obj_set_style_pad_all(kb->qwerty, 0, 0);
-	lv_obj_set_style_pad_gap(kb->qwerty, 7, 0);
+	lv_obj_set_style_pad_gap(kb->qwerty, ui_px(7), 0);
 	lv_obj_remove_flag(kb->qwerty, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(kb->qwerty, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb->qwerty, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -804,7 +805,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	kb->rows[1] = kb_make_row(kb->qwerty, row_h);
 	kb->rows[2] = kb_make_row(kb->qwerty, row_h);
 
-	kb->shift_btn = kb_make_key(kb->rows[2], key_w + 14, kb_shift_cb, kb);
+	kb->shift_btn = kb_make_key(kb->rows[2], key_w + ui_px(14), kb_shift_cb, kb);
 	kb->shift_icon = kb_key_icon(kb->shift_btn, &icon_shift);
 
 	for (index = 0; index < KB_MAX_KEYS; index++) {
@@ -815,19 +816,19 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 		kb_attach_preview(kb->letter_btn[index], &kb->refs[index]);
 	}
 
-	kb->delete_btn = kb_make_key(kb->rows[2], key_w + 14, kb_delete_cb, kb);
+	kb->delete_btn = kb_make_key(kb->rows[2], key_w + ui_px(14), kb_delete_cb, kb);
 	kb_key_icon(kb->delete_btn, &icon_delete);
 	// Holding delete keeps deleting.
 	lv_obj_add_event_cb(kb->delete_btn, kb_delete_cb, LV_EVENT_LONG_PRESSED_REPEAT, kb);
 
 	lv_obj_t *row4 = kb_make_row(kb->qwerty, row_h);
-	lv_obj_t *mode = kb_make_key(row4, 84, kb_mode_cb, kb);
+	lv_obj_t *mode = kb_make_key(row4, ui_px(84), kb_mode_cb, kb);
 	kb->mode_label = kb_key_label(mode);
 	// Held rather than tapped, the same key offers the other alphabets in use.
 	lv_obj_add_event_cb(mode, kb_layouts_cb, LV_EVENT_LONG_PRESSED, kb);
 	lv_obj_t *space = kb_make_key(row4, 0, kb_space_cb, kb); // grows
 	kb_key_icon(space, &icon_space);
-	kb->accept_btn = kb_make_key(row4, 84, on_accept, user);
+	kb->accept_btn = kb_make_key(row4, ui_px(84), on_accept, user);
 	lv_obj_set_style_bg_color(kb->accept_btn, theme()->accent, 0);
 	if (accept_icon) {
 		lv_obj_t *glyph = kb_key_icon(kb->accept_btn, accept_icon);
@@ -847,7 +848,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_set_style_bg_opa(kb->t9, 0, 0);
 	lv_obj_set_style_border_width(kb->t9, 0, 0);
 	lv_obj_set_style_pad_all(kb->t9, 0, 0);
-	lv_obj_set_style_pad_gap(kb->t9, 7, 0);
+	lv_obj_set_style_pad_gap(kb->t9, ui_px(7), 0);
 	lv_obj_remove_flag(kb->t9, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(kb->t9, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb->t9, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -870,18 +871,18 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	}
 	lv_obj_t *t9_row4 = kb_make_row(kb->t9, row_h);
 	// The mode switch, always first: "123" in letter mode, "abc" in number mode.
-	lv_obj_t *t9_mode = kb_make_key(t9_row4, 84, kb_t9_mode_cb, kb);
+	lv_obj_t *t9_mode = kb_make_key(t9_row4, ui_px(84), kb_t9_mode_cb, kb);
 	kb->t9_mode_label = kb_key_label(t9_mode);
 	lv_obj_add_event_cb(t9_mode, kb_layouts_cb, LV_EVENT_LONG_PRESSED, kb);
-	kb->t9_shift_btn = kb_make_key(t9_row4, key_w + 14, kb_t9_shift_cb, kb);
+	kb->t9_shift_btn = kb_make_key(t9_row4, key_w + ui_px(14), kb_t9_shift_cb, kb);
 	kb->t9_shift_icon = kb_key_icon(kb->t9_shift_btn, &icon_shift);
 	// The "0" that takes the shift icon's place in number mode.
 	lv_obj_t *t9_space = kb_make_key(t9_row4, 0, kb_t9_space_cb, kb); // grows
 	kb_key_icon(t9_space, &icon_space);
-	lv_obj_t *t9_del = kb_make_key(t9_row4, key_w + 14, kb_delete_cb, kb);
+	lv_obj_t *t9_del = kb_make_key(t9_row4, key_w + ui_px(14), kb_delete_cb, kb);
 	kb_key_icon(t9_del, &icon_delete);
 	lv_obj_add_event_cb(t9_del, kb_delete_cb, LV_EVENT_LONG_PRESSED_REPEAT, kb);
-	kb->t9_accept_btn = kb_make_key(t9_row4, 84, on_accept, user);
+	kb->t9_accept_btn = kb_make_key(t9_row4, ui_px(84), on_accept, user);
 	lv_obj_set_style_bg_color(kb->t9_accept_btn, theme()->accent, 0);
 	if (accept_icon) {
 		lv_obj_t *glyph = kb_key_icon(kb->t9_accept_btn, accept_icon);
@@ -907,14 +908,14 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	// The preview bubble lives above the keyboard, on the page itself, so it
 	// can overhang the top row.
 	kb->preview = lv_obj_create(parent);
-	lv_obj_set_size(kb->preview, key_w + 22, row_h + 12);
+	lv_obj_set_size(kb->preview, key_w + ui_px(22), row_h + ui_px(12));
 	lv_obj_add_style(kb->preview, &theme_style_card, 0);
-	lv_obj_set_style_radius(kb->preview, 12, 0);
+	lv_obj_set_style_radius(kb->preview, ui_px(12), 0);
 	lv_obj_set_style_border_width(kb->preview, 0, 0);
-	lv_obj_set_style_shadow_width(kb->preview, 14, 0);
+	lv_obj_set_style_shadow_width(kb->preview, ui_px(14), 0);
 	lv_obj_set_style_shadow_opa(kb->preview, LV_OPA_30, 0);
 	lv_obj_set_style_shadow_color(kb->preview, lv_color_black(), 0);
-	lv_obj_set_style_shadow_offset_y(kb->preview, 3, 0);
+	lv_obj_set_style_shadow_offset_y(kb->preview, ui_px(3), 0);
 	lv_obj_set_style_pad_all(kb->preview, 0, 0);
 	lv_obj_remove_flag(kb->preview, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_remove_flag(kb->preview, LV_OBJ_FLAG_CLICKABLE);
@@ -967,7 +968,7 @@ void keyboard_set_field(keyboard_t *kb, lv_obj_t *field) {
 
 // The caret is the left border of the CURSOR part, not a block: three pixels
 // of accent, like a system text field's cursor.
-#define KB_CARET_WIDTH 3
+#define KB_CARET_WIDTH ui_px(3)
 
 void keyboard_style_caret(lv_obj_t *field) {
 	if (!field) {
@@ -1017,7 +1018,7 @@ void keyboard_style_caret(lv_obj_t *field) {
 // placeholder, to the plain text shown when the eye is tapped, and to the
 // character LVGL leaves readable for a moment after it is typed. So it is
 // enabled only while the field really is showing bullets.
-#define KB_PASSWORD_LETTER_SPACE (-10)
+#define KB_PASSWORD_LETTER_SPACE ui_px(-10)
 
 // The matching caret shift, which would otherwise land on top of the last
 // bullet.

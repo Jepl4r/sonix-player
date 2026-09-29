@@ -14,6 +14,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // Parametric equaliser
@@ -179,30 +180,30 @@ static void graph_paint_theme(void) {
 static void build_graph(lv_obj_t *parent) {
 	lv_obj_t *card = lv_obj_create(parent);
 	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, 236);
+	lv_obj_set_height(card, ui_px(236));
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 14, 0);
+	lv_obj_set_style_pad_all(card, ui_px(14), 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 	// Not clickable, so the back gesture can start on top of the graph.
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_CLICKABLE);
 
 	graph = lv_chart_create(card);
-	lv_obj_set_size(graph, lv_pct(100), 168);
+	lv_obj_set_size(graph, lv_pct(100), ui_px(168));
 	lv_obj_align(graph, LV_ALIGN_TOP_MID, 0, 0);
 	lv_obj_remove_flag(graph, LV_OBJ_FLAG_CLICKABLE);
 	lv_obj_set_style_border_width(graph, 0, 0);
-	lv_obj_set_style_radius(graph, 8, 0);
-	lv_obj_set_style_pad_all(graph, 6, 0);
+	lv_obj_set_style_radius(graph, ui_px(8), 0);
+	lv_obj_set_style_pad_all(graph, ui_px(6), 0);
 	lv_chart_set_type(graph, LV_CHART_TYPE_LINE);
 	lv_chart_set_point_count(graph, GRAPH_POINTS);
 	lv_chart_set_range(graph, LV_CHART_AXIS_PRIMARY_Y, -GRAPH_RANGE_TENTHS, GRAPH_RANGE_TENTHS);
 	lv_chart_set_div_line_count(graph, 5, 4);
 	// No point markers: with sixty-one points the bare line reads better.
 	lv_obj_set_style_size(graph, 0, 0, LV_PART_INDICATOR);
-	lv_obj_set_style_line_width(graph, 3, LV_PART_ITEMS);
+	lv_obj_set_style_line_width(graph, ui_px(3), LV_PART_ITEMS);
 
 	graph_series = lv_chart_add_series(graph, theme()->accent, LV_CHART_AXIS_PRIMARY_Y);
 	lv_chart_set_ext_y_array(graph, graph_series, graph_values);
@@ -357,8 +358,8 @@ static void q_cb(lv_event_t *e) {
 
 static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 52);
-	lv_obj_set_style_pad_hor(btn, 20, 0);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(52));
+	lv_obj_set_style_pad_hor(btn, ui_px(20), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -376,12 +377,12 @@ static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value) {
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph,
 							   lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (ui_px(56) + ui_px(6)), cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *icon = lv_image_create(button);
@@ -432,11 +433,11 @@ static void build_band_page(gui_config_t *cfg) {
 	lv_obj_set_width(shape_card, lv_pct(100));
 	lv_obj_set_height(shape_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(shape_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(shape_card, 12, 0);
+	lv_obj_set_style_radius(shape_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(shape_card, 0, 0);
 	lv_obj_set_style_shadow_width(shape_card, 0, 0);
-	lv_obj_set_style_pad_all(shape_card, 18, 0);
-	lv_obj_set_style_pad_row(shape_card, 14, 0);
+	lv_obj_set_style_pad_all(shape_card, ui_px(18), 0);
+	lv_obj_set_style_pad_row(shape_card, ui_px(14), 0);
 	lv_obj_remove_flag(shape_card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(shape_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(shape_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -451,7 +452,7 @@ static void build_band_page(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 10, 0);
+	lv_obj_set_style_pad_gap(pills, ui_px(10), 0);
 	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);

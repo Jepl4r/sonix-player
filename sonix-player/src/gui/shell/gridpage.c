@@ -9,9 +9,10 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
-#define GRID_GAP 14
-#define TILE_RADIUS 12 // Adwaita card radius
+#define GRID_GAP ui_px(14)
+#define TILE_RADIUS ui_px(12) // Adwaita card radius
 
 static void unavailable_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active()) {
@@ -56,14 +57,41 @@ void gridpage_set_tile(lv_obj_t *grid, int index, const lv_image_dsc_t *icon, co
 	}
 }
 
-static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int height) {
+// Inside a tile: its edge to the content, and the picture to the caption.
+#define TILE_PAD ui_px(8)
+#define TILE_GAP ui_px(8)
+
+// The tallest picture every tile of the grid can carry beside its caption.
+//
+// A caption that wraps to a second line needs the room of that line, and on a
+// short panel (the original R3's, laid out at 480x640) the picture does not
+// leave it: the second line runs off the bottom of the tile. The pictures give
+// way -- all of them, so the grid keeps one size -- and only as much as the
+// longest caption asks. Never below half, where a picture stops being one.
+static int32_t icon_room(const grid_entry_t *entries, int count, int width, int height) {
+	int32_t room = LV_COORD_MAX;
+	int32_t tallest = 0;
+	for (int i = 0; i < count; i++) {
+		lv_point_t text;
+		lv_text_get_size(&text, tr(entries[i].label), &font_ui_24_bold, 0, 0, width - 2 * TILE_PAD,
+						 LV_TEXT_FLAG_NONE);
+		int32_t left = height - 2 * TILE_PAD - TILE_GAP - text.y;
+		room = left < room ? left : room;
+		if (entries[i].icon && (int32_t)entries[i].icon->header.h > tallest) {
+			tallest = (int32_t)entries[i].icon->header.h;
+		}
+	}
+	return room < tallest / 2 ? tallest / 2 : room;
+}
+
+static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int height, int32_t icon_max) {
 	lv_obj_t *tile = lv_btn_create(grid);
 	lv_obj_set_size(tile, width, height);
 	lv_obj_add_style(tile, &theme_style_card, 0);
 	lv_obj_add_style(tile, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_radius(tile, TILE_RADIUS, 0);
 	lv_obj_set_style_shadow_width(tile, 0, 0);
-	lv_obj_set_style_pad_all(tile, 8, 0);
+	lv_obj_set_style_pad_all(tile, TILE_PAD, 0);
 
 	// Presses bubble up to the grid so a swipe can start on a tile: the whole
 	// page has to be draggable, not just the gaps between the tiles.
@@ -71,7 +99,7 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 
 	lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(tile, 8, 0);
+	lv_obj_set_style_pad_gap(tile, TILE_GAP, 0);
 	lv_obj_remove_flag(tile, LV_OBJ_FLAG_SCROLLABLE);
 
 	// The tile artwork keeps its own colours, so unlike the interface glyphs it
@@ -88,6 +116,14 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 	lv_obj_set_style_text_font(label, &font_ui_24_bold, 0);
 	lv_obj_set_width(label, lv_pct(100));
 	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+
+	// Drawn smaller when the grid is too short for its pictures and captions
+	// (see icon_room()).
+	int32_t icon_h = entry->icon ? (int32_t)entry->icon->header.h : 0;
+	if (icon_h > 0 && icon_max < icon_h) {
+		lv_obj_set_size(icon, (int32_t)entry->icon->header.w * icon_max / icon_h, icon_max);
+		lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_STRETCH);
+	}
 
 	if (entry->target) {
 		lv_obj_add_event_cb(tile, switch_screen_cb, LV_EVENT_CLICKED, *entry->target);
@@ -129,8 +165,9 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 	int tile_w = (usable_w - (columns - 1) * GRID_GAP) / columns;
 	int tile_h = (usable_h - (rows - 1) * GRID_GAP) / rows;
 
+	int32_t icon_max = icon_room(entries, count, tile_w, tile_h);
 	for (int i = 0; i < count; i++) {
-		add_tile(grid, &entries[i], tile_w, tile_h);
+		add_tile(grid, &entries[i], tile_w, tile_h, icon_max);
 	}
 
 	// The player can be pulled in from any tiled page.
@@ -155,7 +192,7 @@ lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_ima
 	lv_obj_align(panel, LV_ALIGN_TOP_LEFT, 0, top);
 	lv_obj_set_style_pad_hor(panel, cfg->padding * 2, 0);
 	lv_obj_set_style_pad_bottom(panel, cfg->padding * 2, 0);
-	lv_obj_set_style_pad_row(panel, 22, 0);
+	lv_obj_set_style_pad_row(panel, ui_px(22), 0);
 	lv_obj_remove_flag(panel, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -175,7 +212,7 @@ lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_ima
 	lv_obj_set_style_text_font(label, &font_ui_24, 0);
 
 	lv_obj_t *button = lv_btn_create(panel);
-	lv_obj_set_size(button, 240, 68);
+	lv_obj_set_size(button, ui_px(240), ui_px(68));
 	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_bg_color(button, theme()->accent, 0);
 	lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);

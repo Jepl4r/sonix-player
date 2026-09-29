@@ -31,11 +31,12 @@
 #include "src/system/audio/usbdac.h"
 #include "src/system/net/wifi.h"
 #include "src/system/net/wifitransfer.h"
+#include "src/gui/shell/uiscale.h"
 
 // The battery bitmaps are rendered from 24x24 SVGs at this size. The shell is
 // drawn by the icon; the charge level is a plain rectangle behind it, showing
 // through the icon's transparent middle.
-#define BATTERY_ICON_SIZE 38
+#define BATTERY_ICON_SIZE ui_px(38)
 
 // The inner cavity of the battery shell, in the SVG's 24x24 coordinates: the
 // body rect runs 2..18 with a 2px stroke centred on it, so the hole is 3..17
@@ -78,7 +79,7 @@
 // How far down a press has to end, with no drag having started, for the pull on
 // the status bar to count as a flick and open the control centre anyway.
 // Comfortably more than the wobble of a tap.
-#define FLICK_OPEN_PX 24
+#define FLICK_OPEN_PX ui_px(24)
 
 static lv_obj_t *top_bar;
 static lv_obj_t *bat_widget;
@@ -809,7 +810,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(container_left, 0, 0);
 	lv_obj_set_style_radius(container_left, 0, 0);
 	lv_obj_set_style_pad_all(container_left, 0, 0);
-	lv_obj_set_style_pad_gap(container_left, 8, 0);
+	lv_obj_set_style_pad_gap(container_left, ui_px(8), 0);
 	lv_obj_remove_flag(container_left, LV_OBJ_FLAG_SCROLLABLE);
 	// Not clickable, so presses reach the bar itself, whose drag handler pulls
 	// the control panel down.
@@ -861,7 +862,7 @@ void topbar_init(gui_config_t *cfg) {
 	// The container's default padding would push the battery about ten pixels
 	// further in than the page padding everything else lines up with.
 	lv_obj_set_style_pad_all(container_right, 0, 0);
-	lv_obj_set_style_pad_gap(container_right, 8, 0);
+	lv_obj_set_style_pad_gap(container_right, ui_px(8), 0);
 	lv_obj_remove_flag(container_right, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_remove_flag(container_right, LV_OBJ_FLAG_CLICKABLE);
 	lv_obj_set_flex_flow(container_right, LV_FLEX_FLOW_ROW);
@@ -909,7 +910,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_color(bat_fill, lv_color_make(60, 190, 90), 0);
 	lv_obj_set_style_bg_opa(bat_fill, LV_OPA_COVER, 0);
 	lv_obj_set_style_border_width(bat_fill, 0, 0);
-	lv_obj_set_style_radius(bat_fill, 1, 0);
+	lv_obj_set_style_radius(bat_fill, ui_px(1), 0);
 	lv_obj_set_style_pad_all(bat_fill, 0, 0);
 	lv_obj_remove_flag(bat_fill, LV_OBJ_FLAG_SCROLLABLE);
 

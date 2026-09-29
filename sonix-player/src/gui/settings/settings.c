@@ -28,6 +28,7 @@
 #include "src/system/device/power.h"
 #include "src/system/device/screenshot.h"
 #include "src/system/device/system.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *settings_screen;
 
@@ -242,13 +243,13 @@ static void build_screen_page(gui_config_t *cfg) {
 	// full-width slider underneath.
 	lv_obj_t *card = lv_obj_create(container);
 	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, 140);
+	lv_obj_set_height(card, ui_px(140));
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_hor(card, 20, 0);
-	lv_obj_set_style_pad_ver(card, 14, 0);
+	lv_obj_set_style_pad_hor(card, ui_px(20), 0);
+	lv_obj_set_style_pad_ver(card, ui_px(14), 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
 	lv_obj_t *label = lv_label_create(card);
@@ -266,8 +267,8 @@ static void build_screen_page(gui_config_t *cfg) {
 	// The Adwaita slider: thin round trough, accent fill, white knob.
 	brightness_slider = lv_slider_create(card);
 	lv_obj_set_width(brightness_slider, lv_pct(100));
-	lv_obj_set_height(brightness_slider, 10);
-	lv_obj_align(brightness_slider, LV_ALIGN_BOTTOM_MID, 0, -14);
+	lv_obj_set_height(brightness_slider, ui_px(10));
+	lv_obj_align(brightness_slider, LV_ALIGN_BOTTOM_MID, 0, -ui_px(14));
 	lv_slider_set_range(brightness_slider, 5, 100);
 
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
@@ -280,15 +281,15 @@ static void build_screen_page(gui_config_t *cfg) {
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 	lv_obj_set_style_bg_color(brightness_slider, lv_color_white(), LV_PART_KNOB);
 	theme_apply_slider_knob(brightness_slider);
-	lv_obj_set_style_pad_all(brightness_slider, 8, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(brightness_slider, 8, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(brightness_slider, ui_px(8), LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(brightness_slider, ui_px(8), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(brightness_slider, LV_OPA_30, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(brightness_slider, lv_color_black(), LV_PART_KNOB);
-	lv_obj_set_style_shadow_offset_y(brightness_slider, 1, LV_PART_KNOB);
+	lv_obj_set_style_shadow_offset_y(brightness_slider, ui_px(1), LV_PART_KNOB);
 
 	// A slim trough is a hard touch target; let the finger land anywhere in
 	// the card's lower half.
-	lv_obj_set_ext_click_area(brightness_slider, 24);
+	lv_obj_set_ext_click_area(brightness_slider, ui_px(24));
 
 	lv_obj_add_event_cb(brightness_slider, brightness_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 	lv_obj_add_event_cb(brightness_slider, brightness_released_cb, LV_EVENT_RELEASED, NULL);
@@ -387,8 +388,8 @@ static void kbtype_pick_cb(lv_event_t *e) {
 
 static lv_obj_t *make_kbtype_pill(lv_obj_t *parent, const char *text, int t9) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
-	lv_obj_set_style_pad_hor(btn, 22, 0);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(64));
+	lv_obj_set_style_pad_hor(btn, ui_px(22), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // the Adwaita pill
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -431,11 +432,11 @@ static void build_other_page(gui_config_t *cfg) {
 	lv_obj_set_width(kb_card, lv_pct(100));
 	lv_obj_set_height(kb_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(kb_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(kb_card, 12, 0);
+	lv_obj_set_style_radius(kb_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(kb_card, 0, 0);
 	lv_obj_set_style_shadow_width(kb_card, 0, 0);
-	lv_obj_set_style_pad_all(kb_card, 16, 0);
-	lv_obj_set_style_pad_row(kb_card, 12, 0);
+	lv_obj_set_style_pad_all(kb_card, ui_px(16), 0);
+	lv_obj_set_style_pad_row(kb_card, ui_px(12), 0);
 	lv_obj_remove_flag(kb_card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(kb_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(kb_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -451,7 +452,7 @@ static void build_other_page(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(kb_pills, 0, 0);
 	lv_obj_set_style_border_width(kb_pills, 0, 0);
 	lv_obj_set_style_pad_all(kb_pills, 0, 0);
-	lv_obj_set_style_pad_column(kb_pills, 8, 0);
+	lv_obj_set_style_pad_column(kb_pills, ui_px(8), 0);
 	lv_obj_remove_flag(kb_pills, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(kb_pills, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(kb_pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -483,7 +484,7 @@ static void build_other_page(gui_config_t *cfg) {
 	lv_obj_set_style_min_height(shot_card, row_height, 0);
 	lv_obj_set_flex_flow(shot_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(shot_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-	lv_obj_set_style_pad_row(shot_card, 2, 0);
+	lv_obj_set_style_pad_row(shot_card, ui_px(2), 0);
 	lv_obj_add_flag(shot_toggle, LV_OBJ_FLAG_IGNORE_LAYOUT);
 
 	if (screenshot_enabled()) {

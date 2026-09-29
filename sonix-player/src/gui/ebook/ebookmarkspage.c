@@ -20,6 +20,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *ebookmarkspage_screen;
 lv_obj_t *ebookmarkbookpage_screen;
@@ -42,8 +43,8 @@ lv_obj_t *ebookmarkbookpage_screen;
 #define BOOKS_MAX 300
 // The cover beside a row. Two-to-three like a paperback, and tall enough to be
 // recognisable next to two lines of text.
-#define ROW_COVER_W 56
-#define ROW_COVER_H 84
+#define ROW_COVER_W ui_px(56)
+#define ROW_COVER_H ui_px(84)
 
 typedef struct {
 	char file[256];
@@ -142,13 +143,13 @@ static void build_marks(void) {
 		lv_obj_set_height(row, LV_SIZE_CONTENT);
 		lv_obj_add_style(row, &theme_style_card, 0);
 		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 12, 0);
+		lv_obj_set_style_radius(row, ui_px(12), 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_all(row, 18, 0);
-		lv_obj_set_style_min_height(row, 88, 0);
+		lv_obj_set_style_pad_all(row, ui_px(18), 0);
+		lv_obj_set_style_min_height(row, ui_px(88), 0);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
-		lv_obj_set_style_pad_row(row, 6, 0);
+		lv_obj_set_style_pad_row(row, ui_px(6), 0);
 		lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
 		lv_obj_add_event_cb(row, mark_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 		lv_obj_add_event_cb(row, mark_long_pressed_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)i);
@@ -285,13 +286,13 @@ static void build_rows(void) {
 		lv_obj_set_height(row, LV_SIZE_CONTENT);
 		lv_obj_add_style(row, &theme_style_card, 0);
 		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 12, 0);
+		lv_obj_set_style_radius(row, ui_px(12), 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_all(row, 14, 0);
+		lv_obj_set_style_pad_all(row, ui_px(14), 0);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-		lv_obj_set_style_pad_column(row, 14, 0);
+		lv_obj_set_style_pad_column(row, ui_px(14), 0);
 		lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
 		lv_obj_add_event_cb(row, open_book_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
@@ -303,7 +304,7 @@ static void build_rows(void) {
 		lv_obj_set_size(plate, ROW_COVER_W, ROW_COVER_H);
 		lv_obj_set_style_bg_color(plate, theme()->screen_bg, 0);
 		lv_obj_set_style_bg_opa(plate, LV_OPA_COVER, 0);
-		lv_obj_set_style_radius(plate, 6, 0);
+		lv_obj_set_style_radius(plate, ui_px(6), 0);
 		lv_obj_remove_flag(plate, LV_OBJ_FLAG_SCROLLABLE);
 		lv_obj_add_flag(plate, LV_OBJ_FLAG_EVENT_BUBBLE);
 
@@ -324,7 +325,7 @@ static void build_rows(void) {
 		lv_obj_set_height(column, LV_SIZE_CONTENT);
 		lv_obj_set_flex_grow(column, 1);
 		lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
-		lv_obj_set_style_pad_row(column, 6, 0);
+		lv_obj_set_style_pad_row(column, ui_px(6), 0);
 		lv_obj_remove_flag(column, LV_OBJ_FLAG_SCROLLABLE);
 		lv_obj_add_flag(column, LV_OBJ_FLAG_EVENT_BUBBLE);
 
@@ -345,7 +346,7 @@ static void build_rows(void) {
 	}
 }
 
-#define COVER_LOOKAHEAD 720
+#define COVER_LOOKAHEAD ui_px(720)
 
 static void want_visible_covers(void) {
 	if (!books || !book_count || !books_container) {
@@ -421,13 +422,13 @@ void ebookmarkspage_init(gui_config_t *cfg) {
 	books_container = container;
 	lv_obj_add_event_cb(container, books_scrolled_cb, LV_EVENT_SCROLL, NULL);
 	lv_obj_add_event_cb(container, books_scrolled_cb, LV_EVENT_SCROLL_END, NULL);
-	lv_obj_set_style_pad_row(container, 10, 0);
+	lv_obj_set_style_pad_row(container, ui_px(10), 0);
 
 	books_list = lv_obj_create(container);
 	lv_obj_remove_style_all(books_list);
 	lv_obj_set_size(books_list, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(books_list, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(books_list, 10, 0);
+	lv_obj_set_style_pad_row(books_list, ui_px(10), 0);
 	lv_obj_remove_flag(books_list, LV_OBJ_FLAG_SCROLLABLE);
 	// One step at a time: a row hands the press to this, and this to the
 	// container, which is where the swipe that goes back is watched.
@@ -453,7 +454,7 @@ void ebookmarkspage_init(gui_config_t *cfg) {
 	lv_obj_add_style(ebookmarkbookpage_screen, &theme_style_screen, 0);
 
 	lv_obj_t *book_container = settingsrow_page(ebookmarkbookpage_screen, cfg, "bookmarks");
-	lv_obj_set_style_pad_row(book_container, 10, 0);
+	lv_obj_set_style_pad_row(book_container, ui_px(10), 0);
 	// The heading says which book, so it is rewritten every time one is opened.
 	marks_title = settingsrow_page_title(ebookmarkbookpage_screen);
 
@@ -461,7 +462,7 @@ void ebookmarkspage_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(marks_list);
 	lv_obj_set_size(marks_list, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(marks_list, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(marks_list, 10, 0);
+	lv_obj_set_style_pad_row(marks_list, ui_px(10), 0);
 	lv_obj_remove_flag(marks_list, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(marks_list, LV_OBJ_FLAG_EVENT_BUBBLE);
 

@@ -23,6 +23,7 @@
 #include "src/system/playback/playlist.h"
 #include "src/system/remote/sonixlink.h"
 #include "src/system/net/wifi.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *sonixlink_screen;
 
@@ -533,7 +534,7 @@ void sonixlink_page_init(gui_config_t *cfg) {
 
 	glyph = lv_image_create(container);
 	lv_image_set_src(glyph, &icon_sonixlink_page);
-	lv_obj_set_style_margin_top(glyph, 40, 0);
+	lv_obj_set_style_margin_top(glyph, ui_px(40), 0);
 
 	status_label = lv_label_create(container);
 	lv_obj_set_width(status_label, lv_pct(100));
@@ -541,13 +542,13 @@ void sonixlink_page_init(gui_config_t *cfg) {
 	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_22, 0);
 	lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_hor(status_label, 4, 0);
-	lv_obj_set_style_margin_top(status_label, 20, 0);
+	lv_obj_set_style_pad_hor(status_label, ui_px(4), 0);
+	lv_obj_set_style_margin_top(status_label, ui_px(20), 0);
 
 	// The same row as the other network pages: the notice says what is
 	// missing, this leads to where it is fixed.
 	wifi_row = settingsrow_add(container, "wi_fi_settings", NULL, wifi_row_cb, NULL);
-	lv_obj_set_style_margin_top(wifi_row, 16, 0);
+	lv_obj_set_style_margin_top(wifi_row, ui_px(16), 0);
 	hide(wifi_row);
 
 	page_timer = lv_timer_create(page_poll_cb, PAGE_POLL_MS, NULL);

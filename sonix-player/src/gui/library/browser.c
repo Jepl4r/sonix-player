@@ -32,6 +32,7 @@
 #include "src/system/playback/playlist.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // A windowed list.
@@ -49,21 +50,21 @@
 // ---------------------------------------------------------------------------
 
 // Side of the album art thumbnail shown in front of each row.
-#define THUMB_SIZE 72
+#define THUMB_SIZE ui_px(72)
 
 // Row geometry. The pitch is what the windowing maths is built on, so it has
 // to be exact: the row height plus the gap underneath it.
-#define ROW_HEIGHT 100
-#define LIST_ROW_GAP 8
+#define ROW_HEIGHT ui_px(100)
+#define LIST_ROW_GAP ui_px(8)
 #define ROW_PITCH (ROW_HEIGHT + LIST_ROW_GAP)
-#define LIST_ROW_RADIUS 12 // Adwaita boxed-list corner radius
-#define LIST_ROW_PAD 14
+#define LIST_ROW_RADIUS ui_px(12) // Adwaita boxed-list corner radius
+#define LIST_ROW_PAD ui_px(14)
 
 // The now-playing mark, the same one the library lists carry: a rounded
 // accent bar in the row's own left padding, so nothing on the row moves.
-#define PLAYMARK_WIDTH 6
-#define PLAYMARK_HEIGHT 52
-#define PLAYMARK_INSET 4
+#define PLAYMARK_WIDTH ui_px(6)
+#define PLAYMARK_HEIGHT ui_px(52)
+#define PLAYMARK_INSET ui_px(4)
 
 // How many row widgets exist. A 720 px panel shows six or seven; the spares
 // cover the partly visible rows at each end and give the recycling somewhere
@@ -1464,7 +1465,7 @@ static void init_list_styles(void) {
 	lv_style_set_radius(&style_list_btn, LIST_ROW_RADIUS);
 	lv_style_set_shadow_width(&style_list_btn, 0);
 	lv_style_set_pad_all(&style_list_btn, LIST_ROW_PAD);
-	lv_style_set_pad_column(&style_list_btn, 14);
+	lv_style_set_pad_column(&style_list_btn, ui_px(14));
 }
 
 // Builds the fixed pool of rows. This runs once, at startup: from here on the
@@ -1537,12 +1538,12 @@ static void build_rows(int width) {
 // Hidden until something shows it.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *btn = lv_btn_create(browser_screen);
-	lv_obj_set_size(btn, 56, 56);
+	lv_obj_set_size(btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_pad_all(btn, 0, 0);
-	lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * 62, cfg->padding + cfg->top_bar_height);
+	lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (ui_px(56) + ui_px(6)), cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_flag(btn, LV_OBJ_FLAG_HIDDEN);
 

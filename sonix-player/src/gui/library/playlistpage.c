@@ -28,6 +28,7 @@
 #include "src/system/streaming/qobuzsync.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/streaming/tidalsync.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *playlistpage_screen;
 
@@ -35,9 +36,9 @@ lv_obj_t *playlistpage_screen;
 // thousands of tracks, so the browser's windowing machinery would cost more
 // than it saves here.
 
-#define ROW_HEIGHT 88
-#define ROW_GAP 8
-#define ROW_RADIUS 12
+#define ROW_HEIGHT ui_px(88)
+#define ROW_GAP ui_px(8)
+#define ROW_RADIUS ui_px(12)
 #define NAME_MAX 200
 
 static gui_config_t *config;
@@ -437,9 +438,9 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_ver(row, 10, 0);
-	lv_obj_set_style_pad_column(row, 14, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(16), 0);
+	lv_obj_set_style_pad_ver(row, ui_px(10), 0);
+	lv_obj_set_style_pad_column(row, ui_px(14), 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE); // the player sheet drags from here too
@@ -501,7 +502,7 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 
 	// The ellipsis on the right edge, as on every track row.
 	lv_obj_t *menu_btn = lv_btn_create(row);
-	lv_obj_set_size(menu_btn, 44, 44);
+	lv_obj_set_size(menu_btn, ui_px(44), ui_px(44));
 	lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(menu_btn, 0, 0);
 	lv_obj_set_style_shadow_width(menu_btn, 0, 0);
@@ -879,9 +880,9 @@ static void import_add_candidate_row(int index) {
 	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_ver(row, 10, 0);
-	lv_obj_set_style_pad_column(row, 14, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(16), 0);
+	lv_obj_set_style_pad_ver(row, ui_px(10), 0);
+	lv_obj_set_style_pad_column(row, ui_px(14), 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_add_event_cb(row, import_row_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
@@ -1097,8 +1098,8 @@ static void rebuild_rows(void) {
 	lv_obj_set_style_radius(new_row, ROW_RADIUS, 0);
 	lv_obj_set_style_border_width(new_row, 0, 0);
 	lv_obj_set_style_shadow_width(new_row, 0, 0);
-	lv_obj_set_style_pad_hor(new_row, 16, 0);
-	lv_obj_set_style_pad_column(new_row, 14, 0);
+	lv_obj_set_style_pad_hor(new_row, ui_px(16), 0);
+	lv_obj_set_style_pad_column(new_row, ui_px(14), 0);
 	lv_obj_set_flex_flow(new_row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(new_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_add_flag(new_row, LV_OBJ_FLAG_EVENT_BUBBLE);
@@ -1248,7 +1249,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(list, 0, 0);
 	lv_obj_set_style_radius(list, 0, 0);
 	lv_obj_set_style_pad_hor(list, cfg->padding, 0);
-	lv_obj_set_style_pad_bottom(list, 12, 0);
+	lv_obj_set_style_pad_bottom(list, ui_px(12), 0);
 	lv_obj_set_style_pad_gap(list, ROW_GAP, 0);
 	lv_obj_set_scroll_dir(list, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
@@ -1260,7 +1261,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(empty_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(empty_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(empty_label, &font_ui_24, 0);
-	lv_obj_align(empty_label, LV_ALIGN_TOP_MID, 0, content_top + 140);
+	lv_obj_align(empty_label, LV_ALIGN_TOP_MID, 0, content_top + ui_px(140));
 	lv_obj_add_flag(empty_label, LV_OBJ_FLAG_HIDDEN);
 
 	// --- the naming dialog: a full-screen layer with the field at the top and
@@ -1282,10 +1283,10 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(heading, &font_ui_24, 0);
 	// Offset clear of the floating back chevron, which sits on top of this
 	// layer; the same offset every page title uses.
-	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
+	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(56) + ui_px(14), cfg->padding + cfg->top_bar_height + ui_px(10));
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
-	lv_obj_set_size(cancel, 56, 56);
+	lv_obj_set_size(cancel, ui_px(56), ui_px(56));
 	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
@@ -1302,22 +1303,22 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_textarea_set_one_line(name_field, true);
 	lv_textarea_set_max_length(name_field, NAME_MAX);
 	lv_textarea_set_placeholder_text(name_field, tr("name"));
-	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(name_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 60);
+	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(60));
 	lv_obj_add_style(name_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(name_field, 12, 0);
+	lv_obj_set_style_radius(name_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(name_field, 0, 0);
 	lv_obj_set_style_shadow_width(name_field, 0, 0);
-	lv_obj_set_style_pad_all(name_field, 14, 0);
+	lv_obj_set_style_pad_all(name_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", name_accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, ui_px(316), name_field, NULL, "ok", name_accept_cb, NULL);
 
 	// --- the import button, in the title row's corner ------------------------
 	import_btn = lv_btn_create(playlistpage_screen);
-	lv_obj_set_size(import_btn, 56, 56);
+	lv_obj_set_size(import_btn, ui_px(56), ui_px(56));
 	lv_obj_align(import_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(import_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(import_btn, 0, 0);
@@ -1347,10 +1348,10 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_label_set_text(import_heading, tr("playlist_import_playlists"));
 	lv_obj_add_style(import_heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(import_heading, &font_ui_24, 0);
-	lv_obj_align(import_heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
+	lv_obj_align(import_heading, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(56) + ui_px(14), cfg->padding + cfg->top_bar_height + ui_px(10));
 
 	lv_obj_t *import_close = lv_btn_create(import_layer);
-	lv_obj_set_size(import_close, 56, 56);
+	lv_obj_set_size(import_close, ui_px(56), ui_px(56));
 	lv_obj_align(import_close, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(import_close, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(import_close, 0, 0);
@@ -1365,12 +1366,12 @@ void playlistpage_init(gui_config_t *cfg) {
 
 	// The button sits on the bottom edge; the list has whatever is left.
 	import_action = lv_btn_create(import_layer);
-	lv_obj_set_size(import_action, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(import_action, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_align(import_action, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding);
 	lv_obj_set_style_bg_color(import_action, theme()->accent, 0);
 	lv_obj_set_style_border_width(import_action, 0, 0);
 	lv_obj_set_style_shadow_width(import_action, 0, 0);
-	lv_obj_set_style_radius(import_action, 12, 0);
+	lv_obj_set_style_radius(import_action, ui_px(12), 0);
 	lv_obj_add_event_cb(import_action, import_action_cb, LV_EVENT_CLICKED, NULL);
 
 	import_action_label = lv_label_create(import_action);
@@ -1381,13 +1382,13 @@ void playlistpage_init(gui_config_t *cfg) {
 
 	int import_top = content_top;
 	import_body = lv_obj_create(import_layer);
-	lv_obj_set_size(import_body, cfg->screen_width, cfg->screen_height - import_top - 62 - 2 * cfg->padding);
+	lv_obj_set_size(import_body, cfg->screen_width, cfg->screen_height - import_top - ui_px(62) - 2 * cfg->padding);
 	lv_obj_align(import_body, LV_ALIGN_TOP_LEFT, 0, import_top);
 	lv_obj_set_style_bg_opa(import_body, 0, 0);
 	lv_obj_set_style_border_width(import_body, 0, 0);
 	lv_obj_set_style_radius(import_body, 0, 0);
 	lv_obj_set_style_pad_hor(import_body, cfg->padding, 0);
-	lv_obj_set_style_pad_ver(import_body, 4, 0);
+	lv_obj_set_style_pad_ver(import_body, ui_px(4), 0);
 	lv_obj_set_style_pad_gap(import_body, ROW_GAP, 0);
 	lv_obj_set_scroll_dir(import_body, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(import_body, LV_SCROLLBAR_MODE_AUTO);

@@ -8,13 +8,14 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/device/power.h"
+#include "src/gui/shell/uiscale.h"
 
 // The track lists' numbers, so the two strips are one design.
 #define BUCKETS LIBRARY_INDEX_BUCKETS
-#define BAR_WIDTH 28
+#define BAR_WIDTH ui_px(28)
 #define HIDE_MS 2500 // no scrolling and no touch for this long: it goes
 #define HINT_MS 450	 // the big letter outstays the finger by a moment
-#define ENGAGE_PX 6	 // upward or downward movement that claims the press
+#define ENGAGE_PX ui_px(6)	 // upward or downward movement that claims the press
 
 static const char *const TEXT[BUCKETS] = {"#", "A", "B", "C", "D", "E", "F", "G", "H", "I",
 										  "J", "K", "L", "M", "N", "O", "P", "Q", "R", "S",
@@ -251,8 +252,8 @@ azindex_t *azindex_create(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t *list, i
 
 	ix->bar = lv_obj_create(screen);
 	lv_obj_remove_style_all(ix->bar);
-	lv_obj_set_size(ix->bar, BAR_WIDTH, cfg->screen_height - content_top - 8);
-	lv_obj_align(ix->bar, LV_ALIGN_TOP_RIGHT, -2, content_top + 4);
+	lv_obj_set_size(ix->bar, BAR_WIDTH, cfg->screen_height - content_top - ui_px(8));
+	lv_obj_align(ix->bar, LV_ALIGN_TOP_RIGHT, -ui_px(2), content_top + ui_px(4));
 	lv_obj_set_style_bg_color(ix->bar, theme()->surface, 0);
 	lv_obj_set_style_bg_opa(ix->bar, LV_OPA_60, 0);
 	lv_obj_set_style_radius(ix->bar, BAR_WIDTH / 2, 0);
@@ -284,11 +285,11 @@ azindex_t *azindex_create(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t *list, i
 	// is not, in the accent colour so it stands off the cards under it.
 	ix->hint = lv_obj_create(screen);
 	lv_obj_remove_style_all(ix->hint);
-	lv_obj_set_size(ix->hint, 132, 124);
+	lv_obj_set_size(ix->hint, ui_px(132), ui_px(124));
 	lv_obj_align(ix->hint, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_style_bg_color(ix->hint, theme()->accent, 0);
 	lv_obj_set_style_bg_opa(ix->hint, LV_OPA_90, 0);
-	lv_obj_set_style_radius(ix->hint, 26, 0);
+	lv_obj_set_style_radius(ix->hint, ui_px(26), 0);
 	lv_obj_remove_flag(ix->hint, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_remove_flag(ix->hint, LV_OBJ_FLAG_CLICKABLE);
 	lv_obj_add_flag(ix->hint, LV_OBJ_FLAG_HIDDEN);
