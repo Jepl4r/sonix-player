@@ -14,6 +14,13 @@
 // the same place.
 lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *text);
 
+// Places a heading the page built itself (a name or picker layer that is not a
+// settingsrow page) on the header row, centred on the corner buttons like
+// settingsrow_title() does, in the font the label already has. `left` is
+// usually settingsrow_heading_left(): clear of the back button.
+void settingsrow_heading_place(lv_obj_t *label, gui_config_t *cfg, int32_t left);
+int32_t settingsrow_heading_left(gui_config_t *cfg);
+
 // How far down a page's content has to start to clear the heading and the
 // corner buttons.
 int settingsrow_content_top(gui_config_t *cfg);

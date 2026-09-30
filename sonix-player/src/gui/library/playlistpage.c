@@ -1284,7 +1284,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(heading, &font_ui_24, 0);
 	// Offset clear of the floating back chevron, which sits on top of this
 	// layer; the same offset every page title uses.
-	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(56) + ui_px(14), cfg->padding + cfg->top_bar_height + ui_px(10));
+	settingsrow_heading_place(heading, cfg, settingsrow_heading_left(cfg));
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
 	lv_obj_set_size(cancel, ui_px(56), ui_px(56));
@@ -1349,7 +1349,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_label_set_text(import_heading, tr("playlist_import_playlists"));
 	lv_obj_add_style(import_heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(import_heading, &font_ui_24, 0);
-	lv_obj_align(import_heading, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(56) + ui_px(14), cfg->padding + cfg->top_bar_height + ui_px(10));
+	settingsrow_heading_place(import_heading, cfg, settingsrow_heading_left(cfg));
 
 	lv_obj_t *import_close = lv_btn_create(import_layer);
 	lv_obj_set_size(import_close, ui_px(56), ui_px(56));

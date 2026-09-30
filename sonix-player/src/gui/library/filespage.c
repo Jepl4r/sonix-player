@@ -1216,7 +1216,7 @@ void filespage_init(gui_config_t *cfg) {
 	lv_label_set_text(name_heading, tr("files_new_folder"));
 	lv_obj_add_style(name_heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(name_heading, &font_ui_24, 0);
-	lv_obj_align(name_heading, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(56) + ui_px(14), cfg->padding + cfg->top_bar_height + ui_px(10));
+	settingsrow_heading_place(name_heading, cfg, settingsrow_heading_left(cfg));
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
 	lv_obj_set_size(cancel, ui_px(56), ui_px(56));
@@ -1266,7 +1266,7 @@ void filespage_init(gui_config_t *cfg) {
 	lv_label_set_text(pick_title, tr("file_explorer"));
 	lv_obj_add_style(pick_title, &theme_style_text, 0);
 	lv_obj_set_style_text_font(pick_title, &font_ui_24, 0);
-	lv_obj_align(pick_title, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(56) + ui_px(14), cfg->padding + cfg->top_bar_height + ui_px(10));
+	settingsrow_heading_place(pick_title, cfg, settingsrow_heading_left(cfg));
 
 	lv_obj_t *pick_cancel = lv_btn_create(pick_layer);
 	lv_obj_set_size(pick_cancel, ui_px(56), ui_px(56));

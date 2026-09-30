@@ -484,7 +484,7 @@ static void build_name_layer(gui_config_t *cfg) {
 	lv_label_set_text(heading, tr("bt_rename"));
 	lv_obj_add_style(heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(heading, &font_ui_24, 0);
-	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(10));
+	settingsrow_heading_place(heading, cfg, cfg->padding);
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
 	lv_obj_set_size(cancel, NAME_CANCEL_SIZE, NAME_CANCEL_SIZE);

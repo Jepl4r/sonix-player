@@ -49,18 +49,23 @@
 // tr() calls live here rather than in thirty call sites. A name that is not a
 // known key (a user-typed preset, an SSID) comes back from tr() unchanged.
 static void fit_title(lv_obj_t *label, int width);
+static void set_title_line(lv_obj_t *label, int32_t line_height);
 
 // Every heading built here, so a change of text size can fit them again: the
 // step each one settled on was chosen at the old size. Its width is the
-// label's own, which is what both callers of fit_title() pass.
+// label's own, which is what both callers of fit_title() pass. Headings placed
+// by settingsrow_heading_place() keep their font and are only centred again.
 #define SETTINGSROW_MAX_TITLES 160
-static lv_obj_t *titles[SETTINGSROW_MAX_TITLES];
+static struct {
+	lv_obj_t *label;
+	bool fit;
+} titles[SETTINGSROW_MAX_TITLES];
 static int title_count;
 
 static void title_deleted_cb(lv_event_t *e) {
 	lv_obj_t *label = lv_event_get_target(e);
 	for (int i = 0; i < title_count; i++) {
-		if (titles[i] == label) {
+		if (titles[i].label == label) {
 			titles[i] = titles[--title_count];
 			return;
 		}
@@ -69,7 +74,24 @@ static void title_deleted_cb(lv_event_t *e) {
 
 static void refit_titles(void) {
 	for (int i = 0; i < title_count; i++) {
-		fit_title(titles[i], lv_obj_get_style_width(titles[i], LV_PART_MAIN));
+		lv_obj_t *label = titles[i].label;
+		if (titles[i].fit) {
+			fit_title(label, lv_obj_get_style_width(label, LV_PART_MAIN));
+		} else {
+			set_title_line(label, lv_font_get_line_height(lv_obj_get_style_text_font(label, LV_PART_MAIN)));
+		}
+	}
+}
+
+static void track_title(lv_obj_t *label, bool fit) {
+	if (title_count == 0) {
+		fonts_register_change(refit_titles);
+	}
+	if (title_count < SETTINGSROW_MAX_TITLES) {
+		titles[title_count].label = label;
+		titles[title_count].fit = fit;
+		title_count++;
+		lv_obj_add_event_cb(label, title_deleted_cb, LV_EVENT_DELETE, NULL);
 	}
 }
 
@@ -81,25 +103,25 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 
 	// Beside the back button, not above it: the two read as one header row.
-	int left = cfg->padding + CORNER_BTN_SIZE + ui_px(14);
+	int left = settingsrow_heading_left(cfg);
 	lv_obj_set_width(label, cfg->screen_width - left - cfg->padding - CORNER_BTN_SIZE - ui_px(14));
-	// Always one line. LV_LABEL_LONG_DOT wraps first and puts the ellipsis at
-	// the end of the last line that fits, so a long album name would grow the
-	// header to two lines; pinning the height to one line makes it truncate
-	// instead.
-	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_32));
+	// fit_title() gives it the back button's height and centres the one line
+	// of text in it.
 	fit_title(label, cfg->screen_width - left - cfg->padding - CORNER_BTN_SIZE - ui_px(14));
-	lv_obj_align(label, LV_ALIGN_TOP_LEFT, left, cfg->top_bar_height + cfg->padding + ui_px(10));
-
-	if (title_count == 0) {
-		fonts_register_change(refit_titles);
-	}
-	if (title_count < SETTINGSROW_MAX_TITLES) {
-		titles[title_count++] = label;
-		lv_obj_add_event_cb(label, title_deleted_cb, LV_EVENT_DELETE, NULL);
-	}
+	lv_obj_align(label, LV_ALIGN_TOP_LEFT, left, cfg->top_bar_height + cfg->padding);
+	track_title(label, true);
 
 	return label;
+}
+
+void settingsrow_heading_place(lv_obj_t *label, gui_config_t *cfg, int32_t left) {
+	set_title_line(label, lv_font_get_line_height(lv_obj_get_style_text_font(label, LV_PART_MAIN)));
+	lv_obj_align(label, LV_ALIGN_TOP_LEFT, left, cfg->top_bar_height + cfg->padding);
+	track_title(label, false);
+}
+
+int32_t settingsrow_heading_left(gui_config_t *cfg) {
+	return cfg->padding + CORNER_BTN_SIZE + ui_px(14);
 }
 
 int settingsrow_content_top(gui_config_t *cfg) {
@@ -162,6 +184,22 @@ lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *titl
 // heading like "Tous les morceaux" at 32 px. The size steps down until the
 // words fit; only a name too long even at the smallest step (an album title out
 // of a tag, say) still gets the ellipsis.
+// The heading's box is as tall as the corner buttons, with the one line of
+// text centred in it by equal padding, so the text lines up with the buttons
+// at every scale and every step fit_title() picks; a fixed offset from the top
+// was tuned for 32 px at 1:1 and left smaller steps riding high.
+// Always one line: LV_LABEL_LONG_DOT wraps first and puts the ellipsis at the
+// end of the last line that fits, so a long album name would grow the header
+// to two lines; a content height of exactly one line makes it truncate
+// instead.
+static void set_title_line(lv_obj_t *label, int32_t line_height) {
+	int32_t spare = CORNER_BTN_SIZE - line_height;
+	int32_t top = spare > 0 ? spare / 2 : 0;
+	lv_obj_set_style_pad_top(label, top, 0);
+	lv_obj_set_style_pad_bottom(label, spare > 0 ? spare - top : 0, 0);
+	lv_obj_set_height(label, line_height + (spare > 0 ? spare : 0));
+}
+
 static void fit_title(lv_obj_t *label, int width) {
 	// Down to 24, because headings such as "Opzioni di visualizzazione" do not
 	// fit at 26 either, and an ellipsis in a page title tells the reader
@@ -187,7 +225,7 @@ static void fit_title(lv_obj_t *label, int width) {
 		lv_text_get_size(&size, text, STEPS[i], 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
 		if (size.x <= width || i + 1 == sizeof(STEPS) / sizeof(STEPS[0])) {
 			lv_obj_set_style_text_font(label, STEPS[i], 0);
-			lv_obj_set_height(label, lv_font_get_line_height(STEPS[i]));
+			set_title_line(label, lv_font_get_line_height(STEPS[i]));
 			break;
 		}
 	}
@@ -269,7 +307,7 @@ void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int butt
 	if (!title || buttons < 0) {
 		return;
 	}
-	int left = cfg->padding + CORNER_BTN_SIZE + ui_px(14);
+	int left = settingsrow_heading_left(cfg);
 	// Zero is a real answer and not "leave it alone": a page with no corner
 	// buttons gets the whole width, which is the difference between a heading
 	// that reads and one that ends in an ellipsis.
