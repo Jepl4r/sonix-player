@@ -57,12 +57,19 @@
 // second line rather than shrinking.
 #define CIRCLE_BUTTON_SIZE ui_px(88)
 #define CIRCLE_BUTTON_GAP ui_px(14)
+// What the circles are drawn at: CIRCLE_BUTTON_SIZE, unless the first card
+// cannot give two lines of them that much height (see quickpanel_init).
+static int circle_size;
 
 // How the sheet divides the screen up: a strip for the close hint at the
 // bottom, small gaps at the top and between the cards, and the rest split
 // evenly between them. The leftover space goes to the cards rather than around
 // them, or on a 720 px panel everything sits high.
 #define CARD_PADDING ui_px(20)
+#define CONTROLS_GAP ui_px(12)	// between the circles and the brightness row
+#define BRIGHT_ROW_H ui_px(44)
+#define NP_GAP ui_px(6)			// between the playing card's lines
+#define TRANSPORT_H ui_px(96)
 #define HINT_STRIP_H ui_px(52) // room under the cards for the close line
 #define CARD_TOP_GAP ui_px(12) // between the status bar and the first card
 #define CARD_GAP ui_px(16)	   // between the two cards
@@ -1196,7 +1203,7 @@ const lv_image_dsc_t *quickpanel_button_icon(quickpanel_button_t button) {
 // glyph centred on it. Callers attach their own handlers.
 static lv_obj_t *make_circle_button(lv_obj_t *parent, const lv_image_dsc_t *glyph) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, CIRCLE_BUTTON_SIZE, CIRCLE_BUTTON_SIZE);
+	lv_obj_set_size(btn, circle_size, circle_size);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_add_style(btn, &theme_style_switch, 0); // neutral circle that follows the theme
 	lv_obj_set_style_shadow_width(btn, 0, 0);
@@ -1608,9 +1615,9 @@ static lv_obj_t *make_flat_button(lv_obj_t *parent, int size, lv_event_cb_t cb) 
 	return btn;
 }
 
-// The rounded surface each half of the panel sits on. Both cards are the same
-// size and stack from the top of the sheet with one gap between them, so
-// together they fill the screen instead of floating in the middle of it.
+// The rounded surface each half of the panel sits on. The cards stack from the
+// top of the sheet with one gap between them, so together they fill the screen
+// instead of floating in the middle of it.
 static lv_obj_t *make_card(lv_obj_t *parent, int width, int height, int top_y) {
 	lv_obj_t *card = lv_obj_create(parent);
 	lv_obj_add_flag(card, LV_OBJ_FLAG_IGNORE_LAYOUT);
@@ -1676,14 +1683,37 @@ void quickpanel_init(gui_config_t *cfg) {
 		card_h = 160; // floor for panels shorter than any shipped screen
 	}
 
+	// Even halves, unless that leaves the controls short of two full lines of
+	// circles (QP_SLOT_COUNT is two lines of four) over the brightness row, as
+	// on a panel the interface is drawn large on. The playing card has height to
+	// spare there, so the controls take theirs from it, down to what its lines
+	// and transport need; only past that do the circles get smaller.
+	int controls_fixed = 2 * CARD_PADDING + CIRCLE_BUTTON_GAP + CONTROLS_GAP + BRIGHT_ROW_H;
+	int controls_need = controls_fixed + 2 * CIRCLE_BUTTON_SIZE;
+	int np_need = 2 * CARD_PADDING + lv_font_get_line_height(&font_ui_26) + lv_font_get_line_height(&font_ui_22) +
+				  TRANSPORT_H + 2 * NP_GAP;
+	int controls_h = card_h;
+	int np_h = card_h;
+	if (controls_need > card_h) {
+		controls_h = controls_need;
+		if (controls_h > 2 * card_h - np_need) {
+			controls_h = 2 * card_h - np_need > card_h ? 2 * card_h - np_need : card_h;
+		}
+		np_h = 2 * card_h - controls_h;
+	}
+	circle_size = CIRCLE_BUTTON_SIZE;
+	if (controls_need > controls_h) {
+		circle_size = (controls_h - controls_fixed) / 2;
+	}
+
 	// --- First card: the quick controls. ---
-	lv_obj_t *controls_card = make_card(panel, card_w, card_h, top_inset);
+	lv_obj_t *controls_card = make_card(panel, card_w, controls_h, top_inset);
 	lv_obj_set_flex_flow(controls_card, LV_FLEX_FLOW_COLUMN);
 	// Brightness along the bottom; the buttons take the height above it and
 	// their rows are centred in it, so a single row of four sits midway between
 	// the top of the card and the slider.
 	lv_obj_set_flex_align(controls_card, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(controls_card, ui_px(12), 0);
+	lv_obj_set_style_pad_gap(controls_card, CONTROLS_GAP, 0);
 
 	lv_obj_t *row = lv_obj_create(controls_card);
 	// Wraps to a second line past four buttons. Grows into the free height of
@@ -1782,7 +1812,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	order_apply();
 
 	lv_obj_t *bright_row = lv_obj_create(controls_card);
-	lv_obj_set_size(bright_row, lv_pct(100), ui_px(44));
+	lv_obj_set_size(bright_row, lv_pct(100), BRIGHT_ROW_H);
 	lv_obj_set_style_bg_opa(bright_row, 0, 0);
 	lv_obj_set_style_border_width(bright_row, 0, 0);
 	lv_obj_set_style_pad_all(bright_row, 0, 0);
@@ -1823,10 +1853,10 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(brightness_slider, brightness_released_cb, LV_EVENT_RELEASED, NULL);
 
 	// --- Second card: what is playing, and its transport. ---
-	lv_obj_t *np_card = make_card(panel, card_w, card_h, top_inset + card_h + CARD_GAP);
+	lv_obj_t *np_card = make_card(panel, card_w, np_h, top_inset + controls_h + CARD_GAP);
 	lv_obj_set_flex_flow(np_card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(np_card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(np_card, ui_px(6), 0);
+	lv_obj_set_style_pad_gap(np_card, NP_GAP, 0);
 
 	// Title and artist are centred and scroll when too long, the same treatment
 	// as the player's now-playing lines. Each is exactly one line of its own
@@ -1850,7 +1880,7 @@ void quickpanel_init(gui_config_t *cfg) {
 	scrolltext_apply(np_artist);
 
 	lv_obj_t *transport = lv_obj_create(np_card);
-	lv_obj_set_size(transport, lv_pct(100), ui_px(96));
+	lv_obj_set_size(transport, lv_pct(100), TRANSPORT_H);
 	lv_obj_set_style_bg_opa(transport, 0, 0);
 	lv_obj_set_style_border_width(transport, 0, 0);
 	lv_obj_set_style_pad_all(transport, 0, 0);
