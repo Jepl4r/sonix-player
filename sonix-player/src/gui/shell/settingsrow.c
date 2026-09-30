@@ -138,6 +138,10 @@ lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *titl
 	lv_obj_set_style_border_width(container, 0, 0);
 	lv_obj_set_style_radius(container, 0, 0);
 	lv_obj_set_style_pad_hor(container, cfg->padding, 0);
+	// settingsrow_content_top() already leaves the padding under the corner
+	// buttons; the theme's own on top of it would be an empty band over the
+	// first row. The bottom keeps the theme's, room past the last row.
+	lv_obj_set_style_pad_top(container, 0, 0);
 	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_gap(container, ROW_GAP, 0);

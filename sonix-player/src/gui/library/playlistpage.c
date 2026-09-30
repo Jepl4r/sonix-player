@@ -1249,6 +1249,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(list, 0, 0);
 	lv_obj_set_style_radius(list, 0, 0);
 	lv_obj_set_style_pad_hor(list, cfg->padding, 0);
+	lv_obj_set_style_pad_top(list, 0, 0);
 	lv_obj_set_style_pad_bottom(list, ui_px(12), 0);
 	lv_obj_set_style_pad_gap(list, ROW_GAP, 0);
 	lv_obj_set_scroll_dir(list, LV_DIR_VER);

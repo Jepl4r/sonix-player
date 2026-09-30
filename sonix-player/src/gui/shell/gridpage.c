@@ -149,6 +149,12 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 	lv_obj_set_style_border_width(grid, 0, 0);
 	lv_obj_set_style_radius(grid, 0, 0);
 	lv_obj_set_style_pad_all(grid, cfg->padding, 0);
+	// Under the corner buttons settingsrow_content_top() has already left the
+	// padding below them, as it does on the settings pages; a second one on top
+	// of it would only be an empty band over the first row.
+	if (clear_corner_buttons) {
+		lv_obj_set_style_pad_top(grid, 0, 0);
+	}
 	lv_obj_set_style_pad_gap(grid, GRID_GAP, 0);
 	lv_obj_remove_flag(grid, LV_OBJ_FLAG_SCROLLABLE);
 
@@ -160,7 +166,7 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 	lv_obj_set_flex_align(grid, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 
 	int usable_w = cfg->screen_width - (2 * cfg->padding);
-	int usable_h = (cfg->screen_height - top) - (2 * cfg->padding);
+	int usable_h = (cfg->screen_height - top) - (clear_corner_buttons ? 1 : 2) * cfg->padding;
 
 	int tile_w = (usable_w - (columns - 1) * GRID_GAP) / columns;
 	int tile_h = (usable_h - (rows - 1) * GRID_GAP) / rows;
