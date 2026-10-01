@@ -105,8 +105,14 @@ Fonts are looked for in `usr/resource/sonix/fonts` first and fall back to
 ```
 
 The window is the panel of the player named in `system-info.json`: 480x720 for
-the R3 Pro II, 480x800 for the R1, and 480x720 when the file is missing. The
-mouse is the finger, and dragging scrolls.
+the R3 Pro II, 480x800 for the R1, 360x480 for the original R3 (`"device-name":
+"HiBy R3"`, laid out at three quarters, see `src/gui/shell/uiscale.h`), and 480x720
+when the file is missing. The mouse is the finger, and dragging scrolls.
+
+The R3's icons are a set of their own, drawn at three quarters, which no other
+player carries. `python3 tools/svg_to_lvgl.py` writes it to
+`build_gen/icons-3-4.bin`; copy it to `usr/resource/sonix/`. Without it the
+R3's icons are drawn at the full size of the 480-wide design.
 
 `SONIX_PANEL=480x800` opens the window at a given size whatever the file says.
 The rest of the model (buttons, DAC, update file) still follows the file.

@@ -18,12 +18,13 @@
 #include "src/system/playback/device_state.h"
 #include "src/system/device/power.h"
 #include "src/system/device/screensaverpics.h"
+#include "src/gui/shell/uiscale.h"
 
 // Movement that turns a press into a drag, and how long the slide that follows
 // the release lasts. The dismiss threshold itself is a quarter of the screen,
 // applied in drag_cb; short of it the panel slides back down, like the control
 // centre.
-#define DRAG_ENGAGE_PX 8
+#define DRAG_ENGAGE_PX ui_px(8)
 #define DISMISS_ANIM_MS 180
 
 static lv_obj_t *saver;		 // the whole thing, full screen on the top layer
@@ -43,7 +44,7 @@ static int strip_h;
 // What the strip falls back to when there is no artwork to size it from, and
 // the height it always has over a picture from the folder -- there the block
 // is built to order rather than borrowed, so there is nothing to measure.
-#define DEFAULT_STRIP_H 250
+#define DEFAULT_STRIP_H ui_px(250)
 
 // ---------------------------------------------------------------------------
 // Pictures from the card
@@ -653,9 +654,9 @@ void screensaver_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(info_strip, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(info_strip, 0, 0);
 	lv_obj_set_style_radius(info_strip, 0, 0);
-	lv_obj_set_style_pad_hor(info_strip, cfg->padding + 6, 0);
-	lv_obj_set_style_pad_ver(info_strip, 18, 0);
-	lv_obj_set_style_pad_gap(info_strip, 2, 0);
+	lv_obj_set_style_pad_hor(info_strip, cfg->padding + ui_px(6), 0);
+	lv_obj_set_style_pad_ver(info_strip, ui_px(18), 0);
+	lv_obj_set_style_pad_gap(info_strip, ui_px(2), 0);
 	lv_obj_remove_flag(info_strip, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(info_strip, LV_OBJ_FLAG_EVENT_BUBBLE);
 	lv_obj_remove_flag(info_strip, LV_OBJ_FLAG_CLICKABLE);
@@ -682,15 +683,15 @@ void screensaver_init(gui_config_t *cfg) {
 	clock_label = lv_label_create(info_strip);
 	lv_obj_set_style_text_font(clock_label, &font_ui_72, 0);
 	lv_obj_set_style_text_color(clock_label, lv_color_white(), 0);
-	lv_obj_set_style_pad_top(clock_label, 6, 0);
+	lv_obj_set_style_pad_top(clock_label, ui_px(6), 0);
 
 	// The way out, spelled out: swipe up. A sign, not a button -- tapping it
 	// does nothing, since the screensaver is only dismissed by dragging -- so it
 	// is not clickable and a finger landing on it talks to the saver underneath,
 	// where the drag gesture lives.
 	lv_obj_t *chevron_btn = lv_obj_create(saver);
-	lv_obj_set_size(chevron_btn, 80, 52);
-	lv_obj_align(chevron_btn, LV_ALIGN_BOTTOM_MID, 0, -4);
+	lv_obj_set_size(chevron_btn, ui_px(80), ui_px(52));
+	lv_obj_align(chevron_btn, LV_ALIGN_BOTTOM_MID, 0, -ui_px(4));
 	lv_obj_set_style_bg_opa(chevron_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(chevron_btn, 0, 0);
 	lv_obj_set_style_shadow_width(chevron_btn, 0, 0);

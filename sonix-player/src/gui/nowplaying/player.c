@@ -53,6 +53,7 @@
 
 #include "lvgl/src/core/lv_obj_event_private.h"
 #include "lvgl/lvgl.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *player_screen;
 
@@ -132,22 +133,54 @@ static int polls_since_stop = POLLS_FAST_AFTER_STOP;
 // Height the controls block needs for its two lines of text, the bar, the
 // clocks and the buttons. Only used as a floor on screens too short to fit a
 // full-width square cover on top of it.
-#define PLAYER_MENU_MIN_HEIGHT 210
+// 240 is what the R3 Pro II leaves (720 - 480) and what the controls are laid
+// out in; anything shorter cuts the transport row off at the bottom.
+#define PLAYER_MENU_MIN_HEIGHT ui_px(240)
+
+// A panel wider for its height than 2:3 -- the original R3, 360x480 -- keeps
+// the cover as wide as the screen and moves the track's lines onto the bottom
+// of it, over a shade, the way HiBy's own player does there. What is left under
+// the cover then only has to hold the bar, the clocks and the buttons, and this
+// is what those need. Where even that does not fit, the cover gives up height
+// and is no longer square.
+#define PLAYER_MENU_BARE_HEIGHT ui_px(180)
+// Measured off HiBy's own page, the same track on both: a straight ramp from
+// clear 75 px above the foot to 80 % dark at it -- a third of the way there by
+// 50 px, half by 33. Short, so the cover keeps its colours down to the title.
+#define COVER_SHADE_HEIGHT ui_px(113)
+#define COVER_SHADE_OPA LV_OPA_80
+#define COVER_INFO_INSET ui_px(6)	  // between the lines and the foot of the cover
+
+// Whether the title, the artist, the star and the format sit on the cover
+// rather than above the bar. Settled once in player_init() from the panel.
+static bool info_over_cover;
+static lv_obj_t *song_info_obj;
+// The shade is a strip of the picture's own bottom rows, darkened and dithered
+// (cover_shade_foot): a gradient drawn on top at 16 bits bands, a whole step
+// of each channel at a time, and green's steps fall where red's and blue's do
+// not. With no picture the strip is made the same way from the placeholder's
+// colour (cover_shade_flat), so both shade alike. cover_shade, a plain
+// gradient, is only the fallback for when a strip cannot be made.
+static lv_obj_t *cover_shade;
+static lv_obj_t *cover_foot;
+static cover_image_t cover_foot_img;
+static cover_image_t placeholder_foot_img; // in theme()->cover_bg
+static int cover_foot_w;
 
 // The controls block as the R3 Pro II has it, 720 - 480. A taller panel (the
 // R1's 800) spreads what it has over the rows rather than leaving it empty
 // above and below them: a fifth to each end and a fifth to each of the three
 // gaps between the four rows.
-#define PLAYER_MENU_REF_HEIGHT 240
-#define PLAYER_MENU_PAD_VER 10
-#define PLAYER_MENU_GAP 12
+#define PLAYER_MENU_REF_HEIGHT ui_px(240)
+#define PLAYER_MENU_PAD_VER ui_px(10)
+#define PLAYER_MENU_GAP ui_px(12)
 
 // Studio keeps only the bar, the clocks and the transport in the controls
 // block, pushed to the bottom, with the gaps between them the standard
 // arrangement has; the panel with the sleeve takes the rest of the screen
 // above them. This is their height at PLAYER_MENU_GAP; a taller panel adds
 // what its wider gaps take.
-#define STUDIO_CONTROLS_H 172
+#define STUDIO_CONTROLS_H ui_px(172)
 
 // Album art: an image on top of a placeholder panel. The panel is always
 // there, so the layout doesn't jump between a track that has a cover and one
@@ -172,7 +205,7 @@ static lv_obj_t *below_slider_obj; // the two clocks under the bar
 // How far the four source marks keep from the corner of the artwork they
 // share. One number, because they replace each other in that corner and a
 // difference between them would read as the mark jumping.
-#define BADGE_INSET 14
+#define BADGE_INSET ui_px(14)
 
 static lv_obj_t *live_badge;	   // live indicator, top right over the artwork
 static lv_obj_t *qobuz_badge;	   // the Qobuz mark, in the same corner
@@ -224,26 +257,26 @@ static int cover_box_w, cover_box_h;   // the artwork spans the full screen widt
 // smaller circle of the accent colour. The ring is a wide white border over an
 // accent-coloured body rather than a second object, so it costs nothing and
 // follows the knob on its own.
-#define PROGRESS_TRACK_HEIGHT 10 // as thick as every other slider
-#define PROGRESS_KNOB_GROW 9	 // how far the knob grows past the track
-#define PROGRESS_KNOB_RING 5
+#define PROGRESS_TRACK_HEIGHT ui_px(10) // as thick as every other slider
+#define PROGRESS_KNOB_GROW ui_px(9)	 // how far the knob grows past the track
+#define PROGRESS_KNOB_RING ui_px(5)
 
 // How the shape of the track is drawn, and how much room it gets. The bars are
 // wide and well apart with rounded ends rather than a comb of hairlines: at
 // this size a hairline is one pixel of a colour that is half background, and
 // the whole thing reads as noise.
-#define WAVE_HEIGHT 64
-#define WAVE_BAR_GAP 3
-#define WAVE_MIN_BAR 3	  // a silent column is still a mark, not a hole
+#define WAVE_HEIGHT ui_px(64)
+#define WAVE_BAR_GAP ui_px(3)
+#define WAVE_MIN_BAR ui_px(3)	  // a silent column is still a mark, not a hole
 #define WAVE_PAST_OPA 255 // the part already played
 #define WAVE_TODO_OPA 80  // and the part still to come
 
 // How far the pills and the disc sit in from the corner of the sleeve, and how
 // big the disc is.
-#define ALT_PAD 16
-#define ALT_FAV_SIZE 64
-#define ALT_PILL_PAD_H 18 // what a pill keeps to the left and right of its text
-#define ALT_PILL_PAD_V 8
+#define ALT_PAD ui_px(16)
+#define ALT_FAV_SIZE ui_px(64)
+#define ALT_PILL_PAD_H ui_px(18) // what a pill keeps to the left and right of its text
+#define ALT_PILL_PAD_V ui_px(8)
 
 // What the sleeve's colour becomes once it has to be painted rather than
 // thrown.
@@ -302,6 +335,16 @@ static int backdrop_w, backdrop_h;	   // size of the controls block it sits behi
 // coarse. `backdrop_is_studio` is the shape the picture on hand was made at.
 static int backdrop_studio_h;
 static bool backdrop_is_studio;
+static int backdrop_made_h; // the height the picture on hand was made at
+
+// On a panel that keeps the cover whole with the track's lines on it (see
+// info_over_cover), the controls have room for the thin bar and not for the
+// waveform. The waveform layout takes the difference off the foot of the cover
+// panel instead: the sleeve is still decoded square and centred in it, so it
+// loses a strip at the top and one at the bottom, and the controls grow by the
+// same amount.
+static int menu_base_h; // the controls block's height with the cover whole
+static int cover_crop;	// how much of the cover the waveform takes, 0 elsewhere
 
 static double current_total_length = 0; // cached from the last device_state snapshot, so slider math works between polls
 static char progress_label_text[32];
@@ -854,10 +897,47 @@ static enum {
 // of its own over the blurred copy -- and the artwork arrives on a worker, so
 // whatever the arrangement did when it was set up would be undone the moment a
 // cover landed.
+// Puts up whichever shade suits what is on the cover now (see cover_foot), or
+// neither: the pills bring their own ground, and Studio has no cover to shade.
+static void cover_shade_show(bool have_cover) {
+	if (!cover_shade || !cover_foot) {
+		return;
+	}
+	bool bare = !layout_alt_now && !layout_studio_now;
+	if (bare && have_cover && !cover_foot_img.pixels && current_cover.pixels) {
+		cover_shade_foot(&current_cover, COVER_SHADE_HEIGHT, COVER_SHADE_OPA, &cover_foot_img);
+	}
+	if (bare && !have_cover && !placeholder_foot_img.pixels) {
+		cover_shade_flat(theme()->cover_bg, cover_foot_w, COVER_SHADE_HEIGHT, COVER_SHADE_OPA, &placeholder_foot_img);
+	}
+	cover_image_t *strip = have_cover ? &cover_foot_img : &placeholder_foot_img;
+	bool foot = bare && strip->pixels;
+	if (foot) {
+		if (lv_image_get_src(cover_foot) != &strip->dsc) {
+			lv_image_set_src(cover_foot, &strip->dsc);
+			lv_obj_set_size(cover_foot, strip->dsc.header.w, strip->dsc.header.h);
+		}
+		if (have_cover) {
+			lv_obj_align_to(cover_foot, cover_img, LV_ALIGN_BOTTOM_MID, 0, 0);
+		} else {
+			lv_obj_align(cover_foot, LV_ALIGN_BOTTOM_MID, 0, 0);
+		}
+		lv_obj_remove_flag(cover_foot, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(cover_foot, LV_OBJ_FLAG_HIDDEN);
+	}
+	if (bare && !foot) {
+		lv_obj_remove_flag(cover_shade, LV_OBJ_FLAG_HIDDEN);
+	} else {
+		lv_obj_add_flag(cover_shade, LV_OBJ_FLAG_HIDDEN);
+	}
+}
+
 static void cover_show(bool have_cover) {
 	if (!cover_img) {
 		return;
 	}
+	cover_shade_show(have_cover);
 	bool studio = layout_studio_now;
 	if (have_cover && !studio) {
 		lv_obj_remove_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
@@ -874,6 +954,17 @@ static void cover_show(bool have_cover) {
 	}
 }
 
+// Whether a line of the track is sitting on the shade at the foot of the cover
+// (see info_over_cover): there it is white whether or not there is a picture,
+// because the shade is dark either way.
+static bool on_cover_shade(lv_obj_t *obj) {
+	if (!info_over_cover || !obj) {
+		return false;
+	}
+	lv_obj_t *row = lv_obj_get_parent(obj);
+	return row && lv_obj_get_parent(row) == song_info_obj;
+}
+
 static void set_over_cover(bool on) {
 	chrome_over_cover = on;
 
@@ -885,7 +976,7 @@ static void set_over_cover(bool on) {
 		if (!text_objs[i]) {
 			continue;
 		}
-		if (on) {
+		if (on || on_cover_shade(text_objs[i])) {
 			lv_obj_set_style_text_color(text_objs[i], lv_color_white(), 0);
 		} else {
 			lv_obj_remove_local_style_prop(text_objs[i], LV_STYLE_TEXT_COLOR, 0);
@@ -895,7 +986,7 @@ static void set_over_cover(bool on) {
 		if (!dim_objs[i]) {
 			continue;
 		}
-		if (on) {
+		if (on || on_cover_shade(dim_objs[i])) {
 			lv_obj_set_style_text_color(dim_objs[i], lv_color_make(200, 200, 200), 0);
 		} else {
 			lv_obj_remove_local_style_prop(dim_objs[i], LV_STYLE_TEXT_COLOR, 0);
@@ -1172,13 +1263,13 @@ static void slider_over_waveform(bool over) {
 // when.
 // ---------------------------------------------------------------------------
 
-#define STUDIO_MARGIN 14	  // what the sleeve keeps to the side edges
-#define STUDIO_HEAD_H 78	  // the title, the artist and the ellipsis
-#define STUDIO_COVER_GAP 24	  // between the head and the top of the sleeve
-#define STUDIO_BADGE_GAP 6	  // between the head and the source mark under the ellipsis
-#define STUDIO_QUALITY_GAP 10 // between the sleeve and the line under it
-#define STUDIO_QUALITY_H 30
-#define STUDIO_BOTTOM 10 // under that line, before the controls begin
+#define STUDIO_MARGIN ui_px(14)	  // what the sleeve keeps to the side edges
+#define STUDIO_HEAD_H ui_px(78)	  // the title, the artist and the ellipsis
+#define STUDIO_COVER_GAP ui_px(24)	  // between the head and the top of the sleeve
+#define STUDIO_BADGE_GAP ui_px(6)	  // between the head and the source mark under the ellipsis
+#define STUDIO_QUALITY_GAP ui_px(10) // between the sleeve and the line under it
+#define STUDIO_QUALITY_H ui_px(30)
+#define STUDIO_BOTTOM ui_px(10) // under that line, before the controls begin
 #define STUDIO_COVER_MAX_PCT 83
 
 static lv_obj_t *studio_bg;		  // the blurred sleeve, the size of the screen
@@ -1192,8 +1283,8 @@ static lv_obj_t *studio_quality;	  // the icon and the format line under the sle
 static lv_obj_t *studio_quality_icon;
 static bool studio_up;
 static int studio_box_w, studio_box_h; // the panel this arrangement is laid out on
-static int menu_pad_ver = PLAYER_MENU_PAD_VER; // the controls block's spacing, see PLAYER_MENU_REF_HEIGHT
-static int menu_gap = PLAYER_MENU_GAP;
+static int menu_pad_ver; // the controls block's spacing, see PLAYER_MENU_REF_HEIGHT
+static int menu_gap;
 static int studio_cover_size;
 
 // ---------------------------------------------------------------------------
@@ -1209,8 +1300,8 @@ static int studio_cover_size;
 // scrolling title does at its ends.
 // ---------------------------------------------------------------------------
 
-#define LYRICS_FADE_PX 56
-#define LYRICS_LINE_GAP 16
+#define LYRICS_FADE_PX ui_px(56)
+#define LYRICS_LINE_GAP ui_px(16)
 #define LYRICS_DIM_OPA LV_OPA_40
 #define LYRICS_USER_HOLD_MS 4000
 #define LYRICS_STEP_MS 320 // one line moving up into the middle
@@ -1233,7 +1324,7 @@ static int lyrics_view_h;
 // Timed lines have room above the first and below the last, so either can be
 // brought to the middle; untimed ones read from the top.
 static void lyrics_pad(void) {
-	int around = lyrics_cur.synced ? lyrics_view_h / 2 - 20 : LYRICS_FADE_PX / 2;
+	int around = lyrics_cur.synced ? lyrics_view_h / 2 - ui_px(20) : LYRICS_FADE_PX / 2;
 	lv_obj_set_style_pad_top(lyrics_view, around, 0);
 	lv_obj_set_style_pad_bottom(lyrics_view, lyrics_cur.synced ? around : LYRICS_FADE_PX, 0);
 }
@@ -1476,7 +1567,7 @@ static void lyrics_place(int x, int y, int w, int h) {
 	lyrics_pad();
 	lyrics_mask_build(w, h);
 	lv_obj_set_size(lyrics_note, w, LV_SIZE_CONTENT);
-	lv_obj_set_pos(lyrics_note, x, y + h / 2 - 20);
+	lv_obj_set_pos(lyrics_note, x, y + h / 2 - ui_px(20));
 }
 
 static void lyrics_show(bool on) {
@@ -1500,7 +1591,7 @@ static void lyrics_build(void) {
 	lv_obj_set_flex_flow(lyrics_view, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(lyrics_view, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_row(lyrics_view, LYRICS_LINE_GAP, 0);
-	lv_obj_set_style_pad_hor(lyrics_view, 8, 0);
+	lv_obj_set_style_pad_hor(lyrics_view, ui_px(8), 0);
 	lv_obj_set_scroll_dir(lyrics_view, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(lyrics_view, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_add_event_cb(lyrics_view, lyrics_scroll_cb, LV_EVENT_SCROLL_BEGIN, NULL);
@@ -1874,6 +1965,16 @@ static void studio_put(void) {
 	studio_refresh_cover();
 }
 
+// How much of the cover the arrangement in force takes (see cover_crop).
+static int cover_crop_now(void) {
+	return layout_alt_now && wave_canvas ? cover_crop : 0;
+}
+
+// The height the blurred copy behind the controls is wanted at.
+static int backdrop_wanted_h(void) {
+	return layout_studio_now ? backdrop_studio_h : backdrop_h + cover_crop_now();
+}
+
 // Moves the pieces between the two arrangements.
 //
 // Reparenting and not rebuilding: the title label carries its scrolling, the
@@ -1888,6 +1989,12 @@ static void apply_layout(void) {
 	// they have to find the ellipsis and the star where they left them.
 	studio_take_back();
 
+	if (cover_crop) {
+		int crop = cover_crop_now();
+		lv_obj_set_height(cover_panel, cover_box_h - crop);
+		lv_obj_set_height(player_menu, menu_base_h + crop);
+	}
+
 	if (layout_alt_now) {
 		// A pill each, and not one pill with two lines in it: the title and the
 		// album's artist are two different things, a single box around both
@@ -1899,7 +2006,7 @@ static void apply_layout(void) {
 		// nothing at all. Here they size themselves -- so each pill ends where
 		// its own text ends -- up to what is left of the sleeve once the star's
 		// disc and the margins are taken off.
-		int room = cover_box_w - 2 * ALT_PAD - ALT_FAV_SIZE - 2 * ALT_PILL_PAD_H - 24;
+		int room = cover_box_w - 2 * ALT_PAD - ALT_FAV_SIZE - 2 * ALT_PILL_PAD_H - ui_px(24);
 		if (song_title_label) {
 			lv_obj_set_parent(song_title_label, alt_title_pill);
 			lv_obj_set_width(song_title_label, LV_SIZE_CONTENT);
@@ -1977,6 +2084,17 @@ static void apply_layout(void) {
 	if (layout_studio_now) {
 		studio_put();
 	}
+
+	// The lines on the cover, and the shade under them, are the standard
+	// arrangement's alone.
+	if (cover_shade && song_info_obj) {
+		if (layout_alt_now || layout_studio_now) {
+			lv_obj_add_flag(song_info_obj, LV_OBJ_FLAG_HIDDEN);
+		} else {
+			lv_obj_remove_flag(song_info_obj, LV_OBJ_FLAG_HIDDEN);
+		}
+		cover_shade_show(current_cover.pixels != NULL);
+	}
 	align_title_with_star(); // the title may have just left its row, or come back to it
 
 	paint_alt_tint();
@@ -2018,7 +2136,7 @@ static void update_layout(const device_state_t *state) {
 	// or out of Studio means the one on hand is the wrong shape and the picture
 	// is asked for again. Only on a change of arrangement, which is a setting
 	// the user has just touched.
-	if (studio != backdrop_is_studio && cover_shown_path[0]) {
+	if ((studio != backdrop_is_studio || backdrop_wanted_h() != backdrop_made_h) && cover_shown_path[0]) {
 		reload_cover(cover_shown_path);
 	}
 }
@@ -2197,6 +2315,10 @@ static void reload_cover(const char *filepath) {
 	// worker decodes.
 	lv_image_set_src(cover_img, NULL);
 	lv_obj_set_style_bg_image_src(player_menu, NULL, 0);
+	if (cover_foot) {
+		lv_image_set_src(cover_foot, NULL);
+	}
+	cover_free(&cover_foot_img);
 	cover_free(&current_cover);
 	cover_free(&current_backdrop);
 
@@ -2229,8 +2351,8 @@ static void reload_cover(const char *filepath) {
 		// being spent again and again on an answer that never changes.
 		int cover_w = backdrop_is_studio ? studio_cover_geometry(NULL) : cover_box_w;
 		int cover_h = backdrop_is_studio ? cover_w : cover_box_h;
-		coverloader_request_player(filepath, cover_w, cover_h, backdrop_w,
-								   backdrop_is_studio ? backdrop_studio_h : backdrop_h);
+		backdrop_made_h = backdrop_wanted_h();
+		coverloader_request_player(filepath, cover_w, cover_h, backdrop_w, backdrop_made_h);
 		cover_request_outstanding = true;
 
 		// The collector rides on the progress timer; make sure it is ticking
@@ -2396,6 +2518,14 @@ static void player_refresh_theme(void) {
 
 	lv_obj_set_style_bg_color(cover_panel, theme()->cover_bg, 0);
 	lv_obj_set_style_image_recolor(cover_placeholder_icon, theme()->text_secondary, 0);
+	// The placeholder's shade is made from its colour: made again in the new one.
+	if (cover_foot) {
+		if (lv_image_get_src(cover_foot) == &placeholder_foot_img.dsc) {
+			lv_image_set_src(cover_foot, NULL);
+		}
+		cover_free(&placeholder_foot_img);
+		cover_shade_show(current_cover.pixels != NULL);
+	}
 	// The backdrop over a loaded cover is always the dark treatment -- same
 	// look in both themes; only the no-cover panel follows the theme.
 	cover_set_backdrop_light(false);
@@ -2672,7 +2802,10 @@ static void update_fav_button(void) {
 		lv_obj_set_style_image_recolor(fav_btn_icon, lv_color_make(246, 211, 45), 0); // Adwaita yellow
 	} else {
 		lv_image_set_src(fav_btn_icon, &icon_star);
-		lv_obj_set_style_image_recolor(fav_btn_icon, layout_alt_now ? alt_ink() : lv_color_make(150, 150, 150), 0);
+		lv_color_t ink = layout_alt_now			  ? alt_ink()
+						 : on_cover_shade(fav_btn_obj) ? lv_color_white()
+													   : lv_color_make(150, 150, 150);
+		lv_obj_set_style_image_recolor(fav_btn_icon, ink, 0);
 	}
 	lv_obj_set_style_image_recolor_opa(fav_btn_icon, LV_OPA_COVER, 0);
 }
@@ -3526,7 +3659,7 @@ void player_refresh_now_playing(void) {
 #define SHEET_ANIM_MS 220
 
 // Sideways movement past this is a drag, not a tap.
-#define DRAG_COMMIT_PX 10
+#define DRAG_COMMIT_PX ui_px(10)
 
 static int sheet_width;
 static lv_obj_t *sheet_under; // the page the sheet first slid over
@@ -3848,18 +3981,36 @@ void player_init(gui_config_t *cfg) {
 	// the status bar), and the controls get whatever height is left. On a panel
 	// too short for that, the artwork gives up height rather than the controls.
 	int cover_size = (int)cfg->screen_width;
+	int cover_height = cover_size;
 	int menu_height = (int)cfg->screen_height - cover_size;
-	if (menu_height < PLAYER_MENU_MIN_HEIGHT) {
+	info_over_cover = menu_height < PLAYER_MENU_MIN_HEIGHT && cfg->screen_width * 3 > cfg->screen_height * 2;
+	if (info_over_cover) {
+		// Still short of the bar, the clocks and the buttons (the interface
+		// drawn larger than the panel was laid out for): the cover stays as
+		// wide as the screen and gives up the difference, a strip off its top
+		// and one off its foot, as the waveform layout does (see cover_crop).
+		if (menu_height < PLAYER_MENU_BARE_HEIGHT) {
+			menu_height = PLAYER_MENU_BARE_HEIGHT;
+			cover_height = (int)cfg->screen_height - menu_height;
+			if (cover_height < 64)
+				cover_height = 64;
+		}
+	} else if (menu_height < PLAYER_MENU_MIN_HEIGHT) {
 		menu_height = PLAYER_MENU_MIN_HEIGHT;
 		cover_size = (int)cfg->screen_height - menu_height;
 		if (cover_size < 64)
 			cover_size = 64;
+		cover_height = cover_size;
 	}
 
 	cover_box_w = cover_size;
-	cover_box_h = cover_size;
+	cover_box_h = cover_height;
 	backdrop_w = (int)cfg->screen_width;
 	backdrop_h = menu_height;
+	menu_base_h = menu_height;
+	// The waveform in place of the bar, and nothing else, is what the controls
+	// are short of there.
+	cover_crop = info_over_cover ? WAVE_HEIGHT - PROGRESS_TRACK_HEIGHT : 0;
 	backdrop_studio_h = (int)cfg->screen_height;
 
 	// The controls block. Its background is the current track's artwork,
@@ -3874,6 +4025,8 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(player_menu, 0, 0);
 	lv_obj_set_style_radius(player_menu, 0, 0);
 	lv_obj_set_style_pad_hor(player_menu, cfg->padding, 0);
+	menu_pad_ver = PLAYER_MENU_PAD_VER;
+	menu_gap = PLAYER_MENU_GAP;
 	int spare = menu_height - PLAYER_MENU_REF_HEIGHT;
 	if (spare > 0) {
 		menu_pad_ver = PLAYER_MENU_PAD_VER + spare / 5;
@@ -3885,12 +4038,13 @@ void player_init(gui_config_t *cfg) {
 
 	// Track info: the text on the left, the star and the format on the right.
 	lv_obj_t *song_info = lv_obj_create(player_menu);
+	song_info_obj = song_info;
 	lv_obj_set_size(song_info, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_style_bg_opa(song_info, 0, 0);
 	lv_obj_set_style_border_width(song_info, 0, 0);
 	lv_obj_set_style_radius(song_info, 0, 0);
 	lv_obj_set_style_pad_all(song_info, 0, 0);
-	lv_obj_set_style_pad_column(song_info, 10, 0);
+	lv_obj_set_style_pad_column(song_info, ui_px(10), 0);
 	lv_obj_set_flex_flow(song_info, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_remove_flag(song_info, LV_OBJ_FLAG_SCROLLABLE);
@@ -3934,14 +4088,14 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(song_side, 0, 0);
 	lv_obj_set_style_border_width(song_side, 0, 0);
 	lv_obj_set_style_pad_all(song_side, 0, 0);
-	lv_obj_set_style_pad_gap(song_side, 2, 0);
+	lv_obj_set_style_pad_gap(song_side, ui_px(2), 0);
 	lv_obj_set_flex_flow(song_side, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(song_side, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER);
 	lv_obj_remove_flag(song_side, LV_OBJ_FLAG_SCROLLABLE);
 
 	lv_obj_t *fav_btn = lv_btn_create(song_side);
 	fav_btn_obj = fav_btn;
-	lv_obj_set_size(fav_btn, 48, 44);
+	lv_obj_set_size(fav_btn, ui_px(48), ui_px(44));
 	lv_obj_set_style_bg_opa(fav_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(fav_btn, 0, 0);
 	lv_obj_set_style_shadow_width(fav_btn, 0, 0);
@@ -4004,10 +4158,10 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_opa(progress_slider, LV_OPA_COVER, LV_PART_KNOB);
 	lv_obj_set_style_border_width(progress_slider, PROGRESS_KNOB_RING, LV_PART_KNOB);
 	lv_obj_set_style_pad_all(progress_slider, PROGRESS_KNOB_GROW, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(progress_slider, 8, LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(progress_slider, ui_px(8), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(progress_slider, LV_OPA_40, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(progress_slider, lv_color_black(), LV_PART_KNOB);
-	lv_obj_set_style_shadow_offset_y(progress_slider, 1, LV_PART_KNOB);
+	lv_obj_set_style_shadow_offset_y(progress_slider, ui_px(1), LV_PART_KNOB);
 
 	lv_obj_add_event_cb(progress_slider, progress_slider_event_cb, LV_EVENT_ALL, NULL);
 
@@ -4082,14 +4236,14 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(player_controls_buttons, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(player_controls_buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	// Lifted a touch off the screen edge.
-	lv_obj_set_style_translate_y(player_controls_buttons, -8, 0);
+	lv_obj_set_style_translate_y(player_controls_buttons, -ui_px(8), 0);
 
 	// The repeat/shuffle button, kept out of the flex row so the transport
 	// stays centred on the screen.
 	lv_obj_t *repeat_btn = lv_btn_create(player_controls_buttons);
 	repeat_btn_obj = repeat_btn;
 	lv_obj_add_flag(repeat_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
-	lv_obj_set_size(repeat_btn, 56, 56);
+	lv_obj_set_size(repeat_btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(repeat_btn, 0, 0);
 	lv_obj_set_style_shadow_width(repeat_btn, 0, 0);
 	lv_obj_add_event_cb(repeat_btn, repeat_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -4105,7 +4259,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *speed_btn = lv_btn_create(player_controls_buttons);
 	speed_btn_obj = speed_btn;
 	lv_obj_add_flag(speed_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
-	lv_obj_set_size(speed_btn, 56, 56);
+	lv_obj_set_size(speed_btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(speed_btn, 0, 0);
 	lv_obj_set_style_shadow_width(speed_btn, 0, 0);
 	lv_obj_add_event_cb(speed_btn, speed_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -4123,7 +4277,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *more_btn = lv_btn_create(player_controls_buttons);
 	more_btn_obj = more_btn;
 	lv_obj_add_flag(more_btn, LV_OBJ_FLAG_IGNORE_LAYOUT);
-	lv_obj_set_size(more_btn, 56, 56);
+	lv_obj_set_size(more_btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(more_btn, 0, 0);
 	lv_obj_set_style_shadow_width(more_btn, 0, 0);
 	lv_obj_add_event_cb(more_btn, more_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -4141,7 +4295,7 @@ void player_init(gui_config_t *cfg) {
 	// and plain glyphs read better there than filled boxes.
 	lv_obj_t *prev_btn = lv_btn_create(player_controls_buttons);
 	prev_btn_obj = prev_btn;
-	lv_obj_set_size(prev_btn, 76, 76);
+	lv_obj_set_size(prev_btn, ui_px(76), ui_px(76));
 	lv_obj_set_style_bg_opa(prev_btn, 0, 0);
 	lv_obj_set_style_shadow_width(prev_btn, 0, 0);
 	prev_icon = lv_image_create(prev_btn);
@@ -4154,7 +4308,7 @@ void player_init(gui_config_t *cfg) {
 
 	// Play/pause: a white disc, with the glyph carrying the colour.
 	play_btn = lv_btn_create(player_controls_buttons);
-	lv_obj_set_size(play_btn, 84, 84);
+	lv_obj_set_size(play_btn, ui_px(84), ui_px(84));
 	lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(play_btn, lv_color_white(), 0); // repainted by set_over_cover
 	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
@@ -4168,7 +4322,7 @@ void player_init(gui_config_t *cfg) {
 
 	lv_obj_t *next_btn = lv_btn_create(player_controls_buttons);
 	next_btn_obj = next_btn;
-	lv_obj_set_size(next_btn, 76, 76);
+	lv_obj_set_size(next_btn, ui_px(76), ui_px(76));
 	lv_obj_set_style_bg_opa(next_btn, 0, 0);
 	lv_obj_set_style_shadow_width(next_btn, 0, 0);
 	next_icon = lv_image_create(next_btn);
@@ -4190,7 +4344,11 @@ void player_init(gui_config_t *cfg) {
 	// taller shape of the track can reach: presses there go to the slider.
 	lv_obj_add_flag(cover_panel, LV_OBJ_FLAG_ADV_HITTEST);
 	lv_obj_add_event_cb(cover_panel, cover_panel_hit_test_cb, LV_EVENT_HIT_TEST, NULL);
-	lv_obj_set_size(cover_panel, cover_size, cover_size);
+	// As wide as the screen even when the artwork is not (a panel too wide for
+	// its height gives the artwork up, see PLAYER_MENU_MIN_HEIGHT): the
+	// picture is centred in it, and the strips either side are the artwork's
+	// own background rather than a frame of another grey.
+	lv_obj_set_size(cover_panel, cfg->screen_width, cover_height);
 	lv_obj_align(cover_panel, LV_ALIGN_TOP_MID, 0, 0);
 	lv_obj_set_style_bg_color(cover_panel, theme()->cover_bg, 0);
 	lv_obj_set_style_border_width(cover_panel, 0, 0);
@@ -4209,9 +4367,9 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_color(live_badge, lv_color_white(), 0);
 	lv_obj_set_style_bg_color(live_badge, lv_color_make(224, 27, 36), 0); // Adwaita red
 	lv_obj_set_style_bg_opa(live_badge, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(live_badge, 6, 0);
-	lv_obj_set_style_pad_hor(live_badge, 10, 0);
-	lv_obj_set_style_pad_ver(live_badge, 5, 0);
+	lv_obj_set_style_radius(live_badge, ui_px(6), 0);
+	lv_obj_set_style_pad_hor(live_badge, ui_px(10), 0);
+	lv_obj_set_style_pad_ver(live_badge, ui_px(5), 0);
 	lv_obj_align(live_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
 	lv_obj_add_flag(live_badge, LV_OBJ_FLAG_HIDDEN);
 
@@ -4258,7 +4416,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_align(alt_text_col, LV_ALIGN_BOTTOM_LEFT, ALT_PAD, -ALT_PAD);
 	lv_obj_set_flex_flow(alt_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(alt_text_col, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-	lv_obj_set_style_pad_row(alt_text_col, 6, 0);
+	lv_obj_set_style_pad_row(alt_text_col, ui_px(6), 0);
 	lv_obj_remove_flag(alt_text_col, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(alt_text_col, LV_OBJ_FLAG_HIDDEN);
 	// None of this takes presses. A plain object is clickable the moment it is
@@ -4305,6 +4463,39 @@ void player_init(gui_config_t *cfg) {
 	cover_img = lv_image_create(cover_panel);
 	lv_obj_center(cover_img);
 	lv_obj_add_flag(cover_img, LV_OBJ_FLAG_HIDDEN);
+
+	// On a short panel the track's lines leave the controls for the foot of the
+	// cover (see PLAYER_MENU_BARE_HEIGHT), over a shade that goes from clear to
+	// dark so white text reads on any sleeve. Over the picture, not under it,
+	// and taking no presses but the star's: the cover is what the player is
+	// dragged shut by.
+	if (info_over_cover) {
+		cover_shade = lv_obj_create(cover_panel);
+		lv_obj_remove_style_all(cover_shade);
+		lv_obj_set_size(cover_shade, lv_pct(100), COVER_SHADE_HEIGHT);
+		lv_obj_align(cover_shade, LV_ALIGN_BOTTOM_MID, 0, 0);
+		lv_obj_set_style_bg_color(cover_shade, lv_color_black(), 0);
+		lv_obj_set_style_bg_grad_color(cover_shade, lv_color_black(), 0);
+		lv_obj_set_style_bg_grad_dir(cover_shade, LV_GRAD_DIR_VER, 0);
+		lv_obj_set_style_bg_main_opa(cover_shade, LV_OPA_TRANSP, 0);
+		lv_obj_set_style_bg_grad_opa(cover_shade, COVER_SHADE_OPA, 0);
+		lv_obj_set_style_bg_opa(cover_shade, LV_OPA_COVER, 0);
+		lv_obj_remove_flag(cover_shade, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_remove_flag(cover_shade, LV_OBJ_FLAG_SCROLLABLE);
+
+		cover_foot = lv_image_create(cover_panel);
+		cover_foot_w = cfg->screen_width; // the panel's, as cover_shade's 100 %
+		lv_obj_remove_flag(cover_foot, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_add_flag(cover_foot, LV_OBJ_FLAG_HIDDEN);
+
+		lv_obj_set_parent(song_info, cover_panel);
+		lv_obj_set_width(song_info, cfg->screen_width - 2 * cfg->padding);
+		lv_obj_align(song_info, LV_ALIGN_BOTTOM_MID, 0, -COVER_INFO_INSET);
+		lv_obj_remove_flag(song_info, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_remove_flag(song_text, LV_OBJ_FLAG_CLICKABLE);
+		lv_obj_remove_flag(song_side, LV_OBJ_FLAG_CLICKABLE);
+		set_over_cover(chrome_over_cover); // the lines are white from the start
+	}
 
 	// ---------------------------------------------------------------------
 	// Studio: the blurred sleeve behind the whole screen, and everything else
@@ -4354,11 +4545,11 @@ void player_init(gui_config_t *cfg) {
 	// against one of them.
 	studio_text_col = lv_obj_create(studio_head);
 	lv_obj_remove_style_all(studio_text_col);
-	lv_obj_set_size(studio_text_col, cover_size - 2 * STUDIO_MARGIN - 2 * 68, LV_SIZE_CONTENT);
+	lv_obj_set_size(studio_text_col, cover_size - 2 * STUDIO_MARGIN - 2 * ui_px(68), LV_SIZE_CONTENT);
 	lv_obj_align(studio_text_col, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_flex_flow(studio_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(studio_text_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(studio_text_col, 4, 0);
+	lv_obj_set_style_pad_row(studio_text_col, ui_px(4), 0);
 	lv_obj_set_style_text_align(studio_text_col, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_remove_flag(studio_text_col, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_remove_flag(studio_text_col, LV_OBJ_FLAG_CLICKABLE);
@@ -4378,7 +4569,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_add_flag(studio_empty, LV_OBJ_FLAG_IGNORE_LAYOUT);
 	lv_obj_add_style(studio_empty, &theme_style_panel, 0);
 	lv_obj_set_style_border_width(studio_empty, 0, 0);
-	lv_obj_set_style_radius(studio_empty, 8, 0);
+	lv_obj_set_style_radius(studio_empty, ui_px(8), 0);
 	lv_obj_remove_flag(studio_empty, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_remove_flag(studio_empty, LV_OBJ_FLAG_CLICKABLE);
 	lv_obj_add_flag(studio_empty, LV_OBJ_FLAG_HIDDEN);
@@ -4392,7 +4583,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(studio_quality);
 	lv_obj_set_flex_flow(studio_quality, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(studio_quality, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(studio_quality, 8, 0);
+	lv_obj_set_style_pad_column(studio_quality, ui_px(8), 0);
 	lv_obj_remove_flag(studio_quality, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_remove_flag(studio_quality, LV_OBJ_FLAG_CLICKABLE);
 

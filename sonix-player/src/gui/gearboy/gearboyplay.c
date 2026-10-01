@@ -20,6 +20,7 @@
 #include "src/system/gearboy/gbinput.h"
 #include "src/system/gearboy/gearboy.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *gearboyplay_screen;
 
@@ -328,7 +329,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_set_pos(v, DPAD_CX - DPAD_CELL / 2, DPAD_Y0);
 	lv_obj_set_style_bg_color(v, body, 0);
 	lv_obj_set_style_bg_opa(v, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(v, 16, 0);
+	lv_obj_set_style_radius(v, ui_px(16), 0);
 
 	lv_obj_t *h = lv_obj_create(parent);
 	lv_obj_remove_style_all(h);
@@ -336,7 +337,7 @@ static void build_dpad(lv_obj_t *parent) {
 	lv_obj_set_pos(h, DPAD_X0, DPAD_CY - DPAD_CELL / 2);
 	lv_obj_set_style_bg_color(h, body, 0);
 	lv_obj_set_style_bg_opa(h, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(h, 16, 0);
+	lv_obj_set_style_radius(h, ui_px(16), 0);
 
 	// The hub in the middle, as on the real D-pad.
 	const int hub = 38;
@@ -521,13 +522,13 @@ static void menu_settings_cb(lv_event_t *e) {
 
 static lv_obj_t *menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb) {
 	lv_obj_t *row = lv_btn_create(parent);
-	lv_obj_set_size(row, lv_pct(100), 76);
+	lv_obj_set_size(row, lv_pct(100), ui_px(76));
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 20, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(20), 0);
 	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, NULL);
 
@@ -553,15 +554,15 @@ static void build_menu(void) {
 	lv_obj_add_event_cb(menu_layer, menu_dismiss_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *card = lv_obj_create(menu_layer);
-	lv_obj_set_size(card, 360, LV_SIZE_CONTENT);
+	lv_obj_set_size(card, ui_px(360), LV_SIZE_CONTENT);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_screen, 0);
 	lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(card, 18, 0);
+	lv_obj_set_style_radius(card, ui_px(18), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 16, 0);
-	lv_obj_set_style_pad_gap(card, 10, 0);
+	lv_obj_set_style_pad_all(card, ui_px(16), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(10), 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -580,7 +581,7 @@ static void build_badge(void) {
 	badge = lv_obj_create(gearboyplay_screen);
 	lv_obj_remove_style_all(badge);
 	lv_obj_set_size(badge, BADGE_SIZE, BADGE_SIZE);
-	lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, -14, 14);
+	lv_obj_align(badge, LV_ALIGN_TOP_RIGHT, -ui_px(14), ui_px(14));
 	lv_obj_set_style_bg_color(badge, theme()->screen_bg, 0);
 	lv_obj_set_style_bg_opa(badge, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(badge, LV_RADIUS_CIRCLE, 0);
@@ -864,7 +865,7 @@ void gearboyplay_init(gui_config_t *cfg) {
 	veil_label = lv_label_create(pause_veil);
 	lv_label_set_text(veil_label, tr("gearboy_starting_the_game"));
 	lv_label_set_long_mode(veil_label, LV_LABEL_LONG_WRAP);
-	lv_obj_set_width(veil_label, GAME_W - 64);
+	lv_obj_set_width(veil_label, GAME_W - ui_px(64));
 	lv_obj_set_style_text_align(veil_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_style_text_font(veil_label, &font_ui_18, 0);
 	lv_obj_set_style_text_color(veil_label, lv_color_make(150, 150, 155), 0);

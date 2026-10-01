@@ -20,6 +20,7 @@
 #include "src/system/library/library.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/core/utils.h"
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // The crate
@@ -61,11 +62,11 @@
 #define CF_SLOTS 6
 
 // The record: the size a square is decoded, built and drawn at.
-#define CF_MID_W 210
+#define CF_MID_W ui_px(210)
 
 // The height a fully turned record comes out at, and how wide its far edge is
 // as a percentage of its near one. Together they are the angle.
-#define CF_LEAN_H 90
+#define CF_LEAN_H ui_px(90)
 #define CF_FAR_PCT 62
 
 // How much of the colour survives at the far edge, out of 256, and how the
@@ -81,14 +82,14 @@
 // How far apart the places are, centre to centre. Less than the middle record
 // is tall on purpose: the record beside it tucks behind it, which is what gives
 // the column a front and a back instead of a stack of tiles.
-#define CF_PITCH_NEAR 118 // between the middle and the place next to it
-#define CF_PITCH_FAR 86   // between two turned places further out
+#define CF_PITCH_NEAR ui_px(118) // between the middle and the place next to it
+#define CF_PITCH_FAR ui_px(86)   // between two turned places further out
 
 // How far the finger travels to move the column by one record.
-#define CF_STEP_PX 96
+#define CF_STEP_PX ui_px(96)
 
 // The travel that separates a tap from a drag.
-#define CF_DRAG_COMMIT_PX 8
+#define CF_DRAG_COMMIT_PX ui_px(8)
 
 // The throw: a release carries on at the speed the finger had, slowing to a
 // stop, and settles on whichever record it ended nearest.
@@ -98,27 +99,27 @@
 
 // The band at the bottom of the Musica page the opening pull has to start in,
 // and the travel that hands the sheet over to the finger.
-#define CF_EDGE_H 56
-#define CF_EDGE_COMMIT_PX 12
+#define CF_EDGE_H ui_px(56)
+#define CF_EDGE_COMMIT_PX ui_px(12)
 
 // The grip at the top: how far down it sits and how big a target it is.
-#define CF_BAR_TOP 2
-#define CF_BAR_HIT_W 180
-#define CF_BAR_HIT_H 46
+#define CF_BAR_TOP ui_px(2)
+#define CF_BAR_HIT_W ui_px(180)
+#define CF_BAR_HIT_H ui_px(46)
 
 // The slide, when the finger lets go part way.
 #define CF_SHEET_MS 260
 
 // The turn, and the card behind the record.
 #define CF_FLIP_MS 130
-#define CF_BACK_W 380
-#define CF_BACK_PAD 18
+#define CF_BACK_W ui_px(380)
+#define CF_BACK_PAD ui_px(18)
 #define CF_BACK_BODY_W (CF_BACK_W - 2 * CF_BACK_PAD)
-#define CF_BACK_H_MIN 120
-#define CF_BACK_LIST_MAX 400
-#define CF_BACK_ROW_H 50
+#define CF_BACK_H_MIN ui_px(120)
+#define CF_BACK_LIST_MAX ui_px(400)
+#define CF_BACK_ROW_H ui_px(50)
 #define CF_BACK_ROWS 64
-#define CF_BACK_RADIUS 16
+#define CF_BACK_RADIUS ui_px(16)
 
 // The scroll position is kept in 16.16 of a place, so a drag moves the column
 // by fractions of a record and every record's angle moves with it.
@@ -149,10 +150,10 @@
 // instead of pooling under it. That rectangle follows the record's height,
 // which shrinks as the record turns, so a sleeve seen at an angle throws a
 // flatter light than one facing the front.
-#define CF_GLOW_INSET 12
-#define CF_GLOW_MIN_H 10
-#define CF_GLOW_RADIUS 20
-#define CF_GLOW_REACH 52 // how far past the caster the light still reaches
+#define CF_GLOW_INSET ui_px(12)
+#define CF_GLOW_MIN_H ui_px(10)
+#define CF_GLOW_RADIUS ui_px(20)
+#define CF_GLOW_REACH ui_px(52) // how far past the caster the light still reaches
 #define CF_GLOW_OPA 210	 // and how strong it is against the caster's own edge
 
 // How many levels of alpha the dither moves a pixel by, either way. An RGB565
@@ -161,6 +162,10 @@
 #define CF_GLOW_DITHER 5
 
 #define CF_GLOW_MAX_W (CF_MID_W - 2 * CF_GLOW_INSET + 2 * CF_GLOW_REACH)
+// The same two at the design's own scale, the largest they get (uiscale.h):
+// what the static tables below are sized by.
+#define CF_GLOW_REACH_1X 52
+#define CF_GLOW_MAX_W_1X (210 - 2 * 12 + 2 * CF_GLOW_REACH_1X)
 #define CF_GLOW_MAX_H CF_GLOW_MAX_W
 
 typedef struct {
@@ -865,7 +870,7 @@ static void glow_paint(int gw, int gh) {
 	// no slope left, which is what makes the edge of the light impossible to
 	// find. A cube does the same but spends so much of the reach near nothing
 	// that the halo turns into a rim.
-	static uint8_t fall[CF_GLOW_REACH + 1];
+	static uint8_t fall[CF_GLOW_REACH_1X + 1];
 	static bool fall_ready;
 	if (!fall_ready) {
 		for (int d = 0; d <= CF_GLOW_REACH; d++) {
@@ -876,7 +881,7 @@ static void glow_paint(int gw, int gh) {
 	}
 
 	// The horizontal term does not change down a column.
-	static int qxs[CF_GLOW_MAX_W];
+	static int qxs[CF_GLOW_MAX_W_1X];
 	for (int x = 0; x < w; x++) {
 		int off = x - cx;
 		qxs[x] = (off < 0 ? -off : off) - (hw - r);
@@ -1159,8 +1164,8 @@ static bool track_fill_cb(const char *name, const char *path, const char *artist
 	lv_obj_set_size(row, lv_pct(100), CF_BACK_ROW_H);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(row, 12, 0);
-	lv_obj_set_style_radius(row, 8, 0);
+	lv_obj_set_style_pad_column(row, ui_px(12), 0);
+	lv_obj_set_style_radius(row, ui_px(8), 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(row, LV_OBJ_FLAG_CLICKABLE);
@@ -1170,7 +1175,7 @@ static bool track_fill_cb(const char *name, const char *path, const char *artist
 	// what makes the list read as the back of one record rather than as a
 	// fragment of the library.
 	lv_obj_t *num = lv_label_create(row);
-	lv_obj_set_width(num, 26);
+	lv_obj_set_width(num, ui_px(26));
 	lv_obj_set_style_text_align(num, LV_TEXT_ALIGN_RIGHT, 0);
 	lv_obj_add_style(num, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(num, &font_ui_18, 0);
@@ -1190,7 +1195,7 @@ static bool track_fill_cb(const char *name, const char *path, const char *artist
 	// travels with it and needs no second pass over the list.
 	lv_obj_t *sep = lv_obj_create(row);
 	lv_obj_remove_style_all(sep);
-	lv_obj_set_size(sep, lv_pct(100), 1);
+	lv_obj_set_size(sep, lv_pct(100), ui_px(1));
 	lv_obj_set_style_bg_color(sep, theme()->text_secondary, 0);
 	lv_obj_set_style_bg_opa(sep, LV_OPA_20, 0);
 	lv_obj_add_flag(sep, LV_OBJ_FLAG_IGNORE_LAYOUT);
@@ -1982,7 +1987,7 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_style_text_font(title_label, &font_ui_24, 0);
 	scrolltext_apply(title_label);
-	lv_obj_align(title_label, LV_ALIGN_BOTTOM_MID, 0, -34);
+	lv_obj_align(title_label, LV_ALIGN_BOTTOM_MID, 0, -ui_px(34));
 
 	empty_label = lv_label_create(sheet);
 	lv_label_set_long_mode(empty_label, LV_LABEL_LONG_WRAP);
@@ -2054,8 +2059,8 @@ void coverflow_init(gui_config_t *cfg) {
 	lv_obj_set_width(back_sub, lv_pct(100));
 	lv_obj_add_style(back_sub, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(back_sub, &font_ui_18, 0);
-	lv_obj_set_style_pad_top(back_sub, 2, 0);
-	lv_obj_set_style_pad_bottom(back_sub, 12, 0);
+	lv_obj_set_style_pad_top(back_sub, ui_px(2), 0);
+	lv_obj_set_style_pad_bottom(back_sub, ui_px(12), 0);
 
 	back_list = lv_obj_create(back_body);
 	lv_obj_remove_style_all(back_list);

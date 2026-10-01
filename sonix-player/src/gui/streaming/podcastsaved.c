@@ -19,14 +19,15 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastdl.h"
 
-#define SAVED_ROW_HEIGHT 88
-#define SAVED_THUMB 60
+#define SAVED_ROW_HEIGHT ui_px(88)
+#define SAVED_THUMB ui_px(60)
 #define SAVED_MAX_SHOWS 128
 #define SAVED_MAX_EPISODES 400
 
@@ -195,7 +196,7 @@ static void format_date(time_t when, char *out, size_t size) {
 static void paint_thumb(lv_obj_t *thumb, const cover_image_t *image) {
 	if (image && image->pixels) {
 		lv_image_set_src(thumb, &image->dsc);
-		lv_obj_set_style_radius(thumb, 6, 0);
+		lv_obj_set_style_radius(thumb, ui_px(6), 0);
 		lv_obj_set_style_clip_corner(thumb, true, 0);
 		return;
 	}
@@ -210,12 +211,12 @@ static lv_obj_t *make_row(lv_obj_t *parent, const cover_image_t *image, const ch
 	lv_obj_set_size(row, lv_pct(100), SAVED_ROW_HEIGHT);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(16), 0);
 	lv_obj_set_style_pad_ver(row, 0, 0);
-	lv_obj_set_style_pad_column(row, 12, 0);
+	lv_obj_set_style_pad_column(row, ui_px(12), 0);
 	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -235,7 +236,7 @@ static lv_obj_t *make_row(lv_obj_t *parent, const cover_image_t *image, const ch
 	lv_obj_remove_style_all(texts);
 	lv_obj_set_flex_grow(texts, 1);
 	lv_obj_set_height(texts, LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_row(texts, 6, 0);
+	lv_obj_set_style_pad_row(texts, ui_px(6), 0);
 	lv_obj_remove_flag(texts, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(texts, LV_OBJ_FLAG_EVENT_BUBBLE);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
@@ -456,7 +457,7 @@ void podcastsaved_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(shows_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(shows_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(shows_empty, &font_ui_24, 0);
-	lv_obj_align(shows_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 140);
+	lv_obj_align(shows_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + ui_px(140));
 	lv_obj_add_flag(shows_empty, LV_OBJ_FLAG_HIDDEN);
 
 	episodes_screen = lv_obj_create(NULL);

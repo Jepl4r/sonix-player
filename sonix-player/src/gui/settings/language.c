@@ -12,6 +12,7 @@
 
 #include <stdio.h>
 #include <string.h>
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *language_screen;
 
@@ -177,10 +178,10 @@ static void build_panel(gui_config_t *cfg) {
 	// panel can centre because two cards and a button leave room to; this one
 	// does not.
 	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-	lv_obj_set_style_pad_gap(panel, 18, 0);
+	lv_obj_set_style_pad_gap(panel, ui_px(18), 0);
 
 	// Where the status bar would be, if this panel did not cover it.
-	lv_obj_set_style_pad_top(panel, cfg->top_bar_height + 10, 0);
+	lv_obj_set_style_pad_top(panel, cfg->top_bar_height + ui_px(10), 0);
 
 	// The heading is the first item in the column rather than pinned out of it,
 	// the way the date panel does it: a pinned label is positioned from inside
@@ -202,7 +203,7 @@ static void build_panel(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(list, 0, 0);
 	lv_obj_set_style_border_width(list, 0, 0);
 	lv_obj_set_style_pad_all(list, 0, 0);
-	lv_obj_set_style_pad_row(list, 8, 0);
+	lv_obj_set_style_pad_row(list, ui_px(8), 0);
 	lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -212,7 +213,7 @@ static void build_panel(gui_config_t *cfg) {
 	}
 
 	lv_obj_t *confirm = lv_btn_create(panel);
-	lv_obj_set_size(confirm, 228, 64);
+	lv_obj_set_size(confirm, ui_px(228), ui_px(64));
 	lv_obj_set_style_radius(confirm, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(confirm, theme()->accent, 0);
 	lv_obj_set_style_shadow_width(confirm, 0, 0);

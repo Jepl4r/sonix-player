@@ -19,6 +19,7 @@
 #include "src/system/playback/device_state.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/radio.h"
+#include "src/gui/shell/uiscale.h"
 
 #define TICK_MS 1000
 
@@ -226,14 +227,14 @@ static lv_obj_t *make_field(lv_obj_t *parent, gui_config_t *cfg, const char *pla
 	lv_obj_t *field = lv_textarea_create(parent);
 	lv_textarea_set_one_line(field, true);
 	lv_textarea_set_placeholder_text(field, tr(placeholder));
-	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(field, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_align(field, LV_ALIGN_TOP_LEFT, cfg->padding, y);
 	lv_obj_add_style(field, &theme_style_card, 0);
-	lv_obj_set_style_radius(field, 12, 0);
+	lv_obj_set_style_radius(field, ui_px(12), 0);
 	lv_obj_set_style_border_width(field, 0, 0);
 	lv_obj_set_style_shadow_width(field, 0, 0);
-	lv_obj_set_style_pad_all(field, 14, 0);
+	lv_obj_set_style_pad_all(field, ui_px(14), 0);
 	lv_obj_set_style_text_font(field, &font_ui_24, 0);
 	keyboard_style_caret(field);
 	lv_obj_add_event_cb(field, field_focus_cb, LV_EVENT_CLICKED, NULL);
@@ -250,11 +251,11 @@ static void build_login(gui_config_t *cfg) {
 	user_field = make_field(login_screen, cfg, "lastfm_username", top);
 	password_field = make_field(login_screen, cfg, "password", top + 78);
 	keyboard_style_password(password_field, 0);
-	lv_obj_set_style_pad_right(password_field, 60, 0);
+	lv_obj_set_style_pad_right(password_field, ui_px(60), 0);
 
 	lv_obj_t *eye = lv_btn_create(login_screen);
-	lv_obj_set_size(eye, 56, 56);
-	lv_obj_align(eye, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + 78 + 3);
+	lv_obj_set_size(eye, ui_px(56), ui_px(56));
+	lv_obj_align(eye, LV_ALIGN_TOP_RIGHT, -cfg->padding - ui_px(4), top + ui_px(78) + ui_px(3));
 	lv_obj_set_style_bg_opa(eye, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(eye, 0, 0);
 	lv_obj_set_style_border_width(eye, 0, 0);
@@ -268,12 +269,12 @@ static void build_login(gui_config_t *cfg) {
 	lv_obj_t *note = lv_label_create(login_screen);
 	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(note, cfg->screen_width - 2 * cfg->padding);
-	lv_obj_align(note, LV_ALIGN_TOP_LEFT, cfg->padding, top + 156);
+	lv_obj_align(note, LV_ALIGN_TOP_LEFT, cfg->padding, top + ui_px(156));
 	lv_obj_add_style(note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(note, &font_ui_18, 0);
 	lv_label_set_text(note, tr("lastfm_login_note"));
 
-	login_keyboard = keyboard_create(login_screen, cfg->screen_width, 316, user_field, NULL, "ok", login_accept_cb, NULL);
+	login_keyboard = keyboard_create(login_screen, cfg->screen_width, ui_px(316), user_field, NULL, "ok", login_accept_cb, NULL);
 	switcher_attach_back_gesture(login_screen);
 }
 

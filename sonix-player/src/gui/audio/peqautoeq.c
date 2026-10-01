@@ -20,6 +20,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
@@ -790,24 +791,24 @@ static void update_database(lv_event_t *event) {
 static void build_pages(gui_config_t *config) {
 	search_screen = lv_obj_create(NULL);
 	lv_obj_t *search_container = settingsrow_page(search_screen, config, "peq_autoeq_search");
-	lv_obj_set_height(search_container, config->screen_height - settingsrow_content_top(config) - 316);
+	lv_obj_set_height(search_container, config->screen_height - settingsrow_content_top(config) - ui_px(316));
 
 	search_field = lv_textarea_create(search_container);
 	lv_textarea_set_one_line(search_field, true);
 	lv_textarea_set_max_length(search_field, 120);
 	lv_textarea_set_placeholder_text(search_field, tr("peq_autoeq_headphones"));
-	lv_obj_set_size(search_field, lv_pct(100), 62);
+	lv_obj_set_size(search_field, lv_pct(100), ui_px(62));
 	lv_obj_add_style(search_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(search_field, 12, 0);
+	lv_obj_set_style_radius(search_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(search_field, 0, 0);
-	lv_obj_set_style_pad_all(search_field, 14, 0);
+	lv_obj_set_style_pad_all(search_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 
 	// The database download sits in the title's corner.
 	settingsrow_title_corner_slots(settingsrow_page_title(search_screen), config, 1);
 	lv_obj_t *update_btn = lv_btn_create(search_screen);
-	lv_obj_set_size(update_btn, 56, 56);
+	lv_obj_set_size(update_btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(update_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(update_btn, 0, 0);
 	lv_obj_set_style_shadow_width(update_btn, 0, 0);
@@ -819,7 +820,7 @@ static void build_pages(gui_config_t *config) {
 	lv_obj_add_style(update_icon, &theme_style_icon, 0);
 	lv_obj_center(update_icon);
 
-	search_keyboard = keyboard_create(search_screen, config->screen_width, 316, search_field, &icon_search, NULL, search_accept, NULL);
+	search_keyboard = keyboard_create(search_screen, config->screen_width, ui_px(316), search_field, &icon_search, NULL, search_accept, NULL);
 
 	results_screen = lv_obj_create(NULL);
 	search_list = settingsrow_page(results_screen, config, "peq_autoeq_results");
@@ -829,7 +830,7 @@ static void build_pages(gui_config_t *config) {
 	lv_obj_set_style_text_font(results_empty, &font_ui_24, 0);
 	lv_obj_set_width(results_empty, config->screen_width - 2 * config->padding);
 	lv_obj_set_style_text_align(results_empty, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_align(results_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(config) + 100);
+	lv_obj_align(results_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(config) + ui_px(100));
 	lv_obj_add_flag(results_empty, LV_OBJ_FLAG_HIDDEN);
 }
 

@@ -45,6 +45,24 @@ static const sysinfo_model_t MODELS[] = {
 		.one_flank = true,
 		.media_keys_swapped = false,
 	},
+	{
+		// The original R3 (2019). Its panel is 360x480, three quarters of the
+		// 480-wide design, and the interface is laid out at those three
+		// quarters (uiscale.h). Only the panel for now, enough for the
+		// simulator to show it.
+		.name = "HiBy R3",
+		.panel_width = 360,
+		.panel_height = 480,
+		.ui_scale_num = 3,
+		.ui_scale_den = 4,
+		.update_stem = "r3",
+		.serial_prefix = "R3",
+		.pmic_charger = false,
+		.cs43131 = false,
+		.tap_wake = false,
+		.one_flank = false,
+		.media_keys_swapped = false,
+	},
 };
 
 // ---------------------------------------------------------------------------

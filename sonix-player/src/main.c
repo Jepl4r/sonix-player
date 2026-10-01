@@ -20,6 +20,8 @@
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/iconscale.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/settings.h"
@@ -1878,6 +1880,19 @@ int main(int argc, char **argv) {
 	// device the framebuffer answers that question itself and this is read for
 	// the update file's name, the converter's name and the serial number.
 	sysinfo_load();
+	{
+		// Before the fonts are opened and the first object is built: both
+		// are sized through ui_px().
+		const sysinfo_model_t *model = sysinfo_model();
+		if (model && model->ui_scale_num > 0 && model->ui_scale_den > 0) {
+			ui_scale_set(model->ui_scale_num, model->ui_scale_den);
+			// The icons are bitmaps, drawn at one scale each: this one's
+			// come from a file of their own (iconscale.h).
+			if (model->ui_scale_num != model->ui_scale_den) {
+				icons_load_scaled(model->ui_scale_num, model->ui_scale_den);
+			}
+		}
+	}
 
 	// The streaming services' application keys, and Qobuz with them. Before
 	// the GUI builds its pages, because the Qobuz page is drawn one way or
@@ -2012,8 +2027,8 @@ int main(int argc, char **argv) {
 	gui_config_t gui_cfg = {
 		.screen_width = (uint32_t)panel_w,
 		.screen_height = (uint32_t)panel_h,
-		.top_bar_height = 44,
-		.padding = 15,
+		.top_bar_height = (int8_t)ui_px(44),
+		.padding = (int8_t)ui_px(15),
 #ifdef HOST_BUILD
 		.sd_root_path = music_path,
 #else

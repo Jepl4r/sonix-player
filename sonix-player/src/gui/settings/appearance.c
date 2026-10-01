@@ -12,6 +12,7 @@
 #include "src/gui/shell/topbar.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *appearance_screen;
 
@@ -84,7 +85,7 @@ static void refresh_accent_buttons(void) {
 		}
 		lv_obj_set_style_bg_color(btn_accent[i], theme_accent_preset(i), 0);
 		if (i == active_accent) {
-			lv_obj_set_style_border_width(btn_accent[i], 3, 0);
+			lv_obj_set_style_border_width(btn_accent[i], ui_px(3), 0);
 			lv_obj_set_style_border_color(btn_accent[i], theme()->text_primary, 0);
 			lv_obj_set_style_border_opa(btn_accent[i], LV_OPA_COVER, 0);
 		} else {
@@ -101,7 +102,7 @@ static void accent_pick_cb(lv_event_t *e) {
 
 static lv_obj_t *make_accent_circle(lv_obj_t *parent, int index) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, 48, 48);
+	lv_obj_set_size(btn, ui_px(48), ui_px(48));
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_bg_color(btn, theme_accent_preset(index), 0);
@@ -137,8 +138,8 @@ static void clock_pos_cb(lv_event_t *e) {
 
 static lv_obj_t *make_clock_choice(lv_obj_t *parent, const char *text, int pos) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
-	lv_obj_set_style_pad_hor(btn, 14, 0);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(64));
+	lv_obj_set_style_pad_hor(btn, ui_px(14), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -160,8 +161,8 @@ static void pick_cb(lv_event_t *e) {
 
 static lv_obj_t *make_choice(lv_obj_t *parent, const char *text, bool dark) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
-	lv_obj_set_style_pad_hor(btn, 34, 0);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(64));
+	lv_obj_set_style_pad_hor(btn, ui_px(34), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -183,11 +184,11 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_gap(card, 18, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(18), 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -202,7 +203,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(row, 0, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, 14, 0);
+	lv_obj_set_style_pad_gap(row, ui_px(14), 0);
 	lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -215,11 +216,11 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_width(clock_card, lv_pct(100));
 	lv_obj_set_height(clock_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(clock_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(clock_card, 12, 0);
+	lv_obj_set_style_radius(clock_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(clock_card, 0, 0);
 	lv_obj_set_style_shadow_width(clock_card, 0, 0);
-	lv_obj_set_style_pad_all(clock_card, 20, 0);
-	lv_obj_set_style_pad_gap(clock_card, 18, 0);
+	lv_obj_set_style_pad_all(clock_card, ui_px(20), 0);
+	lv_obj_set_style_pad_gap(clock_card, ui_px(18), 0);
 	lv_obj_remove_flag(clock_card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(clock_card, LV_OBJ_FLAG_EVENT_BUBBLE);
 	lv_obj_set_flex_flow(clock_card, LV_FLEX_FLOW_COLUMN);
@@ -235,7 +236,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(clock_row, 0, 0);
 	lv_obj_set_style_border_width(clock_row, 0, 0);
 	lv_obj_set_style_pad_all(clock_row, 0, 0);
-	lv_obj_set_style_pad_gap(clock_row, 10, 0);
+	lv_obj_set_style_pad_gap(clock_row, ui_px(10), 0);
 	lv_obj_remove_flag(clock_row, LV_OBJ_FLAG_SCROLLABLE);
 	// Wrapped, not a single line: four pills of translated words do not fit
 	// across 480 pixels in every language, and one that does not fit is drawn
@@ -253,11 +254,11 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_width(accent_card, lv_pct(100));
 	lv_obj_set_height(accent_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(accent_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(accent_card, 12, 0);
+	lv_obj_set_style_radius(accent_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(accent_card, 0, 0);
 	lv_obj_set_style_shadow_width(accent_card, 0, 0);
-	lv_obj_set_style_pad_all(accent_card, 20, 0);
-	lv_obj_set_style_pad_gap(accent_card, 18, 0);
+	lv_obj_set_style_pad_all(accent_card, ui_px(20), 0);
+	lv_obj_set_style_pad_gap(accent_card, ui_px(18), 0);
 	lv_obj_remove_flag(accent_card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(accent_card, LV_OBJ_FLAG_EVENT_BUBBLE);
 	lv_obj_set_flex_flow(accent_card, LV_FLEX_FLOW_COLUMN);
@@ -273,7 +274,7 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(accent_row, 0, 0);
 	lv_obj_set_style_border_width(accent_row, 0, 0);
 	lv_obj_set_style_pad_all(accent_row, 0, 0);
-	lv_obj_set_style_pad_gap(accent_row, 14, 0);
+	lv_obj_set_style_pad_gap(accent_row, ui_px(14), 0);
 	lv_obj_remove_flag(accent_row, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(accent_row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(accent_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

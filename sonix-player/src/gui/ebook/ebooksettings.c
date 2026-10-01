@@ -9,6 +9,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *ebooksettings_screen;
 
@@ -166,9 +167,9 @@ void ebooksettings_init(gui_config_t *cfg) {
 	lv_obj_set_pos(preview_paper, cfg->padding, list_top);
 	lv_obj_set_style_bg_color(preview_paper, lv_color_hex(PAPER_COLOUR), 0);
 	lv_obj_set_style_bg_opa(preview_paper, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(preview_paper, 12, 0);
-	lv_obj_set_style_pad_all(preview_paper, 14, 0);
-	lv_obj_set_style_pad_row(preview_paper, 10, 0);
+	lv_obj_set_style_radius(preview_paper, ui_px(12), 0);
+	lv_obj_set_style_pad_all(preview_paper, ui_px(14), 0);
+	lv_obj_set_style_pad_row(preview_paper, ui_px(10), 0);
 	lv_obj_remove_flag(preview_paper, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(preview_paper, LV_FLEX_FLOW_COLUMN);
 	lv_obj_add_flag(preview_paper, LV_OBJ_FLAG_EVENT_BUBBLE);
@@ -178,8 +179,8 @@ void ebooksettings_init(gui_config_t *cfg) {
 	for (int i = 0; i < 2; i++) {
 		lv_obj_t *line = lv_obj_create(preview_paper);
 		lv_obj_remove_style_all(line);
-		lv_obj_set_size(line, lv_pct(i == 0 ? 100 : 72), 10);
-		lv_obj_set_style_radius(line, 5, 0);
+		lv_obj_set_size(line, lv_pct(i == 0 ? 100 : 72), ui_px(10));
+		lv_obj_set_style_radius(line, ui_px(5), 0);
 		lv_obj_set_style_bg_color(line, lv_color_hex(PAPER_INK), 0);
 		lv_obj_set_style_bg_opa(line, LV_OPA_20, 0);
 		lv_obj_remove_flag(line, LV_OBJ_FLAG_SCROLLABLE);
@@ -195,10 +196,10 @@ void ebooksettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(option_list, 0, 0);
 	lv_obj_set_style_radius(option_list, 0, 0);
 	lv_obj_set_style_pad_hor(option_list, cfg->padding, 0);
-	lv_obj_set_style_pad_top(option_list, 12, 0);
+	lv_obj_set_style_pad_top(option_list, ui_px(12), 0);
 	lv_obj_set_flex_flow(option_list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(option_list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(option_list, 12, 0);
+	lv_obj_set_style_pad_gap(option_list, ui_px(12), 0);
 
 	for (int i = 0; i < EBOOKBAR_COUNT; i++) {
 		if (i == EBOOKBAR_PROGRESS) {

@@ -73,6 +73,10 @@ typedef struct {
 	bool tap_wake;			   // the touch controller can wake the screen (power.h)
 	bool one_flank;			   // every button on the right flank (remap.c)
 	bool media_keys_swapped;   // KEY_NEXTSONG is the upper skip key, not next (system.c)
+	// The scale the 480-wide interface is laid out at on this panel, as a
+	// fraction; 0/0 is 1:1 (see uiscale.h).
+	int ui_scale_num;
+	int ui_scale_den;
 } sysinfo_model_t;
 
 // The entry for the name in the file, or NULL when the file says nothing or

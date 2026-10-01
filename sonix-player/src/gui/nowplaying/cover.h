@@ -91,6 +91,19 @@ bool cover_load_screensaver_images(const char *path, int w, int h, cover_image_t
 // as one surface. The caller owns `out` and must cover_free() it.
 bool cover_blur_copy(const cover_image_t *src, cover_image_t *out);
 
+// The bottom `height` rows of a packed picture, darkened in a straight ramp from
+// nothing at the top to opa/255 at the foot, for laying over it. Done here
+// rather than as a gradient drawn over the picture because at 16 bits the
+// darkening moves each channel a whole step at once, and on a dark sleeve those
+// steps are lines across it; here the ramp is dithered between the two steps
+// either side. The caller owns `out` and must cover_free() it.
+bool cover_shade_foot(const cover_image_t *src, int height, int opa, cover_image_t *out);
+
+// The same strip for a panel of one colour `w` wide: what stands under the
+// track's lines when there is no sleeve, so it shades exactly as a sleeve
+// does. The caller owns `out` and must cover_free() it.
+bool cover_shade_flat(lv_color_t colour, int w, int height, int opa, cover_image_t *out);
+
 // The one colour that stands for a sleeve, as 0xRRGGBB. Cover Flow throws it
 // under the record in the middle; the player's alternative layout tints the
 // title pill, the waveform and the star with it. A grey sleeve comes back a

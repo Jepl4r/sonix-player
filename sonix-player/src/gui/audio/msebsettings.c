@@ -15,6 +15,7 @@
 #include "src/gui/shell/toast.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 #define NAME_MAX 100
 
@@ -71,10 +72,10 @@ static void range_pick_cb(lv_event_t *e) {
 
 static lv_obj_t *make_range_pill(lv_obj_t *parent, const char *text, int range) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(64));
 	// Tight, because "-100 +100" is a wide label and all three have to fit
 	// the card without the last one running off its right edge.
-	lv_obj_set_style_pad_hor(btn, 10, 0);
+	lv_obj_set_style_pad_hor(btn, ui_px(10), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // the Adwaita pill, like the clock position
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -159,14 +160,14 @@ static bool add_preset_row(const char *name, void *user) {
 	}
 
 	lv_obj_t *row = lv_btn_create(list_container);
-	lv_obj_set_size(row, lv_pct(100), 84);
+	lv_obj_set_size(row, lv_pct(100), ui_px(84));
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_column(row, 14, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(16), 0);
+	lv_obj_set_style_pad_column(row, ui_px(14), 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_add_event_cb(row, preset_clicked_cb, LV_EVENT_CLICKED, owned);
@@ -190,7 +191,7 @@ static bool add_preset_row(const char *name, void *user) {
 								0);
 
 	lv_obj_t *menu_btn = lv_btn_create(row);
-	lv_obj_set_size(menu_btn, 44, 44);
+	lv_obj_set_size(menu_btn, ui_px(44), ui_px(44));
 	lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(menu_btn, 0, 0);
 	lv_obj_set_style_shadow_width(menu_btn, 0, 0);
@@ -293,10 +294,10 @@ static void build_name_dialog(gui_config_t *cfg) {
 	lv_label_set_text(heading, tr("preset_name"));
 	lv_obj_add_style(heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(heading, &font_ui_24, 0);
-	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
+	settingsrow_heading_place(heading, cfg, settingsrow_heading_left(cfg));
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
-	lv_obj_set_size(cancel, 56, 56);
+	lv_obj_set_size(cancel, ui_px(56), ui_px(56));
 	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
@@ -313,18 +314,18 @@ static void build_name_dialog(gui_config_t *cfg) {
 	lv_textarea_set_one_line(name_field, true);
 	lv_textarea_set_max_length(name_field, NAME_MAX);
 	lv_textarea_set_placeholder_text(name_field, tr("name"));
-	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(name_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 60);
+	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(60));
 	lv_obj_add_style(name_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(name_field, 12, 0);
+	lv_obj_set_style_radius(name_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(name_field, 0, 0);
 	lv_obj_set_style_shadow_width(name_field, 0, 0);
-	lv_obj_set_style_pad_all(name_field, 14, 0);
+	lv_obj_set_style_pad_all(name_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", name_accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, ui_px(316), name_field, NULL, "ok", name_accept_cb, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -341,7 +342,7 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(list_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
-	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
+	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + ui_px(100));
 	lv_obj_add_flag(list_empty, LV_OBJ_FLAG_HIDDEN);
 
 	switcher_attach_back_gesture(list_screen);
@@ -361,11 +362,11 @@ void msebsettings_init(gui_config_t *cfg) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 16, 0);
-	lv_obj_set_style_pad_row(card, 12, 0);
+	lv_obj_set_style_pad_all(card, ui_px(16), 0);
+	lv_obj_set_style_pad_row(card, ui_px(12), 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -381,7 +382,7 @@ void msebsettings_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_column(pills, 8, 0);
+	lv_obj_set_style_pad_column(pills, ui_px(8), 0);
 	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

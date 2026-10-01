@@ -5,15 +5,16 @@
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 #define TOAST_MS 1400
 // Not TOAST_W / TOAST_H: the second of those collides with toast.h's own
 // include guard, which is defined by the time this line is read.
-#define TOAST_WIDTH 260
+#define TOAST_WIDTH ui_px(260)
 // The height with a glyph above the text. Without one the card measures itself
 // instead: 200 px of card around a single line reads as an empty box with a
 // sentence lost in the middle of it.
-#define TOAST_HEIGHT 200
+#define TOAST_HEIGHT ui_px(200)
 
 // The Adwaita "success" green, the same one the active chevrons use, so a
 // confirmation reads as one across the interface, and the Adwaita red beside
@@ -76,11 +77,11 @@ void toast_init(gui_config_t *cfg) {
 	lv_obj_set_size(card, TOAST_WIDTH, TOAST_HEIGHT);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 20, 0);
+	lv_obj_set_style_radius(card, ui_px(20), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_gap(card, 16, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(16), 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_add_flag(card, LV_OBJ_FLAG_CLICKABLE); // a tap on it is not a tap outside
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);

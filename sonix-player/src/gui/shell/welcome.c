@@ -10,6 +10,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
+#include "src/gui/shell/uiscale.h"
 
 // ---------------------------------------------------------------------------
 // The words
@@ -49,7 +50,7 @@ static const char *const WELCOME_WORDS[] = {
 
 // Travel of the slide in and out. Deliberately small: it accompanies the fade
 // rather than being a carousel.
-#define WELCOME_SLIDE_PX 46
+#define WELCOME_SLIDE_PX ui_px(46)
 
 static lv_obj_t *panel;
 static lv_obj_t *word_label;
@@ -203,7 +204,7 @@ void welcome_init(gui_config_t *cfg) {
 	// page, which holds more.
 	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(panel, 64, 0);
+	lv_obj_set_style_pad_gap(panel, ui_px(64), 0);
 
 	word_label = lv_label_create(panel);
 	lv_label_set_text(word_label, WELCOME_WORDS[0]);
@@ -215,7 +216,7 @@ void welcome_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(word_label, LV_TEXT_ALIGN_CENTER, 0);
 
 	start_btn = lv_btn_create(panel);
-	lv_obj_set_size(start_btn, 228, 64);
+	lv_obj_set_size(start_btn, ui_px(228), ui_px(64));
 	lv_obj_set_style_radius(start_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(start_btn, theme()->accent, 0);
 	lv_obj_set_style_shadow_width(start_btn, 0, 0);

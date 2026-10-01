@@ -647,6 +647,68 @@ static bool pack_rgb565_dithered(const uint8_t *rgb, int w, int h, cover_image_t
 	return true;
 }
 
+// Thresholds of a 4x4 ordered dither, 0..15, for cover_shade_foot().
+static const uint8_t BAYER4_INDEX[4][4] = {
+	{0, 8, 2, 10},
+	{12, 4, 14, 6},
+	{3, 11, 1, 9},
+	{15, 7, 13, 5},
+};
+
+// What each row of cover_shade_foot()'s strip keeps of every channel, in
+// 1/65536ths: all of it at the top of the strip, 1 - opa/255 at the foot,
+// straight in between.
+static uint32_t shade_keep(int y, int height, int opa) {
+	return 65536 - (uint32_t)((uint64_t)opa * 65536 * (2 * y + 1) / (2 * height * 255));
+}
+
+bool cover_shade_foot(const cover_image_t *src, int height, int opa, cover_image_t *out) {
+	memset(out, 0, sizeof(*out));
+	if (!src || !src->pixels || height < 1 || opa < 0) {
+		return false;
+	}
+	if (src->dsc.header.cf != LV_COLOR_FORMAT_RGB565) {
+		return false;
+	}
+	int w = (int)src->dsc.header.w;
+	int h = (int)src->dsc.header.h;
+	if (height > h) {
+		height = h;
+	}
+	if (opa > 255) {
+		opa = 255;
+	}
+	uint16_t *buf = malloc((size_t)w * height * sizeof(uint16_t));
+	if (!buf) {
+		return false;
+	}
+
+	const uint16_t *rows = (const uint16_t *)src->pixels + (size_t)(h - height) * w;
+	for (int y = 0; y < height; y++) {
+		uint32_t keep = shade_keep(y, height, opa);
+		for (int x = 0; x < w; x++) {
+			uint16_t px = rows[(size_t)y * w + x];
+			// A threshold inside the step, never a whole one: where nothing is
+			// taken off, the pixel comes back exactly as it was.
+			uint32_t thr = ((uint32_t)BAYER4_INDEX[y & 3][x & 3] * 2 + 1) * 2048;
+			uint32_t r = ((px >> 11) * keep + thr) >> 16;
+			uint32_t g = (((px >> 5) & 0x3F) * keep + thr) >> 16;
+			uint32_t b = ((px & 0x1F) * keep + thr) >> 16;
+			buf[(size_t)y * w + x] = (uint16_t)((r << 11) | (g << 5) | b);
+		}
+	}
+
+	out->pixels = (uint8_t *)buf;
+	out->dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+	out->dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+	out->dsc.header.w = (uint32_t)w;
+	out->dsc.header.h = (uint32_t)height;
+	out->dsc.header.stride = (uint32_t)w * 2;
+	out->dsc.data_size = (uint32_t)w * height * 2;
+	out->dsc.data = out->pixels;
+	return true;
+}
+
 // Packs an RGB888 buffer into the cover_image_t LVGL draws from. Takes
 // ownership of nothing: the source buffer is still the caller's to free.
 static bool pack_rgb565(const uint8_t *rgb, int w, int h, cover_image_t *out) {
@@ -668,6 +730,39 @@ static bool pack_rgb565(const uint8_t *rgb, int w, int h, cover_image_t *out) {
 	out->dsc.data_size = (uint32_t)w * h * 2;
 	out->dsc.data = out->pixels;
 	return true;
+}
+
+bool cover_shade_flat(lv_color_t colour, int w, int height, int opa, cover_image_t *out) {
+	memset(out, 0, sizeof(*out));
+	if (w < 1 || height < 1) {
+		return false;
+	}
+	// Packed the way LVGL packs the panel's own fill -- lv_color_to_u16 cuts
+	// where pack_rgb565 rounds -- so the strip's top row is the panel's colour
+	// to the bit and there is no seam where it starts.
+	size_t n = (size_t)w * height;
+	uint16_t *flat = malloc(n * sizeof(uint16_t));
+	if (!flat) {
+		return false;
+	}
+	uint16_t px = lv_color_to_u16(colour);
+	for (size_t i = 0; i < n; i++) {
+		flat[i] = px;
+	}
+	cover_image_t src;
+	memset(&src, 0, sizeof(src));
+	src.pixels = (uint8_t *)flat;
+	src.dsc.header.magic = LV_IMAGE_HEADER_MAGIC;
+	src.dsc.header.cf = LV_COLOR_FORMAT_RGB565;
+	src.dsc.header.w = (uint32_t)w;
+	src.dsc.header.h = (uint32_t)height;
+	src.dsc.header.stride = (uint32_t)w * 2;
+	src.dsc.data_size = (uint32_t)(n * 2);
+	src.dsc.data = src.pixels;
+
+	bool ok = cover_shade_foot(&src, height, opa, out);
+	cover_free(&src);
+	return ok;
 }
 
 // Builds the visible picture: COVER_FIT_COVER crops to the box's aspect ratio,

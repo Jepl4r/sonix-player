@@ -10,6 +10,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/input/kblayout.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *kblayoutpage_screen;
 
@@ -24,19 +25,19 @@ lv_obj_t *kblayoutpage_screen;
 // parent.
 // ---------------------------------------------------------------------------
 
-#define ROW_HEIGHT 72
-#define ROW_GAP 8
+#define ROW_HEIGHT ui_px(72)
+#define ROW_GAP ui_px(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
-#define HEADING_H 40
-#define GRIP_SIZE 64
+#define ROW_RADIUS ui_px(12)
+#define HEADING_H ui_px(40)
+#define GRIP_SIZE ui_px(64)
 
 // The second list is a drop target even when it is empty, so it is never
 // shorter than one row.
 #define LIST_MIN_ROWS 1
 
 // How far the finger has to travel before a release counts as a drop.
-#define DROP_MIN_TRAVEL 8
+#define DROP_MIN_TRAVEL ui_px(8)
 
 typedef struct {
 	lv_obj_t *row;
@@ -109,7 +110,7 @@ static void refresh(void) {
 	lv_obj_set_y(others_heading, others_heading_y());
 
 	int rows_below = others_n < LIST_MIN_ROWS ? LIST_MIN_ROWS : others_n;
-	lv_obj_set_height(body, others_top() + rows_below * ROW_PITCH + 8);
+	lv_obj_set_height(body, others_top() + rows_below * ROW_PITCH + ui_px(8));
 }
 
 static void refresh_async(void *unused) {
@@ -189,10 +190,10 @@ static void drag_cb(lv_event_t *e) {
 		lv_obj_set_size(drag_ghost, lv_obj_get_width(entries[index].row), ROW_HEIGHT);
 		lv_obj_add_style(drag_ghost, &theme_style_card, 0);
 		lv_obj_set_style_radius(drag_ghost, ROW_RADIUS, 0);
-		lv_obj_set_style_border_width(drag_ghost, 2, 0);
+		lv_obj_set_style_border_width(drag_ghost, ui_px(2), 0);
 		lv_obj_set_style_border_color(drag_ghost, theme()->accent, 0);
 		lv_obj_set_style_shadow_width(drag_ghost, 0, 0);
-		lv_obj_set_style_pad_hor(drag_ghost, 20, 0);
+		lv_obj_set_style_pad_hor(drag_ghost, ui_px(20), 0);
 		lv_obj_remove_flag(drag_ghost, LV_OBJ_FLAG_SCROLLABLE);
 
 		lv_obj_t *label = lv_label_create(drag_ghost);
@@ -242,7 +243,7 @@ static lv_obj_t *make_heading(lv_obj_t *parent, const char *tag, int y) {
 	lv_label_set_text(label, tr(tag));
 	lv_obj_add_style(label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_set_pos(label, 4, y + 10);
+	lv_obj_set_pos(label, ui_px(4), y + ui_px(10));
 	return label;
 }
 
@@ -274,7 +275,7 @@ void kblayoutpage_init(gui_config_t *cfg) {
 		lv_obj_set_style_radius(row, ROW_RADIUS, 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 20, 0);
+		lv_obj_set_style_pad_hor(row, ui_px(20), 0);
 		lv_obj_remove_flag(row, LV_OBJ_FLAG_SCROLLABLE);
 
 		entries[i].row = row;
@@ -289,7 +290,7 @@ void kblayoutpage_init(gui_config_t *cfg) {
 		// it is looked for.
 		entries[i].grip = lv_obj_create(row);
 		lv_obj_set_size(entries[i].grip, GRIP_SIZE, ROW_HEIGHT);
-		lv_obj_align(entries[i].grip, LV_ALIGN_RIGHT_MID, 20, 0);
+		lv_obj_align(entries[i].grip, LV_ALIGN_RIGHT_MID, ui_px(20), 0);
 		lv_obj_set_style_bg_opa(entries[i].grip, 0, 0);
 		lv_obj_set_style_border_width(entries[i].grip, 0, 0);
 		lv_obj_set_style_pad_all(entries[i].grip, 0, 0);

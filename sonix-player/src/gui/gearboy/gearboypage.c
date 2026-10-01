@@ -17,6 +17,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/gearboy/gbdb.h"
 #include "src/system/core/lang.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *gearboypage_screen;
 
@@ -118,8 +119,8 @@ static void pick_view_cb(lv_event_t *e) {
 
 static lv_obj_t *make_view_choice(lv_obj_t *parent, const char *text, bool color) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-	lv_obj_set_style_pad_hor(btn, 26, 0);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(56));
+	lv_obj_set_style_pad_hor(btn, ui_px(26), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -227,7 +228,7 @@ void gearboypage_init(gui_config_t *cfg) {
 
 	{
 		lv_obj_t *button = lv_btn_create(gearboypage_screen);
-		lv_obj_set_size(button, 56, 56);
+		lv_obj_set_size(button, ui_px(56), ui_px(56));
 		lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(button, 0, 0);
 		lv_obj_set_style_shadow_width(button, 0, 0);
@@ -254,7 +255,7 @@ void gearboypage_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(container, 0, 0);
 	lv_obj_set_style_pad_hor(container, cfg->padding, 0);
 	lv_obj_set_style_pad_ver(container, 0, 0);
-	lv_obj_set_style_pad_gap(container, 12, 0);
+	lv_obj_set_style_pad_gap(container, ui_px(12), 0);
 	lv_obj_remove_flag(container, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -265,7 +266,7 @@ void gearboypage_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(chooser, 0, 0);
 	lv_obj_set_style_border_width(chooser, 0, 0);
 	lv_obj_set_style_pad_all(chooser, 0, 0);
-	lv_obj_set_style_pad_gap(chooser, 10, 0);
+	lv_obj_set_style_pad_gap(chooser, ui_px(10), 0);
 	lv_obj_remove_flag(chooser, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(chooser, LV_FLEX_FLOW_ROW);
 
@@ -280,7 +281,7 @@ void gearboypage_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(list_box, 0, 0);
 	lv_obj_set_style_pad_all(list_box, 0, 0);
 	lv_obj_set_style_pad_bottom(list_box, cfg->padding, 0);
-	lv_obj_set_style_pad_gap(list_box, 10, 0);
+	lv_obj_set_style_pad_gap(list_box, ui_px(10), 0);
 	lv_obj_set_flex_flow(list_box, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(list_box, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scroll_dir(list_box, LV_DIR_VER);

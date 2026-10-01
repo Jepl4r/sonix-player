@@ -11,6 +11,7 @@
 #include "src/system/core/lang.h"
 
 #include <stdint.h>
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *gearboysettings_screen;
 
@@ -83,8 +84,8 @@ static void bootrom_toggle_cb(lv_event_t *e) {
 
 static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, lv_event_cb_t cb, int value) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 60);
-	lv_obj_set_style_pad_hor(btn, 18, 0);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(60));
+	lv_obj_set_style_pad_hor(btn, ui_px(18), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // the Adwaita pill
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -103,11 +104,11 @@ static lv_obj_t *make_pill_card(lv_obj_t *parent, const char *title_tag) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 16, 0);
-	lv_obj_set_style_pad_row(card, 12, 0);
+	lv_obj_set_style_pad_all(card, ui_px(16), 0);
+	lv_obj_set_style_pad_row(card, ui_px(12), 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -123,8 +124,8 @@ static lv_obj_t *make_pill_card(lv_obj_t *parent, const char *title_tag) {
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_column(pills, 8, 0);
-	lv_obj_set_style_pad_row(pills, 8, 0);
+	lv_obj_set_style_pad_column(pills, ui_px(8), 0);
+	lv_obj_set_style_pad_row(pills, ui_px(8), 0);
 	lv_obj_remove_flag(pills, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

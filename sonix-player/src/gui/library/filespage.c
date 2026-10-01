@@ -27,6 +27,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/playback/playlist.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *filespage_screen;
 
@@ -58,7 +59,7 @@ static bool gesture_not_tap(void) {
 #define ROWS_FIRST 14
 #define ROWS_MORE 14
 
-#define ROW_HEIGHT 76
+#define ROW_HEIGHT ui_px(76)
 
 typedef struct {
 	char *name;	 // in the pool
@@ -731,11 +732,11 @@ static void pick_rebuild(void) {
 		lv_obj_set_size(row, lv_pct(100), ROW_HEIGHT);
 		lv_obj_add_style(row, &theme_style_card, 0);
 		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 12, 0);
+		lv_obj_set_style_radius(row, ui_px(12), 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 16, 0);
-		lv_obj_set_style_pad_column(row, 14, 0);
+		lv_obj_set_style_pad_hor(row, ui_px(16), 0);
+		lv_obj_set_style_pad_column(row, ui_px(14), 0);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 		// The row owns the copy the callback reads: the array above is freed
@@ -756,7 +757,7 @@ static void pick_rebuild(void) {
 		lv_label_set_text(label, names[i]);
 		lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 		lv_obj_set_flex_grow(label, 1);
-		lv_obj_set_height(label, 32);
+		lv_obj_set_height(label, ui_px(32));
 		lv_obj_add_style(label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(label, &font_ui_22, 0);
 	}
@@ -978,11 +979,11 @@ static void build_row(int index) {
 	lv_obj_set_size(row, lv_pct(100), ROW_HEIGHT);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_column(row, 14, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(16), 0);
+	lv_obj_set_style_pad_column(row, ui_px(14), 0);
 	lv_obj_add_flag(row, LV_OBJ_FLAG_EVENT_BUBBLE);
 	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -1002,7 +1003,7 @@ static void build_row(int index) {
 	lv_obj_set_flex_grow(label, 1);
 	// One line, then dots. Without a height the label wraps instead, and a long
 	// name then grows past the fixed row it lives in.
-	lv_obj_set_height(label, 32);
+	lv_obj_set_height(label, ui_px(32));
 	lv_obj_add_style(label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(label, &font_ui_22, 0);
 
@@ -1021,7 +1022,7 @@ static void build_row(int index) {
 	}
 
 	lv_obj_t *dots = lv_btn_create(row);
-	lv_obj_set_size(dots, 44, 44);
+	lv_obj_set_size(dots, ui_px(44), ui_px(44));
 	lv_obj_set_style_bg_opa(dots, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(dots, 0, 0);
 	lv_obj_set_style_shadow_width(dots, 0, 0);
@@ -1096,7 +1097,7 @@ static void rebuild(void) {
 		lv_obj_set_width(empty_label, lv_pct(100));
 		lv_obj_add_style(empty_label, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(empty_label, &font_ui_22, 0);
-		lv_obj_set_style_pad_top(empty_label, 80, 0);
+		lv_obj_set_style_pad_top(empty_label, ui_px(80), 0);
 		return;
 	}
 
@@ -1167,7 +1168,7 @@ void filespage_init(gui_config_t *cfg) {
 	// The one thing on this page that is about the folder rather than about an
 	// entry in it, so it is a corner button and not a row of the menu.
 	lv_obj_t *newdir_btn = lv_btn_create(filespage_screen);
-	lv_obj_set_size(newdir_btn, 56, 56);
+	lv_obj_set_size(newdir_btn, ui_px(56), ui_px(56));
 	lv_obj_align(newdir_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(newdir_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(newdir_btn, 0, 0);
@@ -1191,7 +1192,7 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(file_list, 0, 0);
 	lv_obj_set_style_pad_hor(file_list, cfg->padding, 0);
 	lv_obj_set_style_pad_ver(file_list, 0, 0);
-	lv_obj_set_style_pad_gap(file_list, 8, 0);
+	lv_obj_set_style_pad_gap(file_list, ui_px(8), 0);
 	lv_obj_set_scroll_dir(file_list, LV_DIR_VER);
 	lv_obj_set_flex_flow(file_list, LV_FLEX_FLOW_COLUMN);
 	// Set here and not in the row builder: an empty folder creates no rows, and
@@ -1215,10 +1216,10 @@ void filespage_init(gui_config_t *cfg) {
 	lv_label_set_text(name_heading, tr("files_new_folder"));
 	lv_obj_add_style(name_heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(name_heading, &font_ui_24, 0);
-	lv_obj_align(name_heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
+	settingsrow_heading_place(name_heading, cfg, settingsrow_heading_left(cfg));
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
-	lv_obj_set_size(cancel, 56, 56);
+	lv_obj_set_size(cancel, ui_px(56), ui_px(56));
 	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
@@ -1235,18 +1236,18 @@ void filespage_init(gui_config_t *cfg) {
 	lv_textarea_set_one_line(name_field, true);
 	lv_textarea_set_max_length(name_field, NAME_MAX);
 	lv_textarea_set_placeholder_text(name_field, tr("name"));
-	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(name_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 60);
+	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(60));
 	lv_obj_add_style(name_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(name_field, 12, 0);
+	lv_obj_set_style_radius(name_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(name_field, 0, 0);
 	lv_obj_set_style_shadow_width(name_field, 0, 0);
-	lv_obj_set_style_pad_all(name_field, 14, 0);
+	lv_obj_set_style_pad_all(name_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", name_accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, ui_px(316), name_field, NULL, "ok", name_accept_cb, NULL);
 
 	// --- the destination picker: the same page, folders only, with the button
 	// that says "here" pinned to the bottom.
@@ -1265,10 +1266,10 @@ void filespage_init(gui_config_t *cfg) {
 	lv_label_set_text(pick_title, tr("file_explorer"));
 	lv_obj_add_style(pick_title, &theme_style_text, 0);
 	lv_obj_set_style_text_font(pick_title, &font_ui_24, 0);
-	lv_obj_align(pick_title, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
+	settingsrow_heading_place(pick_title, cfg, settingsrow_heading_left(cfg));
 
 	lv_obj_t *pick_cancel = lv_btn_create(pick_layer);
-	lv_obj_set_size(pick_cancel, 56, 56);
+	lv_obj_set_size(pick_cancel, ui_px(56), ui_px(56));
 	lv_obj_align(pick_cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(pick_cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(pick_cancel, 0, 0);
@@ -1283,9 +1284,9 @@ void filespage_init(gui_config_t *cfg) {
 
 	// The button first, so the list can be sized against what it leaves.
 	pick_here_btn = lv_btn_create(pick_layer);
-	lv_obj_set_size(pick_here_btn, cfg->screen_width - 2 * cfg->padding, 64);
+	lv_obj_set_size(pick_here_btn, cfg->screen_width - 2 * cfg->padding, ui_px(64));
 	lv_obj_align(pick_here_btn, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding);
-	lv_obj_set_style_radius(pick_here_btn, 14, 0);
+	lv_obj_set_style_radius(pick_here_btn, ui_px(14), 0);
 	lv_obj_set_style_bg_color(pick_here_btn, theme()->accent, 0);
 	lv_obj_set_style_border_width(pick_here_btn, 0, 0);
 	lv_obj_set_style_shadow_width(pick_here_btn, 0, 0);
@@ -1298,14 +1299,14 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_center(pick_here_label);
 
 	pick_list = lv_obj_create(pick_layer);
-	lv_obj_set_size(pick_list, lv_pct(100), cfg->screen_height - content_top - 64 - 2 * cfg->padding);
+	lv_obj_set_size(pick_list, lv_pct(100), cfg->screen_height - content_top - ui_px(64) - 2 * cfg->padding);
 	lv_obj_align(pick_list, LV_ALIGN_TOP_LEFT, 0, content_top);
 	lv_obj_set_style_bg_opa(pick_list, 0, 0);
 	lv_obj_set_style_border_width(pick_list, 0, 0);
 	lv_obj_set_style_radius(pick_list, 0, 0);
 	lv_obj_set_style_pad_hor(pick_list, cfg->padding, 0);
 	lv_obj_set_style_pad_ver(pick_list, 0, 0);
-	lv_obj_set_style_pad_gap(pick_list, 8, 0);
+	lv_obj_set_style_pad_gap(pick_list, ui_px(8), 0);
 	lv_obj_set_scroll_dir(pick_list, LV_DIR_VER);
 	lv_obj_set_flex_flow(pick_list, LV_FLEX_FLOW_COLUMN);
 

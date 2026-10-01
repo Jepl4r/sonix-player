@@ -14,6 +14,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <unistd.h>
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *processespage_screen;
 
@@ -111,11 +112,11 @@ static void add_proc_row(const char *name, long rss_kb) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_hor(card, 18, 0);
-	lv_obj_set_style_pad_ver(card, 10, 0);
+	lv_obj_set_style_pad_hor(card, ui_px(18), 0);
+	lv_obj_set_style_pad_ver(card, ui_px(10), 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 
 	lv_obj_t *name_lbl = lv_label_create(card);
@@ -241,7 +242,7 @@ void processespage_init(gui_config_t *cfg) {
 	settingsrow_title_corner_slots(settingsrow_page_title(processespage_screen), cfg, 1);
 	{
 		lv_obj_t *button = lv_btn_create(processespage_screen);
-		lv_obj_set_size(button, 56, 56);
+		lv_obj_set_size(button, ui_px(56), ui_px(56));
 		lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(button, 0, 0);
 		lv_obj_set_style_shadow_width(button, 0, 0);
@@ -260,10 +261,10 @@ void processespage_init(gui_config_t *cfg) {
 	lv_obj_set_width(ram_card, lv_pct(100));
 	lv_obj_set_height(ram_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(ram_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(ram_card, 12, 0);
+	lv_obj_set_style_radius(ram_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(ram_card, 0, 0);
 	lv_obj_set_style_shadow_width(ram_card, 0, 0);
-	lv_obj_set_style_pad_all(ram_card, 18, 0);
+	lv_obj_set_style_pad_all(ram_card, ui_px(18), 0);
 	lv_obj_remove_flag(ram_card, LV_OBJ_FLAG_SCROLLABLE);
 
 	ram_label = lv_label_create(ram_card);
@@ -276,7 +277,7 @@ void processespage_init(gui_config_t *cfg) {
 	lv_label_set_text(list_title, tr("processes_running_processes"));
 	lv_obj_add_style(list_title, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(list_title, &font_ui_18, 0);
-	lv_obj_set_style_pad_top(list_title, 6, 0);
+	lv_obj_set_style_pad_top(list_title, ui_px(6), 0);
 
 	proc_list = lv_obj_create(page_container);
 	lv_obj_set_width(proc_list, lv_pct(100));
@@ -284,7 +285,7 @@ void processespage_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(proc_list, 0, 0);
 	lv_obj_set_style_border_width(proc_list, 0, 0);
 	lv_obj_set_style_pad_all(proc_list, 0, 0);
-	lv_obj_set_style_pad_row(proc_list, 8, 0);
+	lv_obj_set_style_pad_row(proc_list, ui_px(8), 0);
 	lv_obj_set_flex_flow(proc_list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_remove_flag(proc_list, LV_OBJ_FLAG_SCROLLABLE);
 

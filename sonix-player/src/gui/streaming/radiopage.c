@@ -25,6 +25,7 @@
 #include "src/system/library/library.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/net/wifi.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *radiopage_screen;
 lv_obj_t *radiolist_screen;
@@ -33,10 +34,10 @@ lv_obj_t *radiosearch_screen;
 // The list is windowed like every other long list here: a fixed pool of row
 // widgets rides the scroll position. Two hundred stations is well past the
 // point where building a widget per entry is felt on this hardware.
-#define ROW_HEIGHT 100
-#define ROW_GAP 8
+#define ROW_HEIGHT ui_px(100)
+#define ROW_GAP ui_px(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
+#define ROW_RADIUS ui_px(12)
 #define ROW_POOL 10
 
 #define POLL_MS 300
@@ -68,10 +69,10 @@ typedef struct {
 
 // The mark on the loaded station, as the track lists draw it on the track that
 // is playing (medialist.c).
-#define PLAYMARK_WIDTH 6
-#define PLAYMARK_HEIGHT 52
-#define PLAYMARK_INSET 4 // from the row's left edge
-#define ROW_PAD_HOR 14
+#define PLAYMARK_WIDTH ui_px(6)
+#define PLAYMARK_HEIGHT ui_px(52)
+#define PLAYMARK_INSET ui_px(4) // from the row's left edge
+#define ROW_PAD_HOR ui_px(14)
 
 // The radio.txt line the rows were last marked for, -1 for none.
 static int marked_custom = -1;
@@ -895,7 +896,7 @@ static void build_list_page(gui_config_t *cfg) {
 	// put a file runs off both edges of the screen otherwise.
 	lv_label_set_long_mode(list_message, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(list_message, cfg->screen_width - 4 * cfg->padding);
-	lv_obj_align(list_message, LV_ALIGN_TOP_MID, 0, 120);
+	lv_obj_align(list_message, LV_ALIGN_TOP_MID, 0, ui_px(120));
 	hide(list_message);
 
 	for (int i = 0; i < ROW_POOL; i++) {
@@ -910,8 +911,8 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_set_style_border_width(row->button, 0, 0);
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
 		lv_obj_set_style_pad_hor(row->button, ROW_PAD_HOR, 0);
-		lv_obj_set_style_pad_ver(row->button, 10, 0);
-		lv_obj_set_style_pad_column(row->button, 14, 0);
+		lv_obj_set_style_pad_ver(row->button, ui_px(10), 0);
+		lv_obj_set_style_pad_column(row->button, ui_px(14), 0);
 		hide(row->button);
 		lv_obj_add_flag(row->button, LV_OBJ_FLAG_EVENT_BUBBLE);
 		lv_obj_add_event_cb(row->button, row_clicked_cb, LV_EVENT_CLICKED, NULL);
@@ -933,7 +934,7 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_add_flag(text, LV_OBJ_FLAG_EVENT_BUBBLE);
 		lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_flex_align(text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-		lv_obj_set_style_pad_row(text, 4, 0);
+		lv_obj_set_style_pad_row(text, ui_px(4), 0);
 
 		row->name = lv_label_create(text);
 		lv_label_set_long_mode(row->name, LV_LABEL_LONG_DOT);
@@ -952,7 +953,7 @@ static void build_list_page(gui_config_t *cfg) {
 		lv_obj_set_size(row->detail, lv_pct(100), LV_SIZE_CONTENT);
 		lv_obj_set_flex_flow(row->detail, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->detail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-		lv_obj_set_style_pad_column(row->detail, 8, 0);
+		lv_obj_set_style_pad_column(row->detail, ui_px(8), 0);
 		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_SCROLLABLE);
 		lv_obj_remove_flag(row->detail, LV_OBJ_FLAG_CLICKABLE);
 		lv_obj_add_flag(row->detail, LV_OBJ_FLAG_EVENT_BUBBLE);
@@ -972,7 +973,7 @@ static void build_list_page(gui_config_t *cfg) {
 		hide(row->code);
 
 		row->menu_btn = lv_btn_create(row->button);
-		lv_obj_set_size(row->menu_btn, 52, 52);
+		lv_obj_set_size(row->menu_btn, ui_px(52), ui_px(52));
 		lv_obj_set_style_bg_opa(row->menu_btn, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(row->menu_btn, 0, 0);
 		lv_obj_set_style_shadow_width(row->menu_btn, 0, 0);
@@ -1012,7 +1013,7 @@ static void build_list_page(gui_config_t *cfg) {
 	// A-Z / Z-A in the corner the title leaves free, and the strip of letters
 	// down the right edge: the category lists only (see sort_button_update).
 	sort_btn = lv_btn_create(radiolist_screen);
-	lv_obj_set_size(sort_btn, 56, 56);
+	lv_obj_set_size(sort_btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(sort_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(sort_btn, 0, 0);
 	lv_obj_set_style_shadow_width(sort_btn, 0, 0);
@@ -1045,12 +1046,12 @@ static void build_list_page(gui_config_t *cfg) {
 // that one, not like a cousin of it.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph) {
 	lv_obj_t *button = lv_btn_create(radiopage_screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (ui_px(56) + ui_px(6)), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
@@ -1273,20 +1274,20 @@ static void build_search_page(gui_config_t *cfg) {
 	search_field = lv_textarea_create(radiosearch_screen);
 	lv_textarea_set_one_line(search_field, true);
 	lv_textarea_set_placeholder_text(search_field, tr("radio_station_name"));
-	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(search_field, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
 	lv_obj_add_style(search_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(search_field, 12, 0);
+	lv_obj_set_style_radius(search_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(search_field, 0, 0);
 	lv_obj_set_style_shadow_width(search_field, 0, 0);
-	lv_obj_set_style_pad_all(search_field, 14, 0);
+	lv_obj_set_style_pad_all(search_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 
 	// 316 px is the other search page's keyboard height, and the two want to be
 	// the same keyboard in the same place.
-	search_keyboard = keyboard_create(radiosearch_screen, cfg->screen_width, 316, search_field, &icon_search, NULL,
+	search_keyboard = keyboard_create(radiosearch_screen, cfg->screen_width, ui_px(316), search_field, &icon_search, NULL,
 									  search_accept_cb, NULL);
 
 	lv_obj_add_event_cb(radiosearch_screen, search_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
@@ -1335,12 +1336,12 @@ void radiopage_init(gui_config_t *cfg) {
 	lv_obj_add_style(hub_wifi_warning, &theme_style_text, 0);
 	lv_obj_set_style_text_font(hub_wifi_warning, &font_ui_22, 0);
 	lv_obj_set_style_text_align(hub_wifi_warning, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_hor(hub_wifi_warning, 4, 0);
-	lv_obj_set_style_margin_top(hub_wifi_warning, 14, 0);
+	lv_obj_set_style_pad_hor(hub_wifi_warning, ui_px(4), 0);
+	lv_obj_set_style_margin_top(hub_wifi_warning, ui_px(14), 0);
 	hide(hub_wifi_warning);
 
 	hub_wifi_row = settingsrow_add(hub_container, "wi_fi_settings", NULL, wifi_row_cb, NULL);
-	lv_obj_set_style_margin_top(hub_wifi_row, 16, 0);
+	lv_obj_set_style_margin_top(hub_wifi_row, ui_px(16), 0);
 	hide(hub_wifi_row);
 
 	build_list_page(cfg);

@@ -32,6 +32,7 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *musicsettings_screen;
 
@@ -666,12 +667,12 @@ static void dsd_gain_pick_cb(lv_event_t *e) {
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph,
 							   lv_event_cb_t cb, void *user) {
 	lv_obj_t *button = lv_btn_create(screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (ui_px(56) + ui_px(6)), cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, user);
 
 	lv_obj_t *icon = lv_image_create(button);
@@ -746,13 +747,13 @@ static void build_mseb_page(gui_config_t *cfg) {
 	for (int i = 0; i < MSEB_BANDS; i++) {
 		lv_obj_t *card = lv_obj_create(container);
 		lv_obj_set_width(card, lv_pct(100));
-		lv_obj_set_height(card, 104);
+		lv_obj_set_height(card, ui_px(104));
 		lv_obj_add_style(card, &theme_style_card, 0);
-		lv_obj_set_style_radius(card, 12, 0);
+		lv_obj_set_style_radius(card, ui_px(12), 0);
 		lv_obj_set_style_border_width(card, 0, 0);
 		lv_obj_set_style_shadow_width(card, 0, 0);
-		lv_obj_set_style_pad_hor(card, 20, 0);
-		lv_obj_set_style_pad_ver(card, 12, 0);
+		lv_obj_set_style_pad_hor(card, ui_px(20), 0);
+		lv_obj_set_style_pad_ver(card, ui_px(12), 0);
 		lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 		lv_obj_add_flag(card, LV_OBJ_FLAG_EVENT_BUBBLE);
 
@@ -770,8 +771,8 @@ static void build_mseb_page(gui_config_t *cfg) {
 
 		lv_obj_t *slider = lv_slider_create(card);
 		lv_obj_set_width(slider, lv_pct(100));
-		lv_obj_set_height(slider, 10);
-		lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -10);
+		lv_obj_set_height(slider, ui_px(10));
+		lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -ui_px(10));
 		lv_slider_set_range(slider, -mseb_get_range(), mseb_get_range());
 		// MSEB sliders are bipolar: zero sits in the middle and the coloured
 		// bar grows from there, forwards for positives and backwards for
@@ -788,8 +789,8 @@ static void build_mseb_page(gui_config_t *cfg) {
 		lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 		lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
 		theme_apply_slider_knob(slider);
-		lv_obj_set_style_pad_all(slider, 7, LV_PART_KNOB);
-		lv_obj_set_style_shadow_width(slider, 6, LV_PART_KNOB);
+		lv_obj_set_style_pad_all(slider, ui_px(7), LV_PART_KNOB);
+		lv_obj_set_style_shadow_width(slider, ui_px(6), LV_PART_KNOB);
 		lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
 		lv_obj_set_style_shadow_color(slider, lv_color_black(), LV_PART_KNOB);
 		// Drag the knob, do not tap the track. A plain LVGL slider jumps its
@@ -800,7 +801,7 @@ static void build_mseb_page(gui_config_t *cfg) {
 		lv_obj_add_flag(slider, LV_OBJ_FLAG_ADV_HITTEST);
 		// The knob is 24 px across, and with ADV_HITTEST the extended click area
 		// belongs to the knob alone rather than padding the whole track.
-		lv_obj_set_ext_click_area(slider, 18);
+		lv_obj_set_ext_click_area(slider, ui_px(18));
 		lv_obj_add_event_cb(slider, mseb_slider_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
 		lv_obj_add_event_cb(slider, mseb_released_cb, LV_EVENT_RELEASED, NULL);
 
@@ -930,12 +931,12 @@ static void build_eq_page(gui_config_t *cfg) {
 	// The band card: ten vertical sliders side by side, frequency underneath.
 	lv_obj_t *card = lv_obj_create(container);
 	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, 360);
+	lv_obj_set_height(card, ui_px(360));
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 14, 0);
+	lv_obj_set_style_pad_all(card, ui_px(14), 0);
 	lv_obj_set_style_pad_gap(card, 0, 0);
 	lv_obj_remove_flag(card, LV_OBJ_FLAG_SCROLLABLE);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
@@ -943,17 +944,17 @@ static void build_eq_page(gui_config_t *cfg) {
 
 	for (int i = 0; i < EQ_BANDS; i++) {
 		lv_obj_t *column = lv_obj_create(card);
-		lv_obj_set_size(column, 38, lv_pct(100));
+		lv_obj_set_size(column, ui_px(38), lv_pct(100));
 		lv_obj_set_style_bg_opa(column, 0, 0);
 		lv_obj_set_style_border_width(column, 0, 0);
 		lv_obj_set_style_pad_all(column, 0, 0);
-		lv_obj_set_style_pad_gap(column, 8, 0);
+		lv_obj_set_style_pad_gap(column, ui_px(8), 0);
 		lv_obj_remove_flag(column, LV_OBJ_FLAG_SCROLLABLE);
 		lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_flex_align(column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 		lv_obj_t *slider = lv_slider_create(column);
-		lv_obj_set_size(slider, 6, lv_pct(80));
+		lv_obj_set_size(slider, ui_px(6), lv_pct(80));
 		lv_slider_set_range(slider, EQ_GAIN_MIN_DB, EQ_GAIN_MAX_DB);
 		lv_slider_set_value(slider, eq_get_band(i), LV_ANIM_OFF);
 
@@ -965,12 +966,12 @@ static void build_eq_page(gui_config_t *cfg) {
 		lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 		lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
 		theme_apply_slider_knob(slider);
-		lv_obj_set_style_pad_all(slider, 7, LV_PART_KNOB);
-		lv_obj_set_style_shadow_width(slider, 6, LV_PART_KNOB);
+		lv_obj_set_style_pad_all(slider, ui_px(7), LV_PART_KNOB);
+		lv_obj_set_style_shadow_width(slider, ui_px(6), LV_PART_KNOB);
 		lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
 		lv_obj_set_style_shadow_color(slider, lv_color_black(), LV_PART_KNOB);
 		// A 6 px trough is no touch target; each column's full width is.
-		lv_obj_set_ext_click_area(slider, 16);
+		lv_obj_set_ext_click_area(slider, ui_px(16));
 		lv_obj_add_event_cb(slider, eq_slider_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
 
 		eq_sliders[i] = slider;
