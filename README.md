@@ -1,27 +1,36 @@
 # Sonix Player
 
-A replacement player for the **HiBy R3 Pro II** and the **HiBy R1**, written on
+A replacement player for the **TempoTec V1**, **HiBy R3 Pro II**, and **HiBy R1**, written on
 LVGL.
 
 ## Supported players
 
-One binary runs on both. It reads which player it is on from
-`system-info.json` at startup, and the firmware packer writes a different one
-into each image.
+One binary runs across supported devices. It reads which player it is on from
+`system-info.json` or the `BOARD` environment variable at startup, and the firmware packer writes a different configuration
+into each image. In this fork, target builds default to the **TempoTec V1** 240×320 profile.
 
-| | HiBy R3 Pro II | HiBy R1 |
-|---|---|---|
-| panel | 480x720 | 480x800 |
-| DAC | two Cirrus Logic CS43198 | one Cirrus Logic CS43131 |
-| headphone outputs | 3.5 mm, 4.4 mm balanced | 3.5 mm |
-| DAC controls | digital filters, DRE, NOS | digital filters |
-| touch | Goodix gt9xx, patched for multitouch | Hynitron CST8xx, patched for two fingers |
-| double tap to wake | yes | no |
-| buttons | volume on the left flank, playback on the right | all on the right flank, one skip key |
-| firmware image | `r3proii.upt` | `r1.upt` |
+| | TempoTec V1 | HiBy R3 Pro II | HiBy R1 |
+|---|---|---|---|
+| panel | 240x320 | 480x720 | 480x800 |
+| interface profile | 240×320 compact | regular | regular |
+| touch | native / CST8xx | Goodix gt9xx, patched for multitouch | Hynitron CST8xx, patched for two fingers |
+| double tap to wake | no | yes | no |
+| buttons | flank buttons | volume on left, playback on right | all on right flank, one skip key |
+| default in this fork | **yes** (`BOARD_DEFAULT_TEMPOTEC_V1`) | via `BOARD=hiby_r3proii` | via `BOARD=hiby_r1` |
+| firmware image | target build | `r3proii.upt` | `r1.upt` |
 
 Each player only looks for its own image, and never offers the other's: the
 recovery system does not check what it is given.
+
+### TempoTec V1 240×320 interface profile
+
+This fork adapts the Sonix Player interface specifically for the **TempoTec V1** 240×320 display:
+
+* **Compact layout geometry**: 24 px status bar, 6 px page padding, 36 px header action buttons, and 10 px tile radii.
+* **Now Playing screen**: Edge-to-edge 240×192 cover art center-cropped without side letterboxing, paired with an independently sized 128 px compact playback controls area.
+* **Music navigation**: Settings plus an overflow menu in the title header row to keep Playlists, Favorites, and Search accessible without truncating page titles.
+* **Compact grids & lists**: 2×3 grids where the fifth tile spans the final row, single-line tile captions with ellipsis truncation, and 56 px compact settings rows.
+* **Popovers & Controls**: Width-bounded scrolling popovers, a 2×4 Quick Settings sheet, and a 144 px compact keyboard tray.
 
 There are two builds from one tree:
 
