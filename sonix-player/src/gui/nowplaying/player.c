@@ -14,6 +14,7 @@
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/board_profile.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/popover.h"
@@ -4518,8 +4519,9 @@ void player_init(gui_config_t *cfg) {
 	// too short for that, the artwork gives up height rather than the controls.
 	int cover_size = (int)cfg->screen_width;
 	int menu_height = (int)cfg->screen_height - cover_size;
-	if (menu_height < PLAYER_MENU_MIN_HEIGHT) {
-		menu_height = PLAYER_MENU_MIN_HEIGHT;
+	int min_menu_h = bp_is_tempotec_v1() ? (PLAYER_MENU_MIN_HEIGHT - 96) : PLAYER_MENU_MIN_HEIGHT;
+	if (menu_height < min_menu_h) {
+		menu_height = min_menu_h;
 		cover_size = (int)cfg->screen_height - menu_height;
 		if (cover_size < 64)
 			cover_size = 64;
@@ -4585,7 +4587,7 @@ void player_init(gui_config_t *cfg) {
 	lv_label_set_text(song_title_label, tr("player_no_track_loaded"));
 	lv_obj_set_width(song_title_label, lv_pct(100));
 	lv_obj_add_style(song_title_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(song_title_label, &font_ui_26, 0);
+	lv_obj_set_style_text_font(song_title_label, bp_title_font(), 0);
 	scrolltext_apply(song_title_label);
 
 	// The artist line -- see refresh_now_playing().
@@ -4593,7 +4595,7 @@ void player_init(gui_config_t *cfg) {
 	lv_label_set_text(song_artist_label, "");
 	lv_obj_set_width(song_artist_label, lv_pct(100));
 	lv_obj_add_style(song_artist_label, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(song_artist_label, &font_ui_24, 0);
+	lv_obj_set_style_text_font(song_artist_label, bp_artist_font(), 0);
 	scrolltext_apply(song_artist_label);
 
 	// Right side: the favourite star over the stream format.
@@ -4624,7 +4626,7 @@ void player_init(gui_config_t *cfg) {
 	format_label = lv_label_create(song_side);
 	lv_label_set_text(format_label, "");
 	lv_obj_add_style(format_label, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(format_label, &font_ui_18, 0);
+	lv_obj_set_style_text_font(format_label, bp_format_label_font(), 0);
 
 	// The shape of the track, and the slider laid over it that still does the
 	// seeking. Two things in the same place rather than one: drawing a
@@ -4719,13 +4721,13 @@ void player_init(gui_config_t *cfg) {
 	elapsed_label = lv_label_create(below_slider_group);
 	lv_label_set_text(elapsed_label, "0:00");
 	lv_obj_add_style(elapsed_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(elapsed_label, &font_ui_22, 0);
+	lv_obj_set_style_text_font(elapsed_label, bp_time_font(), 0);
 	lv_obj_set_align(elapsed_label, LV_ALIGN_LEFT_MID);
 
 	remaining_label = lv_label_create(below_slider_group);
 	lv_label_set_text(remaining_label, "0:00");
 	lv_obj_add_style(remaining_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(remaining_label, &font_ui_22, 0);
+	lv_obj_set_style_text_font(remaining_label, bp_time_font(), 0);
 	lv_obj_set_align(remaining_label, LV_ALIGN_RIGHT_MID);
 
 	// Between them, in the middle the two clocks left empty. Dimmer than they
@@ -4736,7 +4738,7 @@ void player_init(gui_config_t *cfg) {
 	// A step below the clocks either side of it, as well as dimmer: it is a
 	// bearing and they are the reading, and at the same size the three read as
 	// one row of equals.
-	lv_obj_set_style_text_font(queue_position_label, &font_ui_18, 0);
+	lv_obj_set_style_text_font(queue_position_label, bp_queue_label_font(), 0);
 	lv_obj_set_align(queue_position_label, LV_ALIGN_CENTER);
 
 	// Transport: prev, play/pause, next -- with the repeat toggle parked on

@@ -2176,9 +2176,9 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	np_artist = lv_label_create(np_card);
 	lv_obj_set_width(np_artist, lv_pct(100));
-	lv_obj_set_height(np_artist, lv_font_get_line_height(&font_ui_22));
+	lv_obj_set_height(np_artist, lv_font_get_line_height(bp_artist_font()));
 	lv_obj_add_style(np_artist, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(np_artist, &font_ui_22, 0);
+	lv_obj_set_style_text_font(np_artist, bp_artist_font(), 0);
 	lv_obj_set_style_text_align(np_artist, LV_TEXT_ALIGN_CENTER, 0);
 	scrolltext_apply(np_artist);
 

@@ -18,6 +18,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/board_profile.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/settings/musicsettings.h"
@@ -1495,12 +1496,12 @@ static void build_rows(int width) {
 		lv_label_set_long_mode(row->label, LV_LABEL_LONG_DOT);
 		lv_obj_set_flex_grow(row->label, 1);
 		lv_obj_add_style(row->label, &theme_style_text, 0);
-		lv_obj_set_style_text_font(row->label, &font_ui_24, 0);
+		lv_obj_set_style_text_font(row->label, bp_tile_label_font(), 0);
 		// Two lines at most: the cap on the height is what makes LV_LABEL_LONG_DOT
 		// cut the name there, with the ellipsis, instead of wrapping on past the
 		// row. A cap and not a height, so a one-line name stays centred.
 		lv_obj_set_style_max_height(row->label,
-									2 * lv_font_get_line_height(&font_ui_24) +
+									2 * lv_font_get_line_height(bp_tile_label_font()) +
 										lv_obj_get_style_text_line_space(row->label, LV_PART_MAIN),
 									0);
 
