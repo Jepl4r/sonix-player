@@ -28,6 +28,13 @@ lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *titl
 // page with no corner buttons the whole width back.
 void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int buttons);
 
+// Shared title-row control geometry. The V1 uses 36 px controls; the HiBy
+// layouts keep their original 56 px targets. New and migrated pages should use
+// settingsrow_place_corner_button() rather than repeating those constants.
+int settingsrow_corner_button_size(gui_config_t *cfg);
+int settingsrow_corner_button_gap(gui_config_t *cfg);
+void settingsrow_place_corner_button(lv_obj_t *button, gui_config_t *cfg, int slot);
+
 // The heading a settingsrow_page() built, for a page whose title changes after
 // it is built (Language names itself in two languages and one of them moves).
 lv_obj_t *settingsrow_page_title(lv_obj_t *screen);

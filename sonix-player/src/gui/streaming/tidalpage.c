@@ -2151,7 +2151,7 @@ static void build_search_page(gui_config_t *cfg) {
 	}
 	paint_search_pills();
 
-	search_keyboard = keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok",
+	search_keyboard = keyboard_create(search_screen, cfg->screen_width, cfg->screen_width < 320 ? 144 : 316, search_field, NULL, "ok",
 									  search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
 	theme_register_refresh(paint_search_pills);
@@ -2538,16 +2538,15 @@ static void update_corner_buttons(void) {
 	}
 }
 
-// Same shape as the Music page corner buttons: 56 px, transparent, aligned top
-// right and stepped leftwards one by one.
+// Same shape as the Music page corner buttons: transparent, aligned top right
+// and stepped leftwards through the shared regular/compact slots.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(tidal_screen);
-	lv_obj_set_size(button, 56, 56);
+	settingsrow_place_corner_button(button, cfg, slot);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);

@@ -4513,22 +4513,25 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_hidden(player_screen, true);
 
 
-	// Geometry first, because everything else hangs off it: the artwork is a
-	// square as wide as the screen, sitting flush at the top (this page hides
-	// the status bar), and the controls get whatever height is left. On a panel
-	// too short for that, the artwork gives up height rather than the controls.
-	int cover_size = (int)cfg->screen_width;
-	int menu_height = (int)cfg->screen_height - cover_size;
-	int min_menu_h = bp_is_tempotec_v1() ? (PLAYER_MENU_MIN_HEIGHT - 96) : PLAYER_MENU_MIN_HEIGHT;
+	// Geometry first, because everything else hangs off it. On the V1 the
+	// controls need some of the square sleeve's height, but never its width:
+	// keeping the old square width equal to the shortened height produced black
+	// bars down both sides. Decode/crop a full-width 240 x cover-height image
+	// instead, flush to every edge.
+	const bool compact = bp_is_tempotec_v1();
+	int cover_height = (int)cfg->screen_width;
+	int menu_height = (int)cfg->screen_height - cover_height;
+	int min_menu_h = compact ? 128 : PLAYER_MENU_MIN_HEIGHT;
 	if (menu_height < min_menu_h) {
 		menu_height = min_menu_h;
-		cover_size = (int)cfg->screen_height - menu_height;
-		if (cover_size < 64)
-			cover_size = 64;
+		cover_height = (int)cfg->screen_height - menu_height;
+		if (cover_height < 64) {
+			cover_height = 64;
+		}
 	}
 
-	cover_box_w = cover_size;
-	cover_box_h = cover_size;
+	cover_box_w = (int)cfg->screen_width;
+	cover_box_h = cover_height;
 	backdrop_w = (int)cfg->screen_width;
 	backdrop_h = menu_height;
 	backdrop_studio_h = (int)cfg->screen_height;
@@ -4545,8 +4548,12 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(player_menu, 0, 0);
 	lv_obj_set_style_radius(player_menu, 0, 0);
 	lv_obj_set_style_pad_hor(player_menu, cfg->padding, 0);
+	if (compact) {
+		menu_pad_ver = 2;
+		menu_gap = 2;
+	}
 	int spare = menu_height - PLAYER_MENU_REF_HEIGHT;
-	if (spare > 0) {
+	if (!compact && spare > 0) {
 		menu_pad_ver = PLAYER_MENU_PAD_VER + spare / 5;
 		menu_gap = PLAYER_MENU_GAP + spare / 5;
 	}
@@ -4561,7 +4568,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(song_info, 0, 0);
 	lv_obj_set_style_radius(song_info, 0, 0);
 	lv_obj_set_style_pad_all(song_info, 0, 0);
-	lv_obj_set_style_pad_column(song_info, 10, 0);
+	lv_obj_set_style_pad_column(song_info, compact ? 4 : 10, 0);
 	lv_obj_set_flex_flow(song_info, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(song_info, false);
@@ -4605,14 +4612,14 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(song_side, 0, 0);
 	lv_obj_set_style_border_width(song_side, 0, 0);
 	lv_obj_set_style_pad_all(song_side, 0, 0);
-	lv_obj_set_style_pad_gap(song_side, 2, 0);
+	lv_obj_set_style_pad_gap(song_side, compact ? 0 : 2, 0);
 	lv_obj_set_flex_flow(song_side, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(song_side, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(song_side, false);
 
 	lv_obj_t *fav_btn = lv_btn_create(song_side);
 	fav_btn_obj = fav_btn;
-	lv_obj_set_size(fav_btn, 48, 44);
+	lv_obj_set_size(fav_btn, compact ? 34 : 48, compact ? 28 : 44);
 	lv_obj_set_style_bg_opa(fav_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(fav_btn, 0, 0);
 	lv_obj_set_style_shadow_width(fav_btn, 0, 0);
@@ -4620,6 +4627,9 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(fav_btn, fav_btn_event_cb, LV_EVENT_CLICKED, NULL);
 
 	fav_btn_icon = lv_image_create(fav_btn);
+	if (compact) {
+		lv_image_set_scale(fav_btn_icon, 208); // 32 px source -> 26 px
+	}
 	lv_obj_center(fav_btn_icon);
 	update_fav_button();
 
@@ -4673,8 +4683,8 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_color(progress_slider, theme()->accent, LV_PART_KNOB);
 	lv_obj_set_style_border_color(progress_slider, lv_color_white(), LV_PART_KNOB);
 	lv_obj_set_style_border_opa(progress_slider, LV_OPA_COVER, LV_PART_KNOB);
-	lv_obj_set_style_border_width(progress_slider, PROGRESS_KNOB_RING, LV_PART_KNOB);
-	lv_obj_set_style_pad_all(progress_slider, PROGRESS_KNOB_GROW, LV_PART_KNOB);
+	lv_obj_set_style_border_width(progress_slider, compact ? 2 : PROGRESS_KNOB_RING, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(progress_slider, compact ? 4 : PROGRESS_KNOB_GROW, LV_PART_KNOB);
 	lv_obj_set_style_shadow_width(progress_slider, 8, LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(progress_slider, LV_OPA_40, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(progress_slider, lv_color_black(), LV_PART_KNOB);
@@ -4752,15 +4762,16 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(player_controls_buttons, 0, 0);
 	lv_obj_set_flex_flow(player_controls_buttons, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(player_controls_buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	// Lifted a touch off the screen edge.
-	lv_obj_set_style_translate_y(player_controls_buttons, -8, 0);
+	// Lifted a touch off the screen edge on the larger panels. The compact row
+	// already uses every pixel of its controls block.
+	lv_obj_set_style_translate_y(player_controls_buttons, compact ? 0 : -8, 0);
 
 	// The repeat/shuffle button, kept out of the flex row so the transport
 	// stays centred on the screen.
 	lv_obj_t *repeat_btn = lv_btn_create(player_controls_buttons);
 	repeat_btn_obj = repeat_btn;
 	lv_obj_set_ignore_layout(repeat_btn, true);
-	lv_obj_set_size(repeat_btn, 56, 56);
+	lv_obj_set_size(repeat_btn, compact ? 36 : 56, compact ? 36 : 56);
 	lv_obj_set_style_bg_opa(repeat_btn, 0, 0);
 	lv_obj_set_style_shadow_width(repeat_btn, 0, 0);
 	lv_obj_add_event_cb(repeat_btn, repeat_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -4779,7 +4790,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *speed_btn = lv_btn_create(player_controls_buttons);
 	speed_btn_obj = speed_btn;
 	lv_obj_set_ignore_layout(speed_btn, true);
-	lv_obj_set_size(speed_btn, 56, 56);
+	lv_obj_set_size(speed_btn, compact ? 36 : 56, compact ? 36 : 56);
 	lv_obj_set_style_bg_opa(speed_btn, 0, 0);
 	lv_obj_set_style_shadow_width(speed_btn, 0, 0);
 	lv_obj_add_event_cb(speed_btn, speed_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -4798,7 +4809,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *more_btn = lv_btn_create(player_controls_buttons);
 	more_btn_obj = more_btn;
 	lv_obj_set_ignore_layout(more_btn, true);
-	lv_obj_set_size(more_btn, 56, 56);
+	lv_obj_set_size(more_btn, compact ? 36 : 56, compact ? 36 : 56);
 	lv_obj_set_style_bg_opa(more_btn, 0, 0);
 	lv_obj_set_style_shadow_width(more_btn, 0, 0);
 	lv_obj_add_event_cb(more_btn, more_btn_event_cb, LV_EVENT_CLICKED, NULL);
@@ -4817,7 +4828,7 @@ void player_init(gui_config_t *cfg) {
 	// and plain glyphs read better there than filled boxes.
 	lv_obj_t *prev_btn = lv_btn_create(player_controls_buttons);
 	prev_btn_obj = prev_btn;
-	lv_obj_set_size(prev_btn, 76, 76);
+	lv_obj_set_size(prev_btn, compact ? 42 : 76, compact ? 42 : 76);
 	lv_obj_set_style_bg_opa(prev_btn, 0, 0);
 	lv_obj_set_style_shadow_width(prev_btn, 0, 0);
 	prev_icon = lv_image_create(prev_btn);
@@ -4830,7 +4841,7 @@ void player_init(gui_config_t *cfg) {
 
 	// Play/pause: a white disc, with the glyph carrying the colour.
 	play_btn = lv_btn_create(player_controls_buttons);
-	lv_obj_set_size(play_btn, 84, 84);
+	lv_obj_set_size(play_btn, compact ? 48 : 84, compact ? 48 : 84);
 	lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_bg_color(play_btn, lv_color_white(), 0); // repainted by set_over_cover
 	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
@@ -4844,7 +4855,7 @@ void player_init(gui_config_t *cfg) {
 
 	lv_obj_t *next_btn = lv_btn_create(player_controls_buttons);
 	next_btn_obj = next_btn;
-	lv_obj_set_size(next_btn, 76, 76);
+	lv_obj_set_size(next_btn, compact ? 42 : 76, compact ? 42 : 76);
 	lv_obj_set_style_bg_opa(next_btn, 0, 0);
 	lv_obj_set_style_shadow_width(next_btn, 0, 0);
 	next_icon = lv_image_create(next_btn);
@@ -4866,7 +4877,7 @@ void player_init(gui_config_t *cfg) {
 	// taller shape of the track can reach: presses there go to the slider.
 	lv_obj_set_adv_hittest(cover_panel, true);
 	lv_obj_add_event_cb(cover_panel, cover_panel_hit_test_cb, LV_EVENT_HIT_TEST, NULL);
-	lv_obj_set_size(cover_panel, cover_size, cover_size);
+	lv_obj_set_size(cover_panel, cover_box_w, cover_box_h);
 	lv_obj_align(cover_panel, LV_ALIGN_TOP_MID, 0, 0);
 	lv_obj_set_style_bg_color(cover_panel, theme()->cover_bg, 0);
 	lv_obj_set_style_border_width(cover_panel, 0, 0);
@@ -5005,10 +5016,12 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_hidden(studio_bg, true);
 	lv_obj_move_background(studio_bg);
 
-	studio_box_w = cover_size;
-	studio_box_h = (int)cfg->screen_height - STUDIO_CONTROLS_H - 2 * (menu_gap - PLAYER_MENU_GAP);
-	if (studio_box_h < cover_size) {
-		studio_box_h = cover_size;
+	studio_box_w = cover_box_w;
+	int studio_controls_h = compact ? 96 : STUDIO_CONTROLS_H;
+	studio_box_h = (int)cfg->screen_height - studio_controls_h -
+					(compact ? 0 : 2 * (menu_gap - PLAYER_MENU_GAP));
+	if (studio_box_h < cover_box_h) {
+		studio_box_h = cover_box_h;
 	}
 	studio_box = lv_obj_create(cover_panel);
 	lv_obj_remove_style_all(studio_box);
@@ -5020,7 +5033,7 @@ void player_init(gui_config_t *cfg) {
 
 	studio_head = lv_obj_create(studio_box);
 	lv_obj_remove_style_all(studio_head);
-	lv_obj_set_size(studio_head, cover_size - 2 * STUDIO_MARGIN, STUDIO_HEAD_H);
+	lv_obj_set_size(studio_head, cover_box_w - 2 * STUDIO_MARGIN, STUDIO_HEAD_H);
 	lv_obj_set_scrollable(studio_head, false);
 	lv_obj_set_clickable(studio_head, false);
 
@@ -5030,7 +5043,7 @@ void player_init(gui_config_t *cfg) {
 	// against one of them.
 	studio_text_col = lv_obj_create(studio_head);
 	lv_obj_remove_style_all(studio_text_col);
-	lv_obj_set_size(studio_text_col, cover_size - 2 * STUDIO_MARGIN - 2 * 68, LV_SIZE_CONTENT);
+	lv_obj_set_size(studio_text_col, cover_box_w - 2 * STUDIO_MARGIN - 2 * 68, LV_SIZE_CONTENT);
 	lv_obj_align(studio_text_col, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_flex_flow(studio_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(studio_text_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);

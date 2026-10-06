@@ -5,6 +5,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/library/browser.h"
+#include "src/gui/board_profile.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
@@ -21,6 +22,7 @@
 // the artwork, big enough to still be a comfortable touch target.
 #define BACK_BTN_SIZE 56
 
+static int back_btn_size = BACK_BTN_SIZE;
 static lv_obj_t *back_btn;
 static lv_obj_t *back_btn_icon;
 
@@ -40,12 +42,14 @@ static int8_t back_btn_top_bar_height;
 // air it keeps instead, and what the player's own header row is aligned to.
 #define BACK_BTN_PLAYER_TOP 14
 
+static int back_btn_player_top(void) { return bp_is_tempotec_v1() ? 4 : BACK_BTN_PLAYER_TOP; }
+
 static void place_back_btn(bool below_top_bar) {
 	// Same offsets as the corner buttons on the right (playlists, settings,
 	// options): the whole header row of round buttons sits on one line. On
 	// the player (below_top_bar false) the status bar is not there to sit
 	// under, so the chevron takes the offset above.
-	int y = back_btn_padding + (below_top_bar ? back_btn_top_bar_height : BACK_BTN_PLAYER_TOP);
+	int y = back_btn_padding + (below_top_bar ? back_btn_top_bar_height : back_btn_player_top());
 	lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, back_btn_padding, y);
 }
 
@@ -161,9 +165,9 @@ void back_btn_translate(int32_t x) { back_btn_set_drag_offset(x); }
 
 int back_btn_centre_y(void) {
 	if (!back_btn) {
-		return back_btn_padding + BACK_BTN_PLAYER_TOP;
+		return back_btn_padding + back_btn_player_top();
 	}
-	return back_btn_padding + BACK_BTN_PLAYER_TOP + lv_obj_get_height(back_btn) / 2;
+	return back_btn_padding + back_btn_player_top() + lv_obj_get_height(back_btn) / 2;
 }
 
 static void back_underlay_destroy(void) {
@@ -244,8 +248,9 @@ static void back_underlay_build(void) {
 		lv_image_set_src(chevron, &icon_chevron_left);
 		// The same two placements as place_back_btn(): the player's own offset
 		// where there is no status bar, the status bar's height everywhere else.
-		int y = back_btn_padding + (going_to_player ? BACK_BTN_PLAYER_TOP : back_btn_top_bar_height);
-		lv_obj_set_pos(chevron, back_btn_padding + 10, y + 10);
+		int y = back_btn_padding + (going_to_player ? back_btn_player_top() : back_btn_top_bar_height);
+		int inset = (back_btn_size - 36) / 2;
+		lv_obj_set_pos(chevron, back_btn_padding + inset, y + inset);
 		if (going_to_player && chevron_over_cover) {
 			lv_obj_set_style_image_recolor(chevron, lv_color_white(), 0);
 		} else {
@@ -733,7 +738,8 @@ void back_btn_init(gui_config_t *cfg) {
 	back_btn_top_bar_height = cfg->top_bar_height;
 
 	back_btn = lv_btn_create(lv_layer_top());
-	lv_obj_set_size(back_btn, BACK_BTN_SIZE, BACK_BTN_SIZE);
+	back_btn_size = bp_header_button_size();
+	lv_obj_set_size(back_btn, back_btn_size, back_btn_size);
 	// Bare chevron, no disc behind it. The button stays the full size so it is
 	// still an easy target; it just does not draw itself.
 	lv_obj_set_style_bg_opa(back_btn, LV_OPA_TRANSP, 0);

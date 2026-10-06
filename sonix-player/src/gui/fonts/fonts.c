@@ -10,6 +10,7 @@
 #include "lvgl/lvgl.h"
 #include "lvgl/src/display/lv_display_private.h"
 
+#include "src/gui/board_profile.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 
@@ -145,7 +146,39 @@ static const text_step_t LARGE_STEPS[] = {
 
 static bool large_text;
 
+// The named font objects are used throughout the interface.  Remapping them
+// here is both safer and more complete than chasing hundreds of explicit
+// &font_ui_24 references: every page keeps its typography hierarchy, while a
+// "24" font no longer consumes a tenth of the V1's entire width per word.
+static int tempotec_drawn_size(int size, bool large) {
+	int compact;
+	switch (size) {
+	case 14: compact = 14; break;
+	case 16: compact = 15; break;
+	case 18: compact = 15; break;
+	case 20: compact = 16; break;
+	case 22: compact = 16; break;
+	case 24: compact = 17; break;
+	case 26: compact = 18; break;
+	case 28: compact = 19; break;
+	case 32: compact = 21; break;
+	case 36: compact = 23; break;
+	case 64: compact = 32; break;
+	case 72: compact = 36; break;
+	default: compact = size; break;
+	}
+	// Large text remains useful on the small display, but one restrained step
+	// avoids recreating the overflows this profile exists to remove.
+	if (large && size <= 36) {
+		compact += 1;
+	}
+	return compact;
+}
+
 static int drawn_size(int size, bool large) {
+	if (bp_is_tempotec_v1()) {
+		return tempotec_drawn_size(size, large);
+	}
 	if (!large) {
 		return size;
 	}

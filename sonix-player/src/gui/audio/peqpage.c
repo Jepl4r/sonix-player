@@ -376,12 +376,11 @@ static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value) {
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph,
 							   lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(screen);
-	lv_obj_set_size(button, 56, 56);
+	settingsrow_place_corner_button(button, cfg, slot);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *icon = lv_image_create(button);

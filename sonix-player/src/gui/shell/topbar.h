@@ -48,8 +48,9 @@ bool topbar_is_hidden(void);
 void topbar_bring_to_front(void);
 
 // Shows or hides the charge percentage next to the battery shell (config
-// "screen"/"battery_percent", on by default). The shell itself always stays --
-// it is what says how much is left at a glance.
+// "screen"/"battery_percent", on by default). The compact 240 px bar always
+// suppresses the number to keep the radios clear of the centred clock. The
+// shell itself stays and says how much is left at a glance.
 void topbar_set_battery_percent(bool shown);
 
 // Where the clock sits in the bar, or that it is not shown at all (config

@@ -179,8 +179,7 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	settingsrow_title_corner_slots(settingsrow_page_title(artistexceptions_screen), cfg, 1);
 
 	lv_obj_t *add = lv_btn_create(artistexceptions_screen);
-	lv_obj_set_size(add, 56, 56);
-	lv_obj_align(add, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	settingsrow_place_corner_button(add, cfg, 0);
 	lv_obj_set_style_bg_opa(add, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(add, 0, 0);
 	lv_obj_set_style_shadow_width(add, 0, 0);
@@ -235,8 +234,7 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
-	lv_obj_set_size(cancel, 56, 56);
-	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	settingsrow_place_corner_button(cancel, cfg, 0);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
 	lv_obj_set_style_shadow_width(cancel, 0, 0);
@@ -262,7 +260,7 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, cfg->screen_width < 320 ? 144 : 316, name_field, NULL, "ok", accept_cb, NULL);
 
 	lv_obj_add_event_cb(artistexceptions_screen, screen_cb, LV_EVENT_SCREEN_LOAD_START, NULL);
 	lv_obj_add_event_cb(artistexceptions_screen, screen_cb, LV_EVENT_SCREEN_UNLOADED, NULL);

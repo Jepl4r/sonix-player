@@ -18,6 +18,7 @@
 
 #include "src/gui/nowplaying/cover.h"
 #include "src/system/audio/waveform.h"
+#include "src/gui/board_profile.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/nowplaying/player.h"
@@ -1039,28 +1040,34 @@ static void tune_pointer(lv_indev_t *indev) {
 #define SCREEN_WIDTH 480
 #define SCREEN_HEIGHT 720
 
-// The smallest panel the pages can be laid out on. Comfortably under either
-// real one: this is not a size anybody should reach, it is the floor under
-// which the arithmetic in the pages stops meaning anything.
+// The smallest regular panel the original layouts accept.  The TempoTec
+// profile deliberately has its own, smaller floor; treating 240x320 as an
+// invalid panel here was the reason board-specific widget sizes never reached
+// the real framebuffer.
 #define PANEL_MIN_WIDTH 320
 #define PANEL_MIN_HEIGHT 480
 
-// The panel size for gui_config_t, in this order: SONIX_PANEL ("480x800"); the
-// model named in system-info.json; the model whose panel exactly matches the
-// framebuffer (fb_w/fb_h, 0 where there is none); SCREEN_WIDTH x SCREEN_HEIGHT.
-// A framebuffer size that matches no model is never used: the pages subtract
-// from these unsigned numbers, and an unexpected size wraps them.
+// The panel size for gui_config_t, in this order: the TempoTec board profile;
+// SONIX_PANEL (for simulation); the model named in system-info.json; the model
+// whose panel exactly matches the framebuffer; SCREEN_WIDTH x SCREEN_HEIGHT.
 static void panel_size(int *width, int *height, int fb_w, int fb_h) {
+	const bool tempotec = bp_is_tempotec_v1();
 	const sysinfo_model_t *model = sysinfo_model();
-	if (!model && fb_w > 0 && fb_h > 0) {
+	if (!tempotec && !model && fb_w > 0 && fb_h > 0) {
 		model = sysinfo_model_by_panel(fb_w, fb_h);
 		if (model) {
 			printf("panel: system-info.json names no known model; the framebuffer is %dx%d, the %s's panel\n",
 				   fb_w, fb_h, model->name);
 		}
 	}
-	*width = model ? model->panel_width : SCREEN_WIDTH;
-	*height = model ? model->panel_height : SCREEN_HEIGHT;
+
+	if (tempotec) {
+		*width = bp_screen_w();
+		*height = bp_screen_h();
+	} else {
+		*width = model ? model->panel_width : SCREEN_WIDTH;
+		*height = model ? model->panel_height : SCREEN_HEIGHT;
+	}
 
 	const char *env = getenv("SONIX_PANEL");
 	int w = 0, h = 0;
@@ -1069,14 +1076,14 @@ static void panel_size(int *width, int *height, int fb_w, int fb_h) {
 		*height = h;
 	}
 
-	// Whatever the answer came from, it has to be a panel this interface can be
-	// laid out on. The pages subtract a title row and a bar from the height in
-	// unsigned arithmetic, so anything shorter than that does not crowd the
-	// layout, it wraps: the fallback is the only safe answer.
-	if (*width < PANEL_MIN_WIDTH || *height < PANEL_MIN_HEIGHT) {
-		printf("panel: %dx%d is too small to lay out, using %dx%d\n", *width, *height, SCREEN_WIDTH, SCREEN_HEIGHT);
-		*width = SCREEN_WIDTH;
-		*height = SCREEN_HEIGHT;
+	int min_w = tempotec ? 240 : PANEL_MIN_WIDTH;
+	int min_h = tempotec ? 320 : PANEL_MIN_HEIGHT;
+	if (*width < min_w || *height < min_h) {
+		int fallback_w = tempotec ? bp_screen_w() : SCREEN_WIDTH;
+		int fallback_h = tempotec ? bp_screen_h() : SCREEN_HEIGHT;
+		printf("panel: %dx%d is too small to lay out, using %dx%d\n", *width, *height, fallback_w, fallback_h);
+		*width = fallback_w;
+		*height = fallback_h;
 	}
 }
 
@@ -2071,15 +2078,16 @@ int main(int argc, char **argv) {
 
 	{
 		const sysinfo_model_t *model = sysinfo_model();
-		printf("panel: laying the interface out at %dx%d (%s)\n", panel_w, panel_h,
-			   model ? model->name : "no model this build knows, so the default");
+		const char *layout_name = bp_is_tempotec_v1() ? "TempoTec V1 profile"
+												 : (model ? model->name : "no model this build knows, so the default");
+		printf("panel: laying the interface out at %dx%d (%s)\n", panel_w, panel_h, layout_name);
 	}
 
 	gui_config_t gui_cfg = {
 		.screen_width = (uint32_t)panel_w,
 		.screen_height = (uint32_t)panel_h,
-		.top_bar_height = 44,
-		.padding = 15,
+		.top_bar_height = (int8_t)(bp_is_tempotec_v1() ? bp_status_bar_h() : 44),
+		.padding = (int8_t)(bp_is_tempotec_v1() ? bp_padding() : 15),
 #ifdef HOST_BUILD
 		.sd_root_path = music_path,
 #else

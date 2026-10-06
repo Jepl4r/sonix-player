@@ -1173,8 +1173,7 @@ void filespage_init(gui_config_t *cfg) {
 	// The one thing on this page that is about the folder rather than about an
 	// entry in it, so it is a corner button and not a row of the menu.
 	lv_obj_t *newdir_btn = lv_btn_create(filespage_screen);
-	lv_obj_set_size(newdir_btn, 56, 56);
-	lv_obj_align(newdir_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	settingsrow_place_corner_button(newdir_btn, cfg, 0);
 	lv_obj_set_style_bg_opa(newdir_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(newdir_btn, 0, 0);
 	lv_obj_set_style_shadow_width(newdir_btn, 0, 0);
@@ -1224,8 +1223,7 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_align(name_heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
-	lv_obj_set_size(cancel, 56, 56);
-	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	settingsrow_place_corner_button(cancel, cfg, 0);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
 	lv_obj_set_style_shadow_width(cancel, 0, 0);
@@ -1252,7 +1250,7 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", name_accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, cfg->screen_width < 320 ? 144 : 316, name_field, NULL, "ok", name_accept_cb, NULL);
 
 	// --- the destination picker: the same page, folders only, with the button
 	// that says "here" pinned to the bottom.
@@ -1274,8 +1272,7 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_align(pick_title, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
 
 	lv_obj_t *pick_cancel = lv_btn_create(pick_layer);
-	lv_obj_set_size(pick_cancel, 56, 56);
-	lv_obj_align(pick_cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	settingsrow_place_corner_button(pick_cancel, cfg, 0);
 	lv_obj_set_style_bg_opa(pick_cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(pick_cancel, 0, 0);
 	lv_obj_set_style_shadow_width(pick_cancel, 0, 0);

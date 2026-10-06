@@ -75,8 +75,6 @@ lv_obj_t *medialist_albums_screen;
 // album grouping beside circle-play on an artist's tracks, shuffle beside the
 // reverse on Favourites. The strip is sized for the most whatever a particular
 // list shows -- see build_panel() for what happens when it is not.
-#define CORNER_BUTTON_SIZE 56
-#define CORNER_GAP 4
 #define CORNER_MAX_BUTTONS 4
 
 // How often finished artwork is collected while any is pending.
@@ -2291,7 +2289,8 @@ static void row_clicked_cb(lv_event_t *e) {
 // One of the small transparent glyph buttons that sit on the title row.
 static lv_obj_t *corner_button(lv_obj_t *parent, const lv_image_dsc_t *glyph, lv_event_cb_t cb, panel_t *p) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, CORNER_BUTTON_SIZE, CORNER_BUTTON_SIZE);
+	int size = settingsrow_corner_button_size(p->cfg);
+	lv_obj_set_size(btn, size, size);
 	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
@@ -3242,13 +3241,16 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	// is one button wide and the second button of a pair lands outside its own
 	// parent, at x = -60, and is never drawn. Sizing for the most buttons that
 	// can coexist costs a strip of empty space on the pages that show fewer.
-	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - 1) * CORNER_GAP, 56);
+	int corner_size = settingsrow_corner_button_size(cfg);
+	int corner_gap = settingsrow_corner_button_gap(cfg);
+	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * corner_size + (CORNER_MAX_BUTTONS - 1) * corner_gap,
+				 corner_size);
 	lv_obj_set_clickable(p->corner, false); // it is a shelf, not a control
 	lv_obj_align(p->corner, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_scrollable(p->corner, false);
 	lv_obj_set_flex_flow(p->corner, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(p->corner, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(p->corner, CORNER_GAP, 0);
+	lv_obj_set_style_pad_column(p->corner, corner_gap, 0);
 
 	// Tracks of one artist, gathered by record instead of strung out
 	// alphabetically. Only ever shown on an artist's own track list.

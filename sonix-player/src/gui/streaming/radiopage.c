@@ -1085,12 +1085,11 @@ static void build_list_page(gui_config_t *cfg) {
 	// A-Z / Z-A in the corner the title leaves free, and the strip of letters
 	// down the right edge: the category lists only (see sort_button_update).
 	sort_btn = lv_btn_create(radiolist_screen);
-	lv_obj_set_size(sort_btn, 56, 56);
+	settingsrow_place_corner_button(sort_btn, cfg, 0);
 	lv_obj_set_style_bg_opa(sort_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(sort_btn, 0, 0);
 	lv_obj_set_style_shadow_width(sort_btn, 0, 0);
 	lv_obj_set_style_pad_all(sort_btn, 0, 0);
-	lv_obj_align(sort_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(sort_btn, sort_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_set_hidden(sort_btn, true);
 
@@ -1118,12 +1117,11 @@ static void build_list_page(gui_config_t *cfg) {
 // that one, not like a cousin of it.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph) {
 	lv_obj_t *button = lv_btn_create(radiopage_screen);
-	lv_obj_set_size(button, 56, 56);
+	settingsrow_place_corner_button(button, cfg, slot);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
@@ -1357,9 +1355,10 @@ static void build_search_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 
-	// 316 px is the other search page's keyboard height, and the two want to be
-	// the same keyboard in the same place.
-	search_keyboard = keyboard_create(radiosearch_screen, cfg->screen_width, 316, search_field, &icon_search, NULL,
+	// Same regular/compact keyboard height as the other search pages, so it is
+	// the same keyboard in the same place rather than a lookalike.
+	search_keyboard = keyboard_create(radiosearch_screen, cfg->screen_width, cfg->screen_width < 320 ? 144 : 316,
+									  search_field, &icon_search, NULL,
 									  search_accept_cb, NULL);
 
 	lv_obj_add_event_cb(radiosearch_screen, search_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);

@@ -25,7 +25,6 @@ lv_obj_t *btsettings_screen;
 
 #define BT_PAGE_POLL_MS 500
 #define BT_ROW_H 76
-#define CORNER_BTN_SIZE 56
 
 static lv_obj_t *bt_switch;
 static lv_obj_t *status_label;
@@ -618,13 +617,11 @@ static void screen_unloaded_cb(lv_event_t *e) {
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph,
 							   lv_obj_t **icon_out) {
 	lv_obj_t *button = lv_btn_create(screen);
-	lv_obj_set_size(button, CORNER_BTN_SIZE, CORNER_BTN_SIZE);
+	settingsrow_place_corner_button(button, cfg, slot);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (CORNER_BTN_SIZE + 6),
-				 cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);

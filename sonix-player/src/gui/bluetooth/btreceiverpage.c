@@ -18,7 +18,6 @@
 lv_obj_t *btreceiverpage_screen;
 
 #define POLL_MS 500
-#define CODEC_BTN_SIZE 56
 
 static lv_obj_t *big_icon;
 static lv_obj_t *format_label;
@@ -276,12 +275,11 @@ void btreceiverpage_init(gui_config_t *cfg) {
 
 	// The codec button, in the corner every other page puts its options in.
 	lv_obj_t *codec_btn = lv_btn_create(btreceiverpage_screen);
-	lv_obj_set_size(codec_btn, CODEC_BTN_SIZE, CODEC_BTN_SIZE);
+	settingsrow_place_corner_button(codec_btn, cfg, 0);
 	lv_obj_set_style_bg_opa(codec_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(codec_btn, 0, 0);
 	lv_obj_set_style_shadow_width(codec_btn, 0, 0);
 	lv_obj_set_style_pad_all(codec_btn, 0, 0);
-	lv_obj_align(codec_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(codec_btn, codec_btn_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *codec_glyph = lv_image_create(codec_btn);

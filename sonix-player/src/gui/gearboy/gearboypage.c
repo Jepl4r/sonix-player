@@ -227,12 +227,11 @@ void gearboypage_init(gui_config_t *cfg) {
 
 	{
 		lv_obj_t *button = lv_btn_create(gearboypage_screen);
-		lv_obj_set_size(button, 56, 56);
+		settingsrow_place_corner_button(button, cfg, 0);
 		lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(button, 0, 0);
 		lv_obj_set_style_shadow_width(button, 0, 0);
 		lv_obj_set_style_pad_all(button, 0, 0);
-		lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 		lv_obj_add_event_cb(button, open_settings_cb, LV_EVENT_CLICKED, NULL);
 
 		lv_obj_t *icon = lv_image_create(button);

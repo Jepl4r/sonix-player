@@ -1920,7 +1920,7 @@ static void build_search_page(gui_config_t *cfg) {
 	}
 	paint_search_pills();
 
-	search_keyboard = keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok",
+	search_keyboard = keyboard_create(search_screen, cfg->screen_width, cfg->screen_width < 320 ? 144 : 316, search_field, NULL, "ok",
 									  search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
 	theme_register_refresh(paint_search_pills);
@@ -1986,14 +1986,14 @@ static lv_obj_t *make_field(lv_obj_t *parent, gui_config_t *cfg, const char *pla
 	lv_obj_t *field = lv_textarea_create(parent);
 	lv_textarea_set_one_line(field, true);
 	lv_textarea_set_placeholder_text(field, tr(placeholder));
-	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, cfg->screen_width < 320 ? 44 : 62);
 	lv_obj_set_scrollbar_mode(field, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_align(field, LV_ALIGN_TOP_LEFT, cfg->padding, y);
 	lv_obj_add_style(field, &theme_style_card, 0);
 	lv_obj_set_style_radius(field, 12, 0);
 	lv_obj_set_style_border_width(field, 0, 0);
 	lv_obj_set_style_shadow_width(field, 0, 0);
-	lv_obj_set_style_pad_all(field, 14, 0);
+	lv_obj_set_style_pad_all(field, cfg->screen_width < 320 ? 8 : 14, 0);
 	lv_obj_set_style_text_font(field, &font_ui_24, 0);
 	keyboard_style_caret(field);
 	lv_obj_add_event_cb(field, field_focus_cb, LV_EVENT_CLICKED, NULL);
@@ -2008,7 +2008,8 @@ static void build_login_page(gui_config_t *cfg) {
 	int top = settingsrow_content_top(cfg);
 
 	user_field = make_field(login_screen, cfg, "qobuz_username_or_email", top);
-	password_field = make_field(login_screen, cfg, "password", top + 78);
+	int field_pitch = cfg->screen_width < 320 ? 50 : 78;
+	password_field = make_field(login_screen, cfg, "password", top + field_pitch);
 
 	// The password as on any modern system: dots from the first keystroke, and
 	// the eye to reveal the whole of it. Zero show time means the character is
@@ -2017,8 +2018,8 @@ static void build_login_page(gui_config_t *cfg) {
 	lv_obj_set_style_pad_right(password_field, 60, 0);
 
 	lv_obj_t *eye = lv_btn_create(login_screen);
-	lv_obj_set_size(eye, 56, 56);
-	lv_obj_align(eye, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + 78 + 3);
+	lv_obj_set_size(eye, cfg->screen_width < 320 ? 44 : 56, cfg->screen_width < 320 ? 44 : 56);
+	lv_obj_align(eye, LV_ALIGN_TOP_RIGHT, -cfg->padding, top + field_pitch);
 	lv_obj_set_style_bg_opa(eye, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(eye, 0, 0);
 	lv_obj_set_style_border_width(eye, 0, 0);
@@ -2032,12 +2033,13 @@ static void build_login_page(gui_config_t *cfg) {
 	lv_obj_t *note = lv_label_create(login_screen);
 	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(note, cfg->screen_width - 2 * cfg->padding);
-	lv_obj_align(note, LV_ALIGN_TOP_LEFT, cfg->padding, top + 156);
+	lv_obj_align(note, LV_ALIGN_TOP_LEFT, cfg->padding, top + 2 * field_pitch);
 	lv_obj_add_style(note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(note, &font_ui_18, 0);
 	lv_label_set_text(note, tr("qobuz_login_note"));
+	lv_obj_set_hidden(note, cfg->screen_width < 320);
 
-	login_keyboard = keyboard_create(login_screen, cfg->screen_width, 316, user_field, NULL, "ok", login_accept_cb,
+	login_keyboard = keyboard_create(login_screen, cfg->screen_width, cfg->screen_width < 320 ? 144 : 316, user_field, NULL, "ok", login_accept_cb,
 									 NULL);
 	switcher_attach_back_gesture(login_screen);
 }
@@ -2086,16 +2088,15 @@ static void update_corner_buttons(void) {
 	}
 }
 
-// Same shape as the Music corner buttons: 56 px, transparent, aligned top
-// right and stepped leftwards one slot at a time.
+// Same shape as the Music corner buttons: transparent, aligned top right and
+// stepped leftwards through the shared regular/compact slots.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(qobuz_screen);
-	lv_obj_set_size(button, 56, 56);
+	settingsrow_place_corner_button(button, cfg, slot);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);

@@ -2214,9 +2214,9 @@ static void search_accept_cb(lv_event_t *e) {
 }
 
 // Copied line for line from Tidal's, deliberately: search in this player has
-// one shape -- the 62-high field with 12 radius, the x on the right edge, the
-// 316-high keyboard below -- and a page that invents another is instantly not
-// of this house.
+// one shape -- the field with 12 radius, the x on the right edge and the
+// shared regular/compact keyboard below. A page that invents another is
+// instantly not of this house.
 static void build_search_page(gui_config_t *cfg) {
 	search_screen = lv_obj_create(NULL);
 	lv_obj_add_style(search_screen, &theme_style_screen, 0);
@@ -2263,7 +2263,7 @@ static void build_search_page(gui_config_t *cfg) {
 	// No search-type pills, unlike Qobuz and Tidal: there the search runs over
 	// tracks, albums and artists, here there is one thing only to search for.
 	search_keyboard =
-		keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok", search_accept_cb, NULL);
+		keyboard_create(search_screen, cfg->screen_width, cfg->screen_width < 320 ? 144 : 316, search_field, NULL, "ok", search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
 }
 
@@ -2348,12 +2348,11 @@ static void open_saved_cb(lv_event_t *e) {
 
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(podcast_screen);
-	lv_obj_set_size(button, 56, 56);
+	settingsrow_place_corner_button(button, cfg, slot);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
