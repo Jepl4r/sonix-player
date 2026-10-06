@@ -203,6 +203,8 @@ run_cmd() {
     echo "Running '$@'" >>$logfile
     if ! $@ >> "$logfile" 2>&1; then
         echo "ROCKBOXDEV: an error occurred, please see $logfile"
+        echo "ROCKBOXDEV: last 80 log lines:"
+        tail -n 80 "$logfile" || true
         exit 1
     fi
 }
@@ -427,6 +429,16 @@ build_hiby_toolchain() {
     prefix="/usr" \
     buildtool "alsa-lib" "$alsalib_ver" \
         "--host=$target --disable-python" "" "install DESTDIR=$sysroot"
+
+    # Sonix links only libc, libstdc++ and ALSA from this sysroot. The remaining
+    # libraries below are for Rockbox/HiBy utilities that Sonix neither builds
+    # nor ships. Skipping them avoids making an ordinary `make target` depend
+    # on old GLib 2.46 building successfully on a modern host; direct users of
+    # rockboxdev.sh still get the historical complete sysroot by default.
+    if [ "${RBDEV_SONIX_MINIMAL:-}" = "1" ]; then
+        echo "ROCKBOXDEV: Sonix minimal toolchain complete (skipping libffi, zlib, GLib, expat and D-Bus)."
+        return
+    fi
 
     # 7. libffi
     getfile_ex "libffi-$libffi_ver.tar.gz" "libffi-$libffi_ver.tar.gz" \

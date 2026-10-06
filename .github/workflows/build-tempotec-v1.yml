@@ -46,7 +46,7 @@ jobs:
           exit 1
 
       - name: Check out source
-        uses: actions/checkout@v4
+        uses: actions/checkout@v5
 
       - name: Install build and firmware tools
         run: |
@@ -94,7 +94,7 @@ jobs:
           echo "kernel_sha256=$kernel_sha256" >> "$GITHUB_OUTPUT"
 
       - name: Restore MIPS toolchain and target-library cache
-        uses: actions/cache@v4
+        uses: actions/cache@v5
         with:
           path: |
             sonix-player/rockbox-toolchain
@@ -154,7 +154,7 @@ jobs:
           EOF
 
       - name: Upload firmware artifact
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@v5
         with:
           name: sonix-tempotec-v1-${{ github.sha }}
           path: ${{ runner.temp }}/sonix-tempotec-v1/

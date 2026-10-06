@@ -381,7 +381,7 @@ $(TARGET_BIN): $(FREETYPE_PREFIX)/lib/libfreetype.a $(AUDIO_LIBS)
 
 $(CROSS_CC):
 	@echo "Building Rockbox toolchain..."
-	./rockboxdev/rockboxdev.sh
+	RBDEV_SONIX_MINIMAL=1 ./rockboxdev/rockboxdev.sh
 
 # The flags FreeType and the audio libraries are built with. -march and -mplt as
 # in TARGET_CFLAGS: they are static, so they end up in the same executable. They
