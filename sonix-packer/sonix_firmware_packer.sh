@@ -8,26 +8,28 @@
 #   sonix_firmware_packer.sh   this script
 #   r3proii_original.upt       the stock firmware of the R3 Pro II
 #   r1_original.upt            the stock firmware of the R1
-#   sonix_player               the binary to install, the same one for both
+#   v1_original.upt            the stock firmware of the TempoTec V1
+#   sonix_player               the binary to install, the same one for all
 #   sonix_launch               waits for the player and reboots when it exits
 #                              (optional: without it the launcher's shell does)
 #   assets/
 #       R3PII/
 #       R1/
+#       V1/
 #       |
 #       v
 #   r3proii.upt                one result per stock firmware present
 #   r1.upt
+#   v1.upt                     experimental; see README before flashing
 #
-# A model whose stock firmware is not here is skipped with a warning, so
-# somebody who owns one of the two players can still run this and get theirs.
+# A model whose stock firmware is not here is skipped with a warning, so an
+# owner can build only the image for the player they have.
 #
-# One complete tree per model, and no shared layer: too much of what goes into
-# an image belongs to the machine it is going into -- the touch driver is built
-# against that kernel, the boot logos are drawn for that panel, and the audio
-# pieces answer to that hardware. The files that really are the same in both,
-# the language files and some of the images, are cheaper to copy than a rule
-# about which layer wins.
+# The two HiBy models have complete, independent overlay trees. The TempoTec
+# V1 deliberately does not borrow either player's kernel-facing files: its
+# minimal overlay is applied after copying only the model-independent Sonix
+# resource and web trees from R1. Its stock touch, audio, boot and init files
+# therefore remain in place.
 #
 # What that costs is the two trees drifting apart, so before each image this
 # script lists the files the OTHER model has and this one does not. Usually
@@ -62,13 +64,18 @@ PLAYER_BIN="$SCRIPT_DIR/sonix_player"
 LAUNCH_BIN="$SCRIPT_DIR/sonix_launch"
 
 # The models, one line each: the assets folder, the stock firmware to start
-# from, the image to write, and the device-name the player will read out of
-# system-info.json. The last one is not decoration -- it is checked against the
-# file the overlay actually landed, which is what stops an R1 image being built
-# with the R3 Pro II's name in it and offering that model's updates.
+# from, the image to write, the device-name the player reads from
+# system-info.json, and an optional model whose model-independent Sonix
+# resources are copied first. "-" means there is no common layer.
+#
+# The device-name is not decoration -- it is checked against the file the
+# overlay actually landed. That stops an image from offering another model's
+# unsafe update file. V1 reuses only R1's usr/resource/sonix and usr/share/web;
+# no driver, init script, binary or boot asset is shared.
 MODELS=(
-	"R3PII|r3proii_original.upt|r3proii.upt|HiBy R3 Pro II"
-	"R1|r1_original.upt|r1.upt|HiBy R1"
+	"R3PII|r3proii_original.upt|r3proii.upt|HiBy R3 Pro II|-"
+	"R1|r1_original.upt|r1.upt|HiBy R1|-"
+	"V1|v1_original.upt|v1.upt|TempoTec V1|R1"
 )
 
 WORK_DIR="$SCRIPT_DIR/temp"
@@ -190,7 +197,7 @@ ASSETS_DIR="$SCRIPT_DIR/assets"
 # error -- it is a model this person does not own.
 BUILDABLE=""
 for entry in "${MODELS[@]}"; do
-	IFS='|' read -r m_dir m_src m_out m_name <<< "$entry"
+	IFS='|' read -r m_dir m_src m_out m_name m_common <<< "$entry"
 	if [ ! -d "$ASSETS_DIR/$m_dir" ]; then
 		warn "assets/$m_dir is missing: $m_name will be skipped."
 		continue
@@ -199,13 +206,17 @@ for entry in "${MODELS[@]}"; do
 		warn "$m_src is not next to this script: $m_name will be skipped."
 		continue
 	fi
+	if [ "$m_common" != "-" ] && [ ! -d "$ASSETS_DIR/$m_common/usr/resource/sonix" ]; then
+		warn "assets/$m_common has no Sonix resource tree: $m_name will be skipped."
+		continue
+	fi
 	BUILDABLE="$BUILDABLE$entry
 "
 	say "    $m_name: $m_src -> $m_out"
 done
 
 [ -n "$BUILDABLE" ] || die "no stock firmware to start from. Put at least one of
-  r3proii_original.upt / r1_original.upt next to this script."
+  r3proii_original.upt / r1_original.upt / v1_original.upt next to this script."
 
 BUILD_STAMP="$(get_stamp "$PLAYER_BIN")"
 TODAY="$(date +%d%m%Y)"
@@ -237,11 +248,17 @@ say ""
 build_one() {
 	local MODEL_DIR="$1" MODEL_NAME="$2"
 	local SOURCE_UPT="$SCRIPT_DIR/$3" OUTPUT_UPT="$SCRIPT_DIR/$4"
+	local COMMON_MODEL_DIR="$5"
 
 	say "${YELLOW}###############################################${NC}"
 	say "${YELLOW}###   $MODEL_NAME${NC}"
 	say "${YELLOW}###############################################${NC}"
 	say ""
+	if [ "$MODEL_DIR" = "V1" ]; then
+		warn "TempoTec V1 packaging is experimental and has not been validated on physical hardware."
+		warn "Keep the official stock firmware available for recovery before testing it."
+		say ""
+	fi
 
 	# ==========================================================================
 	# 1. Unpack the stock firmware
@@ -314,13 +331,30 @@ build_one() {
 	# ==========================================================================
 	step "[$MODEL_NAME] copying the overlay onto the root of the rootfs"
 
+	# V1 shares only data consumed by Sonix itself. In particular, copying the
+	# whole R1 tree here would install the wrong touch kernel module and could
+	# leave a V1 unbootable. Its own tiny overlay below replaces system-info.json.
+	if [ "$COMMON_MODEL_DIR" != "-" ]; then
+		mkdir -p "$SQUASH_DIR/usr/resource"
+		( cd "$ASSETS_DIR/$COMMON_MODEL_DIR/usr/resource" && tar cf - sonix ) |
+			( cd "$SQUASH_DIR/usr/resource" && tar xf - )
+		say "    $COMMON_MODEL_DIR/usr/resource/sonix copied as model-independent data"
+
+		if [ -d "$ASSETS_DIR/$COMMON_MODEL_DIR/usr/share/web" ]; then
+			mkdir -p "$SQUASH_DIR/usr/share"
+			( cd "$ASSETS_DIR/$COMMON_MODEL_DIR/usr/share" && tar cf - web ) |
+				( cd "$SQUASH_DIR/usr/share" && tar xf - )
+			say "    $COMMON_MODEL_DIR/usr/share/web copied as model-independent data"
+		fi
+	fi
+
 	# tar rather than cp: it merges into directories that already exist,
 	# overwrites the files that clash, carries the hidden ones, and behaves the
 	# same way on macOS and on Linux -- none of which is true of `cp -a` on both.
 	( cd "$ASSETS_DIR/$MODEL_DIR" && tar cf - . ) | ( cd "$SQUASH_DIR" && tar xf - )
 
 	MODEL_N="$(cd "$ASSETS_DIR/$MODEL_DIR" && find . -type f | wc -l | tr -d ' ')"
-	say "    $MODEL_DIR/: $MODEL_N files"
+	say "    $MODEL_DIR/: $MODEL_N model-specific files"
 
 	# The streaming keys go in sealed, as streaming-keys.bin. One left in the
 	# clear in the assets is not shipped: an image is unpacked by anyone who
@@ -339,17 +373,20 @@ build_one() {
 	# path is left alone, which for a boot logo is this model's own at its own
 	# size. It is listed because the other reason for the difference is having
 	# added a file to one tree and forgotten the other.
-	for other in "${MODELS[@]}"; do
-		IFS='|' read -r o_dir o_src o_out o_name <<< "$other"
-		[ "$o_dir" != "$MODEL_DIR" ] || continue
-		[ -d "$ASSETS_DIR/$o_dir" ] || continue
-		while IFS= read -r rel; do
-			[ -n "$rel" ] || continue
-			say "    only in $o_dir/: ${rel#./} -- the stock firmware's own is kept here"
-		done < <(comm -23 \
-			<(cd "$ASSETS_DIR/$o_dir" && find . -type f | sort) \
-			<(cd "$ASSETS_DIR/$MODEL_DIR" && find . -type f | sort))
-	done
+	if [ "$COMMON_MODEL_DIR" = "-" ]; then
+		for other in "${MODELS[@]}"; do
+			IFS='|' read -r o_dir o_src o_out o_name o_common <<< "$other"
+			[ "$o_dir" != "$MODEL_DIR" ] || continue
+			[ "$o_common" = "-" ] || continue
+			[ -d "$ASSETS_DIR/$o_dir" ] || continue
+			while IFS= read -r rel; do
+				[ -n "$rel" ] || continue
+				say "    only in $o_dir/: ${rel#./} -- the stock firmware's own is kept here"
+			done < <(comm -23 \
+				<(cd "$ASSETS_DIR/$o_dir" && find . -type f | sort) \
+				<(cd "$ASSETS_DIR/$MODEL_DIR" && find . -type f | sort))
+		done
+	fi
 	say ""
 
 	# ==========================================================================
@@ -562,6 +599,26 @@ build_one() {
 
 	[ -f "$OUTPUT_UPT" ] || die "the image was not written."
 
+	# TempoTec distributes a checksum text file beside v1.upt. If the workflow
+	# retained the stock template, preserve its exact wording and replace every
+	# MD5 in it; otherwise write the standard md5sum form. The firmware image is
+	# useful on its own, but shipping the companion avoids making an official
+	# update procedure silently incomplete.
+	if [ "$MODEL_DIR" = "V1" ]; then
+		V1_SUM="$(get_md5 "$OUTPUT_UPT")"
+		V1_MD5_OUT="$SCRIPT_DIR/v1_md5.txt"
+		V1_MD5_TEMPLATE="$SCRIPT_DIR/v1_md5_original.txt"
+		if [ -f "$V1_MD5_TEMPLATE" ] && grep -Eq '[[:xdigit:]]{32}' "$V1_MD5_TEMPLATE"; then
+			sed -E "s/[[:xdigit:]]{32}/$V1_SUM/g; s/v1_original\\.upt/v1.upt/g" \
+				"$V1_MD5_TEMPLATE" > "$V1_MD5_OUT"
+			grep -qi "$V1_SUM" "$V1_MD5_OUT" || die "could not update the V1 checksum template."
+		else
+			[ ! -f "$V1_MD5_TEMPLATE" ] || warn "V1 checksum template has no MD5; writing standard syntax."
+			printf '%s  v1.upt\n' "$V1_SUM" > "$V1_MD5_OUT"
+		fi
+		say "    v1_md5.txt: $V1_SUM"
+	fi
+
 	cleanup
 
 	say "  $OUTPUT_UPT"
@@ -572,9 +629,9 @@ build_one() {
 # ==========================================================================
 # Every model that can be built
 # ==========================================================================
-while IFS='|' read -r m_dir m_src m_out m_name; do
+while IFS='|' read -r m_dir m_src m_out m_name m_common; do
 	[ -n "$m_dir" ] || continue
-	build_one "$m_dir" "$m_name" "$m_src" "$m_out"
+	build_one "$m_dir" "$m_name" "$m_src" "$m_out" "$m_common"
 done <<< "$BUILDABLE"
 
 say "${GREEN}#############################${NC}"

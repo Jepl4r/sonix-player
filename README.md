@@ -1,24 +1,54 @@
 # Sonix Player
 
 A replacement player for the **HiBy R3 Pro II** and the **HiBy R1**, written on
-LVGL.
+LVGL. This fork also contains an **experimental TempoTec Variations V1** port.
+
+## TempoTec V1 experimental status
+
+The target binary, 240x320 interface profile, model identity, firmware filename
+and packer path now exist for the TempoTec V1. The V1 packer starts from an
+official `v1.upt`, keeps its kernel and hardware-specific files, and installs
+only Sonix plus model-independent resource files.
+
+**The generated V1 firmware has not been validated on physical hardware.** The
+automated checks prove that the ISO opens, both payload hash chains are valid,
+the stock kernel is byte-for-byte unchanged, and the new rootfs contains Sonix.
+They cannot prove recovery-updater, audio routing, buttons, touch, charging or
+suspend compatibility. Keep official recovery firmware available and do not
+treat a successful build as proof that the image is safe to flash.
+
+### Build it with GitHub Actions
+
+No local Linux installation is needed:
+
+1. Open the repository's **Actions** tab.
+2. Select **Build experimental TempoTec V1 firmware**.
+3. Choose **Run workflow**. The official TempoTec V1.2 Google Drive folder is
+   the default stock-firmware source; it can be replaced with another official
+   Drive/file/archive URL.
+4. Select the experimental-build acknowledgement and start the run.
+5. Download the `sonix-tempotec-v1-...` artifact when the job finishes.
+
+The artifact contains `v1.upt`, `v1_md5.txt`, target/debug binaries, both
+validation logs, and `BUILD-REPORT.txt`. It deliberately does not publish a
+GitHub Release automatically.
 
 ## Supported players
 
-One binary runs on both. It reads which player it is on from
-`system-info.json` at startup, and the firmware packer writes a different one
-into each image.
+One target binary contains all three profiles. It reads which player it is on
+from `system-info.json` at startup, and the firmware packer writes a different
+one into each image.
 
-| | HiBy R3 Pro II | HiBy R1 |
-|---|---|---|
-| panel | 480x720 | 480x800 |
-| DAC | two Cirrus Logic CS43198 | one Cirrus Logic CS43131 |
-| headphone outputs | 3.5 mm, 4.4 mm balanced | 3.5 mm |
-| DAC controls | digital filters, DRE, NOS | digital filters |
-| touch | Goodix gt9xx, patched for multitouch | Hynitron CST8xx, patched for two fingers |
-| double tap to wake | yes | no |
-| buttons | volume on the left flank, playback on the right | all on the right flank, one skip key |
-| firmware image | `r3proii.upt` | `r1.upt` |
+| | HiBy R3 Pro II | HiBy R1 | TempoTec V1 (experimental) |
+|---|---|---|---|
+| panel | 480x720 | 480x800 | 240x320 |
+| DAC | two Cirrus Logic CS43198 | one Cirrus Logic CS43131 | two Cirrus Logic CS43131 |
+| headphone outputs | 3.5 mm, 4.4 mm balanced | 3.5 mm | 3.5 mm, 4.4 mm balanced |
+| DAC controls | digital filters, DRE, NOS | digital filters | not hardware-validated |
+| touch | Goodix gt9xx, patched for multitouch | Hynitron CST8xx, patched for two fingers | stock V1 driver, not hardware-validated |
+| double tap to wake | yes | no | disabled pending validation |
+| buttons | volume on the left flank, playback on the right | all on the right flank, one skip key | all on one flank; mapping pending validation |
+| firmware image | `r3proii.upt` | `r1.upt` | `v1.upt` (experimental) |
 
 Each player only looks for its own image, and never offers the other's: the
 recovery system does not check what it is given.
@@ -179,12 +209,13 @@ the target binary defaults to the TempoTec V1 240×320 profile; an explicit
 
 Everything the device does not already carry is linked statically, so the
 result is one file to copy across with nothing to install beside it. The same
-file goes into both images.
+binary is packaged into every image; runtime identity selects the model.
 
 ### The ABI check
 
 The link is followed by a `readelf` pass that fails the build if the binary
-asks for a glibc symbol newer than 2.22, the version both players carry.
+asks for a glibc symbol newer than 2.22, the version the validated HiBy players
+carry.
 
 This is not decoration. A binary that asks for a newer symbol links without a
 word and then refuses to start, and the device reboots as soon as the player
@@ -207,18 +238,22 @@ sonix-packer/
 ├── sonix_firmware_packer.sh
 ├── r3proii_original.upt     the stock firmware of the R3 Pro II, from HiBy
 ├── r1_original.upt          the stock firmware of the R1, from HiBy
+├── v1_original.upt          official TempoTec V1 firmware (experimental path)
 ├── sonix_player             the binary from `make target`
 ├── sonix_launch             also from `make target`; optional
 └── assets/
-    ├── R3PII/               the overlay for the R3 Pro II
-    └── R1/                  the overlay for the R1
+    ├── R3PII/               complete overlay for the R3 Pro II
+    ├── R1/                  complete overlay for the R1
+    └── V1/                  V1 identity only; hardware files remain stock
 ```
 
-It builds one image for each stock firmware it finds. With only one of the two
-`.upt` files next to it, it builds that player's image and says it skipped the
-other.
+It builds one image for each stock firmware it finds. With only one original
+`.upt` next to it, it builds that player's image and says it skipped the others.
 
-Each model has a complete overlay of its own and nothing is shared.
+The HiBy models have complete overlays of their own. V1 intentionally reuses
+only R1's model-independent `usr/resource/sonix` and `usr/share/web` data, then
+applies its own identity file. It never copies R1 touch modules, boot assets,
+init scripts or hardware binaries.
 
 An overlay mirrors the rootfs from its root, so a file goes to the path it has
 inside the folder. That is how the resource tree gets installed:
@@ -243,10 +278,11 @@ assets/R3PII/                           (and assets/R1/, the same shape)
 ```
 
 `system-info.json` has to be there, and its `device-name` has to be the model
-the folder is for: `HiBy R3 Pro II` in `R3PII/`, `HiBy R1` in `R1/`. The packer
-checks it, writes the build stamp into the `build_version` key, and stops if
-either is wrong. An image carrying the other player's name would offer that
-player's update to a device that cannot survive it.
+the folder is for: `HiBy R3 Pro II` in `R3PII/`, `HiBy R1` in `R1/`, and
+`TempoTec V1` in `V1/`. The packer checks it, writes the build stamp into the
+`build_version` key, and stops if either is wrong. An image carrying the other
+player's name would offer that player's update to a device that cannot survive
+it.
 
 ### Streaming keys
 
@@ -307,7 +343,8 @@ It runs through without asking anything, once for each model:
    into it
 8. repacks the squashfs, splits it into 512 KB chunks and rebuilds the md5
    chain the recovery kernel checks
-9. writes `r3proii.upt` or `r1.upt`
+9. writes `r3proii.upt`, `r1.upt`, or experimental `v1.upt`; V1 also gets
+   `v1_md5.txt`
 
 The kernel is carried across untouched, size and md5 copied from the original
 rather than recomputed.
@@ -321,6 +358,8 @@ the overlay - any other file need to be in the respective folder mirroring the r
 
 1. Copy the image for your player to the **root of the microSD card**:
    `r3proii.upt` for the R3 Pro II, `r1.upt` for the R1. Never the other one.
+   The TempoTec `v1.upt` path is experimental and should not be treated as
+   flash-ready until it has been reviewed and validated on recoverable hardware.
 2. Insert the SD card into the player.
 3. Start the update:
    - **from the stock firmware** - use its firmware update from the microSD

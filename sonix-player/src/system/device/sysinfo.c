@@ -45,6 +45,22 @@ static const sysinfo_model_t MODELS[] = {
 		.one_flank = true,
 		.media_keys_swapped = false,
 	},
+	{
+		// The Variations V1 has two CS43131s and both 3.5 mm and 4.4 mm
+		// outputs. It must not take the R1's single-DAC shortcut even though
+		// the converter model matches: the regular route logic is the only
+		// path that can select its balanced socket.
+		.name = "TempoTec V1",
+		.panel_width = 240,
+		.panel_height = 320,
+		.update_stem = "v1",
+		.serial_prefix = "V1",
+		.pmic_charger = true,
+		.cs43131 = false,
+		.tap_wake = false,
+		.one_flank = true,
+		.media_keys_swapped = false,
+	},
 };
 
 // ---------------------------------------------------------------------------

@@ -1,0 +1,163 @@
+name: Build experimental TempoTec V1 firmware
+
+on:
+  workflow_dispatch:
+    inputs:
+      stock_firmware_url:
+        description: Official TempoTec firmware URL (Drive folder, Drive file, archive, or raw v1.upt)
+        required: true
+        type: string
+        default: https://drive.google.com/drive/folders/1jbT9lhRvJ8sbJuepnaBpss861mpsYwnv?usp=sharing
+      acknowledge_experimental:
+        description: I understand this V1 image is experimental and not hardware-validated
+        required: true
+        type: boolean
+        default: false
+  pull_request:
+    paths:
+      - .github/workflows/build-tempotec-v1.yml
+      - sonix-packer/**
+      - sonix-player/Makefile
+      - sonix-player/rockboxdev/**
+      - sonix-player/src/**
+
+permissions:
+  contents: read
+
+concurrency:
+  group: tempotec-v1-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  STOCK_FIRMWARE_URL: ${{ inputs.stock_firmware_url || 'https://drive.google.com/drive/folders/1jbT9lhRvJ8sbJuepnaBpss861mpsYwnv?usp=sharing' }}
+
+jobs:
+  firmware:
+    name: Cross-compile and package v1.upt
+    runs-on: ubuntu-24.04
+    timeout-minutes: 300
+
+    steps:
+      - name: Require experimental-build acknowledgement
+        if: github.event_name == 'workflow_dispatch' && inputs.acknowledge_experimental != true
+        run: |
+          echo 'This workflow creates an experimental, not hardware-validated V1 image.' >&2
+          echo 'Run it again and select the acknowledgement checkbox.' >&2
+          exit 1
+
+      - name: Check out source
+        uses: actions/checkout@v4
+
+      - name: Install build and firmware tools
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y --no-install-recommends \
+            build-essential git pkg-config wget curl ca-certificates \
+            texinfo bison flex gawk gperf patch xz-utils bzip2 gzip \
+            autoconf automake libtool libtool-bin \
+            libgmp-dev libmpfr-dev libmpc-dev \
+            p7zip-full squashfs-tools genisoimage python3 python3-venv
+          python3 -m venv "$RUNNER_TEMP/gdown-venv"
+          "$RUNNER_TEMP/gdown-venv/bin/pip" install --disable-pip-version-check gdown
+
+      - name: Download official TempoTec V1 firmware
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/v1-stock-download"
+          case "$STOCK_FIRMWARE_URL" in
+            *drive.google.com/drive/folders/*)
+              "$RUNNER_TEMP/gdown-venv/bin/gdown" --folder "$STOCK_FIRMWARE_URL" \
+                -O "$RUNNER_TEMP/v1-stock-download"
+              ;;
+            *drive.google.com/*)
+              "$RUNNER_TEMP/gdown-venv/bin/gdown" --fuzzy "$STOCK_FIRMWARE_URL" \
+                -O "$RUNNER_TEMP/v1-stock-download/download"
+              ;;
+            *)
+              curl --fail --location --retry 5 --retry-all-errors \
+                "$STOCK_FIRMWARE_URL" -o "$RUNNER_TEMP/v1-stock-download/download"
+              ;;
+          esac
+          find "$RUNNER_TEMP/v1-stock-download" -type f -printf '%P  %s bytes\n'
+
+      - name: Prepare and validate stock image
+        id: stock
+        run: |
+          set -euo pipefail
+          chmod +x sonix-packer/*.sh
+          sonix-packer/prepare_v1_stock.sh \
+            "$RUNNER_TEMP/v1-stock-download" sonix-packer
+          sonix-packer/verify_upt.sh sonix-packer/v1_original.upt \
+            | tee "$RUNNER_TEMP/v1-stock-validation.txt"
+          kernel_sha256="$(sed -n 's/^Kernel SHA-256: //p' "$RUNNER_TEMP/v1-stock-validation.txt")"
+          test -n "$kernel_sha256"
+          echo "kernel_sha256=$kernel_sha256" >> "$GITHUB_OUTPUT"
+
+      - name: Restore MIPS toolchain and target-library cache
+        uses: actions/cache@v4
+        with:
+          path: |
+            sonix-player/rockbox-toolchain
+            sonix-player/freetype-target
+            sonix-player/audio-target
+            sonix-player/*.tar.gz
+            sonix-player/*.tar.bz2
+            sonix-player/*.tar.xz
+          key: v2-mips-target-${{ runner.os }}-${{ hashFiles('sonix-player/Makefile', 'sonix-player/rockboxdev/**') }}
+          restore-keys: |
+            v2-mips-target-${{ runner.os }}-
+
+      - name: Build TempoTec V1 target binaries
+        working-directory: sonix-player
+        run: make target -j"$(nproc)"
+
+      - name: Build experimental v1.upt
+        run: |
+          install -m 0755 sonix-player/sonix_player sonix-packer/sonix_player
+          install -m 0755 sonix-player/sonix_launch sonix-packer/sonix_launch
+          sonix-packer/sonix_firmware_packer.sh
+
+      - name: Validate generated firmware and unchanged kernel
+        run: |
+          sonix-packer/verify_upt.sh sonix-packer/v1.upt \
+            --sonix-v1 --kernel-sha256 '${{ steps.stock.outputs.kernel_sha256 }}' \
+            | tee "$RUNNER_TEMP/v1-output-validation.txt"
+
+      - name: Assemble downloadable artifact
+        env:
+          KERNEL_SHA256: ${{ steps.stock.outputs.kernel_sha256 }}
+        run: |
+          set -euo pipefail
+          out="$RUNNER_TEMP/sonix-tempotec-v1"
+          mkdir -p "$out"
+          cp sonix-packer/v1.upt sonix-packer/v1_md5.txt "$out/"
+          cp sonix-player/sonix_player sonix-player/sonix_player_debug \
+             sonix-player/sonix_launch "$out/"
+          cp "$RUNNER_TEMP/v1-stock-validation.txt" "$out/STOCK-VALIDATION.txt"
+          cp "$RUNNER_TEMP/v1-output-validation.txt" "$out/OUTPUT-VALIDATION.txt"
+          image_sha256="$(sha256sum sonix-packer/v1.upt | awk '{print $1}')"
+          image_md5="$(md5sum sonix-packer/v1.upt | awk '{print $1}')"
+          cat > "$out/BUILD-REPORT.txt" <<EOF
+          EXPERIMENTAL TEMPOTEC V1 FIRMWARE - NOT HARDWARE-VALIDATED
+
+          Commit: ${GITHUB_SHA}
+          Actions run: ${GITHUB_SERVER_URL}/${GITHUB_REPOSITORY}/actions/runs/${GITHUB_RUN_ID}
+          Stock firmware source: ${STOCK_FIRMWARE_URL}
+          Stock/output kernel SHA-256: ${KERNEL_SHA256}
+          v1.upt SHA-256: ${image_sha256}
+          v1.upt MD5: ${image_md5}
+
+          The package structure, rootfs hash chain, Sonix installation, model
+          identity, and unchanged stock kernel were checked automatically.
+          Those checks do not prove that audio, input, charging, suspend, or the
+          recovery updater are compatible with this physical device.
+          EOF
+
+      - name: Upload firmware artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonix-tempotec-v1-${{ github.sha }}
+          path: ${{ runner.temp }}/sonix-tempotec-v1/
+          if-no-files-found: error
+          compression-level: 0
+          retention-days: 14

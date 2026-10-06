@@ -1,0 +1,7 @@
+{
+    "device-name": "TempoTec V1",
+    "dac-info": "Dual Cirrus Logic CS43131",
+    "OS_version": "experimental",
+    "build_version": "000000000000",
+    "ota-repo": "mr-f0xx/sonix-player-tempotec-v1"
+}
