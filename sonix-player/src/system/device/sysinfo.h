@@ -39,8 +39,8 @@ void sysinfo_load(void);
 const char *sysinfo_os_version(void);
 const char *sysinfo_build_version(void);
 
-// The name of the player, verbatim from the file: "HiBy R3 Pro II", "HiBy R1".
-// "" when the file does not say.
+// The name of the player, verbatim from the file: "HiBy R3 Pro II", "HiBy R1"
+// or "TempoTec V1". "" when the file does not say.
 const char *sysinfo_device_name(void);
 
 // The converter, verbatim from the file, for the information page to print.
