@@ -36,6 +36,8 @@
 // drawn by the icon; the charge level is a plain rectangle behind it, showing
 // through the icon's transparent middle.
 #define BATTERY_ICON_SIZE 38
+#define COMPACT_STATUS_ICON_SIZE 18
+#define COMPACT_BATTERY_ICON_SIZE 20
 
 static bool topbar_compact;
 static int battery_icon_size = BATTERY_ICON_SIZE;
@@ -117,14 +119,20 @@ static lv_timer_t *radio_timer;
 // Cavity geometry scaled to BATTERY_ICON_SIZE, worked out once at init.
 static int cavity_x, cavity_y, cavity_w, cavity_h;
 
-static void compact_status_icon(lv_obj_t *icon) {
-	if (topbar_compact && icon) {
-		// Transforming alone only changes the drawing; LVGL flex would still
-		// reserve the source glyph's 26--34 px box. Give every status glyph a
-		// real 24 px layout box as well, then centre the scaled source in it.
-		lv_obj_set_size(icon, 24, 24);
-		lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CENTER);
-		lv_image_set_scale(icon, 180);
+static void compact_status_icon(lv_obj_t *icon, const lv_image_dsc_t *source) {
+	if (!topbar_compact || !icon || !source) {
+		return;
+	}
+
+	// Transforming alone only changes the drawing; LVGL flex would still
+	// reserve the source glyph's 26--34 px box. Give every glyph a real 18 px
+	// layout box and derive the scale from its source, so Wi-Fi, volume and the
+	// smaller playback glyph all align without crowding the centred clock.
+	int max_side = LV_MAX((int)source->header.w, (int)source->header.h);
+	lv_obj_set_size(icon, COMPACT_STATUS_ICON_SIZE, COMPACT_STATUS_ICON_SIZE);
+	lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CENTER);
+	if (max_side > 0) {
+		lv_image_set_scale(icon, (uint32_t)(LV_SCALE_NONE * COMPACT_STATUS_ICON_SIZE / max_side));
 	}
 }
 
@@ -831,7 +839,7 @@ void topbar_init(gui_config_t *cfg) {
 		return;
 	}
 	topbar_compact = cfg->screen_width < 320;
-	battery_icon_size = topbar_compact ? 24 : BATTERY_ICON_SIZE;
+	battery_icon_size = topbar_compact ? COMPACT_BATTERY_ICON_SIZE : BATTERY_ICON_SIZE;
 
 	// The bar lives on the top layer so it stays above every screen.
 	top_bar = lv_obj_create(lv_layer_top());
@@ -862,7 +870,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(container_left, 0, 0);
 	lv_obj_set_style_radius(container_left, 0, 0);
 	lv_obj_set_style_pad_all(container_left, 0, 0);
-	lv_obj_set_style_pad_gap(container_left, topbar_compact ? 3 : 8, 0);
+	lv_obj_set_style_pad_gap(container_left, topbar_compact ? 2 : 8, 0);
 	lv_obj_set_scrollable(container_left, false);
 	// Not clickable, so presses reach the bar itself, whose drag handler pulls
 	// the control panel down.
@@ -873,19 +881,19 @@ void topbar_init(gui_config_t *cfg) {
 	// Glyph first, then the number: the icon says what the number means.
 	vol_icon = lv_image_create(container_left);
 	lv_image_set_src(vol_icon, &icon_volume_high);
-	compact_status_icon(vol_icon);
+	compact_status_icon(vol_icon, &icon_volume_high);
 	lv_obj_add_style(vol_icon, &theme_style_icon, 0);
 
 	vol_label = lv_label_create(container_left);
 	lv_label_set_text(vol_label, "--");
 	lv_obj_add_style(vol_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(vol_label, &font_ui_24, 0);
+	lv_obj_set_style_text_font(vol_label, topbar_compact ? &font_ui_14 : &font_ui_24, 0);
 
 	// The jack indicator: appears when headphones are plugged in, theme-coloured
 	// for the 3.5 mm jack and gold for the 4.4 mm balanced one.
 	hp_icon = lv_image_create(container_left);
 	lv_image_set_src(hp_icon, &icon_headphones);
-	compact_status_icon(hp_icon);
+	compact_status_icon(hp_icon, &icon_headphones);
 	lv_obj_add_style(hp_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(hp_icon, true);
 
@@ -893,7 +901,7 @@ void topbar_init(gui_config_t *cfg) {
 	// runs, pause while one is loaded and stopped, hidden when nothing is loaded.
 	play_icon = lv_image_create(container_left);
 	lv_image_set_src(play_icon, &icon_play_status);
-	compact_status_icon(play_icon);
+	compact_status_icon(play_icon, &icon_play_status);
 	lv_obj_add_style(play_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(play_icon, true);
 
@@ -901,7 +909,7 @@ void topbar_init(gui_config_t *cfg) {
 	// (topbar_set_library_check).
 	library_icon = lv_image_create(container_left);
 	lv_image_set_src(library_icon, &icon_library_checking);
-	compact_status_icon(library_icon);
+	compact_status_icon(library_icon, &icon_library_checking);
 	lv_obj_add_style(library_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(library_icon, true);
 
@@ -911,7 +919,7 @@ void topbar_init(gui_config_t *cfg) {
 	// true and this only adds who is asking.
 	sonixlink_icon = lv_image_create(container_left);
 	lv_image_set_src(sonixlink_icon, &icon_sonixlink_status);
-	compact_status_icon(sonixlink_icon);
+	compact_status_icon(sonixlink_icon, &icon_sonixlink_status);
 	lv_obj_add_style(sonixlink_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(sonixlink_icon, true);
 
@@ -926,7 +934,7 @@ void topbar_init(gui_config_t *cfg) {
 	// The container's default padding would push the battery about ten pixels
 	// further in than the page padding everything else lines up with.
 	lv_obj_set_style_pad_all(container_right, 0, 0);
-	lv_obj_set_style_pad_gap(container_right, topbar_compact ? 3 : 8, 0);
+	lv_obj_set_style_pad_gap(container_right, topbar_compact ? 2 : 8, 0);
 	lv_obj_set_scrollable(container_right, false);
 	lv_obj_set_clickable(container_right, false);
 	lv_obj_set_flex_flow(container_right, LV_FLEX_FLOW_ROW);
@@ -937,13 +945,13 @@ void topbar_init(gui_config_t *cfg) {
 	// topbar_refresh_radios() decides what is shown.
 	bt_icon = lv_image_create(container_right);
 	lv_image_set_src(bt_icon, &icon_bluetooth_status);
-	compact_status_icon(bt_icon);
+	compact_status_icon(bt_icon, &icon_bluetooth_status);
 	lv_obj_add_style(bt_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(bt_icon, true);
 
 	wifi_icon = lv_image_create(container_right);
 	lv_image_set_src(wifi_icon, &icon_wifi_max);
-	compact_status_icon(wifi_icon);
+	compact_status_icon(wifi_icon, &icon_wifi_max);
 	lv_obj_add_style(wifi_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(wifi_icon, true);
 
@@ -952,7 +960,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_label_set_text(bat_label, "--%");
 	topbar_set_battery_percent(config_get_int("screen", "battery_percent", 1) != 0);
 	lv_obj_add_style(bat_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(bat_label, &font_ui_24, 0);
+	lv_obj_set_style_text_font(bat_label, topbar_compact ? &font_ui_14 : &font_ui_24, 0);
 
 	// The battery indicator is stacked fill first, shell over it, charging bolt
 	// above both. The cavity is sized by scaling both edges and taking the
@@ -985,7 +993,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_image_recolor(bat_shell, theme()->text_primary, 0);
 	lv_obj_set_style_image_recolor_opa(bat_shell, LV_OPA_COVER, 0);
 	if (topbar_compact) {
-		lv_image_set_scale(bat_shell, 162);
+		lv_image_set_scale(bat_shell, (uint32_t)(LV_SCALE_NONE * battery_icon_size / BATTERY_ICON_SIZE));
 		lv_obj_center(bat_shell);
 	} else {
 		lv_obj_set_pos(bat_shell, 0, 0);
@@ -996,7 +1004,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_image_recolor(bat_bolt, lv_color_make(245, 205, 60), 0);
 	lv_obj_set_style_image_recolor_opa(bat_bolt, LV_OPA_COVER, 0);
 	if (topbar_compact) {
-		lv_image_set_scale(bat_bolt, 162);
+		lv_image_set_scale(bat_bolt, (uint32_t)(LV_SCALE_NONE * battery_icon_size / BATTERY_ICON_SIZE));
 		lv_obj_center(bat_bolt);
 	} else {
 		lv_obj_set_pos(bat_bolt, 0, 0);
@@ -1006,7 +1014,7 @@ void topbar_init(gui_config_t *cfg) {
 	// Clock, centred on the bar and independent of everything around it.
 	clock_label = lv_label_create(top_bar);
 	lv_obj_add_style(clock_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(clock_label, &font_ui_24, 0);
+	lv_obj_set_style_text_font(clock_label, topbar_compact ? &font_ui_14 : &font_ui_24, 0);
 	lv_obj_align(clock_label, LV_ALIGN_CENTER, 0, 0);
 	topbar_refresh_clock();
 	topbar_set_clock_position((int)config_get_int("screen", "clock_pos", TOPBAR_CLOCK_CENTER));

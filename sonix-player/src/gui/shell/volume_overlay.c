@@ -161,7 +161,13 @@ void volume_overlay_show(int percent) {
 }
 
 void volume_overlay_init(gui_config_t *cfg) {
-	(void)cfg;
+	const bool compact = cfg->screen_width < 320;
+	// Keep the V1 pill clear of the player's back button in the top-left and
+	// out of the middle of the 192 px artwork.  The regular layout keeps its
+	// established full control strip.
+	const int overlay_width = compact ? LV_MIN(180, (int)cfg->screen_width - 2 * cfg->padding) : OVERLAY_WIDTH;
+	const int overlay_height = compact ? 44 : OVERLAY_HEIGHT;
+	const int slider_height = compact ? 8 : 10;
 
 	// The veil under the pill. A parent that takes no input does not stop its
 	// children from taking theirs: the pill and its slider still get the finger.
@@ -176,14 +182,18 @@ void volume_overlay_init(gui_config_t *cfg) {
 	lv_obj_set_hidden(veil, true);
 
 	overlay = lv_obj_create(veil);
-	lv_obj_set_size(overlay, OVERLAY_WIDTH, OVERLAY_HEIGHT);
-	lv_obj_align(overlay, LV_ALIGN_TOP_MID, 0, OVERLAY_TOP_Y);
-	lv_obj_set_style_radius(overlay, OVERLAY_RADIUS, 0);
+	lv_obj_set_size(overlay, overlay_width, overlay_height);
+	if (compact) {
+		lv_obj_align(overlay, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding);
+	} else {
+		lv_obj_align(overlay, LV_ALIGN_TOP_MID, 0, OVERLAY_TOP_Y);
+	}
+	lv_obj_set_style_radius(overlay, compact ? overlay_height / 2 : OVERLAY_RADIUS, 0);
 	lv_obj_set_style_border_width(overlay, 0, 0);
 	lv_obj_set_style_shadow_width(overlay, 0, 0);
-	lv_obj_set_style_pad_hor(overlay, 22, 0);
+	lv_obj_set_style_pad_hor(overlay, compact ? 10 : 22, 0);
 	lv_obj_set_style_pad_ver(overlay, 0, 0);
-	lv_obj_set_style_pad_gap(overlay, 16, 0);
+	lv_obj_set_style_pad_gap(overlay, compact ? 6 : 16, 0);
 	lv_obj_set_scrollable(overlay, false);
 	lv_obj_set_event_bubble(overlay, false);
 
@@ -192,18 +202,25 @@ void volume_overlay_init(gui_config_t *cfg) {
 
 	overlay_icon = lv_image_create(overlay);
 	lv_image_set_src(overlay_icon, &icon_volume_high);
+	if (compact) {
+		// As in the status bar, make the layout box match the transformed image;
+		// otherwise flex still reserves the 30 px source icon.
+		lv_obj_set_size(overlay_icon, 20, 20);
+		lv_image_set_inner_align(overlay_icon, LV_IMAGE_ALIGN_CENTER);
+		lv_image_set_scale(overlay_icon, (uint32_t)(LV_SCALE_NONE * 20 / 30));
+	}
 
 	// The number rides right beside the glyph; the scale takes the rest.
 	overlay_label = lv_label_create(overlay);
 	lv_label_set_text(overlay_label, "0");
-	lv_obj_set_style_text_font(overlay_label, &font_ui_24, 0);
-	lv_obj_set_width(overlay_label, 42);
+	lv_obj_set_style_text_font(overlay_label, compact ? &font_ui_16 : &font_ui_24, 0);
+	lv_obj_set_width(overlay_label, compact ? 28 : 42);
 	lv_obj_set_style_text_align(overlay_label, LV_TEXT_ALIGN_CENTER, 0);
 
 	// The scale: an Adwaita slider (slim trough, accent fill, white knob) that
 	// takes the finger directly.
 	overlay_slider = lv_slider_create(overlay);
-	lv_obj_set_height(overlay_slider, 10);
+	lv_obj_set_height(overlay_slider, slider_height);
 	lv_obj_set_flex_grow(overlay_slider, 1);
 	lv_slider_set_range(overlay_slider, 0, 100);
 
@@ -214,14 +231,14 @@ void volume_overlay_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(overlay_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 	lv_obj_set_style_bg_color(overlay_slider, lv_color_white(), LV_PART_KNOB);
 	lv_obj_set_style_bg_opa(overlay_slider, LV_OPA_COVER, LV_PART_KNOB);
-	lv_obj_set_style_pad_all(overlay_slider, 7, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(overlay_slider, 6, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(overlay_slider, compact ? 5 : 7, LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(overlay_slider, compact ? 4 : 6, LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(overlay_slider, LV_OPA_30, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(overlay_slider, lv_color_black(), LV_PART_KNOB);
 
 	// A slim trough is a hard touch target; give the finger the pill's whole
 	// height to land on.
-	lv_obj_set_ext_click_area(overlay_slider, (OVERLAY_HEIGHT - 6) / 2);
+	lv_obj_set_ext_click_area(overlay_slider, (overlay_height - slider_height) / 2);
 	lv_obj_add_event_cb(overlay_slider, slider_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
 	hide_timer = lv_timer_create(hide_cb, OVERLAY_HIDE_MS, NULL);

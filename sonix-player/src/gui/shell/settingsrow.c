@@ -157,6 +157,9 @@ lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *titl
 	lv_obj_set_style_border_width(container, 0, 0);
 	lv_obj_set_style_radius(container, 0, 0);
 	lv_obj_set_style_pad_hor(container, cfg->padding, 0);
+	lv_obj_set_style_pad_bottom(container, compact_rows() ? cfg->padding : 0, 0);
+	lv_obj_set_scroll_dir(container, LV_DIR_VER);
+	lv_obj_set_scrollbar_mode(container, LV_SCROLLBAR_MODE_AUTO);
 	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_gap(container, compact_rows() ? 4 : ROW_GAP, 0);

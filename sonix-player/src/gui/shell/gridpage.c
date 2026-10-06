@@ -12,6 +12,7 @@
 #include "src/system/core/lang.h"
 
 #define GRID_GAP 14
+#define COMPACT_TILE_ICON_MAX 46
 
 static bool compact_grid(void) { return bp_is_tempotec_v1(); }
 static int grid_gap(void) { return compact_grid() ? 6 : GRID_GAP; }
@@ -79,14 +80,23 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 	lv_obj_set_scrollable(tile, false);
 
 	// The source menu art is 112-128 px.  On a compact three-row page an entire
-	// tile can be only about 75 px high, so scale the art once instead of
-	// letting it push the caption through the card's lower edge.
+	// tile can be only about 75 px high, so both its drawing and its layout box
+	// have to shrink.  lv_image_set_scale() changes only the drawing: leaving
+	// the object's intrinsic 128 px box in flex layout pushes the caption below
+	// the tile even though the visible icon looks small.  This explicit box is
+	// what keeps the caption in the card on the V1.
 	lv_obj_t *icon = lv_image_create(tile);
 	lv_image_set_src(icon, entry->icon);
 	if (compact && entry->icon) {
-		int max_side = LV_MAX((int)entry->icon->header.w, (int)entry->icon->header.h);
-		if (max_side > 48) {
-			lv_image_set_scale(icon, (uint32_t)(LV_SCALE_NONE * 48 / max_side));
+		int source_w = (int)entry->icon->header.w;
+		int source_h = (int)entry->icon->header.h;
+		int max_side = LV_MAX(source_w, source_h);
+		if (max_side > COMPACT_TILE_ICON_MAX) {
+			int icon_w = LV_MAX(1, source_w * COMPACT_TILE_ICON_MAX / max_side);
+			int icon_h = LV_MAX(1, source_h * COMPACT_TILE_ICON_MAX / max_side);
+			lv_obj_set_size(icon, icon_w, icon_h);
+			lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CENTER);
+			lv_image_set_scale(icon, (uint32_t)(LV_SCALE_NONE * COMPACT_TILE_ICON_MAX / max_side));
 		}
 	}
 
