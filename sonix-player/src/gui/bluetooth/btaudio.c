@@ -410,7 +410,6 @@ static void screen_unloaded_cb(lv_event_t *e) {
 
 // The player's own Bluetooth name, and the sheet that changes it: a field and a
 // keyboard over the page, the same shape the preset and playlist names use.
-#define NAME_CANCEL_SIZE 56
 
 static lv_obj_t *name_row_value;
 static lv_obj_t *name_layer;
@@ -486,8 +485,7 @@ static void build_name_layer(gui_config_t *cfg) {
 	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 10);
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
-	lv_obj_set_size(cancel, NAME_CANCEL_SIZE, NAME_CANCEL_SIZE);
-	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	settingsrow_place_corner_button(cancel, cfg, 0);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
 	lv_obj_set_style_shadow_width(cancel, 0, 0);
@@ -516,7 +514,7 @@ static void build_name_layer(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", name_accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, cfg->screen_width < 320 ? 144 : 316, name_field, NULL, "ok", name_accept_cb, NULL);
 }
 
 void btaudio_init(gui_config_t *cfg) {

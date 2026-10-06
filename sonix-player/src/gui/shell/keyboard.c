@@ -937,6 +937,13 @@ static void kb_refresh_theme(void) {
 keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *field,
 							const lv_image_dsc_t *accept_icon, const char *accept_text, lv_event_cb_t on_accept,
 							void *user) {
+	// A 316 px keyboard is almost the whole V1 screen. Compact callers request
+	// 144 px explicitly so their result lists can size around it; this clamp is
+	// the safety net for any dialog which still passes the regular constant.
+	if (width < 320 && height > 144) {
+		height = 144;
+	}
+
 	keyboard_t *kb = calloc(1, sizeof(*kb));
 	if (!kb) {
 		return NULL;
@@ -959,6 +966,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 
 	int row_h = (height - 16 - 3 * 7) / 4;
 	int key_w = (width - 16 - 9 * 6) / 10;
+	int wide_key_w = width < 320 ? 44 : 84;
 	int index = 0;
 
 	// The two panels, stacked inside the tray: QWERTY and T9. Only one stays
@@ -1008,13 +1016,13 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_add_event_cb(kb->delete_btn, kb_delete_cb, LV_EVENT_LONG_PRESSED_REPEAT, kb);
 
 	lv_obj_t *row4 = kb_make_row(kb->qwerty, row_h);
-	lv_obj_t *mode = kb_make_key(row4, 84, kb_mode_cb, kb);
+	lv_obj_t *mode = kb_make_key(row4, wide_key_w, kb_mode_cb, kb);
 	kb->mode_label = kb_key_label(mode);
 	// Held rather than tapped, the same key offers the other alphabets in use.
 	lv_obj_add_event_cb(mode, kb_layouts_cb, LV_EVENT_LONG_PRESSED, kb);
 	lv_obj_t *space = kb_make_key(row4, 0, kb_space_cb, kb); // grows
 	kb_key_icon(space, &icon_space);
-	kb->accept_btn = kb_make_key(row4, 84, on_accept, user);
+	kb->accept_btn = kb_make_key(row4, wide_key_w, on_accept, user);
 	lv_obj_set_style_bg_color(kb->accept_btn, theme()->accent, 0);
 	if (accept_icon) {
 		lv_obj_t *glyph = kb_key_icon(kb->accept_btn, accept_icon);
@@ -1057,7 +1065,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	}
 	lv_obj_t *t9_row4 = kb_make_row(kb->t9, row_h);
 	// The mode switch, always first: "123" in letter mode, "abc" in number mode.
-	lv_obj_t *t9_mode = kb_make_key(t9_row4, 84, kb_t9_mode_cb, kb);
+	lv_obj_t *t9_mode = kb_make_key(t9_row4, wide_key_w, kb_t9_mode_cb, kb);
 	kb->t9_mode_label = kb_key_label(t9_mode);
 	lv_obj_add_event_cb(t9_mode, kb_layouts_cb, LV_EVENT_LONG_PRESSED, kb);
 	kb->t9_shift_btn = kb_make_key(t9_row4, key_w + 14, kb_t9_shift_cb, kb);
@@ -1068,7 +1076,7 @@ keyboard_t *keyboard_create(lv_obj_t *parent, int width, int height, lv_obj_t *f
 	lv_obj_t *t9_del = kb_make_key(t9_row4, key_w + 14, kb_delete_cb, kb);
 	kb_key_icon(t9_del, &icon_delete);
 	lv_obj_add_event_cb(t9_del, kb_delete_cb, LV_EVENT_LONG_PRESSED_REPEAT, kb);
-	kb->t9_accept_btn = kb_make_key(t9_row4, 84, on_accept, user);
+	kb->t9_accept_btn = kb_make_key(t9_row4, wide_key_w, on_accept, user);
 	lv_obj_set_style_bg_color(kb->t9_accept_btn, theme()->accent, 0);
 	if (accept_icon) {
 		lv_obj_t *glyph = kb_key_icon(kb->t9_accept_btn, accept_icon);

@@ -87,7 +87,11 @@ HOST_CFLAGS = $(CFLAGS) -DHOST_BUILD=1 $(shell sdl2-config --cflags) $(shell pkg
 # arithmetic is untouched: only how code and data are reached. Needs a dynamic
 # linker with MIPS PLT support, which glibc has had since 2.9 (the device has
 # 2.22). Ignored for anything built with -fPIC.
-TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -mplt -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
+# This fork's target package is for the TempoTec V1. The runtime BOARD value
+# still wins (BOARD=hiby_r1 / hiby_r3proii keeps one binary testable on those
+# devices), while host builds stay regular unless BOARD=tempotec_v1 or
+# SONIX_PANEL=240x320 is supplied.
+TARGET_CFLAGS = $(CFLAGS) -DBOARD_DEFAULT_TEMPOTEC_V1=1 -march=mips32r2 -mno-madd4 -mplt -I$(LVGL_DIR)/src -I$(FREETYPE_PREFIX)/include/freetype2 \
 				-I$(AUDIO_PREFIX)/include -I$(AUDIO_PREFIX)/include/opus \
 				-include src/system/core/glibc_compat.h
 

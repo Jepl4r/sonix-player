@@ -12,6 +12,7 @@
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/library/playlistpage.h"
 #include "src/gui/library/search.h"
+#include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -67,6 +68,28 @@ static void favourites_cb(lv_event_t *e) {
 	medialist_open(tr("favourites"), LIBRARY_LIST_FAVOURITES, LIBRARY_FILTER_NONE, NULL);
 }
 
+static void compact_playlists_action(void *unused) {
+	(void)unused;
+	playlists_cb(NULL);
+}
+static void compact_favourites_action(void *unused) {
+	(void)unused;
+	favourites_cb(NULL);
+}
+static void compact_search_action(void *unused) {
+	(void)unused;
+	search_cb(NULL);
+}
+
+static void compact_more_cb(lv_event_t *e) {
+	popover_item_t items[] = {
+		{musicsettings_playlists_first() ? "music_browse" : "playlists", compact_playlists_action, NULL, false},
+		{"favourites", compact_favourites_action, NULL, false},
+		{"search", compact_search_action, NULL, false},
+	};
+	popover_show(lv_event_get_target(e), items, (int)(sizeof(items) / sizeof(items[0])));
+}
+
 // With no tracks indexed the tiles would all open empty lists: the page says
 // a scan is needed instead, and the button asks which folders to scan.
 static lv_obj_t *empty_panel;
@@ -84,16 +107,18 @@ static void screen_loaded_cb(lv_event_t *e) {
 // The corner buttons share everything but icon and action.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph) {
 	lv_obj_t *button = lv_btn_create(music_screen);
-	lv_obj_set_size(button, 56, 56);
+	settingsrow_place_corner_button(button, cfg, slot);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
 	lv_obj_add_style(icon, &theme_style_icon, 0);
+	if (cfg->screen_width < 320) {
+		lv_image_set_scale(icon, 192); // 34 px source -> about 25 px
+	}
 	lv_obj_center(icon);
 
 	return button;
@@ -118,21 +143,31 @@ void music_init(gui_config_t *cfg) {
 	// the grid because that is where a tile's press stops bubbling.
 	coverflow_attach_edge(grid, cfg);
 
-	// Four buttons in the corner, so the heading has to be told to clear them.
-	settingsrow_title_corner_slots(settingsrow_title(music_screen, cfg, "music"), cfg, 4);
+	// The 240 px header has room for two actions beside the back button and a
+	// readable title. Keep Settings visible and fold the other three actions
+	// into one menu; drawing all four here reduced "Music" to "Musi…".
+	bool compact_header = cfg->screen_width < 320;
+	settingsrow_title_corner_slots(settingsrow_title(music_screen, cfg, "music"), cfg, compact_header ? 2 : 4);
 
 	lv_obj_t *settings_btn = corner_button(cfg, 0, &icon_music_settings);
 	lv_obj_add_event_cb(settings_btn, switch_screen_cb, LV_EVENT_CLICKED, musicsettings_screen);
 
-	playlists_btn = corner_button(cfg, 1, &icon_list_music);
-	playlists_icon = lv_obj_get_child(playlists_btn, 0);
-	lv_obj_add_event_cb(playlists_btn, playlists_cb, LV_EVENT_CLICKED, NULL);
+	if (compact_header) {
+		playlists_btn = NULL;
+		playlists_icon = NULL;
+		lv_obj_t *more_btn = corner_button(cfg, 1, &icon_ellipsis_vertical);
+		lv_obj_add_event_cb(more_btn, compact_more_cb, LV_EVENT_CLICKED, NULL);
+	} else {
+		playlists_btn = corner_button(cfg, 1, &icon_list_music);
+		playlists_icon = lv_obj_get_child(playlists_btn, 0);
+		lv_obj_add_event_cb(playlists_btn, playlists_cb, LV_EVENT_CLICKED, NULL);
 
-	lv_obj_t *favourites_btn = corner_button(cfg, 2, &icon_star_corner);
-	lv_obj_add_event_cb(favourites_btn, favourites_cb, LV_EVENT_CLICKED, NULL);
+		lv_obj_t *favourites_btn = corner_button(cfg, 2, &icon_star_corner);
+		lv_obj_add_event_cb(favourites_btn, favourites_cb, LV_EVENT_CLICKED, NULL);
 
-	lv_obj_t *search_btn = corner_button(cfg, 3, &icon_search);
-	lv_obj_add_event_cb(search_btn, search_cb, LV_EVENT_CLICKED, NULL);
+		lv_obj_t *search_btn = corner_button(cfg, 3, &icon_search);
+		lv_obj_add_event_cb(search_btn, search_cb, LV_EVENT_CLICKED, NULL);
+	}
 
 	empty_panel = gridpage_empty_panel(music_screen, cfg, &icon_music_note, "music_no_database", scan_cb);
 	lv_obj_add_event_cb(music_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);

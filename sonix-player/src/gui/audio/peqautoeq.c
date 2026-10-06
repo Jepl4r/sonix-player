@@ -790,7 +790,8 @@ static void update_database(lv_event_t *event) {
 static void build_pages(gui_config_t *config) {
 	search_screen = lv_obj_create(NULL);
 	lv_obj_t *search_container = settingsrow_page(search_screen, config, "peq_autoeq_search");
-	lv_obj_set_height(search_container, config->screen_height - settingsrow_content_top(config) - 316);
+	int keyboard_h = config->screen_width < 320 ? 144 : 316;
+	lv_obj_set_height(search_container, config->screen_height - settingsrow_content_top(config) - keyboard_h);
 
 	search_field = lv_textarea_create(search_container);
 	lv_textarea_set_one_line(search_field, true);
@@ -807,19 +808,19 @@ static void build_pages(gui_config_t *config) {
 	// The database download sits in the title's corner.
 	settingsrow_title_corner_slots(settingsrow_page_title(search_screen), config, 1);
 	lv_obj_t *update_btn = lv_btn_create(search_screen);
-	lv_obj_set_size(update_btn, 56, 56);
+	settingsrow_place_corner_button(update_btn, config, 0);
 	lv_obj_set_style_bg_opa(update_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(update_btn, 0, 0);
 	lv_obj_set_style_shadow_width(update_btn, 0, 0);
 	lv_obj_set_style_pad_all(update_btn, 0, 0);
-	lv_obj_align(update_btn, LV_ALIGN_TOP_RIGHT, -config->padding, config->padding + config->top_bar_height);
 	lv_obj_add_event_cb(update_btn, update_database, LV_EVENT_CLICKED, NULL);
 	lv_obj_t *update_icon = lv_image_create(update_btn);
 	lv_image_set_src(update_icon, &icon_autoeq_update);
 	lv_obj_add_style(update_icon, &theme_style_icon, 0);
 	lv_obj_center(update_icon);
 
-	search_keyboard = keyboard_create(search_screen, config->screen_width, 316, search_field, &icon_search, NULL, search_accept, NULL);
+	search_keyboard = keyboard_create(search_screen, config->screen_width, keyboard_h, search_field, &icon_search, NULL,
+									  search_accept, NULL);
 
 	results_screen = lv_obj_create(NULL);
 	search_list = settingsrow_page(results_screen, config, "peq_autoeq_results");

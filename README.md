@@ -1,4 +1,4 @@
-﻿# Sonix Player
+# Sonix Player
 
 A replacement player for the **HiBy R3 Pro II** and the **HiBy R1**, written on
 LVGL.
@@ -109,6 +109,7 @@ the R3 Pro II, 480x800 for the R1, and 480x720 when the file is missing. The
 mouse is the finger, and dragging scrolls.
 
 `SONIX_PANEL=480x800` opens the window at a given size whatever the file says.
+`SONIX_PANEL=240x320` also selects the compact TempoTec V1 interface profile.
 The rest of the model (buttons, DAC, update file) still follows the file.
 
 The folder that stands in for the memory card is the **documents folder**,
@@ -140,7 +141,8 @@ The device's buttons are on the keyboard:
 | variable | what it does |
 |---|---|
 | `SONIX_SD_ROOT` | the folder standing in for the card |
-| `SONIX_PANEL` | the window size, e.g. `480x800` |
+| `SONIX_PANEL` | the window size, e.g. `480x800` or the V1 profile's `240x320` |
+| `BOARD` | force `tempotec_v1`, `hiby_r1` or `hiby_r3proii` layout selection |
 | `SONIX_CONFIG` | where the settings file lives |
 | `SONIX_EBOOK_CONFIG` | the ebook reader's own settings file |
 | `SONIX_LANG_DIR` | the language directory, instead of the resource tree |
@@ -171,7 +173,9 @@ The first run takes a while and does four things by itself:
    into `audio-target/`
 4. compiles and links `sonix_player`, and builds `sonix_launch` (see below)
 
-Steps 1 to 3 happen once. Later builds go straight to step 4.
+Steps 1 to 3 happen once. Later builds go straight to step 4. In this fork,
+the target binary defaults to the TempoTec V1 240×320 profile; an explicit
+`BOARD=hiby_r1` or `BOARD=hiby_r3proii` in the launcher overrides that default.
 
 Everything the device does not already carry is linked statically, so the
 result is one file to copy across with nothing to install beside it. The same

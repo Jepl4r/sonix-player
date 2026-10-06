@@ -1,9 +1,50 @@
-﻿# Firmware patches
+# Firmware patches
 
 | patch | script | what it fixes |
 |---|---|---|
 | Touchscreen multitouch | `tools/gt9xx_multitouch_patch.py` | the panel reports five fingers, the driver lets one out |
 | Touchscreen multitouch, R1 | `tools/cst8xx_multitouch_patch.py` | the panel reports two fingers, the driver lets one out |
+
+
+## TempoTec V1 240×320 interface profile
+
+The target build of this fork defaults to the TempoTec V1 profile. At runtime,
+`BOARD=tempotec_v1` (also `tempotec-v1` or `tv1`) selects it explicitly, while
+`BOARD=hiby_r1` or `BOARD=hiby_r3proii` forces the regular layout. For the host
+simulator, this is enough to exercise the V1 path:
+
+```bash
+SONIX_PANEL=240x320 ./sonix_player_host
+```
+
+The profile is more than a font substitution. It makes `gui_config_t` use the
+real 240×320 panel, a 24 px status bar and 6 px page padding; remaps the named UI
+font faces to compact raster sizes; and gives shared headers, settings rows,
+grids and status icons compact geometry. Header actions use 36 px slots. The
+Music landing page keeps Settings plus one overflow menu in the title row;
+Playlists/Browse, Favourites and Search remain available inside that menu
+without allowing four actions to reduce the heading to `Musi…`.
+
+Now Playing keeps the cover **240 px wide** and centre-crops it to the available
+192 px height. The remaining 128 px is an independently sized compact control
+area. The artwork, its hit target and generated backdrop therefore share the
+same edge-to-edge bounds instead of producing black side bands.
+
+Two-column, three-row pages with five entries let the fifth tile span the last
+row. Compact tile captions are one fixed line with an ellipsis and no extra
+line spacing, so long translations such as “Artistes d’album” cannot draw
+through the card edge. Popovers are width-bounded and scroll when necessary,
+and the on-screen keyboard uses a 144 px compact tray with narrower action
+keys. Quick Settings retains eight controls in a 2×4 layout; its buttons,
+artwork and two card heights are reduced to fit the 320 px sheet.
+
+### Touch input is intentionally not guessed
+
+This profile does **not** hard-code a `/dev/input/eventN` node or a speculative
+axis transform. Event numbering and the controller's reported ABS/MT ranges
+must first be captured from the actual V1 firmware. Once that report is known,
+the device-specific runtime branch belongs in the launcher/input path rather
+than in the screen-layout profile.
 
 
 ## Touchscreen multitouch

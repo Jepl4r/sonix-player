@@ -1412,8 +1412,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
-	lv_obj_set_size(cancel, 56, 56);
-	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	settingsrow_place_corner_button(cancel, cfg, 0);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
 	lv_obj_set_style_shadow_width(cancel, 0, 0);
@@ -1440,12 +1439,11 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", name_accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, cfg->screen_width < 320 ? 144 : 316, name_field, NULL, "ok", name_accept_cb, NULL);
 
 	// --- the import button, in the title row's corner ------------------------
 	import_btn = lv_btn_create(playlistpage_screen);
-	lv_obj_set_size(import_btn, 56, 56);
-	lv_obj_align(import_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	settingsrow_place_corner_button(import_btn, cfg, 0);
 	lv_obj_set_style_bg_opa(import_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(import_btn, 0, 0);
 	lv_obj_set_style_shadow_width(import_btn, 0, 0);
@@ -1480,8 +1478,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	import_heading_set("playlist_import_playlists");
 
 	lv_obj_t *import_close = lv_btn_create(import_layer);
-	lv_obj_set_size(import_close, 56, 56);
-	lv_obj_align(import_close, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	settingsrow_place_corner_button(import_close, cfg, 0);
 	lv_obj_set_style_bg_opa(import_close, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(import_close, 0, 0);
 	lv_obj_set_style_shadow_width(import_close, 0, 0);

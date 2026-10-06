@@ -85,6 +85,18 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 		count = POPOVER_MAX_ITEMS;
 	}
 
+	lv_obj_update_layout(veil);
+	int screen_w = lv_obj_get_width(veil);
+	int screen_h = lv_obj_get_height(veil);
+	bool compact = screen_w < 320;
+	int card_w = POPOVER_WIDTH;
+	if (card_w > screen_w - 2 * POPOVER_MARGIN) {
+		card_w = screen_w - 2 * POPOVER_MARGIN;
+	}
+	lv_obj_set_width(card, card_w);
+	lv_obj_set_height(card, LV_SIZE_CONTENT);
+	lv_obj_set_scrollable(card, false);
+
 	memcpy(items_copy, items, (size_t)count * sizeof(items[0]));
 	items_count = count;
 
@@ -96,8 +108,8 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 		// translated label such as "Zur Wiedergabeliste hinzufügen" does not
 		// fit on one, and a fixed height would clip it at the card's edge.
 		lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-		lv_obj_set_style_min_height(row, POPOVER_ROW_HEIGHT, 0);
-		lv_obj_set_style_pad_ver(row, 12, 0);
+		lv_obj_set_style_min_height(row, compact ? 48 : POPOVER_ROW_HEIGHT, 0);
+		lv_obj_set_style_pad_ver(row, compact ? 8 : 12, 0);
 		// With a check mark the entry lays out as a row: text left, mark right.
 		// Without one it stays a column, which is what the two-line text of long
 		// entries needs.
@@ -109,7 +121,7 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 		lv_obj_set_style_radius(row, 10, 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 14, 0);
+		lv_obj_set_style_pad_hor(row, compact ? 10 : 14, 0);
 		lv_obj_add_event_cb(row, item_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
 		lv_obj_t *label = lv_label_create(row);
@@ -147,16 +159,22 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 	lv_obj_get_coords(anchor, &a);
 	lv_obj_update_layout(card);
 
-	int screen_w = lv_obj_get_width(veil);
-	int screen_h = lv_obj_get_height(veil);
 	int card_h = lv_obj_get_height(card);
+	int max_card_h = screen_h - 2 * POPOVER_MARGIN;
+	if (card_h > max_card_h) {
+		// Seven regular rows fit on the large panels but not in 320 px. Keep
+		// every action reachable rather than drawing the last rows off-screen.
+		card_h = max_card_h;
+		lv_obj_set_height(card, card_h);
+		lv_obj_set_scrollable(card, true);
+	}
 
-	int x = a.x1 + (a.x2 - a.x1) / 2 - POPOVER_WIDTH / 2;
+	int x = a.x1 + (a.x2 - a.x1) / 2 - card_w / 2;
 	if (x < POPOVER_MARGIN) {
 		x = POPOVER_MARGIN;
 	}
-	if (x + POPOVER_WIDTH > screen_w - POPOVER_MARGIN) {
-		x = screen_w - POPOVER_MARGIN - POPOVER_WIDTH;
+	if (x + card_w > screen_w - POPOVER_MARGIN) {
+		x = screen_w - POPOVER_MARGIN - card_w;
 	}
 
 	int y = a.y2 + POPOVER_MARGIN; // preferred: right under the control

@@ -26,7 +26,6 @@ lv_obj_t *wifisettings_screen;
 #define WIFI_PAGE_POLL_MS 500
 
 #define WIFI_ROW_H 82
-#define CORNER_BTN_SIZE 56
 
 static lv_obj_t *wifi_switch;
 static lv_obj_t *status_label;
@@ -699,12 +698,11 @@ static void screen_unloaded_cb(lv_event_t *e) {
 
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, const lv_image_dsc_t *glyph, lv_obj_t **icon_out) {
 	lv_obj_t *button = lv_btn_create(screen);
-	lv_obj_set_size(button, CORNER_BTN_SIZE, CORNER_BTN_SIZE);
+	settingsrow_place_corner_button(button, cfg, 0);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
@@ -730,7 +728,7 @@ static void build_password_page(gui_config_t *cfg) {
 	password_title = settingsrow_title(password_screen, cfg, "");
 
 	int top = settingsrow_content_top(cfg);
-	int keyboard_h = 316; // the same keyboard the search page uses
+	int keyboard_h = cfg->screen_width < 320 ? 144 : 316; // the same keyboard the search page uses
 
 	lv_obj_t *hint = lv_label_create(password_screen);
 	lv_label_set_text(hint, tr("wifi_network_password"));

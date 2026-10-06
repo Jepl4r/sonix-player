@@ -1538,12 +1538,11 @@ static void build_rows(int width) {
 // Hidden until something shows it.
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *btn = lv_btn_create(browser_screen);
-	lv_obj_set_size(btn, 56, 56);
+	settingsrow_place_corner_button(btn, cfg, slot);
 	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_pad_all(btn, 0, 0);
-	lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * 62, cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_set_hidden(btn, true);
 

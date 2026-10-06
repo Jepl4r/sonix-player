@@ -1,40 +1,39 @@
-// board_profile.h -- runtime detection of the device so the GUI can pick
-// sizes, fonts and paddings that fit it.
+// board_profile.h -- the small set of dimensions that differ on the
+// TempoTec V1.
 //
-// Why this file exists
-// --------------------
-// sonix-player is authored against the HiBy R1 (480x640, 3.06 inch). The
-// Tempotec V1 keeps the same Ingenic X1000 SoC and the same LVGL stack,
-// but ships a 2 inch 240x320 panel. The patches in the tempotec-v1 branch
-// are gated on the helpers here so the same binary still runs on the R1.
-//
-// Detection
-// ---------
-// The launcher most commonly sets `BOARD` in /etc/init.d before exec'ing
-// sonix_player. We honour that. When nothing is set, the build-time
-// `-DBOARD_DEFAULT_...` decides. The default is `hiby_r1` so upstream
-// behaviour is preserved when this file is simply included.
-//
-// What callers use
-// ----------------
-//   bp_is_tempotec_v1()    -- true on the Tempotec V1
-//   bp_screen_w() / bp_screen_h()  -- panel pixels
-//   bp_title_font()        -- &font_ui_14 on V1, &font_ui_26 on R1
-//   bp_artist_font()       -- &font_ui_14 on V1, &font_ui_24 on R1
-//   bp_time_font()         -- &font_ui_14 on V1, &font_ui_22 on R1
-//   bp_tile_radius()       -- 14 on V1, 20 on R1
-//   bp_tile_label_font()   -- &font_ui_14 on V1, default on R1
-//   bp_padding()           -- outer page padding in pixels
-//   bp_status_bar_h()      -- top status strip height
-//
-// Anything not overridden here stays at its R1 default; the runtime helper
-// for each knob decides whether V1 needs a different value.
+// The V1 uses the same Linux/LVGL application shape as the HiBy targets but
+// has a much smaller 240x320 panel.  Keep that distinction in one place so a
+// V1 build can still be tested on the host and the same source remains usable
+// on the 480-pixel HiBy players.
 
 #ifndef SRC_GUI_BOARD_PROFILE_H_
 #define SRC_GUI_BOARD_PROFILE_H_
 
+#include <stdbool.h>
+
 #include "lvgl/lvgl.h"
 
+// BOARD=tempotec_v1 selects the profile.  BOARD=hiby_r1/hiby_r3proii forces
+// the regular profile.  BOARD_DEFAULT_TEMPOTEC_V1 may be defined by a dedicated
+// firmware build.  SONIX_PANEL=240x320 also selects it for host simulation.
+bool bp_is_tempotec_v1(void);
+
+int bp_screen_w(void);
+int bp_screen_h(void);
+int bp_padding(void);
+int bp_status_bar_h(void);
+int bp_tile_radius(void);
+
+// Common compact-shell geometry.  Callers which already have gui_config_t can
+// still key off screen_width < 320; these helpers are for code built before the
+// display exists (notably fonts_init()).
+int bp_header_button_size(void);
+int bp_header_button_gap(void);
+
+// Fonts used by the most crowded player/list labels.  On the V1 fonts.c also
+// maps the remaining large named UI fonts to compact raster sizes, so pages
+// which use font_ui_24 directly do not keep 24 physical pixels on a 240-pixel
+// display.
 const lv_font_t *bp_title_font(void);
 const lv_font_t *bp_artist_font(void);
 const lv_font_t *bp_time_font(void);
@@ -42,11 +41,4 @@ const lv_font_t *bp_tile_label_font(void);
 const lv_font_t *bp_queue_label_font(void);
 const lv_font_t *bp_format_label_font(void);
 
-bool bp_is_tempotec_v1(void);
-int  bp_screen_w(void);
-int  bp_screen_h(void);
-int  bp_tile_radius(void);
-int  bp_padding(void);
-int  bp_status_bar_h(void);
-
-#endif  // SRC_GUI_BOARD_PROFILE_H_
+#endif // SRC_GUI_BOARD_PROFILE_H_

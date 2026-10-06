@@ -828,7 +828,7 @@ void search_init(gui_config_t *cfg) {
 	settingsrow_title(search_screen, cfg, "search_2");
 
 	int top = settingsrow_content_top(cfg);
-	int keyboard_h = 316; // tall enough for honest fingertip-sized keys
+	int keyboard_h = cfg->screen_width < 320 ? 144 : 316; // tall enough for honest fingertip-sized keys
 	screen_h = cfg->screen_height;
 	keyboard_height = keyboard_h;
 	results_top = top + 62 + 10;

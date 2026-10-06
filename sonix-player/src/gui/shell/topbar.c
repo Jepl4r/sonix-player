@@ -37,6 +37,9 @@
 // through the icon's transparent middle.
 #define BATTERY_ICON_SIZE 38
 
+static bool topbar_compact;
+static int battery_icon_size = BATTERY_ICON_SIZE;
+
 // The inner cavity of the battery shell, in the SVG's 24x24 coordinates: the
 // body rect runs 2..18 with a 2px stroke centred on it, so the hole is 3..17
 // across and 7..17 down.
@@ -113,6 +116,17 @@ static lv_timer_t *radio_timer;
 
 // Cavity geometry scaled to BATTERY_ICON_SIZE, worked out once at init.
 static int cavity_x, cavity_y, cavity_w, cavity_h;
+
+static void compact_status_icon(lv_obj_t *icon) {
+	if (topbar_compact && icon) {
+		// Transforming alone only changes the drawing; LVGL flex would still
+		// reserve the source glyph's 26--34 px box. Give every status glyph a
+		// real 24 px layout box as well, then centre the scaled source in it.
+		lv_obj_set_size(icon, 24, 24);
+		lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CENTER);
+		lv_image_set_scale(icon, 180);
+	}
+}
 
 // Parses the sysfs capacity string. Returns -1 when it is not a number: the
 // host build has no battery and its reader returns "!!".
@@ -816,6 +830,8 @@ void topbar_init(gui_config_t *cfg) {
 	if (top_bar != NULL) {
 		return;
 	}
+	topbar_compact = cfg->screen_width < 320;
+	battery_icon_size = topbar_compact ? 24 : BATTERY_ICON_SIZE;
 
 	// The bar lives on the top layer so it stays above every screen.
 	top_bar = lv_obj_create(lv_layer_top());
@@ -846,7 +862,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(container_left, 0, 0);
 	lv_obj_set_style_radius(container_left, 0, 0);
 	lv_obj_set_style_pad_all(container_left, 0, 0);
-	lv_obj_set_style_pad_gap(container_left, 8, 0);
+	lv_obj_set_style_pad_gap(container_left, topbar_compact ? 3 : 8, 0);
 	lv_obj_set_scrollable(container_left, false);
 	// Not clickable, so presses reach the bar itself, whose drag handler pulls
 	// the control panel down.
@@ -857,6 +873,7 @@ void topbar_init(gui_config_t *cfg) {
 	// Glyph first, then the number: the icon says what the number means.
 	vol_icon = lv_image_create(container_left);
 	lv_image_set_src(vol_icon, &icon_volume_high);
+	compact_status_icon(vol_icon);
 	lv_obj_add_style(vol_icon, &theme_style_icon, 0);
 
 	vol_label = lv_label_create(container_left);
@@ -868,6 +885,7 @@ void topbar_init(gui_config_t *cfg) {
 	// for the 3.5 mm jack and gold for the 4.4 mm balanced one.
 	hp_icon = lv_image_create(container_left);
 	lv_image_set_src(hp_icon, &icon_headphones);
+	compact_status_icon(hp_icon);
 	lv_obj_add_style(hp_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(hp_icon, true);
 
@@ -875,6 +893,7 @@ void topbar_init(gui_config_t *cfg) {
 	// runs, pause while one is loaded and stopped, hidden when nothing is loaded.
 	play_icon = lv_image_create(container_left);
 	lv_image_set_src(play_icon, &icon_play_status);
+	compact_status_icon(play_icon);
 	lv_obj_add_style(play_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(play_icon, true);
 
@@ -882,6 +901,7 @@ void topbar_init(gui_config_t *cfg) {
 	// (topbar_set_library_check).
 	library_icon = lv_image_create(container_left);
 	lv_image_set_src(library_icon, &icon_library_checking);
+	compact_status_icon(library_icon);
 	lv_obj_add_style(library_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(library_icon, true);
 
@@ -891,6 +911,7 @@ void topbar_init(gui_config_t *cfg) {
 	// true and this only adds who is asking.
 	sonixlink_icon = lv_image_create(container_left);
 	lv_image_set_src(sonixlink_icon, &icon_sonixlink_status);
+	compact_status_icon(sonixlink_icon);
 	lv_obj_add_style(sonixlink_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(sonixlink_icon, true);
 
@@ -905,7 +926,7 @@ void topbar_init(gui_config_t *cfg) {
 	// The container's default padding would push the battery about ten pixels
 	// further in than the page padding everything else lines up with.
 	lv_obj_set_style_pad_all(container_right, 0, 0);
-	lv_obj_set_style_pad_gap(container_right, 8, 0);
+	lv_obj_set_style_pad_gap(container_right, topbar_compact ? 3 : 8, 0);
 	lv_obj_set_scrollable(container_right, false);
 	lv_obj_set_clickable(container_right, false);
 	lv_obj_set_flex_flow(container_right, LV_FLEX_FLOW_ROW);
@@ -916,11 +937,13 @@ void topbar_init(gui_config_t *cfg) {
 	// topbar_refresh_radios() decides what is shown.
 	bt_icon = lv_image_create(container_right);
 	lv_image_set_src(bt_icon, &icon_bluetooth_status);
+	compact_status_icon(bt_icon);
 	lv_obj_add_style(bt_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(bt_icon, true);
 
 	wifi_icon = lv_image_create(container_right);
 	lv_image_set_src(wifi_icon, &icon_wifi_max);
+	compact_status_icon(wifi_icon);
 	lv_obj_add_style(wifi_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(wifi_icon, true);
 
@@ -935,13 +958,13 @@ void topbar_init(gui_config_t *cfg) {
 	// above both. The cavity is sized by scaling both edges and taking the
 	// difference rather than scaling width and height directly: rounding each
 	// independently leaves the fill a pixel short of the bottom of the shell.
-	cavity_x = (BATTERY_CAVITY_X * BATTERY_ICON_SIZE) / 24;
-	cavity_y = (BATTERY_CAVITY_Y * BATTERY_ICON_SIZE) / 24;
-	cavity_w = (((BATTERY_CAVITY_X + BATTERY_CAVITY_W) * BATTERY_ICON_SIZE + 23) / 24) - cavity_x;
-	cavity_h = (((BATTERY_CAVITY_Y + BATTERY_CAVITY_H) * BATTERY_ICON_SIZE + 23) / 24) - cavity_y;
+	cavity_x = (BATTERY_CAVITY_X * battery_icon_size) / 24;
+	cavity_y = (BATTERY_CAVITY_Y * battery_icon_size) / 24;
+	cavity_w = (((BATTERY_CAVITY_X + BATTERY_CAVITY_W) * battery_icon_size + 23) / 24) - cavity_x;
+	cavity_h = (((BATTERY_CAVITY_Y + BATTERY_CAVITY_H) * battery_icon_size + 23) / 24) - cavity_y;
 
 	bat_widget = lv_obj_create(container_right);
-	lv_obj_set_size(bat_widget, BATTERY_ICON_SIZE, BATTERY_ICON_SIZE);
+	lv_obj_set_size(bat_widget, battery_icon_size, battery_icon_size);
 	lv_obj_set_style_bg_opa(bat_widget, 0, 0);
 	lv_obj_set_style_border_width(bat_widget, 0, 0);
 	lv_obj_set_style_pad_all(bat_widget, 0, 0);
@@ -961,13 +984,23 @@ void topbar_init(gui_config_t *cfg) {
 	lv_image_set_src(bat_shell, &icon_battery);
 	lv_obj_set_style_image_recolor(bat_shell, theme()->text_primary, 0);
 	lv_obj_set_style_image_recolor_opa(bat_shell, LV_OPA_COVER, 0);
-	lv_obj_set_pos(bat_shell, 0, 0);
+	if (topbar_compact) {
+		lv_image_set_scale(bat_shell, 162);
+		lv_obj_center(bat_shell);
+	} else {
+		lv_obj_set_pos(bat_shell, 0, 0);
+	}
 
 	bat_bolt = lv_image_create(bat_widget);
 	lv_image_set_src(bat_bolt, &icon_battery_charging_bolt);
 	lv_obj_set_style_image_recolor(bat_bolt, lv_color_make(245, 205, 60), 0);
 	lv_obj_set_style_image_recolor_opa(bat_bolt, LV_OPA_COVER, 0);
-	lv_obj_set_pos(bat_bolt, 0, 0);
+	if (topbar_compact) {
+		lv_image_set_scale(bat_bolt, 162);
+		lv_obj_center(bat_bolt);
+	} else {
+		lv_obj_set_pos(bat_bolt, 0, 0);
+	}
 	lv_obj_set_hidden(bat_bolt, true);
 
 	// Clock, centred on the bar and independent of everything around it.
@@ -1039,11 +1072,9 @@ void topbar_set_battery_percent(bool shown) {
 	if (!bat_label) {
 		return;
 	}
-	if (shown) {
-		lv_obj_set_hidden(bat_label, false);
-	} else {
-		lv_obj_set_hidden(bat_label, true);
-	}
+	// With both radios visible, a numeric percentage would run underneath the
+	// centred clock on a 240 px bar. The shell remains and conveys the level.
+	lv_obj_set_hidden(bat_label, !shown || topbar_compact);
 }
 
 void topbar_bring_to_front(void) {
