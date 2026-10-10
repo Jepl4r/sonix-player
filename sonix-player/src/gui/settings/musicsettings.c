@@ -36,6 +36,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
+#include "src/system/library/playlists.h"
 
 lv_obj_t *musicsettings_screen;
 
@@ -1518,6 +1519,20 @@ static void go_to_current_cb(lv_event_t *e) {
 	medialist_set_go_to_current(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+// Whether the playlists are the files in the card's Playlists folder rather
+// than the index's own. The switch only says which; playlists.c does the rest,
+// and the index's playlists are there again when it is turned off.
+static lv_obj_t *card_playlists_switch;
+
+bool musicsettings_card_playlists(void) { return config_get_bool("music", "card_playlists", false); }
+
+static void card_playlists_cb(lv_event_t *e) {
+	bool on = lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED);
+	config_set_bool("music", "card_playlists", on);
+	config_save();
+	playlists_set_card_folder_mode(on);
+}
+
 static void quality_badges_cb(lv_event_t *e) {
 	medialist_set_quality_badges(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
@@ -1727,6 +1742,12 @@ static void build_display_page(gui_config_t *cfg) {
 	option_note(container, "musicsettings_nowplaying_at_boot_note");
 	if (config_get_bool("music", "nowplaying_at_boot", false)) {
 		lv_obj_add_state(nowplaying_at_boot_switch, LV_STATE_CHECKED);
+	}
+
+	settingsrow_toggle(container, "musicsettings_card_playlists", &card_playlists_switch, card_playlists_cb);
+	option_note(container, "musicsettings_card_playlists_note");
+	if (musicsettings_card_playlists()) {
+		lv_obj_add_state(card_playlists_switch, LV_STATE_CHECKED);
 	}
 
 	switcher_attach_back_gesture(display_screen);

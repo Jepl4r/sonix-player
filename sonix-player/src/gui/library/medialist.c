@@ -911,7 +911,9 @@ static library_filter_t filter_for(library_list_t kind);
 // playlist and the favourites, read from the index. Not genres, and not a list
 // handed in as paths.
 static bool panel_selectable(const panel_t *p) {
-	if (p->from_paths) {
+	// Choosing rows is for adding them to a playlist, and the card folder's
+	// playlists are read only.
+	if (p->from_paths || playlists_card_folder_mode()) {
 		return false;
 	}
 	return p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_ALBUMS || p->kind == LIBRARY_LIST_ARTISTS ||
@@ -2434,7 +2436,7 @@ static void drag_end(void) {
 		return;
 	}
 
-	if (!library_playlist_move(p->playlist, from, to)) {
+	if (!playlists_move(p->playlist, from, to)) {
 		toast_error("medialist_reorder_failed");
 		return;
 	}
@@ -3141,7 +3143,10 @@ static void menu_btn_cb(lv_event_t *e) {
 	// Inside a playlist the useful action is the opposite one: this list is
 	// where the track already is, so offering to file it somewhere else while
 	// looking at it would be the wrong way round.
-	if (p->playlist[0]) {
+	// Neither over the card folder's playlists, which are read only.
+	if (playlists_card_folder_mode()) {
+		// nothing
+	} else if (p->playlist[0]) {
 		items[n++] = (popover_item_t){"medialist_remove_from_playlist", menu_playlist_remove_action, NULL};
 	} else {
 		items[n++] = (popover_item_t){"add_to_playlist", menu_playlist_action, NULL};
@@ -3582,7 +3587,8 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// A playlist is the only list whose order belongs to the user. Every other
 	// one comes back from the database in an order the database decides, and
 	// dragging a row in it would have nowhere to be written down.
-	bool want_reorder = kind == LIBRARY_LIST_PLAYLIST;
+	// Not the card folder's, which are read only.
+	bool want_reorder = kind == LIBRARY_LIST_PLAYLIST && !playlists_card_folder_mode();
 
 	// Whatever this panel was showing before, it is not showing it now.
 	reorder_stop(p);

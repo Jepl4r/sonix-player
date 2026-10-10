@@ -2101,8 +2101,10 @@ int main(int argc, char **argv) {
 	waveform_set_cache_dir(gui_cfg.sd_root_path);
 	waveform_start();
 
-	// User playlists: plain .m3u files in <card>/Playlist.
+	// User playlists: tables in the index, or the .m3u files in <card>/Playlists
+	// when the Music settings say to use those.
 	playlists_init(gui_cfg.sd_root_path);
+	playlists_set_card_folder_mode(config_get_bool("music", "card_playlists", false));
 
 	// And the tree "play by folder" is allowed to walk: the same card, so the
 	// walk cannot wander off it.
