@@ -24,6 +24,7 @@
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/settings.h"
 #include "src/system/device/adb.h"
+#include "src/system/device/rsyncd.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/audio/usbaudio.h"
@@ -1939,6 +1940,7 @@ int main(int argc, char **argv) {
 	audio_set_gapless(config_get_int("audio", "gapless", 0) != 0);
 	clock_init();
 	adb_apply_saved_state();
+    rsyncd_apply_saved_state();
 	// The buttons on the headset cable: the kernel module starts disabled and
 	// only remembers what was last written to it, so the configured state has
 	// to be written back on every boot, on or off.

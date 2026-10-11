@@ -12,7 +12,7 @@ be dealt with:
      away any frame carrying more contacts than that. This script rewrites the
      insmod line in gt9xx_touch.sh.
 
-PATCHES.md has the full account of both.
+doc/PATCHES.md has the full account of both.
 
     python3 tools/gt9xx_multitouch_patch.py <module_driver directory>
     python3 tools/gt9xx_multitouch_patch.py --check  <directory>

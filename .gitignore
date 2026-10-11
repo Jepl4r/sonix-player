@@ -27,6 +27,12 @@ sonix-player/opusfile-*
 sonix-player/libogg-*
 sonix-player/freetype-*
 
+sonix-player/rsync-3.2.7/
+sonix-player/rsync-3.2.7.tar.gz
+sonix-player/usr/
+sonix-player/tmp/
+sonix-player/build.log
+
 sonix-player/opus-1.4.tar.gz
 sonix-player/opusfile-0.12.tar.gz
 sonix-player/wavpack-5.6.0.tar.bz2

@@ -1,0 +1,37 @@
+#!/bin/sh
+#
+# rsync daemon for music sync (PC -> R1). Off unless enabled by the
+# player (Developer options), which creates /usr/data/rsyncd.enabled.
+# The password lives in /usr/data/rsyncd.secrets ("music:PASSWORD",
+# mode 600) and is never part of the image.
+#
+
+ENABLE_FLAG=/usr/data/rsyncd.enabled
+SECRETS=/usr/data/rsyncd.secrets
+CONF=/etc/rsyncd.conf
+PIDFILE=/var/run/rsyncd.pid
+
+case "$1" in
+  start)
+	[ -f "$ENABLE_FLAG" ] || { echo "rsyncd: disabled (no $ENABLE_FLAG)"; exit 0; }
+	[ -f "$CONF" ] || { echo "rsyncd: no $CONF"; exit 0; }
+	[ -s "$SECRETS" ] || { echo "rsyncd: no secrets at $SECRETS; create 'music:PASSWORD' mode 600"; exit 0; }
+	echo "rsyncd: starting"
+	rsync --daemon --config="$CONF"
+	;;
+  stop)
+	echo "rsyncd: stopping"
+	[ -f "$PIDFILE" ] && kill "$(cat "$PIDFILE")" 2>/dev/null
+	killall rsync 2>/dev/null
+	;;
+  restart|reload)
+	"$0" stop
+	sleep 1
+	"$0" start
+	;;
+  *)
+	echo "Usage: $0 {start|stop|restart}"
+	exit 1
+esac
+
+exit 0

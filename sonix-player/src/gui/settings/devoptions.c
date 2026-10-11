@@ -9,6 +9,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/bluetooth/btlog.h"
 #include "src/system/device/adb.h"
+#include "src/system/device/rsyncd.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
@@ -17,6 +18,7 @@
 lv_obj_t *devoptions_screen;
 
 static lv_obj_t *adb_switch;
+static lv_obj_t *rsyncd_switch;
 static lv_obj_t *log_switch;
 static lv_obj_t *db_log_switch;
 static lv_obj_t *log_name_label; // rises to make room for the path when logging
@@ -42,6 +44,10 @@ static bool adb_pending;	// a tap is still being carried out
 static bool adb_wanted;		// what that tap asked for
 static uint32_t adb_asked_at;
 
+static bool rsyncd_pending;
+static bool rsyncd_wanted;
+static uint32_t rsyncd_asked_at;
+
 static void update_adb_row(void) {
 	if (!adb_switch) {
 		return;
@@ -65,6 +71,28 @@ static void update_adb_row(void) {
 		lv_obj_add_state(adb_switch, LV_STATE_CHECKED);
 	} else {
 		lv_obj_remove_state(adb_switch, LV_STATE_CHECKED);
+	}
+}
+
+static void update_rsyncd_row(void) {
+	if (!rsyncd_switch) {
+		return;
+	}
+
+	bool running = rsyncd_is_running();
+
+	if (rsyncd_pending) {
+		if (running == rsyncd_wanted || lv_tick_elaps(rsyncd_asked_at) > ADB_PENDING_MAX_MS) {
+			rsyncd_pending = false;
+		} else {
+			running = rsyncd_wanted;
+		}
+	}
+
+	if (running) {
+		lv_obj_add_state(rsyncd_switch, LV_STATE_CHECKED);
+	} else {
+		lv_obj_remove_state(rsyncd_switch, LV_STATE_CHECKED);
 	}
 }
 
@@ -133,6 +161,14 @@ static void adb_toggled_cb(lv_event_t *e) {
 	adb_set_enabled(adb_wanted);
 }
 
+static void rsyncd_toggled_cb(lv_event_t *e) {
+	(void)e;
+	rsyncd_wanted = lv_obj_has_state(rsyncd_switch, LV_STATE_CHECKED);
+	rsyncd_pending = true;
+	rsyncd_asked_at = lv_tick_get();
+	rsyncd_set_enabled(rsyncd_wanted);
+}
+
 static void log_toggled_cb(lv_event_t *e) {
 	(void)e;
 	logging_set_to_sd(lv_obj_has_state(log_switch, LV_STATE_CHECKED));
@@ -153,11 +189,13 @@ static void db_log_toggled_cb(lv_event_t *e) {
 static void adb_poll_cb(lv_timer_t *timer) {
 	(void)timer;
 	update_adb_row();
+	update_rsyncd_row();
 }
 
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
 	update_adb_row();
+	update_rsyncd_row();
 	update_log_row();
 	update_bt_log_row(); // the card may have come or gone since
 	lv_timer_resume(adb_poll_timer);
@@ -172,6 +210,8 @@ void devoptions_init(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(devoptions_screen, cfg, "developer_options");
 
 	settingsrow_toggle(container, "devoptions_adb", &adb_switch, adb_toggled_cb);
+    settingsrow_toggle(container, "devoptions_rsyncd", &rsyncd_switch, rsyncd_toggled_cb);
+	add_note(container, "devoptions_rsyncd_note");
 
 	lv_obj_t *log_card = settingsrow_toggle(container, "devoptions_log_to_microsd", &log_switch, log_toggled_cb);
 	log_name_label = lv_obj_get_child(log_card, 0);
@@ -198,6 +238,7 @@ void devoptions_init(gui_config_t *cfg) {
 	settingsrow_add(container, "processes", NULL, switch_screen_cb, processespage_screen);
 
 	update_adb_row();
+	update_rsyncd_row();
 	update_log_row();
 	update_bt_log_row();
 
