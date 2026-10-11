@@ -29,6 +29,8 @@
 #include "src/system/core/config.h"
 #include "src/system/library/cue.h"
 #include "src/system/library/folderorder.h"
+#include "src/system/library/library.h"
+#include "src/system/library/playlists.h"
 #include "src/system/playback/playlist.h"
 // SQLite is vendored: this header, not the system's.
 #include "src/system/db/sqlite3.h"
@@ -1383,6 +1385,12 @@ static bool index_path(char *out, size_t out_size) {
 	return out[0] != '\0';
 }
 
+// The tables the player's playlists are right now: the index's own, or the
+// mirrors of the card's Playlists folder, so the phone lists what the player does.
+static const char *playlist_prefix(void) {
+	return playlists_card_folder_mode() ? LIBRARY_CARD_PLAYLIST_PREFIX : LIBRARY_PLAYLIST_PREFIX;
+}
+
 // The playlists, read live like the favourites: the copy of the index on the
 // phone is only as fresh as its last download, and a playlist made a moment ago
 // on the player or from the phone belongs in the list now. Names with their
@@ -1399,15 +1407,18 @@ static void route_playlists(client_t *c) {
 	sqlite3 *db = NULL;
 	if (index_path(path, sizeof(path)) && sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
 		sqlite3_busy_timeout(db, 1000);
+		const char *prefix = playlist_prefix();
+		size_t prefix_len = strlen(prefix);
 		sqlite3_stmt *names = NULL;
 		if (sqlite3_prepare_v2(db,
 							   "SELECT name FROM sqlite_master WHERE type='table'"
-							   " AND name LIKE 'M3U\\_%' ESCAPE '\\' ORDER BY name",
+							   " AND substr(name, 1, length(?1)) = ?1 ORDER BY name",
 							   -1, &names, NULL) == SQLITE_OK) {
+			sqlite3_bind_text(names, 1, prefix, -1, SQLITE_STATIC);
 			bool first = true;
 			while (sqlite3_step(names) == SQLITE_ROW) {
 				const char *table = (const char *)sqlite3_column_text(names, 0);
-				if (!table || strlen(table) <= 4 || strchr(table, '"')) {
+				if (!table || strlen(table) <= prefix_len || strchr(table, '"')) {
 					continue;
 				}
 				char sql[400];
@@ -1420,7 +1431,7 @@ static void route_playlists(client_t *c) {
 				sqlite3_finalize(st);
 				buf_str(&j, first ? "{" : ",{");
 				first = false;
-				buf_json_field(&j, "name", table + 4, true);
+				buf_json_field(&j, "name", table + prefix_len, true);
 				buf_fmt(&j, "\"count\":%d}", count);
 			}
 		}
@@ -1453,7 +1464,8 @@ static void route_playlist(client_t *c, const char *query) {
 	if (index_path(path, sizeof(path)) && sqlite3_open_v2(path, &db, SQLITE_OPEN_READONLY, NULL) == SQLITE_OK) {
 		sqlite3_busy_timeout(db, 1000);
 		char sql[420];
-		snprintf(sql, sizeof(sql), "SELECT path,title,artist FROM \"M3U_%s\" WHERE present<>0 ORDER BY idx", name);
+		snprintf(sql, sizeof(sql), "SELECT path,title,artist FROM \"%s%s\" WHERE present<>0 ORDER BY idx",
+				 playlist_prefix(), name);
 		sqlite3_stmt *st = NULL;
 		if (sqlite3_prepare_v2(db, sql, -1, &st, NULL) == SQLITE_OK) {
 			bool first = true;
