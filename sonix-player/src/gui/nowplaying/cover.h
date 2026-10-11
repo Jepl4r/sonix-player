@@ -65,13 +65,18 @@ bool cover_load_image_memory(const void *data, size_t size, int box_w, int box_h
 // to the same place.
 //
 // 0 means there is no artwork at all. Cheap: it reads the picture but never
-// decodes it, and hashes its size with a slice of each end.
+// decodes it, and hashes its size with a slice of each end. For a track whose
+// picture is embedded the answer is kept in the thumbnail database, keyed by
+// the file's path, size and mtime, and the picture is not read again.
 uint64_t cover_source_id(const char *filepath);
 
-// Decodes the artwork once and builds both images the player screen needs: the
-// artwork itself, and the upside-down blurred copy drawn behind the controls.
-// Either output may be skipped by passing NULL for its size. Returns false if
-// the track has no artwork at all, leaving both outputs zeroed.
+// Builds both images the player screen needs: the artwork itself, and the
+// upside-down blurred copy drawn behind the controls. A picture already shown
+// at this size comes out of the thumbnail database (one row per picture, shared
+// by the tracks that carry it) and the backdrop is made from it; otherwise the
+// artwork is decoded once for both and the cover stored. Either output may be
+// skipped by passing NULL for its size. Returns false if the track has no
+// artwork at all, leaving both outputs zeroed.
 bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
 							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out);
 
@@ -146,5 +151,27 @@ bool cover_thumb_load(const char *path, bool is_dir, int size, cover_image_t *ou
 // list builds a hundred rows in one go, where a hundred small cache reads are
 // affordable and a hundred decodes are not.
 bool cover_thumb_cached(const char *path, int size, cover_image_t *out);
+
+// ---------------------------------------------------------------------------
+// Book covers
+//
+// An EPUB's cover is inside the book: reaching it means opening the ZIP and
+// reading the OPF, then decoding the picture. The shelf keeps the scaled cover
+// and the book's title in the thumbnail cache instead, keyed by the book's
+// path, size and modification time and by the box it is drawn in, so a book
+// is opened once and every later visit is a read. What a page shows is still
+// its own and is freed with the page.
+// ---------------------------------------------------------------------------
+
+// A cached cover for `path` at `box_w` x `box_h`. True on a hit: then
+// `*has_cover` says whether the book has a cover at all, `out` holds it when it
+// does (the caller cover_free()s it), and `title` what the book calls itself,
+// empty when it does not say.
+bool cover_book_cached(const char *path, int box_w, int box_h, cover_image_t *out, bool *has_cover, char *title,
+					   size_t title_size);
+
+// Keeps what was read from the book: its cover, or NULL for a book without
+// one, and its title.
+void cover_book_store(const char *path, int box_w, int box_h, const cover_image_t *cover, const char *title);
 
 #endif // COVER_H

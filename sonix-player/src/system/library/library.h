@@ -99,13 +99,26 @@ typedef enum {
 	LIBRARY_SPLIT_COMMA = 1 << 3,	  // ,
 	LIBRARY_SPLIT_FEAT = 1 << 4,	  // feat., ft., featuring, as a word
 	LIBRARY_SPLIT_VS = 1 << 5,		  // vs., versus, as a word
+	LIBRARY_SPLIT_X = 1 << 6,		  // x as a word, lower case, and the sign
+	LIBRARY_SPLIT_PLUS = 1 << 7,	  // +
+	LIBRARY_SPLIT_WITH = 1 << 8,	  // with, as a word
+	LIBRARY_SPLIT_AND = 1 << 9,		  // and, as a word
 } library_split_t;
+
+// The full-width forms CJK tags are written with count as the separator they
+// stand for: ／ as /, ＆ as &, ；as ;, ， and 、 as a comma, ＋ as +.
 
 // [library] split_artists (off) and artist_separators (; / & feat.).
 bool library_split_artists(void);
 void library_set_split_artists(bool on);
 unsigned library_artist_separators(void);
 void library_set_artist_separators(unsigned separators);
+
+// [library] split_album_artists (off): the album artist split as well, at the
+// artist separators and with the same exceptions, so a record by "A & B" is
+// listed under A and under B in Album artists. Only with split_artists on.
+bool library_split_album_artists(void);
+void library_set_split_album_artists(bool on);
 
 // [library] split_genres (off) and genre_separators (; / ,).
 bool library_split_genres(void);
@@ -275,6 +288,15 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 // Looks a track's display title up by its file path (the scan stored it).
 // False when the file is not in the index; `out` untouched then.
 bool library_track_title(const char *path, char *out, size_t out_size);
+
+// Where each of `count` paths sits on its record, as the scan stored it: the
+// album, the disc (1 when the file has no disc tag) and the track number (0
+// when it has none). `cb` is called once for every path the index holds, with
+// its position in `paths`, and never for one it does not. Called with the
+// index locked: `cb` must not call back into the library. Returns how many
+// were found.
+typedef void (*library_place_cb)(size_t index, const char *album, int disc, int track, void *user);
+size_t library_track_places(const char *const *paths, size_t count, library_place_cb cb, void *user);
 
 // An album is its name AND whose it is: two records called "Greatest Hits" by
 // two different artists are two albums. Whose is the album artist, the artist

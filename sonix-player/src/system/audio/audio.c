@@ -70,7 +70,8 @@ static void host_pace(snd_pcm_sframes_t frames, int rate) {
 // back by the returned amount.
 // One per turn of a decode loop, for the watchdog.
 //
-// The playback thread runs SCHED_RR, and this device has one core: a turn that
+// The playback thread runs SCHED_RR while its stream plays (see
+// playback_follow), and this device has one core: a turn that
 // never blocks starves everything else, the interface included, and the log
 // stops because nothing else is scheduled to write to it. From outside that is
 // a frozen player with nothing in the log -- and from the watchdog's side a
@@ -295,49 +296,60 @@ static double restart_fresh_pos;
 // ---------------------------------------------------------------------------
 // Re-initialising the output route after waking from mem.
 //
-// mem powers the HBC3000 (the FPGA audio bridge) down; its kernel resume is a
-// no-op (plat_data+0x48 == 0), so the hardware stays off -- but the software
-// route ("Output Port Switch") survives in kernel RAM. On the first play
-// auto_set_output() asks for the same route X as before mem: the machine driver
-// callback sees X==X, takes the "no change" shortcut and never reaches
-// hbc3000_enable() (the chip's real power-on/program-RAM step). hbc3000_start()
-// then runs on dead hardware, the AIC reset fails and the device reboots.
+// mem powers the HBC3000 (the FPGA audio bridge) off, and the card's
+// suspend_pre resets the driver's route to 0. The first route write after it
+// is therefore a real change, which runs hbc3000_enable(): power, the FPGA
+// configuration loaded over JTAG, the DAC powered up. A PCM opened before that
+// write starts the HBC3000 dead, the AIC reset fails and the device reboots.
 //
-// So after wake and before opening any PCM, a real X -> Y -> X transition is
-// forced on the actual ALSA control. Two different values make the kernel run
-// the full route change, which goes through hbc3000_enable() and powers the
-// chip back up. Nothing is listened to on Y: it is only the way to traverse the
-// re-init branch.
-//
-// Y has to be a different PORT, not merely a different number. Routes 1 and 2
-// are the two faces of the 3.5 mm socket and the driver reconfigures nothing
-// moving between them (see write_output_route in alsa-controls.c), so a Y of 2
-// for an X of 1 would traverse nothing and leave the HBC3000 off. There are two
-// ports, so the choice is between the balanced one and either of the
-// single-ended pair.
-void audio_force_output_reinit_after_resume(void) {
+// The write takes a few hundred milliseconds in the driver, so on the R3 Pro II
+// it runs on a low-priority thread while the screen comes back. The card is
+// closed to everything else (alsa_wait_output_reinit()) from the parking of
+// the route before mem until the write and the DAC level are done.
+// ---------------------------------------------------------------------------
+
+// On the thread that called alsa_output_reinit_enter_thread().
+static void output_reinit_now(void) {
+	long start = log_ms();
+	alsa_controls_rewrite_output();
+	// The DAC back once the real route is live again.
+	alsa_suspend_restore();
+	fprintf(stderr, "audio: output re-init after resume done in %ld ms\n", log_ms() - start);
+}
+
+static void *output_reinit_thread(void *unused) {
+	(void)unused;
+	alsa_output_reinit_enter_thread();
+	thread_be_low_priority("outreinit");
+	output_reinit_now();
+	alsa_output_reinit_leave_thread();
+	alsa_output_reinit_end();
+	return NULL;
+}
+
+void audio_start_output_reinit_after_resume(void) {
 	// No HBC3000 on the CS43131 board: nothing went down, nothing to re-init.
 	if (alsa_board_is_cs43131()) {
 		alsa_suspend_restore();
 		return;
 	}
-	// 1 = 3.5 mm line out, 2 = 3.5 mm headphone, 3 = 4.4 mm balanced.
-	int x = detect_output();
-	int y = output_reinit_partner(x);
-	fprintf(stderr, "audio: output re-init after resume, %d -> %d -> %d\n", x, y, x);
-#ifndef HOST_BUILD
-	alsa_set_control("Output Port Switch", y);
-	usleep(120 * 1000); // settle: how long the driver takes over a route change
-	alsa_set_control("Output Port Switch", x);
-	usleep(120 * 1000);
+	fprintf(stderr, "audio: output re-init after resume, route %d, in the background\n", detect_output());
 
-	// X was written by hand, bypassing the alsa-controls.c cache: realign it so
-	// the play's first auto_set_output() sees X==X and does not touch the route
-	// again with a stream already coming.
-	alsa_controls_note_output(x);
-#endif
-	// The DAC back once the real route is live again.
-	alsa_suspend_restore();
+	// Closed already by the parking before mem; closed here otherwise.
+	alsa_output_reinit_begin();
+	pthread_attr_t attr;
+	pthread_t thread;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	int err = pthread_create(&thread, &attr, output_reinit_thread, NULL);
+	pthread_attr_destroy(&attr);
+	if (err != 0) {
+		fprintf(stderr, "audio: no thread for the output re-init (%s); done here\n", strerror(err));
+		alsa_output_reinit_enter_thread();
+		output_reinit_now();
+		alsa_output_reinit_leave_thread();
+		alsa_output_reinit_end();
+	}
 }
 
 // The pop into the headphones as the R3 Pro II goes into mem.
@@ -348,27 +360,28 @@ void audio_force_output_reinit_after_resume(void) {
 // the route, the balanced line-out flag and DOP_EN, the codec's are before the
 // amplifier -- but a route change is the machine driver's own orderly sequence
 // (mute the old port, reconfigure, unmute the new one), and it is silent: the
-// re-init above runs one at every wake and nobody hears it.
+// route write at every wake runs the same sequence and nobody hears it.
 //
 // So before the suspend the route is moved to the other socket, the empty one.
 // The port in use is muted by the driver, and what goes down in mem is an
-// amplifier driving nothing. The wake needs nothing more: the re-init writes
-// the partner and then the real route, and the second write is a real change
-// from the parked one, which is the full sequence that powers the HBC3000 back.
+// amplifier driving nothing. The re-init above puts the real route back.
 //
-// Called with the PCM closed: audio_suspend_freeze() has run.
+// Called with the PCM closed: audio_suspend_freeze() has run. Closes the card
+// to everything but the re-init that follows the suspend, or the attempt.
 void audio_park_output_before_suspend(void) {
 	if (alsa_board_is_cs43131()) {
 		return; // no HBC3000, and no thump to take away
 	}
+	alsa_wait_output_reinit(); // the last wake's re-init, if still running
 	int x = detect_output();
 	if (x < 1 || x > 3) {
+		alsa_output_reinit_begin();
 		return; // not one of the analogue sockets
 	}
 	int y = output_reinit_partner(x);
 	// The DAC first: the route change mutes the old port, but the DAC feeding
 	// it would still be live when its supply goes. Silent until the wake has
-	// put the real route back (audio_force_output_reinit_after_resume()).
+	// put the real route back (audio_start_output_reinit_after_resume()).
 	alsa_suspend_mute();
 	// The balanced line-out flag with it: on the 4.4 mm socket headphone and
 	// line out are the same route, and a report of a pop has to say which.
@@ -376,10 +389,9 @@ void audio_park_output_before_suspend(void) {
 #ifndef HOST_BUILD
 	alsa_set_control("Output Port Switch", y);
 	usleep(120 * 1000); // the driver's mute and route change, before the power goes
-	// Written by hand like the re-init: the cache follows, so a suspend that
-	// fails after this puts the real route back at the next play.
 	alsa_controls_note_output(y);
 #endif
+	alsa_output_reinit_begin();
 }
 
 // True while the playback thread holds an open PCM handle. The suspend path
@@ -1296,6 +1308,9 @@ static void release_page_cache(void) {
 static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_per_sample, snd_pcm_uframes_t *period_size_out) {
 	snd_pcm_t *pcm_handle = NULL;
 
+	// Not on the card while the route re-init after mem is powering it up.
+	alsa_wait_output_reinit();
+
 	release_external_output();
 
 	// A track change closes the old PCM and opens a new one back to back. On
@@ -1676,8 +1691,8 @@ static void track_started(void) {
 
 // A line every HEALTH_PERIOD_MS while a track plays: the share of the core the
 // playback thread used, how many writes needed recovering, and MemAvailable.
-// The thread runs SCHED_RR on a single core, so whatever it uses is taken from
-// the interface first.
+// While a stream plays the thread runs SCHED_RR on a single core, so whatever
+// it uses is taken from the interface first.
 #define HEALTH_PERIOD_MS 10000
 
 static volatile unsigned write_recoveries; // counted in pcm_write_recover()
@@ -2171,12 +2186,89 @@ static snd_pcm_sframes_t pcm_write_bluetooth(snd_pcm_t *pcm, const void *buf, sn
 	return (snd_pcm_sframes_t)done;
 }
 
+// The playback thread is real-time only while a stream is playing.
+//
+// Real-time is what keeps a playing stream fed whatever the interface is
+// doing. But a stream that is not running yet -- a track starting, a seek, a
+// resume, a recovery -- is filled from empty in one go: the start threshold is
+// the whole buffer, so nothing is written to the card until it is full, and
+// no write blocks on the way. At 192 kHz that is most of a second of audio
+// decoded, run through the effects and written without a pause, on the one
+// core, ahead of the interface -- right as the now-playing screen slides in.
+// Opening the device is worse: the codec's power-up and reset are busy waits
+// in the driver (more than a hundred milliseconds of them), and a real-time
+// caller holds the core through every one.
+//
+// Nothing is playing in either case, so there is nothing for the priority to
+// protect: the thread steps down to the interface's level until the stream
+// starts, and goes back up from the first write that finds it running.
+#define PLAYBACK_RT_PRIORITY 10
+
+static bool playback_rt;
+
+static void playback_set_rt(bool on) {
+	if (on == playback_rt) {
+		return;
+	}
+	struct sched_param param = {.sched_priority = on ? PLAYBACK_RT_PRIORITY : 0};
+	if (pthread_setschedparam(pthread_self(), on ? SCHED_RR : SCHED_OTHER, &param) == 0) {
+		playback_rt = on;
+	}
+}
+
+// The stream the thread's priority follows, its buffer, and how much has been
+// written to it since it last stopped playing.
+static snd_pcm_t *follow_pcm;
+static snd_pcm_uframes_t follow_buffer;
+static snd_pcm_uframes_t follow_filled;
+
+static bool pcm_playing(snd_pcm_t *pcm) {
+	snd_pcm_state_t st = snd_pcm_state(pcm);
+	return st == SND_PCM_STATE_RUNNING || st == SND_PCM_STATE_DRAINING;
+}
+
+// Real-time while `pcm` plays, the interface's level otherwise. NULL is a
+// device about to be opened. A whole buffer written also counts as playing,
+// whatever the state says: the stream starts on a full buffer, so by then it
+// is either running or about to, and a PCM that never reports it does not
+// leave the thread below the interface for the length of a track.
+static void playback_follow(snd_pcm_t *pcm) {
+	if (pcm != follow_pcm) {
+		follow_pcm = pcm;
+		follow_filled = 0;
+		follow_buffer = 0;
+		snd_pcm_uframes_t period = 0;
+		if (pcm && snd_pcm_get_params(pcm, &follow_buffer, &period) < 0) {
+			follow_buffer = 0;
+		}
+	}
+	if (!pcm) {
+		playback_set_rt(false);
+		return;
+	}
+	if (pcm_playing(pcm)) {
+		follow_filled = 0;
+		playback_set_rt(true);
+		return;
+	}
+	playback_set_rt(follow_buffer > 0 && follow_filled >= follow_buffer);
+}
+
+// After a write of `frames` to `pcm`.
+static void playback_wrote(snd_pcm_t *pcm, snd_pcm_uframes_t frames) {
+	if (pcm == follow_pcm && !pcm_playing(pcm)) {
+		follow_filled += frames;
+	}
+	playback_follow(pcm);
+}
+
 static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd_pcm_uframes_t frames, int channels,
 										   int rate, int bits, snd_pcm_uframes_t *period) {
 	for (int attempt = 0; attempt < 8; attempt++) {
 		if (!*pcm) {
 			return -EIO; // a previous recovery closed it and could not get it back
 		}
+		playback_follow(*pcm);
 
 		// Never write blind to a RUNNING stream. The blocking writei waits for
 		// room in the card's buffer; after a storm of underruns this hardware
@@ -2221,6 +2313,7 @@ static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd
 			written = snd_pcm_writei(*pcm, buf, frames);
 		}
 		if (written >= 0) {
+			playback_wrote(*pcm, (snd_pcm_uframes_t)written);
 			return written;
 		}
 
@@ -2252,6 +2345,7 @@ static snd_pcm_sframes_t pcm_write_recover(snd_pcm_t **pcm, const void *buf, snd
 		// immediately only earns another EIO.
 		snd_pcm_close(*pcm);
 		*pcm = NULL;
+		playback_follow(NULL);
 		usleep((attempt + 1) * 150 * 1000);
 		// The route, not just the PCM. Reopening the stream without redoing the
 		// codec routing leaves the DAC in a state where high-rate streams never
@@ -2281,6 +2375,7 @@ static bool pcm_reroute(snd_pcm_t **pcm, int channels, int rate, int bits, snd_p
 		snd_pcm_close(*pcm);
 		*pcm = NULL;
 	}
+	playback_follow(NULL);
 	usleep(150 * 1000); // let the switch settle before the codec is poked
 	auto_set_output();
 	*pcm = open_pcm_device(channels, rate, bits, period);
@@ -2508,6 +2603,7 @@ static void play_wav_file(const char *filepath) {
 	// the decoded path.
 	snd_pcm_uframes_t period_size;
 	snd_pcm_t *pcm_handle = gapless_take(info.channels, info.sample_rate, info.out_bits, &period_size);
+	playback_follow(pcm_handle);
 	if (pcm_handle) {
 		pcm_device_open = true;
 	} else {
@@ -2657,6 +2753,7 @@ static void play_wav_file(const char *filepath) {
 				snd_pcm_close(pcm_handle);
 				pcm_handle = NULL;
 				pcm_device_open = false;
+				playback_follow(NULL);
 				fprintf(stderr, "audio[%ld]: device released while paused (DAC powered down)\n", log_ms());
 			}
 
@@ -2691,6 +2788,7 @@ static void play_wav_file(const char *filepath) {
 					snd_pcm_close(pcm_handle);
 					pcm_handle = NULL;
 					pcm_device_open = false;
+					playback_follow(NULL);
 					// Breathing room after the close: the same as the 120 ms
 					// on a track's way out and the 150 ms in pcm_reroute. On
 					// this driver an open glued to a close comes back busy or
@@ -2733,6 +2831,7 @@ static void play_wav_file(const char *filepath) {
 							snd_pcm_close(pcm_handle);
 							pcm_handle = NULL;
 							pcm_device_open = false;
+							playback_follow(NULL);
 							audio_command = AUDIO_CMD_STOP;
 							playback_status = AUDIO_STATUS_STOPPED;
 							pthread_mutex_unlock(&audio_mutex);
@@ -2772,6 +2871,7 @@ static void play_wav_file(const char *filepath) {
 			}
 		}
 
+		playback_follow(pcm_handle);
 		// Up to the end of the data chunk and no further: what follows it is
 		// metadata, not audio.
 		health_mark(&health);
@@ -3103,6 +3203,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// is the whole of gapless. Never for DoP -- see the comment above
 	// gapless_release().
 	snd_pcm_t *pcm_handle = passthrough ? NULL : gapless_take(channels, out_rate, out_bits, &period_size);
+	playback_follow(pcm_handle);
 	if (pcm_handle) {
 		pcm_device_open = true;
 	} else {
@@ -3342,6 +3443,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				snd_pcm_close(pcm_handle);
 				pcm_handle = NULL;
 				pcm_device_open = false;
+				playback_follow(NULL);
 				fprintf(stderr, "audio[%ld]: device released while paused (DAC powered down)\n", log_ms());
 			}
 
@@ -3369,6 +3471,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 					snd_pcm_close(pcm_handle);
 					pcm_handle = NULL;
 					pcm_device_open = false;
+					playback_follow(NULL);
 					// Breathing room after the close -- like the 120 ms on a
 					// track's way out and the 150 ms in pcm_reroute: on this
 					// driver an open glued to a close comes back busy or
@@ -3397,6 +3500,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 							snd_pcm_close(pcm_handle);
 							pcm_handle = NULL;
 							pcm_device_open = false;
+							playback_follow(NULL);
 							audio_command = AUDIO_CMD_STOP;
 							playback_status = AUDIO_STATUS_STOPPED;
 							pthread_mutex_unlock(&audio_mutex);
@@ -3456,6 +3560,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		// same at normal speed, and deliberately not at any other.
 		uint64_t frames_read;
 		uint64_t input_frames;
+		// Before the decode, as a seek or a resume this turn has just emptied
+		// the stream (see playback_follow).
+		playback_follow(pcm_handle);
 		health_mark(&health);
 		if (out_bits == 32) {
 			frames_read = decoder_read_pcm_frames_s32(dec, chunk_frames, (int32_t *)buffer);
@@ -3774,6 +3881,11 @@ static void play_file(const char *filepath) {
 	// the codec route while another stream's PCM is open is the move that
 	// wedges this driver (see pcm_reroute), and this is the one place on the
 	// way into a track where nothing is holding a lock.
+	// No stream of this player's is playing out: the route and the open that
+	// follow can wait for the interface (see playback_follow).
+	if (!gapless_holding()) {
+		playback_follow(NULL);
+	}
 	release_external_output();
 	auto_set_output();
 
@@ -3782,6 +3894,8 @@ static void play_file(const char *filepath) {
 	} else {
 		play_decoded_file(filepath, format);
 	}
+	// A held stream may still be playing out its last buffer.
+	playback_set_rt(true);
 
 	pthread_mutex_lock(&audio_mutex);
 	bool replaced = play_request;
@@ -3806,8 +3920,8 @@ static void *playback_thread_func(void *arg) {
 	// Real-time round-robin, modestly: the UI decoding a 9 MB cover on the
 	// one core must never starve the thread that feeds the DAC. Failing is
 	// fine (the host build has no privilege for it).
-	struct sched_param rt = {.sched_priority = 10};
-	if (pthread_setschedparam(pthread_self(), SCHED_RR, &rt) == 0) {
+	playback_set_rt(true);
+	if (playback_rt) {
 		fprintf(stderr, "audio: playback thread running at RT priority\n");
 	}
 

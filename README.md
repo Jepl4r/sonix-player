@@ -15,7 +15,7 @@ into each image.
 | DAC | two Cirrus Logic CS43198 | one Cirrus Logic CS43131 |
 | headphone outputs | 3.5 mm, 4.4 mm balanced | 3.5 mm |
 | DAC controls | digital filters, DRE, NOS | digital filters, NOS |
-| touch | Goodix gt9xx, patched for multitouch | Hynitron CST8xx, open-source driver, two fingers |
+| touch | Goodix gt9xx, open-source driver, five fingers | Hynitron CST8xx, open-source driver, two fingers |
 | kernel | custom 4.4.94, see [hiby-custom-kernel](https://github.com/Jepl4r/hiby-custom-kernel) | the same |
 | double tap to wake | yes | no |
 | buttons | volume on the left flank, playback on the right | all on the right flank, one skip key |
@@ -225,8 +225,8 @@ inside the folder. That is how the resource tree gets installed:
 assets/R3PII/                           (and assets/R1/, the same shape)
 ├── etc/                             boot logos at the panel's size, D-Bus policy, certificates, S80_bt_init
 ├── usr/
-│   ├── bin/                         bluealsa
-│   ├── lib/                         the bluealsa ALSA plugin
+│   ├── bin/                         bluealsa, ntfs-3g, thttpd
+│   ├── lib/                         the bluealsa ALSA plugin, and OpenSSL, libupnp, libsndfile and fdk-aac (see "System libraries" below)
 │   ├── resource/
 │   │   └── sonix/
 │   │       ├── language/            the 8 .ini files
@@ -237,7 +237,7 @@ assets/R3PII/                           (and assets/R1/, the same shape)
 │   │       ├── fonts/               default.otf, bold.otf, then korean, thai and arabic .otf, each with a -bold
 │   │       └── gui/                 some of the .png assets the UI loads at runtime - the rest are inside the binary.
 │   └── share/web/                   icons and images for the Wi-Fi transfer page                        
-└── module_driver/                   the open-source modules, the patched gt9xx touch driver and the changed load scripts
+└── module_driver/                   the open-source modules and the changed load scripts
 ```
 
 `system-info.json` has to be there, and its `device-name` has to be the model
@@ -284,6 +284,9 @@ sudo apt install p7zip-full squashfs-tools genisoimage
 sudo dnf install p7zip squashfs-tools genisoimage
 ```
 
+perl as well, which macOS and most Linux systems already have: it reads the
+stock `sa_sound_hbc3000.ko` (see step 5).
+
 ### Build
 
 ```bash
@@ -296,9 +299,16 @@ It runs through without asking anything, once for each model:
 2. deletes `usr/bin/hiby_player` and installs `usr/bin/sonix_player`
 3. renames `hiby_player.sh` to `sonix_player.sh` and rewrites the name inside it
 4. points `etc/init.d/S92_03_start_music_player` at the new launcher script
-5. copies `assets/<model>/` over the rootfs, then installs
+5. for the R3 Pro II, copies the HBC3000's FPGA configuration out of the stock
+   `sa_sound_hbc3000.ko` into `lib/firmware/hbc3000.fw`, where the open module
+   loads it from (it is HiBy's, so it is not in the assets); then copies
+   `assets/<model>/` over the rootfs and installs
    `usr/bin/sonix_launch` and has the launcher script exec it (skipped with a warning
-   if it is not there)
+   if it is not there). Before the copy, a library in `assets/<model>/usr/lib`
+   takes the place of the stock one: the stock versioned file it replaces goes
+   (`libupnp.so.6.3.4` for `libupnp.so.6`, and so on), the symlinks to it are
+   pointed at the new file, and the stock `libntfs-3g` goes, which the new
+   `ntfs-3g` has linked in
 6. deletes the stock interface's own resources - `litegui`, `layout`, `str`,
    `fonts`.
 7. checks the `device-name` in `system-info.json` and writes the build stamp
@@ -324,16 +334,44 @@ carried across from the stock firmware.
 |---|---|---|
 | sound card | `x1600_hiby_r3proii_sound_card.ko` | `x1600_hiby_r1_sound_card.ko` |
 | DAC | `codec_cs43198_dual.ko` | `codec_cs43131.ko` |
-| panel, touch | `lcd_st7701_sbtc033001.ko` | `cst8xx_touch.ko` (two fingers) |
+| panel, touch | `lcd_st7701_sbtc033001.ko`, `gt9xx_touch.ko` (five fingers) | `lcd_lg35583.ko`, `cst8xx_touch.ko` (two fingers) |
 | keys | `keyboard_adc.ko` | `keyboard_adc_multifunc.ko` |
 | LEDs | `leds_sgm31324_add.ko` | `leds_pwm_add.ko` |
 | Type-C | `fusb302b_add.ko` | `tcs1421_add.ko` |
-| board | `gpio_aw95016_add.ko`, `sau.ko` | |
-| on both | `cw2015.ko` (fuel gauge), `soc_efuse.ko`, `sa_sound_switch.ko`, `sa_earpods_adc.ko`, `pwm_backlight.ko`, `soc_utils.ko`, `sa_config_module.ko` | the same |
+| charger | `mp2731.ko`, which also wakes the player from standby when the cable goes in or out, and keeps the charge limit itself | |
+| board | `gpio_aw95016_add.ko`, `sau.ko`, `sa_sound_hbc3000.ko` (the HBC3000 FPGA; its configuration comes from the stock firmware, see step 5 above) | |
+| on both | `cw2015.ko` (fuel gauge), `soc_efuse.ko`, `soc_adc.ko`, `rmem_manager.ko`, `i2c_gpio_add.ko` (the DAC's I2C bus), `keyboard_gpio_add.ko` (power and track keys), `sa_sound_switch.ko`, `sa_earpods_adc.ko`, `pwm_backlight.ko`, `soc_utils.ko`, `sa_config_module.ko`, `utils.ko` (the helpers the other modules link against), `soc_gpio.ko` (`/dev/gpio`), `sa_hgl_dma.ko` (`/dev/sa_hgl_dma`), `soc_aic.ko` (the I2S controller), `soc_pwm.ko` (the PWM controller), `soc_i2c.ko` (the I2C controllers), `soc_fb.ko` (the LCD controller, `/dev/fb0`), `soc_msc.ko` (the MMC/SD controllers: the microSD slot and the Wi-Fi chip's SDIO), `axp2101.ko` (the PMIC: regulators and power off) | the same |
 | Wi-Fi | `brcmfmac.ko`, `brcmutil.ko` and `bcm_wlbt_power.ko` in place of `cywdhd.ko` | the same |
 
-The R3 Pro II's `gt9xx_touch.ko` is still HiBy's, patched for multitouch (see
-[PATCHES.md](PATCHES.md)).
+### System libraries
+
+`assets/<model>/usr/lib` and `usr/bin` carry newer builds of libraries and
+programs the stock firmware has, the same files in both models:
+
+| | stock | assets |
+|---|---|---|
+| `libssl.so.1.1`, `libcrypto.so.1.1` | OpenSSL 1.1.1f | 1.1.1w |
+| `libupnp.so.6`, `libixml.so.2`, `libthreadutil.so.6` | pupnp 1.6.21 | 1.6.25 |
+| `libsndfile.so.1` | 1.0.28 | 1.2.2 |
+| `libfdk-aac.so.2` | 2.0.1 | 2.0.3 |
+| `ntfs-3g` | 2015.3.14 | 2022.10.3, with libntfs-3g linked in |
+| `thttpd` | 2.27 | 2.29 |
+
+The sonames, paths and build options are the stock ones, so the stock
+programs that use them (`wpa_supplicant`, `ntpd`, `curl`, `adbd`, `dmrd`,
+`shairport`, `bluealsa`) load them unchanged. They are built by
+`tools/system-libs/build.sh` from the upstream sources, against the device's
+own glibc 2.22 taken from a stock rootfs, and checked with
+`tools/system-libs/abicheck.py`:
+
+```bash
+# Ubuntu 24.04, or docker run -it -v "$PWD":/w ubuntu:24.04
+apt install gcc-9-mipsel-linux-gnu binutils-mipsel-linux-gnu libc6-dev-mipsel-cross \
+    autoconf automake libtool pkg-config make git perl python3-pyelftools zlib1g-dev
+tools/system-libs/build.sh <extracted stock rootfs> out
+```
+
+`out/usr/lib` and `out/usr/bin` then go into `assets/R3PII/` and `assets/R1/`.
 
 ### Patches
 
@@ -384,7 +422,7 @@ sonix-player/
 │   ├── assets/
 │   │   ├── R3PII/                   the R3 Pro II overlay
 │   │   │   ├── etc/                 boot logos (480x720), sonix-player.conf, cert.pem, modified S80_bt_init
-│   │   │   ├── module_driver/       the open-source modules; patched gt9xx_touch.ko, gt9xx_touch.sh and leds_sgm31324_add.sh with 3 added LED registers
+│   │   │   ├── module_driver/       the open-source modules, gt9xx_touch.ko among them; gt9xx_touch.sh for five fingers and leds_sgm31324_add.sh with 3 added LED registers
 │   │   │   └── usr/                 bluealsa 4.3.1, resources required by Sonix Player
 │   │   └── R1/                      the R1 overlay
 │   │       ├── etc/                 boot logos (480x800), sonix-player.conf, cert.pem, modified S80_bt_init
@@ -446,7 +484,8 @@ sonix-player/
 │   │   │
 │   │   └── main.c                   entry point: display, input, and the startup order
 │   │
-│   ├── tools/                       generators, and the multitouch patches for the stock touch drivers
+│   ├── tools/                       generators, the multitouch patches for the stock touch drivers,
+│   │                                and system-libs/, the build of the system libraries in the assets
 │   │
 │   ├── web/                         Wi-Fi transfer page, source of src/system/net/webpage.h
 │   │   ├── icons/                   26 Lucide glyphs, inlined as <symbol>

@@ -161,6 +161,33 @@ rename_player_in() {
 	grep -n "sonix_player" "$file" | sed 's/^/        /'
 }
 
+# Copies FS_data, the HBC3000's FPGA configuration, out of the stock
+# sa_sound_hbc3000.ko into a file: the array named by the module's symbol table,
+# in its own section. perl because macOS and Linux both have it.
+hbc3000_firmware() {
+	perl -e '
+		local $/;
+		open(my $f, "<:raw", $ARGV[0]) or die "$ARGV[0]: $!\n";
+		my $e = <$f>;
+		substr($e, 0, 6) eq "\x7fELF\x01\x01" or die "$ARGV[0]: not a 32-bit little-endian ELF\n";
+		my $shoff = unpack("V", substr($e, 0x20, 4));
+		my ($shentsize, $shnum) = unpack("vv", substr($e, 0x2e, 4));
+		my @sh = map { [unpack("V10", substr($e, $shoff + $_ * $shentsize, 40))] } 0 .. $shnum - 1;
+		for my $s (grep { $_->[1] == 2 } @sh) {
+			my $strtab = $sh[$s->[6]]->[4];
+			for (my $o = 0; $o < $s->[5]; $o += 16) {
+				my ($name, $value, $size, $info, $other, $shndx) =
+					unpack("VVVCCv", substr($e, $s->[4] + $o, 16));
+				next unless unpack("Z*", substr($e, $strtab + $name)) eq "FS_data";
+				open(my $out, ">:raw", $ARGV[1]) or die "$ARGV[1]: $!\n";
+				print $out substr($e, $sh[$shndx]->[4] + $value, $size);
+				exit 0;
+			}
+		}
+		die "$ARGV[0]: no FS_data\n";
+	' "$1" "$2"
+}
+
 # Writes an image into the OTA folder the way the updater reads it: 512 KiB
 # chunks named NAME.NNNN.<md5 of the previous chunk>, the first one named after
 # the md5 of the whole image, and ota_md5_NAME.<md5 of the whole image> listing
@@ -346,6 +373,74 @@ build_one() {
 	say ""
 
 	# ==========================================================================
+	# 4b. The HBC3000's configuration
+	# ==========================================================================
+	#
+	# The open sa_sound_hbc3000.ko loads the FPGA's configuration from
+	# lib/firmware/hbc3000.fw. The configuration is HiBy's and is not in the
+	# assets: it is taken here from the stock module, before the overlay puts
+	# the open one in its place.
+	if [ -f "$ASSETS_DIR/$MODEL_DIR/module_driver/sa_sound_hbc3000.ko" ]; then
+		step "[$MODEL_NAME] taking the HBC3000 configuration from the stock module"
+
+		command -v perl >/dev/null 2>&1 || die "perl is needed to read the stock sa_sound_hbc3000.ko."
+		STOCK_HBC="$SQUASH_DIR/module_driver/sa_sound_hbc3000.ko"
+		[ -f "$STOCK_HBC" ] || die "the stock firmware has no module_driver/sa_sound_hbc3000.ko.
+	  The open one would have no configuration to load: the outputs would stay silent."
+		mkdir -p "$SQUASH_DIR/lib/firmware"
+		hbc3000_firmware "$STOCK_HBC" "$SQUASH_DIR/lib/firmware/hbc3000.fw" ||
+			die "no configuration in the stock sa_sound_hbc3000.ko."
+		say "    lib/firmware/hbc3000.fw: $(wc -c < "$SQUASH_DIR/lib/firmware/hbc3000.fw" | tr -d ' ') bytes"
+		say ""
+	fi
+
+	# ==========================================================================
+	# 4c. Room for the system libraries in the assets
+	# ==========================================================================
+	#
+	# assets/MODEL/usr/lib holds libraries rebuilt from newer sources under
+	# their sonames (tools/system-libs in sonix-player). In the stock image a
+	# soname is usually a symlink to a versioned file, which the overlay would
+	# leave behind beside the new library: the symlink and that file go, and
+	# every other symlink to the file (libfoo.so) is pointed at the soname.
+	LIB_ASSETS="$(cd "$ASSETS_DIR/$MODEL_DIR" && find usr/lib -maxdepth 1 -type f -name 'lib*.so.*' 2>/dev/null | sort)"
+	if [ -n "$LIB_ASSETS" ]; then
+		step "[$MODEL_NAME] making room for the updated system libraries"
+
+		for rel in $LIB_ASSETS; do
+			soname="$(basename "$rel")"
+			dst="$SQUASH_DIR/$rel"
+			[ -L "$dst" ] || continue
+			target="$(readlink "$dst")"
+			rm -f "$dst"
+			case "$target" in
+			*/*) continue ;; # outside usr/lib: not this library's file
+			esac
+			if [ -f "$SQUASH_DIR/usr/lib/$target" ] && [ ! -L "$SQUASH_DIR/usr/lib/$target" ]; then
+				rm -f "$SQUASH_DIR/usr/lib/$target"
+				say "    usr/lib/$target removed: $soname replaces it"
+			fi
+			for link in "$SQUASH_DIR"/usr/lib/*; do
+				[ -L "$link" ] && [ "$(readlink "$link")" = "$target" ] || continue
+				ln -sfn "$soname" "$link"
+				say "    usr/lib/$(basename "$link") -> $soname"
+			done
+		done
+
+		# The assets' ntfs-3g has libntfs-3g linked in, and nothing else in
+		# the image uses the stock library.
+		NTFS_ASSET="$ASSETS_DIR/$MODEL_DIR/usr/bin/ntfs-3g"
+		if [ -f "$NTFS_ASSET" ] && ! LC_ALL=C grep -aq 'libntfs-3g\.so\.' "$NTFS_ASSET"; then
+			for f in "$SQUASH_DIR"/usr/lib/libntfs-3g.so*; do
+				[ -e "$f" ] || [ -L "$f" ] || continue
+				rm -f "$f"
+				say "    usr/lib/$(basename "$f") removed: the new ntfs-3g carries it"
+			done
+		fi
+		say ""
+	fi
+
+	# ==========================================================================
 	# 5. The overlay
 	# ==========================================================================
 	step "[$MODEL_NAME] copying the overlay onto the root of the rootfs"
@@ -430,8 +525,8 @@ build_one() {
 	done
 
 	# Anything else the overlay put in a directory of executables, the
-	# kernel-module scripts and the init scripts with it.
-	for rel in $(cd "$ASSETS_DIR/$MODEL_DIR" && find usr/bin module_driver etc/init.d -type f 2>/dev/null); do
+	# libraries, the kernel-module scripts and the init scripts with it.
+	for rel in $(cd "$ASSETS_DIR/$MODEL_DIR" && find usr/bin usr/lib module_driver etc/init.d -type f 2>/dev/null); do
 		[ -f "$SQUASH_DIR/$rel" ] || continue
 		chmod 755 "$SQUASH_DIR/$rel"
 	done

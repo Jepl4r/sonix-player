@@ -28,6 +28,7 @@
 #include "src/system/image/art_shrink.h"
 #include "src/system/core/config.h"
 #include "src/system/library/cue.h"
+#include "src/system/library/folderorder.h"
 #include "src/system/playback/playlist.h"
 // SQLite is vendored: this header, not the system's.
 #include "src/system/db/sqlite3.h"
@@ -165,7 +166,7 @@ static void push_command_paths(sonixlink_command_kind_t kind, int arg, char *pat
 		slot->kind = kind;
 		slot->arg = arg;
 		if (value && value[0]) {
-			snprintf(slot->value, sizeof(slot->value), "%s", value);
+			snprintf(slot->value, sizeof(slot->value), "%.*s", (int)sizeof(slot->value) - 1, value);
 		}
 		slot->paths = paths;
 		slot->path_count = path_count;
@@ -766,7 +767,7 @@ static bool hash_index(const char *path, uint64_t *out) {
 
 	static const char *const TABLES[] = {
 		"MEDIA_TABLE", "ALBUM_TABLE", "ALBUM_GROUP_TABLE", "ARTIST_TABLE",
-		"ALBUM_ARTIST_TABLE", "GENRE_TABLE", "ARTIST_LINK", "GENRE_LINK",
+		"ALBUM_ARTIST_TABLE", "GENRE_TABLE", "ARTIST_LINK", "ALBUM_ARTIST_LINK", "GENRE_LINK",
 	};
 	uint64_t total = FNV_OFFSET;
 	bool ok = true;
@@ -1204,6 +1205,12 @@ static void route_command(client_t *c, const char *query) {
 		bool to_playlist = strncmp(what, "playlist_", 9) == 0;
 		if (to_playlist && !value[0]) {
 			reply_status(c, "400 Bad Request", "no playlist");
+			return;
+		}
+		// The command keeps SONIXLINK_TEXT_MAX bytes of it: a longer name
+		// would reach the playlist code cut, as a different playlist.
+		if (to_playlist && strlen(value) >= SONIXLINK_TEXT_MAX) {
+			reply_status(c, "400 Bad Request", "playlist name too long");
 			return;
 		}
 		char *paths = NULL;
@@ -1837,6 +1844,12 @@ static void *art_worker(void *unused) {
 					}
 				}
 			}
+			// A card pulled out under the read: zeros, not artwork.
+			if (data && albumart_faulted(&art)) {
+				free(data);
+				data = NULL;
+				missing = true;
+			}
 			albumart_free(&art);
 		}
 
@@ -1948,7 +1961,15 @@ static void route_art(client_t *c, const char *query) {
 	}
 	// What it is, from the bytes rather than from a file name: an embedded
 	// picture has no name to read an extension off.
+	size_t before = c->out.len;
 	reply_art_bytes(c, art_type_of(art.data, art.size), art.data, art.size);
+	if (albumart_faulted(&art)) {
+		// A card pulled out under the copy: zeros, not artwork.
+		c->out.len = before;
+		albumart_free(&art);
+		reply_status(c, "404 Not Found", "no artwork");
+		return;
+	}
 	albumart_free(&art);
 }
 
@@ -1974,6 +1995,7 @@ static void route_bye(client_t *c) {
 typedef struct {
 	char *label; // what the row says
 	char *file;	 // the name inside the folder: the real one, or the sheet's virtual one
+	folder_place_t place; // where a track sits on its record
 	bool dir;
 } browse_entry_t;
 
@@ -2013,6 +2035,7 @@ static bool browse_add(browse_list_t *l, const char *label, const char *file, bo
 	browse_entry_t *e = &l->items[l->count];
 	e->label = strdup(label);
 	e->file = strdup(file);
+	memset(&e->place, 0, sizeof(e->place));
 	e->dir = dir;
 	if (!e->label || !e->file) {
 		free(e->label);
@@ -2038,6 +2061,10 @@ static int browse_cmp(const void *a, const void *b) {
 	if (ea->dir != eb->dir) {
 		return ea->dir ? -1 : 1;
 	}
+	int by_place = folderorder_cmp(&ea->place, &eb->place);
+	if (by_place) {
+		return by_place;
+	}
 	int by_track = 0;
 	if (cue_order_tracks(ea->file, eb->file, &by_track)) {
 		return by_track;
@@ -2047,7 +2074,38 @@ static int browse_cmp(const void *a, const void *b) {
 
 #define BROWSE_CLAIMS 32
 
-static void browse_read(const char *path, browse_list_t *out) {
+// The record order of the folder's tracks, as the player's own browser has it
+// (browser.c, listing_place_tracks): the list the app shows and the queue a
+// tap there starts run in the same order.
+static void browse_place_tracks(const char *path, browse_list_t *list) {
+	if (list->count <= 0) {
+		return;
+	}
+	const char **names = malloc((size_t)list->count * sizeof(*names));
+	int *index = malloc((size_t)list->count * sizeof(*index));
+	folder_place_t *places = malloc((size_t)list->count * sizeof(*places));
+	if (names && index && places) {
+		size_t n = 0;
+		for (int i = 0; i < list->count; i++) {
+			if (!list->items[i].dir) {
+				names[n] = list->items[i].file;
+				index[n] = i;
+				n++;
+			}
+		}
+		folderorder_places(path, names, n, true, places);
+		for (size_t i = 0; i < n; i++) {
+			list->items[index[i]].place = places[i];
+		}
+	}
+	free(names);
+	free(index);
+	free(places);
+}
+
+// `path` is the folder as the filesystem resolves it, `indexed` the same folder
+// spelled under the root as the player and its index spell it.
+static void browse_read(const char *path, const char *indexed, browse_list_t *out) {
 	DIR *dir = opendir(path);
 	if (!dir) {
 		return;
@@ -2064,7 +2122,7 @@ static void browse_read(const char *path, browse_list_t *out) {
 		}
 		char sheet_path[PATH_MAX + 260];
 		snprintf(sheet_path, sizeof(sheet_path), "%s/%s", path, de->d_name);
-		if (!cue_parse(sheet_path, sheet)) {
+		if (!cue_parse(sheet_path, sheet) || sheet->split) {
 			continue;
 		}
 		for (int t = 0; t < sheet->track_count; t++) {
@@ -2117,6 +2175,7 @@ static void browse_read(const char *path, browse_list_t *out) {
 	}
 	free(claims);
 	closedir(dir);
+	browse_place_tracks(indexed, out);
 	qsort(out->items, (size_t)out->count, sizeof(*out->items), browse_cmp);
 }
 
@@ -2167,7 +2226,7 @@ static void route_browse(client_t *c, const char *query) {
 
 	browse_list_t list;
 	memset(&list, 0, sizeof(list));
-	browse_read(real, &list);
+	browse_read(real, shown, &list);
 
 	buf_t j;
 	memset(&j, 0, sizeof(j));
@@ -2747,7 +2806,7 @@ static void *sonixlink_worker(void *unused) {
 
 	int listener = -1, beacon = -1, mdns = -1;
 	uint32_t last_beacon = 0, last_mdns = 0;
-	char ip[64] = "";
+	char ip[INET6_ADDRSTRLEN] = "";
 	char instance[192] = "";
 	char host[160] = "";
 
