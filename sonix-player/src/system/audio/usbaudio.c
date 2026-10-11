@@ -447,6 +447,17 @@ static void find_volume_control(int card) {
 		volume_has_db = snd_ctl_elem_info_is_tlv_readable(info) &&
 						snd_ctl_elem_tlv_read(ctl, id, volume_tlv, sizeof(volume_tlv)) >= 0 &&
 						snd_tlv_get_dB_range(volume_tlv, volume_min, volume_max, &db_min, &db_max) >= 0;
+		// A scale whose top is far below 0 dB, far above it, or that spans
+		// almost nothing is a descriptor error -- one dongle reports
+		// -128..-127 dB over 256 steps. Trusted, it reads the control's top
+		// as -127 dB and the software attenuation cancels itself out, leaving
+		// every index at full scale. Without a scale the control is held at
+		// its top and the samples take the whole level.
+		if (volume_has_db && (db_max < -2000 || db_max > 2400 || db_max - db_min < 1000)) {
+			fprintf(stderr, "usbaudio: '%s' reports an implausible dB scale (%.2f..%.2f dB); ignoring it\n", elem,
+					db_min / 100.0, db_max / 100.0);
+			volume_has_db = false;
+		}
 	}
 
 	snd_ctl_elem_list_free_space(list);
@@ -526,7 +537,10 @@ void usbaudio_apply_volume(int percent) {
 			hw_db = 0;
 		}
 	}
-	long rest = target - hw_db;
+	// Only hardware mode splits the level with the control. By default the
+	// control sits at its top and the samples take all of it: what the device
+	// says its top is worth is not to be trusted with the listener's ears.
+	long rest = hardware ? target - hw_db : target;
 	swvolume_set_usb_gain(rest < 0 ? rest : 0, mute);
 
 	snd_ctl_t *ctl;

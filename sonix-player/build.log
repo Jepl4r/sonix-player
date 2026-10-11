@@ -1,0 +1,127 @@
+Building static FreeType 2.13.3 for the target...
+Building static libogg 1.3.5 for the target...
+Building static libopus 1.4 for the target...
+Building static libwavpack 5.6.0 for the target...
+rm -rf /home/yorisoft/src/sonix-player/sonix-player/freetype-2.13.3 && tar xf freetype-2.13.3.tar.xz
+rm -rf /home/yorisoft/src/sonix-player/sonix-player/libogg-1.3.5 && tar xf libogg-1.3.5.tar.gz
+rm -rf /home/yorisoft/src/sonix-player/sonix-player/opus-1.4 && tar xf opus-1.4.tar.gz
+rm -rf /home/yorisoft/src/sonix-player/sonix-player/wavpack-5.6.0 && tar xf wavpack-5.6.0.tar.bz2
+cd /home/yorisoft/src/sonix-player/sonix-player/libogg-1.3.5 && PATH="/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin:$PATH" ./configure --host=mipsel-rockbox-linux-gnu --prefix=/home/yorisoft/src/sonix-player/sonix-player/audio-target --disable-shared --enable-static CC=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc CFLAGS="-O2 -march=mips32r2 -mplt" AR=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ar RANLIB=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ranlib
+cd /home/yorisoft/src/sonix-player/sonix-player/opus-1.4 && PATH="/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin:$PATH" ./configure --host=mipsel-rockbox-linux-gnu --prefix=/home/yorisoft/src/sonix-player/sonix-player/audio-target --disable-shared --enable-static \
+	--enable-fixed-point --disable-doc --disable-extra-programs \
+	CC=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc CFLAGS="-O2 -march=mips32r2 -mplt" AR=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ar RANLIB=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ranlib
+/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc -Os -Wall -Wextra -march=mips32r2 -mno-abicalls -fno-pic -G0 -static -nostdlib -ffreestanding -fno-builtin -fno-tree-loop-distribute-patterns -fno-stack-protector -fno-asynchronous-unwind-tables -Wl,-e,__start -o sonix_launch launcher/sonix_launch.c
+launcher/sonix_launch.c:15:10: fatal error: asm/unistd.h: No such file or directory
+   15 | #include <asm/unistd.h>
+      |          ^~~~~~~~~~~~~~
+compilation terminated.
+make: *** [Makefile:299: sonix_launch] Error 1
+make: *** Waiting for unfinished jobs....
+Scanning source files...
+Generated compile_commands.json with 485 entries successfully.
+cd /home/yorisoft/src/sonix-player/sonix-player/freetype-2.13.3 && PATH="/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin:$PATH" ./configure \
+	--host=mipsel-rockbox-linux-gnu \
+	--prefix=/home/yorisoft/src/sonix-player/sonix-player/freetype-target \
+	--disable-shared --enable-static \
+	--with-zlib=no --with-bzip2=no --with-png=no \
+	--with-harfbuzz=no --with-brotli=no \
+	CC=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc CFLAGS="-O2 -march=mips32r2 -mplt" \
+	AR=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ar \
+	RANLIB=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ranlib
+make[1]: Entering directory '/home/yorisoft/src/sonix-player/sonix-player/freetype-2.13.3'
+
+FreeType build system -- automatic system detection
+
+The following settings are used:
+
+  platform                    unix
+  compiler                    cc
+  configuration directory     ./builds/unix
+  configuration rules         ./builds/unix/unix.mk
+
+If this does not correspond to your system or settings please remove the file
+`config.mk' from this directory then read the INSTALL file for help.
+
+Otherwise, simply type `make' again to build the library,
+or `make refdoc' to build the API reference (this needs Python >= 3.5).
+
+Generating modules list in ./objs/ftmodule.h...
+done.
+* module: truetype  (Windows/Mac font files with extension *.ttf or *.ttc)
+* module: type1     (Postscript font files with extension *.pfa or *.pfb)
+* module: cff       (OpenType fonts with extension *.otf)
+* module: cid       (Postscript CID-keyed fonts, no known extension)
+* module: pfr       (PFR/TrueDoc font files with extension *.pfr)
+* module: type42    (Type 42 font files with no known extension)
+* module: winfnt    (Windows bitmap fonts with extension *.fnt or *.fon)
+* module: pcf       (pcf bitmap fonts)
+* module: bdf       (bdf bitmap fonts)
+* module: sfnt      (helper module for TrueType & OpenType formats)
+* module: autofit   (automatic hinting module)
+* module: pshinter  (Postscript hinter module)
+cd /home/yorisoft/src/sonix-player/sonix-player/wavpack-5.6.0 && PATH="/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin:$PATH" ./configure --host=mipsel-rockbox-linux-gnu --prefix=/home/yorisoft/src/sonix-player/sonix-player/audio-target --disable-shared --enable-static \
+	--disable-apps --disable-man --disable-asm \
+	--enable-dsd --enable-legacy --without-libiconv-prefix \
+	CC=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc CFLAGS="-O2 -march=mips32r2 -mplt" AR=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ar RANLIB=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ranlib
+* module: smooth    (anti-aliased bitmap renderer)
+* module: raster    (monochrome bitmap renderer)
+* module: ot-svg    (OT-SVG glyph renderer module)
+* module: sdf       (signed distance field renderer)
+* module: bsdf      (bitmap to signed distance field converter)
+* module: psaux     (Postscript Type 1 & Type 2 helper module)
+* module: psnames   (Postscript & Unicode Glyph name handling)
+cd builds/unix; \
+        ./configure  '--host=mipsel-rockbox-linux-gnu' '--prefix=/home/yorisoft/src/sonix-player/sonix-player/freetype-target' '--disable-shared' '--enable-static' '--with-zlib=no' '--with-bzip2=no' '--with-png=no' '--with-harfbuzz=no' '--with-brotli=no' 'CC=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc' 'CFLAGS=-O2 -march=mips32r2 -mplt' 'AR=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ar' 'RANLIB=/home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-ranlib'
+checking build system type... checking whether make supports nested variables... yes
+checking for a BSD-compatible install... /usr/bin/install -c
+checking whether build environment is sane... x86_64-pc-linux-gnu
+checking host system type... yes
+checking for mipsel-rockbox-linux-gnu-strip... mipsel-rockbox-linux-gnu-strip
+checking for a thread-safe mkdir -p... mipsel-rockbox-linux-gnu
+checking how to print strings... printf
+checking for mipsel-rockbox-linux-gnu-gcc... /home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc
+./install-sh -c -d
+checking for gawk... gawk
+checking whether make sets $(MAKE)... yes
+checking whether to enable maintainer-specific portions of Makefiles... yes
+checking whether the C compiler works... checking build system type... no
+configure: error: in `/home/yorisoft/src/sonix-player/sonix-player/libogg-1.3.5':
+configure: error: C compiler cannot create executables
+See `config.log' for more details
+checking for a BSD-compatible install... x86_64-pc-linux-gnu
+checking host system type... make: *** [Makefile:459: /home/yorisoft/src/sonix-player/sonix-player/audio-target/lib/libogg.a] Error 77
+mipsel-rockbox-linux-gnu
+checking how to print strings... printf
+checking whether make supports the include directive... checking build system type... yes (GNU style)
+checking for mipsel-rockbox-linux-gnu-gcc... /home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc
+/usr/bin/install -c
+checking whether build environment is sane... yes
+checking whether the C compiler works... checking for mipsel-rockbox-linux-gnu-strip... mipsel-rockbox-linux-gnu-strip
+checking for a race-free mkdir -p... ./install-sh -c -d
+checking for gawk... gawk
+checking whether make sets $(MAKE)... no
+configure: error: in `/home/yorisoft/src/sonix-player/sonix-player/opus-1.4':
+configure: error: C compiler cannot create executables
+See `config.log' for more details
+yes
+x86_64-pc-linux-gnu
+checking host system type... checking whether make supports nested variables... mipsel-rockbox-linux-gnu
+checking for mipsel-rockbox-linux-gnu-gcc... /home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc
+yes
+checking whether to enable maintainer-specific portions of Makefiles... no
+make: *** [Makefile:471: /home/yorisoft/src/sonix-player/sonix-player/audio-target/lib/libopus.a] Error 77
+checking build system type... checking whether the C compiler works... x86_64-pc-linux-gnu
+checking host system type... mipsel-rockbox-linux-gnu
+checking for mipsel-rockbox-linux-gnu-gcc... /home/yorisoft/src/sonix-player/sonix-player/rockbox-toolchain/bin/mipsel-rockbox-linux-gnu-gcc
+no
+configure: error: in '/home/yorisoft/src/sonix-player/sonix-player/freetype-2.13.3/builds/unix':
+configure: error: C compiler cannot create executables
+See 'config.log' for more details
+make[1]: *** [builds/unix/detect.mk:91: setup] Error 77
+make[1]: Leaving directory '/home/yorisoft/src/sonix-player/sonix-player/freetype-2.13.3'
+make: *** [Makefile:428: /home/yorisoft/src/sonix-player/sonix-player/freetype-target/lib/libfreetype.a] Error 2
+checking whether the C compiler works... no
+configure: error: in `/home/yorisoft/src/sonix-player/sonix-player/wavpack-5.6.0':
+configure: error: C compiler cannot create executables
+See `config.log' for more details
+make: *** [Makefile:505: /home/yorisoft/src/sonix-player/sonix-player/audio-target/lib/libwavpack.a] Error 77
