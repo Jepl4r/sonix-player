@@ -1243,11 +1243,22 @@ static bool ensure_bluealsa(void) {
 		if (aac[0]) {
 			fprintf(stderr, "bluetooth: AAC %s\n", aac);
 		}
+		// The link's sampling rate. Left alone, bluealsa takes the highest rate
+		// both ends can do, which is 48 kHz for nearly every pair of
+		// headphones -- and nearly every record is 44.1 kHz, so every track is
+		// resampled here, on the one core, before it is encoded. Forcing the
+		// CD rate makes a 44.1 kHz track go out as it is; a 48 or 96 kHz file
+		// is resampled down instead, which is the rarer case. Only a
+		// preference: a sink without 44.1 kHz gets what it can take.
+		bool audio_cd = bluetooth_force_44k() && bluealsa_knows_option("--a2dp-force-audio-cd");
+		if (audio_cd) {
+			fprintf(stderr, "bluetooth: asking for a 44.1 kHz link\n");
+		}
 
 		char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
 		int codec_count = codecs_to_ask_for(codecs, BT_MAX_CODECS);
 
-		char *argv[12 + BT_MAX_CODECS * 2];
+		char *argv[13 + BT_MAX_CODECS * 2];
 		int at = 0;
 		argv[at++] = (char *)"bluealsa";
 		argv[at++] = (char *)"-p";
@@ -1267,6 +1278,9 @@ static bool ensure_bluealsa(void) {
 		}
 		if (aac[0]) {
 			argv[at++] = aac;
+		}
+		if (audio_cd) {
+			argv[at++] = (char *)"--a2dp-force-audio-cd";
 		}
 		for (int i = 0; i < codec_count; i++) {
 			argv[at++] = (char *)"-c";
@@ -3681,6 +3695,17 @@ void bluetooth_set_aac_vbr(bool on) {
 	config_set("wireless", "bt_aac_mode", on ? "vbr" : "cbr");
 	config_save();
 	restart_for_option(on ? "AAC VBR" : "AAC CBR");
+}
+
+bool bluetooth_force_44k(void) { return strcmp(config_get("wireless", "bt_sample_rate", "auto"), "44100") == 0; }
+
+void bluetooth_set_force_44k(bool on) {
+	if (on == bluetooth_force_44k()) {
+		return;
+	}
+	config_set("wireless", "bt_sample_rate", on ? "44100" : "auto");
+	config_save();
+	restart_for_option(on ? "44.1 kHz link" : "automatic link rate");
 }
 
 void bluetooth_set_receiver_profile(bool on) {

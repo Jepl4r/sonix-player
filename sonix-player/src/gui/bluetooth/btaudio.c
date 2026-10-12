@@ -285,10 +285,17 @@ static void volume_toggle_cb(lv_event_t *e) {
 // between two named things, not something that is on or off.
 // ---------------------------------------------------------------------------
 
+static lv_obj_t *rate_auto_pill;
+static lv_obj_t *rate_cd_pill;
 static lv_obj_t *aac_vbr_pill;
 static lv_obj_t *aac_cbr_pill;
 
 static void encoder_pills_refresh(void) {
+	if (rate_auto_pill) {
+		bool cd = bluetooth_force_44k();
+		settingsrow_pill_active(rate_auto_pill, !cd);
+		settingsrow_pill_active(rate_cd_pill, cd);
+	}
 	if (aac_vbr_pill) {
 		bool vbr = bluetooth_aac_vbr();
 		settingsrow_pill_active(aac_vbr_pill, vbr);
@@ -304,6 +311,14 @@ static void aac_pick_cb(lv_event_t *e) {
 	encoder_pills_refresh();
 }
 
+static void rate_pick_cb(lv_event_t *e) {
+	if (switcher_back_drag_active()) {
+		return;
+	}
+	bluetooth_set_force_44k((intptr_t)lv_event_get_user_data(e) != 0);
+	encoder_pills_refresh();
+}
+
 static lv_obj_t *option_note(lv_obj_t *parent, const char *text) {
 	lv_obj_t *note = lv_label_create(parent);
 	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
@@ -316,6 +331,12 @@ static lv_obj_t *option_note(lv_obj_t *parent, const char *text) {
 
 static void build_encoder_options(lv_obj_t *container) {
 	lv_obj_t *pills = NULL;
+	settingsrow_pills(container, "btaudio_sample_rate", &pills);
+	rate_auto_pill = settingsrow_pill(pills, "btaudio_rate_auto", 0, rate_pick_cb);
+	rate_cd_pill = settingsrow_pill_text(pills, "44.1 kHz", 1, rate_pick_cb);
+	option_note(container, "btaudio_sample_rate_note");
+
+	pills = NULL;
 	settingsrow_pills(container, "btaudio_aac_mode", &pills);
 	aac_vbr_pill = settingsrow_pill_text(pills, "VBR", 1, aac_pick_cb);
 	aac_cbr_pill = settingsrow_pill_text(pills, "CBR 220", 0, aac_pick_cb);

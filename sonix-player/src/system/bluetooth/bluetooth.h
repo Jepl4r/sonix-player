@@ -236,6 +236,14 @@ void bluetooth_set_ldac_quality(const char *mode);
 bool bluetooth_aac_vbr(void);
 void bluetooth_set_aac_vbr(bool on);
 
+// The rate the link is asked to run at: false (the default) lets bluealsa take
+// the highest both ends can do, nearly always 48 kHz; true passes
+// --a2dp-force-audio-cd so a 44.1 kHz track reaches the encoder without being
+// resampled. A start-up option, restarted for like the two above. Kept in
+// [wireless] bt_sample_rate = auto | 44100.
+bool bluetooth_force_44k(void);
+void bluetooth_set_force_44k(bool on);
+
 // ---------------------------------------------------------------------------
 // The other direction: a device streaming to this one
 //
