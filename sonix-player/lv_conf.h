@@ -63,10 +63,21 @@
 
 /* FT_New_Face maps the font files and decodes nothing up front; rendered
  * glyphs sit in the shared FTC cache sized below, so text costs a bounded
- * amount of memory however much of it is on screen. */
+ * amount of memory however much of it is on screen.
+ *
+ * The count is per face (one cache node per font file and style, all sizes
+ * together): LVGL keeps up to this many rendered bitmaps and twice as many
+ * glyph descriptors. 256 was too few for a library page in Cyrillic or CJK in
+ * two or three sizes at once: scrolling a list evicted glyphs that the next row
+ * needed again, and every miss is a FreeType rasterisation on the one core.
+ * 1024 covers a screenful of any script with room to spare. The bitmaps are
+ * A8 and small (a 24 px glyph is well under 1 KB), so the worst case is a few
+ * hundred KB per face, reached only by text that really uses that many
+ * different letters. Must stay a power of two (LVGL's L1 glyph cache masks
+ * with it). */
 #define LV_USE_FREETYPE 1
 #define LV_FREETYPE_USE_LVGL_PORT 0
-#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
+#define LV_FREETYPE_CACHE_FT_GLYPH_CNT 1024
 
 /* Song titles, tags and station names in Arabic. The text is kept in the
  * order it is written in and LVGL draws each line right to left where the
