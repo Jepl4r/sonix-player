@@ -20,7 +20,20 @@ typedef struct {
 #define VOLUME_WARN_PERCENT 55
 #define VOLUME_WARN_COLOR lv_color_make(224, 60, 50)
 
-void gui_init(gui_config_t *cfg);
+// Builds the interface. UI thread, once.
+//
+// With `split`, only what the first frame shows is built -- the theme, the
+// status bar, the home screen -- and true is returned: the caller paints that
+// frame and then calls gui_init_rest() for the hundred-odd other pages, before
+// entering the main loop. False means everything was built here, which is what
+// happens without `split` and on a first boot (whose first frame is the
+// greeting, built last).
+bool gui_init(gui_config_t *cfg, bool split);
+
+// Builds whatever gui_init() left for after the first frame; nothing when that
+// is done. Also called, as a safety net, by navigation and by the gui_post
+// drain, so no page is ever shown or updated before it exists.
+void gui_init_rest(void);
 
 // The bridge from any thread to the UI thread: `cb(user)` runs on the UI
 // thread within a few tens of milliseconds.

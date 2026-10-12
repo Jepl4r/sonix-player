@@ -1258,6 +1258,11 @@ void display_set_rotated(bool rotated) { host_rotated = rotated; }
 void panel_touch_enable(bool enabled) { (void)enabled; }
 const char *panel_touch_device(void) { return NULL; }
 
+// No evdev descriptor to wait on: SDL's mouse is read by its timer as before.
+static int touch_poll_fd(void) { return -1; }
+static void touch_wake(void) {}
+static void touch_give_up_events(void) {}
+
 // There is no framebuffer to read on the simulator, but the SDL renderer can
 // be read back. The rest of the path is identical (same copy, same flash, same
 // PNG writer); only the source of the pixels differs.
@@ -1324,7 +1329,7 @@ static struct fb_var_screeninfo fb_var;
 // rendering moves off the framebuffer: LVGL draws into ONE full-screen RAM
 // page, and what it draws is copied into the framebuffer turned through 180
 // degrees. Unrotated, LVGL renders straight into the mapped pages, with no
-// copy at all.
+// copy at all -- unless [display] cached_render is on, see below.
 //
 // One RAM page, not two, deliberately. With two, LVGL's direct mode keeps
 // them coherent by re-drawing the previous frame's areas into the buffer it
@@ -1335,18 +1340,34 @@ static struct fb_var_screeninfo fb_var;
 // framebuffer page is still missing.
 //
 // The touch panel is turned with it, by inverting the evdev calibration.
+//
+// Rendering into cached memory ([display] cached_render)
+//
+// The same RAM page serves a second purpose. On this SoC the framebuffer is
+// mapped uncached (jzfb_mmap clears the cacheable attribute, so the panel's
+// DMA never reads stale lines), and LVGL drawing straight into it pays for
+// that on every pixel it touches: blending reads the destination back, and
+// every such read is a trip to DRAM, as are the refr_sync_areas() copies that
+// keep the two pages coherent. With cached_render on, LVGL draws into the RAM
+// page -- ordinary cached memory -- and each frame's damage is copied into the
+// off-screen framebuffer page with plain memcpy()s, which only write. It is
+// the rotated path exactly, with a straight copy instead of a turned one, so
+// the page bookkeeping is shared. Costs one page of RAM (fb_page_size, about
+// 675 KB on a 480x720 panel) for as long as the player runs. Off by default
+// until it has been measured on the device.
 // ---------------------------------------------------------------------------
 
 static lv_display_t *fb_display;   // the page-flipping display, NULL on the fallback
 static lv_indev_t *fb_touch;	   // so the calibration can be flipped with the screen
 static bool fb_rotated;
-static uint8_t *rot_page;		   // the RAM page LVGL draws into while rotated
+static bool fb_cached_render;	   // [display] cached_render took effect: the RAM page is permanent
+static uint8_t *shadow_page;	   // the RAM page LVGL draws into while rotated or rendering cached
 
 // What this frame touched, and what each framebuffer page has not been given
 // yet (a bounding box each -- cheap, and a frame's damage is one region in
 // practice). Empty is x1 > x2.
-static lv_area_t rot_frame_dirty;
-static lv_area_t rot_page_pending[2];
+static lv_area_t shadow_frame_dirty;
+static lv_area_t shadow_page_pending[2];
 
 static void area_clear(lv_area_t *a) {
 	a->x1 = 1;
@@ -1404,13 +1425,37 @@ static void blit_rotated_180(uint16_t *dst, const uint16_t *src, const lv_area_t
 	}
 }
 
+// The same, the right way up: row by row, or one copy when the rectangle spans
+// whole lines (and so is contiguous in both).
+static void blit_straight(uint16_t *dst, const uint16_t *src, const lv_area_t *area, int32_t width,
+						  int32_t height) {
+	int32_t x1 = area->x1 < 0 ? 0 : area->x1;
+	int32_t y1 = area->y1 < 0 ? 0 : area->y1;
+	int32_t x2 = area->x2 >= width ? width - 1 : area->x2;
+	int32_t y2 = area->y2 >= height ? height - 1 : area->y2;
+	if (x1 > x2 || y1 > y2) {
+		return;
+	}
+
+	if (x1 == 0 && x2 == width - 1) {
+		size_t offset = (size_t)y1 * width;
+		memcpy(dst + offset, src + offset, (size_t)(y2 - y1 + 1) * width * sizeof(uint16_t));
+		return;
+	}
+	size_t row_bytes = (size_t)(x2 - x1 + 1) * sizeof(uint16_t);
+	for (int32_t y = y1; y <= y2; y++) {
+		size_t offset = (size_t)y * width + x1;
+		memcpy(dst + offset, src + offset, row_bytes);
+	}
+}
+
 static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
 	bool second_page;
 
-	if (fb_rotated) {
+	if (fb_rotated || fb_cached_render) {
 		// Collect this frame's damage; the copy happens once, on the last
 		// area, into the page that is NOT on screen.
-		area_merge(&rot_frame_dirty, area);
+		area_merge(&shadow_frame_dirty, area);
 		if (!lv_display_flush_is_last(disp)) {
 			lv_display_flush_ready(disp);
 			return;
@@ -1420,17 +1465,21 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 		int target = second_page ? 1 : 0;
 
 		// Everything this page still owes, plus what just changed.
-		lv_area_t redraw = rot_page_pending[target];
-		area_merge(&redraw, &rot_frame_dirty);
+		lv_area_t redraw = shadow_page_pending[target];
+		area_merge(&redraw, &shadow_frame_dirty);
 
 		if (!area_is_empty(&redraw)) {
-			blit_rotated_180((uint16_t *)(fb_mem + (second_page ? fb_page_size : 0)), (const uint16_t *)px, &redraw,
-							 (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			uint16_t *dst = (uint16_t *)(fb_mem + (second_page ? fb_page_size : 0));
+			if (fb_rotated) {
+				blit_rotated_180(dst, (const uint16_t *)px, &redraw, (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			} else {
+				blit_straight(dst, (const uint16_t *)px, &redraw, (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			}
 		}
 
-		area_clear(&rot_page_pending[target]);
-		area_merge(&rot_page_pending[target ? 0 : 1], &rot_frame_dirty); // the other page still owes it
-		area_clear(&rot_frame_dirty);
+		area_clear(&shadow_page_pending[target]);
+		area_merge(&shadow_page_pending[target ? 0 : 1], &shadow_frame_dirty); // the other page still owes it
+		area_clear(&shadow_frame_dirty);
 	} else {
 		second_page = (px >= fb_mem + fb_page_size);
 	}
@@ -1517,12 +1566,35 @@ static lv_display_t *try_panned_display(void) {
 	}
 
 	lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-	lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
-						   LV_DISPLAY_RENDER_MODE_DIRECT);
+
+	// Cached rendering when asked for and the page can be had; the mapped
+	// pages directly otherwise, as before.
+	if (config_get_int("display", "cached_render", 0)) {
+		shadow_page = malloc(fb_page_size);
+		if (shadow_page) {
+			memset(shadow_page, 0, fb_page_size);
+			fb_cached_render = true;
+			// Both pages hold whatever was there before (the boot logo): each
+			// owes a full frame, the same as after turning rotation on.
+			area_clear(&shadow_frame_dirty);
+			area_set_full(&shadow_page_pending[0]);
+			area_set_full(&shadow_page_pending[1]);
+		} else {
+			fprintf(stderr, "fb: no memory for cached rendering (%zu bytes), drawing into the framebuffer\n",
+					fb_page_size);
+		}
+	}
+	if (fb_cached_render) {
+		lv_display_set_buffers(disp, shadow_page, NULL, (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
+	} else {
+		lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
+							   LV_DISPLAY_RENDER_MODE_DIRECT);
+	}
 	lv_display_set_flush_cb(disp, fb_pan_flush_cb);
 	fb_display = disp;
 
-	printf("fb: double-buffered, page flip on FBIOPAN_DISPLAY (%ux%u)\n", fb_var.xres, fb_var.yres);
+	printf("fb: double-buffered, page flip on FBIOPAN_DISPLAY (%ux%u)%s\n", fb_var.xres, fb_var.yres,
+		   fb_cached_render ? ", rendered in cached RAM" : "");
 	return disp;
 }
 
@@ -1607,13 +1679,13 @@ void display_wake_end(lv_display_t *disp) {
 
 // Frees the RAM pages once the refresh that may still be reading them is
 // over: an async call runs at the top of the next lv_timer_handler pass.
-static void free_rot_pages_cb(void *unused) {
+static void free_shadow_page_cb(void *unused) {
 	(void)unused;
-	if (fb_rotated) {
-		return; // turned back on in the meantime
+	if (fb_rotated || fb_cached_render) {
+		return; // turned back on in the meantime, or the page is permanent
 	}
-	free(rot_page);
-	rot_page = NULL;
+	free(shadow_page);
+	shadow_page = NULL;
 }
 
 bool display_rotation_supported(void) { return fb_display != NULL; }
@@ -1629,9 +1701,104 @@ const char *panel_touch_device(void) { return fb_touch_node[0] ? fb_touch_node :
 // not polled and stops reading the node, so events pile up unread in the
 // kernel queue. Whatever re-enables it must wait a moment before trusting the
 // first touch (see gearboyplay.c).
+// ---------------------------------------------------------------------------
+// Touch read on demand
+//
+// LVGL reads an input device from a timer, every LV_DEF_REFR_PERIOD: some sixty
+// wakeups a second for as long as the screen is on, nearly all of them to learn
+// that nobody is touching it. On a single core that is a steady tax on battery
+// and on whatever the audio thread wanted to do instead.
+//
+// So the timer is parked while it has nothing to do -- finger up, no fling
+// still gliding, nothing waiting in the kernel queue -- and the main loop's
+// poll() watches the evdev descriptor instead: the first event of a touch makes
+// it readable, the loop wakes, the timer is resumed and run at once, and from
+// there it reads at the normal rate until the finger is lifted and any fling
+// has come to rest. Everything time-based in LVGL's pointer handling -- long
+// press and its repeat, scroll throw, gestures -- happens while the timer
+// runs, so it is all unchanged.
+//
+// Parking is decided after every read, by this file's own callback wrapped
+// around LVGL's. The pending-data check matters: a read during a screen
+// animation, or with the indev disabled, returns early without draining the
+// queue, and parking then would have poll() report the same events forever,
+// a busy loop. In those moments the timer just keeps polling as it always did.
+//
+// Standby needs nothing special: power.c pauses this timer itself, and the
+// descriptor is only watched while the screen is on and the timer is parked
+// by this code, so a touch in the dark wakes nothing. Gearboy's hand-over
+// (panel_touch_enable(false)) unparks for the same reason: the indev is then
+// not reading, and the queue on this descriptor would fill up and stay
+// readable.
+//
+// [display] touch_events=0 in device_config.ini restores plain timer polling.
+// ---------------------------------------------------------------------------
+
+static int fb_touch_fd = -1;  // the descriptor lv_evdev reads; -1 without on-demand reading
+static bool touch_parked;	  // the read timer is paused by this code, waiting on the fd
+static bool touch_enabled = true;
+
+static bool fd_has_input(int fd) {
+	struct pollfd p = {.fd = fd, .events = POLLIN};
+	return poll(&p, 1, 0) > 0 && (p.revents & POLLIN);
+}
+
+static void touch_read_timer_cb(lv_timer_t *t) {
+	lv_indev_t *indev = lv_timer_get_user_data(t);
+	lv_indev_read(indev);
+
+	if (fb_touch_fd < 0 || !touch_enabled) {
+		return;
+	}
+	if (lv_indev_get_state(indev) == LV_INDEV_STATE_RELEASED && lv_indev_get_scroll_obj(indev) == NULL &&
+		!fd_has_input(fb_touch_fd)) {
+		lv_timer_pause(t);
+		touch_parked = true;
+	}
+}
+
+static int touch_poll_fd(void) {
+	if (fb_touch_fd < 0 || !touch_parked || !touch_enabled || !power_screen_is_on()) {
+		return -1;
+	}
+	lv_timer_t *t = lv_indev_get_read_timer(fb_touch);
+	// Resumed by someone else meanwhile (the wake from standby does): it is
+	// reading again, and will park itself when there is reason to.
+	if (!t || !lv_timer_get_paused(t)) {
+		touch_parked = false;
+		return -1;
+	}
+	return fb_touch_fd;
+}
+
+// The descriptor became readable: a finger is down. Read it now, not a period
+// from now.
+static void touch_wake(void) {
+	if (!fb_touch || !touch_parked) {
+		return;
+	}
+	touch_parked = false;
+	lv_timer_t *t = lv_indev_get_read_timer(fb_touch);
+	if (t) {
+		lv_timer_resume(t);
+		lv_timer_ready(t);
+	}
+}
+
+static void touch_give_up_events(void) {
+	fprintf(stderr, "touch: the panel's descriptor reports an error, back to timed reading\n");
+	touch_wake();
+	fb_touch_fd = -1;
+}
+
 void panel_touch_enable(bool enabled) {
 	if (fb_touch) {
 		lv_indev_enable(fb_touch, enabled);
+		touch_enabled = enabled;
+		// Either way the timer runs: disabled, so the descriptor is not
+		// watched while someone else owns the panel; enabled, to drain what
+		// piled up meanwhile and park from there.
+		touch_wake();
 	}
 }
 
@@ -1643,28 +1810,35 @@ void display_set_rotated(bool rotated) {
 	}
 
 	if (rotated) {
-		if (!rot_page) {
-			rot_page = malloc(fb_page_size);
+		if (!shadow_page) {
+			shadow_page = malloc(fb_page_size);
 		}
-		if (!rot_page) {
+		if (!shadow_page) {
 			fprintf(stderr, "fb: no memory for the rotated page (%zu bytes)\n", fb_page_size);
 			return;
 		}
-		memset(rot_page, 0, fb_page_size);
+		memset(shadow_page, 0, fb_page_size);
 
 		// Both framebuffer pages still hold the picture the right way up, so
 		// they each owe a full frame.
-		area_clear(&rot_frame_dirty);
-		area_set_full(&rot_page_pending[0]);
-		area_set_full(&rot_page_pending[1]);
+		area_clear(&shadow_frame_dirty);
+		area_set_full(&shadow_page_pending[0]);
+		area_set_full(&shadow_page_pending[1]);
 
-		lv_display_set_buffers(fb_display, rot_page, NULL, (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
+		lv_display_set_buffers(fb_display, shadow_page, NULL, (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
 		fb_rotated = true;
+	} else if (fb_cached_render) {
+		// Back the right way up, still through the RAM page: both framebuffer
+		// pages now hold the turned picture and owe a full frame.
+		area_clear(&shadow_frame_dirty);
+		area_set_full(&shadow_page_pending[0]);
+		area_set_full(&shadow_page_pending[1]);
+		fb_rotated = false;
 	} else {
 		lv_display_set_buffers(fb_display, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
 							   LV_DISPLAY_RENDER_MODE_DIRECT);
 		fb_rotated = false;
-		lv_async_call(free_rot_pages_cb, NULL);
+		lv_async_call(free_shadow_page_cb, NULL);
 	}
 
 	// The touch panel turns with the picture: an inverted calibration maps
@@ -1705,6 +1879,22 @@ void display_set_rotated(bool rotated) {
 
 static bool input_bit(const unsigned long *bits, int bit) {
 	return (bits[bit / (8 * (int)sizeof(long))] >> (bit % (8 * (int)sizeof(long)))) & 1UL;
+}
+
+// lv_evdev_create() with the open done here, so the descriptor is known: the
+// main loop waits on it (see touch_read_timer_cb). Same flags as LVGL's own
+// open; lv_evdev_create_fd() takes the descriptor over, closing it on failure.
+static lv_indev_t *touch_open(const char *node) {
+	int fd = open(node, O_RDONLY | O_NOCTTY | O_CLOEXEC);
+	if (fd < 0) {
+		return NULL;
+	}
+	lv_indev_t *touch = lv_evdev_create_fd(LV_INDEV_TYPE_POINTER, fd);
+	if (touch) {
+		fb_touch_fd = fd;
+		snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", node);
+	}
+	return touch;
 }
 
 static bool find_touch_node(char *out, size_t out_size) {
@@ -1767,30 +1957,30 @@ static lv_display_t *init_target_display(void) {
 	char found[sizeof(fb_touch_node)];
 	lv_indev_t *touch = NULL;
 	if (find_touch_node(found, sizeof(found))) {
-		touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, found);
-		if (touch) {
-			snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", found);
-		}
+		touch = touch_open(found);
 	}
 	if (!touch) {
-		touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, "/dev/input/event1");
-		if (touch) {
-			snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", "/dev/input/event1");
-		}
+		touch = touch_open("/dev/input/event1");
 	}
 	if (!touch) {
 		fprintf(stderr, "Warning: Failed to open /dev/input/event1. Trying event0...\n");
-		touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, "/dev/input/event0");
-		if (touch) {
-			snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", "/dev/input/event0");
-		}
+		touch = touch_open("/dev/input/event0");
 	}
 
 	if (touch) {
 		lv_indev_set_display(touch, disp);
 		tune_pointer(touch);
 		fb_touch = touch;
-		printf("Touch screen input driver successfully registered.\n");
+		// On-demand reading (see touch_read_timer_cb): the read timer gets
+		// this file's callback, which parks it when idle.
+		lv_timer_t *t = lv_indev_get_read_timer(touch);
+		if (t && fb_touch_fd >= 0 && config_get_int("display", "touch_events", 1)) {
+			lv_timer_set_cb(t, touch_read_timer_cb);
+		} else {
+			fb_touch_fd = -1;
+		}
+		printf("Touch screen input driver successfully registered%s.\n",
+			   fb_touch_fd >= 0 ? " (read on demand)" : "");
 	} else {
 		fprintf(stderr, "Warning: No touch input device found.\n");
 	}
@@ -2219,12 +2409,27 @@ int main(int argc, char **argv) {
 	// they are built, and read before this they all say off, 0 minutes.
 	sleeptimer_init();
 
-	gui_init(&gui_cfg);
+	// Only what the first frame shows, unless that frame is the now-playing
+	// page (see the restore further down), which needs the player built and
+	// its track put back first.
+	bool nowplaying_first =
+		config_get_int("player", "remember_track", 0) && config_get_bool("music", "nowplaying_at_boot", false);
+	bool rest_pending = gui_init(&gui_cfg, !nowplaying_first);
 
 	// "Rotate screen", as it was left. After gui_init so there are screens to
 	// redraw, and before the first frame the user sees.
 	if (config_get_int("screen", "rotate_180", 0)) {
 		display_set_rotated(true);
+	}
+
+	// The home screen up now, and the rest of the interface built behind it.
+	// Building every page was most of the wait for the first frame, and none of
+	// them is on it. Still before the main loop: nothing -- no timer, no posted
+	// callback, no touch -- runs between the two, so nothing can meet a page
+	// that does not exist yet.
+	if (rest_pending) {
+		lv_refr_now(NULL);
+		gui_init_rest();
 	}
 
 	// The USB-C port, allowed to take a peripheral. Before the volume restore
@@ -2398,11 +2603,26 @@ int main(int argc, char **argv) {
 			time_till_next = MAIN_LOOP_MAX_SLEEP_MS; // also catches LV_NO_TIMER_READY
 		}
 
-		struct pollfd wake = {.fd = gui_post_wake_fd(), .events = POLLIN};
-		if (poll(&wake, 1, (int)time_till_next) > 0) {
+		// The touch panel's descriptor too, while its read timer is parked
+		// (see touch_read_timer_cb); -1 otherwise, which poll() ignores.
+		struct pollfd fds[2] = {
+			{.fd = gui_post_wake_fd(), .events = POLLIN},
+			{.fd = touch_poll_fd(), .events = POLLIN},
+		};
+		if (poll(fds, 2, (int)time_till_next) > 0) {
+			if (fds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+				// The node went away or broke: stop watching it rather than
+				// spin on an error that will be reported forever, and go back
+				// to reading on the timer.
+				touch_give_up_events();
+			} else if (fds[1].revents & POLLIN) {
+				touch_wake();
+			}
 			// Something was posted: drain the queue now instead of waiting
 			// for the bridge's own timer to come round.
-			gui_post_service();
+			if (fds[0].revents & POLLIN) {
+				gui_post_service();
+			}
 		}
 	}
 

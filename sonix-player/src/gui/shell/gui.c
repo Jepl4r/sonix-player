@@ -156,6 +156,8 @@ static int post_wake_fd = -1;
 int gui_post_wake_fd(void) { return post_wake_fd; }
 
 void gui_post_service(void) {
+	// A posted callback may update any page; none may meet one unbuilt.
+	gui_init_rest();
 	// The doorbell rang, but the drain timer is a second from expiring, so
 	// without this the posted work would sit there. Marking it ready runs it on
 	// the next pass of lv_timer_handler(), which is immediate, and this is the
@@ -567,7 +569,13 @@ static void power_menu_async_cb(void *unused) {
 void gui_notify_power_menu(void) { gui_post(power_menu_async_cb, NULL); }
 
 
-void gui_init(gui_config_t *cfg) {
+static void build_rest(gui_config_t *cfg, bool final);
+
+// The configuration the second half is to be built with, while it is still to
+// be built; NULL before gui_init() and once it is done.
+static gui_config_t *rest_cfg;
+
+bool gui_init(gui_config_t *cfg, bool split) {
 	// Colours first: every screen below styles itself from the active palette.
 	theme_init();
 
@@ -642,6 +650,38 @@ void gui_init(gui_config_t *cfg) {
 
 	main_menu_init(cfg);
 
+	// The first frame is the home screen and the status bar, and that is all
+	// built by now: the hundred-odd pages below (some six thousand objects)
+	// are none of them on it, yet building them was most of the wait for it.
+	// So when asked, stop here, show the home screen, and let main() paint it
+	// before calling gui_init_rest() for the remainder -- in the same order,
+	// so every "built after the page it points at" below still holds.
+	//
+	// Not on a first boot: then the first frame is the greeting or the clock,
+	// which are built at the very end.
+	if (split && !language_needed() && !timeset_needed()) {
+		switch_screen(main_menu_screen);
+		rest_cfg = cfg;
+		return true;
+	}
+	build_rest(cfg, true);
+	return false;
+}
+
+void gui_init_rest(void) {
+	gui_config_t *cfg = rest_cfg;
+	if (!cfg) {
+		return;
+	}
+	rest_cfg = NULL; // first: what follows navigates, and navigation calls back here
+	build_rest(cfg, false);
+}
+
+// Everything gui_init() did not build before the first frame. `final` is the
+// unsplit path, which ends by raising the first-boot questions and opening the
+// home screen; the split path has done the latter already and is never a first
+// boot.
+static void build_rest(gui_config_t *cfg, bool final) {
 	music_init(cfg);
 	coverflow_init(cfg);
 
@@ -838,6 +878,10 @@ void gui_init(gui_config_t *cfg) {
 	// language brings the clock up itself, so the two only chain here on the
 	// path where the language has already been answered before.
 	welcome_init(cfg);
+
+	if (!final) {
+		return;
+	}
 
 	// Ahead of everything else, and only on a device that has never been booted:
 	// the greeting. Its button opens the language picker itself, which in turn

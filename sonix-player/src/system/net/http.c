@@ -867,8 +867,7 @@ static conn_t stream_conn(http_stream_t *st) {
 	return c;
 }
 
-static bool stream_open_once(http_stream_t *st, const char *url, int timeout_secs, int *status_out,
-							 char *location, size_t location_size) {
+static bool stream_open_once(http_stream_t *st, const char *url, long range_from, int timeout_secs, int *status_out, char *location, size_t location_size) {
 	url_t u;
 	if (!url_parse(url, &u)) {
 		return false;
@@ -890,15 +889,23 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 	char host_header[300];
 	host_header_value(&u, host_header, sizeof(host_header));
 
+	// A ranged request is a file being resumed, never a radio: no ICY
+	// metadata is asked for, since interleaved metadata would make the byte
+	// positions on both sides of the Range meaningless.
+	char range[64] = "";
+	if (range_from > 0) {
+		snprintf(range, sizeof(range), "Range: bytes=%ld-\r\n", range_from);
+	}
+
 	char request[2600];
 	int n = snprintf(request, sizeof(request),
 					 "GET %s HTTP/1.0\r\n" // 1.0: no chunking, no keep-alive to argue about
 					 "Host: %s\r\n"
 					 "User-Agent: " HTTP_USER_AGENT "\r\n"
-					 "Icy-MetaData: 1\r\n"
+					 "%s"
 					 "Accept: */*\r\n"
 					 "\r\n",
-					 u.path, host_header);
+					 u.path, host_header, range_from > 0 ? range : "Icy-MetaData: 1\r\n");
 	// As above: snprintf returns what it would have written, not what it did.
 	if (n <= 0 || (size_t)n >= sizeof(request) || !conn_write_all(&conn, request, (size_t)n)) {
 		conn_close(&conn);
@@ -915,7 +922,38 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 		conn_close(&conn);
 		return false;
 	}
-	if (status != 200) {
+	// 206 only answers a Range, and only counts when it starts where asked:
+	// a server that sends some other slice would have it written at the
+	// wrong place in the file. 200 to a Range is legal (the server does not
+	// do ranges) and means the whole body from byte 0, which the caller
+	// learns from range_start.
+	long range_start = 0;
+	long range_total = 0;
+	if (status == 206 && range_from > 0) {
+		char cr[96] = "";
+		long first = -1;
+		if (header_value(headers, "Content-Range", cr, sizeof(cr))) {
+			const char *p = cr;
+			if (strncasecmp(p, "bytes", 5) == 0) {
+				p += 5;
+			}
+			while (*p == ' ' || *p == '=') {
+				p++;
+			}
+			char *end = NULL;
+			first = strtol(p, &end, 10);
+			const char *slash = end ? strchr(end, '/') : NULL;
+			if (slash && slash[1] != '*') {
+				range_total = strtol(slash + 1, NULL, 10);
+			}
+		}
+		if (first != range_from) {
+			fprintf(stderr, "http: %s%s -> 206 for \"%s\", wanted %ld-\n", u.host, u.path, cr, range_from);
+			conn_close(&conn);
+			return false;
+		}
+		range_start = range_from;
+	} else if (status != 200) {
 		conn_close(&conn);
 		return false;
 	}
@@ -933,6 +971,10 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 	st->content_length = header_value(headers, "Content-Length", length_text, sizeof(length_text))
 							 ? strtol(length_text, NULL, 10)
 							 : 0;
+	st->range_start = range_start;
+	st->total_length = range_total > 0 ? range_total
+					   : st->content_length > 0 ? range_start + st->content_length
+												: 0;
 
 	header_value(headers, "icy-name", st->icy_name, sizeof(st->icy_name));
 	header_value(headers, "icy-genre", st->icy_genre, sizeof(st->icy_genre));
@@ -949,7 +991,7 @@ static bool stream_open_once(http_stream_t *st, const char *url, int timeout_sec
 	return true;
 }
 
-bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs) {
+static bool stream_open(http_stream_t *st, const char *url, long range_from, int timeout_secs) {
 	if (!st || !url) {
 		return false;
 	}
@@ -963,7 +1005,7 @@ bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs) {
 	for (int hop = 0; hop <= HTTP_MAX_REDIRECTS; hop++) {
 		int status = 0;
 		char location[2048] = "";
-		if (stream_open_once(st, current, timeout_secs, &status, location, sizeof(location))) {
+		if (stream_open_once(st, current, range_from, timeout_secs, &status, location, sizeof(location))) {
 			return true;
 		}
 		if (status < 300 || status >= 400 || !location[0]) {
@@ -983,6 +1025,39 @@ bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs) {
 		}
 	}
 	return false;
+}
+
+bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs) { return stream_open(st, url, 0, timeout_secs); }
+
+bool http_stream_open_range(http_stream_t *st, const char *url, long from, int timeout_secs) { return stream_open(st, url, from > 0 ? from : 0, timeout_secs); }
+
+bool http_stream_skip(http_stream_t *st, long count) {
+	char sink[4096];
+	while (count > 0) {
+		int n = http_stream_read(st, sink, count < (long)sizeof(sink) ? (int)count : (int)sizeof(sink));
+		if (n <= 0) {
+			return false;
+		}
+		count -= n;
+		st->range_start += n;
+	}
+	return true;
+}
+
+bool http_stream_resume(http_stream_t *st, const char *url, long have, int timeout_secs) {
+	if (!http_stream_open_range(st, url, have, timeout_secs)) {
+		return false;
+	}
+	if (st->range_start != have) {
+		// A 200: the server ignored the Range and is sending everything
+		// again. See http_stream_skip() for why the bytes are read past.
+		fprintf(stderr, "http: no ranges from this server, skipping %ld bytes already held\n", have);
+		if (!http_stream_skip(st, have - st->range_start)) {
+			http_stream_close(st);
+			return false;
+		}
+	}
+	return true;
 }
 
 // Reads exactly `len` raw bytes (lead buffer first, then the socket).
