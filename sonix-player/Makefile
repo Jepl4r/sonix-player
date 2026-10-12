@@ -109,14 +109,17 @@ TARGET_CFLAGS = $(CFLAGS) -march=mips32r2 -mno-madd4 -mplt -ffunction-sections -
 # cache, smaller code is seldom slower code.
 #
 # The hot paths: the audio chain and its effects, the decoders, the Game Boy
-# core, and LVGL's software renderer and colour mixing. SQLite is at -O2, the
-# level it is normally built at.
+# core, LVGL's software renderer and colour mixing, and the cover decoders and
+# scalers (system/image), which run on every track change and every screenful
+# of album art in the library and decide how soon the cover appears. SQLite is
+# at -O2, the level it is normally built at.
 #
 # TARGET_OPT is per object: the default level everywhere, the hot one on the
 # objects matching TARGET_HOT_PATTERNS.
 TARGET_DEFAULT_OPT = -O2
 TARGET_HOT_OPT = -O3
 TARGET_HOT_PATTERNS = build_target/system/audio/% build_target/system/decode/% build_target/gb/% \
+					  build_target/system/image/% \
 					  build_target/lvgl/src/draw/sw/% build_target/lvgl/src/misc/lv_color%
 TARGET_OPT = $(TARGET_DEFAULT_OPT)
 $(TARGET_HOT_PATTERNS): TARGET_OPT = $(TARGET_HOT_OPT)
