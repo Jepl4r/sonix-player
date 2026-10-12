@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "lvgl/lvgl.h"
@@ -374,6 +375,64 @@ static void build_encoder_options(lv_obj_t *container) {
 	theme_register_refresh(encoder_pills_refresh);
 }
 
+// ---------------------------------------------------------------------------
+// Keep Bluetooth on
+//
+// How long the radio stays up, idle, after the screen goes dark before it is
+// parked (power.c). Longer means headphones put back on after a pause find the
+// player still there and reconnect by themselves; shorter saves the few mA of an
+// idle radio. A wait past the standby delay keeps the player out of standby
+// until it runs out, which the note says.
+// ---------------------------------------------------------------------------
+
+static const int KEEP_ON_SECONDS[] = {15, 60, 5 * 60, 15 * 60};
+#define KEEP_ON_COUNT ((int)(sizeof(KEEP_ON_SECONDS) / sizeof(KEEP_ON_SECONDS[0])))
+static lv_obj_t *keep_on_pills[KEEP_ON_COUNT];
+
+static void keep_on_refresh(void) {
+	uint32_t current = power_bt_park_seconds();
+	// The nearest choice lights up, so a hand-edited config still shows one.
+	int best = 0;
+	for (int i = 1; i < KEEP_ON_COUNT; i++) {
+		long d_best = labs((long)KEEP_ON_SECONDS[best] - (long)current);
+		long d_this = labs((long)KEEP_ON_SECONDS[i] - (long)current);
+		if (d_this < d_best) {
+			best = i;
+		}
+	}
+	for (int i = 0; i < KEEP_ON_COUNT; i++) {
+		settingsrow_pill_active(keep_on_pills[i], i == best);
+	}
+}
+
+static void keep_on_pick_cb(lv_event_t *e) {
+	if (switcher_back_drag_active()) {
+		return;
+	}
+	int seconds = (int)(intptr_t)lv_event_get_user_data(e);
+	power_set_bt_park_seconds((uint32_t)seconds);
+	config_set_int("power", "bt_park_seconds", seconds);
+	config_save();
+	keep_on_refresh();
+}
+
+static void build_keep_on_options(lv_obj_t *container) {
+	lv_obj_t *pills = NULL;
+	settingsrow_pills(container, "btaudio_keep_on", &pills);
+	for (int i = 0; i < KEEP_ON_COUNT; i++) {
+		char text[16];
+		if (KEEP_ON_SECONDS[i] < 60) {
+			snprintf(text, sizeof(text), "%d s", KEEP_ON_SECONDS[i]);
+		} else {
+			snprintf(text, sizeof(text), "%d min", KEEP_ON_SECONDS[i] / 60);
+		}
+		keep_on_pills[i] = settingsrow_pill_text(pills, text, KEEP_ON_SECONDS[i], keep_on_pick_cb);
+	}
+	option_note(container, "btaudio_keep_on_note");
+	keep_on_refresh();
+	theme_register_refresh(keep_on_refresh);
+}
+
 static void refresh_name_row(void);
 
 static void refresh_page(void) {
@@ -677,6 +736,7 @@ void btaudio_init(gui_config_t *cfg) {
 	}
 
 	build_encoder_options(container);
+	build_keep_on_options(container);
 
 	// --- the codec list, on a page of its own ---
 	codec_screen = lv_obj_create(NULL);

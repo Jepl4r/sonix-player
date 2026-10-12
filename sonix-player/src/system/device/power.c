@@ -590,6 +590,17 @@ static void headset_keys_wake(void) {
 #define RADIO_PARK_AFTER_MS_DEFAULT (60 * 1000)
 static uint32_t g_radio_park_after_ms = RADIO_PARK_AFTER_MS_DEFAULT;
 
+// Bluetooth's own wait, which the user can stretch ("Keep Bluetooth on" on the
+// Bluetooth audio page, [power] bt_park_seconds). Never shorter than 15 s, and
+// by default the same minute as Wi-Fi's.
+//
+// Longer is for a pause that ends with the headphones going back on: a radio
+// still up means they reconnect by themselves in a second or two, a parked one
+// means the stack is rebuilt first. The cost is the radio idling (a few mA) and,
+// when this wait is longer than the standby one, the SoC staying out of "mem"
+// until it has run out -- see suspend_if_idle().
+static uint32_t g_bt_park_after_ms = RADIO_PARK_AFTER_MS_DEFAULT;
+
 // No settings switch for this: parking is always on, and the two in_use() tests
 // below are the only places that decide when not to switch off.
 static bool g_wifi_parked; // this module switched it off, so it switches it back on
@@ -757,7 +768,7 @@ static void park_radios_if_idle(uint32_t now) {
 	// both in the same tick means writing to the SDIO chip while its neighbour's
 	// teardown is still in flight, which wedges the suspend path. The next pass
 	// is 250 ms away; the second radio can wait for it.
-	if (!g_bt_parked && bluetooth_get_enabled() && since(g_bt_idle_since, now) >= g_radio_park_after_ms) {
+	if (!g_bt_parked && bluetooth_get_enabled() && since(g_bt_idle_since, now) >= g_bt_park_after_ms) {
 		fprintf(stderr, "power: parking Bluetooth after %u ms unused\n", since(g_bt_idle_since, now));
 		park_bluetooth_now();
 		return;
@@ -1242,6 +1253,15 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 		return;
 	}
 	if (bluetooth_get_enabled()) {
+		// Kept on longer than the radios' usual wait, at the user's request: the
+		// suspend waits for it, because "mem" would mean parking the radio now
+		// and the point of the setting is that it is not parked yet. Only when
+		// the setting is longer than the usual wait, so the default behaves as
+		// it always has (the suspend takes the radio down as soon as it is due).
+		if (g_bt_park_after_ms > g_radio_park_after_ms && since(g_bt_idle_since, now) < g_bt_park_after_ms) {
+			mem_skip("Bluetooth is kept on for a while (Keep Bluetooth on)");
+			return;
+		}
 		// Enabled but idle: the park takes it down now and the suspend goes on
 		// the next round, the same way Wi-Fi is handled below.
 		park_bluetooth_now();
@@ -1869,6 +1889,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 		park_secs = 15; // any lower and a pocket checked twice re-associates for nothing
 	}
 	g_radio_park_after_ms = (uint32_t)park_secs * 1000u;
+	power_set_bt_park_seconds((uint32_t)config_get_int("power", "bt_park_seconds", park_secs));
 
 	g_power_timer = lv_timer_create(power_timer_cb, POWER_TICK_MS, NULL);
 
@@ -1878,3 +1899,14 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 }
 
 bool power_radios_parked(void) { return g_wifi_parked || g_bt_parked; }
+
+// UI thread, like everything else in this file. Not saved here: the page does
+// that, so init can apply the stored value through the same clamp.
+void power_set_bt_park_seconds(uint32_t seconds) {
+	if (seconds < 15) {
+		seconds = 15; // the same floor as the radios' own wait
+	}
+	g_bt_park_after_ms = seconds * 1000u;
+}
+
+uint32_t power_bt_park_seconds(void) { return g_bt_park_after_ms / 1000u; }

@@ -212,6 +212,13 @@ void power_set_standby_enabled(bool enabled);
 // [power] standby_mem_seconds). Never less than 15.
 void power_set_standby_after(uint32_t seconds);
 
+// How long Bluetooth stays up with nothing using it and the screen dark before
+// it is parked ("Keep Bluetooth on"). At least 15 s; by default the radios'
+// usual minute. A wait longer than that holds the standby off until it has run
+// out. UI thread. The caller stores [power] bt_park_seconds.
+void power_set_bt_park_seconds(uint32_t seconds);
+uint32_t power_bt_park_seconds(void);
+
 // Powers the Bluetooth radio and its daemons down, in order, through
 // bluetooth_power_down_stack(). The stock init script starts the whole stack at
 // every boot -- rfkill on, patchram, bluetoothd, bluealsa -- and with the

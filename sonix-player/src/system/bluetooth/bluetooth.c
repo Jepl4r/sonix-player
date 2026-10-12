@@ -270,6 +270,42 @@ static uint32_t now_ms(void) {
 	return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
 }
 
+// The same, on the clock that keeps counting while the SoC is suspended. Only
+// for "how long ago was the link up", which has to include the sleep: an hour
+// in standby is an hour, not the few seconds CLOCK_MONOTONIC saw of it.
+#ifndef CLOCK_BOOTTIME
+#define CLOCK_BOOTTIME 7
+#endif
+static uint32_t boot_ms(void) {
+	struct timespec ts;
+	if (clock_gettime(CLOCK_BOOTTIME, &ts) != 0) {
+		clock_gettime(CLOCK_MONOTONIC, &ts);
+	}
+	return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
+}
+
+// When an audio link was last seen up, on boot_ms(); 0 for never in this boot.
+// Under `lock`.
+static uint32_t g_link_seen_boot_ms;
+
+// Called with `lock` held.
+static void note_link_seen(void) {
+	g_link_seen_boot_ms = boot_ms();
+	if (g_link_seen_boot_ms == 0) {
+		g_link_seen_boot_ms = 1; // 0 means "never"
+	}
+}
+
+#define RECENT_LINK_MS (10u * 60u * 1000u)
+
+// Whether that was within the last few minutes (see SELF_RECONNECT_GRACE_RECENT_MS).
+static bool link_was_recent(void) {
+	pthread_mutex_lock(&lock);
+	uint32_t seen = g_link_seen_boot_ms;
+	pthread_mutex_unlock(&lock);
+	return seen != 0 && (uint32_t)(boot_ms() - seen) < RECENT_LINK_MS;
+}
+
 // ---------------------------------------------------------------------------
 // processes
 // ---------------------------------------------------------------------------
@@ -546,6 +582,120 @@ static bool hci_up(void) {
 static void hci_down(void) { (void)hci_ioctl(BT_HCIDEVDOWN); }
 
 // ---------------------------------------------------------------------------
+// Whether the controller itself answers
+//
+// hci_up() asks the KERNEL, and the kernel's "up" is a flag it set when the
+// firmware was loaded. After a park or a suspend to RAM that flag is still set
+// and brcm_patchram_plus is still holding the UART, so the bring-up skips the
+// firmware upload -- which is what makes a wake quick. But if the chip went
+// through a power cycle under it (a regulator dropped in "mem", a brown-out),
+// it is back at its ROM baud rate with no patch loaded, and an "up" hci0 on top
+// of it answers nothing: bluetoothd times out on every command and the
+// headphones never come back until Bluetooth is switched off and on by hand.
+//
+// So the controller is asked one harmless question -- HCI Read Local Version
+// Information, which changes nothing and which every controller answers in a
+// few milliseconds -- on a raw HCI socket. Only a clean silence counts as "not
+// answering": the question went out and no Command Complete came back in time.
+// Anything else (no Bluetooth socket family, a bind or a write refused) says
+// nothing about the controller, and the caller keeps believing the kernel, as
+// it always has. A false "dead" would cost a firmware upload and a dropped link
+// for nothing; a false "alive" is exactly the behaviour before this existed.
+//
+// The constants are kernel UAPI, spelled out for the same reason as the ones
+// above.
+// ---------------------------------------------------------------------------
+
+#define BT_SOL_HCI 0
+#define BT_HCI_FILTER 2
+#define BT_HCI_COMMAND_PKT 0x01
+#define BT_HCI_EVENT_PKT 0x04
+#define BT_EVT_CMD_COMPLETE 0x0e
+#define BT_OP_READ_LOCAL_VERSION 0x1001 // OGF 0x04 (informational), OCF 0x0001
+
+// Long enough for a controller busy with a command of its own (the kernel
+// queues this one behind it), far shorter than the firmware upload it saves.
+#define HCI_PROBE_MS 1500
+
+typedef enum {
+	HCI_PROBE_UNKNOWN, // could not ask: trust the kernel
+	HCI_PROBE_ALIVE,
+	HCI_PROBE_SILENT,
+} hci_probe_t;
+
+static hci_probe_t hci_probe(void) {
+	int fd = socket(BT_AF_BLUETOOTH, SOCK_RAW | SOCK_CLOEXEC, BT_PROTO_HCI);
+	if (fd < 0) {
+		return HCI_PROBE_UNKNOWN;
+	}
+
+	// struct sockaddr_hci { sa_family_t family; unsigned short dev, channel; }
+	struct {
+		unsigned short family;
+		unsigned short dev;
+		unsigned short channel;
+	} addr = {BT_AF_BLUETOOTH, BT_HCI_DEVICE, 0};
+	// struct hci_filter { uint32_t type_mask; uint32_t event_mask[2]; uint16_t opcode; }
+	// A raw socket starts with an empty filter and is handed nothing at all.
+	struct {
+		uint32_t type_mask;
+		uint32_t event_mask[2];
+		uint16_t opcode;
+	} filter = {1u << BT_HCI_EVENT_PKT, {1u << BT_EVT_CMD_COMPLETE, 0}, 0};
+
+	if (bind(fd, (struct sockaddr *)&addr, sizeof(addr)) != 0 ||
+		setsockopt(fd, BT_SOL_HCI, BT_HCI_FILTER, &filter, sizeof(filter)) != 0) {
+		close(fd);
+		return HCI_PROBE_UNKNOWN;
+	}
+
+	unsigned char command[4] = {BT_HCI_COMMAND_PKT, BT_OP_READ_LOCAL_VERSION & 0xff, BT_OP_READ_LOCAL_VERSION >> 8, 0};
+	if (write(fd, command, sizeof(command)) != (ssize_t)sizeof(command)) {
+		close(fd);
+		return HCI_PROBE_UNKNOWN;
+	}
+
+	hci_probe_t result = HCI_PROBE_SILENT;
+	uint32_t began = now_ms();
+	for (;;) {
+		int left = HCI_PROBE_MS - (int)(now_ms() - began);
+		if (left <= 0) {
+			break;
+		}
+		struct pollfd pfd = {.fd = fd, .events = POLLIN};
+		int ready = poll(&pfd, 1, left);
+		if (ready < 0 && errno == EINTR) {
+			continue;
+		}
+		if (ready <= 0) {
+			break;
+		}
+		unsigned char event[260];
+		ssize_t got = read(fd, event, sizeof(event));
+		if (got < 0 && errno == EINTR) {
+			continue;
+		}
+		if (got < 0) {
+			result = HCI_PROBE_UNKNOWN;
+			break;
+		}
+		// 04 0e <len> <ncmd> <opcode lo> <opcode hi> <status> ...: the answer
+		// to this question, and not to one bluetoothd asked at the same moment.
+		if (got >= 7 && event[0] == BT_HCI_EVENT_PKT && event[1] == BT_EVT_CMD_COMPLETE &&
+			(event[4] | (event[5] << 8)) == BT_OP_READ_LOCAL_VERSION) {
+			result = HCI_PROBE_ALIVE;
+			break;
+		}
+	}
+	close(fd);
+	if (result != HCI_PROBE_UNKNOWN) {
+		fprintf(stderr, "bluetooth: controller %s after %u ms\n", result == HCI_PROBE_ALIVE ? "answers" : "SILENT",
+				now_ms() - began);
+	}
+	return result;
+}
+
+// ---------------------------------------------------------------------------
 // uinput
 //
 // The media keys on a pair of headphones are not audio: bluez receives them over
@@ -797,7 +947,22 @@ static bool device_address(char *out, size_t size) {
 
 static bool ensure_transport(void) {
 	if (hci_up()) {
-		return true;
+		// The fast path of every wake: the firmware is still loaded and the
+		// UART still held, so there is nothing to upload -- provided the chip
+		// under the "up" really is the one that was loaded. See hci_probe().
+		if (hci_probe() != HCI_PROBE_SILENT) {
+			return true;
+		}
+		// Up in the kernel's eyes and deaf in fact. The same teardown a
+		// deliberate switch-off does (bring_stack_down), and then the full
+		// bring-up below: the patch uploaded again over a freshly powered chip.
+		// bluetoothd, if it is still running, sees hci0 go and come back and
+		// takes the new one as it would a dongle plugged in again.
+		fprintf(stderr, "bluetooth: hci0 is up but the controller does not answer; loading it again\n");
+		hci_down();
+		stop_process("brcm_patchram_plus");
+		write_file(BT_RFKILL, "0");
+		sleep_ms(100);
 	}
 
 	write_file(BT_RFKILL, "1");
@@ -1533,6 +1698,11 @@ static void refresh_audio_state(void) {
 	}
 
 	pthread_mutex_lock(&lock);
+	// Stamped on both edges: the moment a link went is the moment that says
+	// whether the next reconnect is a wake after a pause (reconnect_last).
+	if (sink || g_a2dp_connected) {
+		note_link_seen();
+	}
 	bool changed = sink != g_a2dp_connected || (sink && strcasecmp(g_a2dp_mac, mac) != 0);
 	g_a2dp_connected = sink;
 	snprintf(g_a2dp_mac, sizeof(g_a2dp_mac), "%s", sink ? mac : "");
@@ -1822,6 +1992,20 @@ static void forget_last_device(const char *mac) {
 // And how long the headphones are given to come back by themselves, at the end
 // of the bring-up, before anything is asked of them.
 #define SELF_RECONNECT_GRACE_MS 8000
+
+// Shorter when they were connected a few minutes ago -- the wake after a pause.
+//
+// The long wait exists for a cold start: headphones switched on at the same
+// moment as the player are in their own power-on reconnect, paging the player
+// for a few seconds, and a Connect from this side in the middle of that tears
+// the half-built link down. Headphones that were on the link a few minutes ago
+// are in a different state. They are already on and idle, listening for a page
+// rather than making one -- most models only reconnect by themselves when they
+// are switched on -- so eight seconds of waiting for them to do it is eight
+// seconds of nothing. Three still covers a pair that does reconnect by itself
+// (they do it within a second of the adapter being powered), and the attempts
+// below check before each Connect whether the link came up meanwhile.
+#define SELF_RECONNECT_GRACE_RECENT_MS 3000
 
 // Whether Bluetooth is still meant to be on: a wait that took seconds may have
 // been overtaken by the switch.
@@ -2191,7 +2375,10 @@ static void reconnect_last(void) {
 	// the instant the adapter is powered. Waiting costs nothing when they do not
 	// come back, and when they do it is the difference between a working link
 	// and a link torn down by a command from this side.
-	for (int waited = 0; waited < SELF_RECONNECT_GRACE_MS; waited += 250) {
+	int grace_ms = link_was_recent() ? SELF_RECONNECT_GRACE_RECENT_MS : SELF_RECONNECT_GRACE_MS;
+	fprintf(stderr, "bluetooth: giving %s %d ms to come back by itself%s\n", mac, grace_ms,
+			grace_ms == SELF_RECONNECT_GRACE_MS ? "" : " (it was connected a few minutes ago)");
+	for (int waited = 0; waited < grace_ms; waited += 250) {
 		if (btstack_audio_sink(sink, sizeof(sink)) && strcasecmp(sink, mac) == 0) {
 			fprintf(stderr, "bluetooth: %s came back on its own after %d ms\n", mac, waited);
 			return;
@@ -2337,6 +2524,9 @@ static void bring_stack_down(bool deliberate) {
 	bool was_on_bluealsa = strncmp(was_playing_on, "bluealsa", 8) == 0;
 
 	pthread_mutex_lock(&lock);
+	if (g_a2dp_connected) {
+		note_link_seen(); // taken down from this side, with the headphones still on
+	}
 	g_state = BT_STATE_OFF;
 	g_paired_count = 0;
 	g_found_count = 0;
