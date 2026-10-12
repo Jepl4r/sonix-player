@@ -37,7 +37,8 @@
 // What is deliberately missing
 //
 // No encryption (#EXT-X-KEY): a public radio does not use it, and those who do
-// do not want to be listened to. No adaptive bitrate: the best variant this
+// do not want to be listened to. (The AES-128-CBC it would need is there, in
+// crypto.h, should a station ever turn up that encrypts with a public key.) No adaptive bitrate: the best variant this
 // device's network can carry is chosen once and kept. No byte ranges within a
 // segment.
 
