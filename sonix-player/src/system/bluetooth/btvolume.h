@@ -34,6 +34,15 @@
 // line stays as the fallback for writing (see bluetooth.c) in case this path is
 // not there at all.
 //
+// When the stream goes and comes back. A restart of bluealsa (a change of the
+// LDAC quality, the AAC mode or the link rate) is heard as NameOwnerChanged,
+// and the new daemon is on the bus seconds before the headphones have
+// reconnected to it; a codec or rate change builds a new stream object behind
+// the same path. The arrival of the object itself is heard as InterfacesAdded,
+// and that is what binds it again -- SoftVolume written, the headphones' level
+// taken again after a restart -- exactly as on a new connection. Until it
+// arrives the stream is waited for, not written off.
+//
 // Threading: one worker owns every call, so no other thread ever blocks on the
 // bus. Signals arrive on the dbuslite reader thread and are only recorded.
 
