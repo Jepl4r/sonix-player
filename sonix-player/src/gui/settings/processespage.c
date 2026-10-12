@@ -234,7 +234,7 @@ static void refresh_clicked_cb(lv_event_t *e) {
 	rebuild();
 }
 
-void processespage_init(gui_config_t *cfg) {
+static void build(gui_config_t *cfg) {
 	page_container = settingsrow_page(processespage_screen, cfg, "processes");
 
 	// The top-right icon, like the other page corner buttons.
@@ -291,3 +291,10 @@ void processespage_init(gui_config_t *cfg) {
 	rebuild();
 	lv_obj_add_event_cb(processespage_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }
+
+// Built on the first visit rather than at boot (see gui_page_defer): the page is
+// two levels down in Developer options and most players never open it, yet its
+// rows and the process list it fills at once are close to two hundred objects.
+// Nothing outside reaches into it -- the devoptions row holds only the screen
+// pointer, which exists from gui_init() on -- so there is nothing to guard.
+void processespage_init(gui_config_t *cfg) { gui_page_defer(processespage_screen, build); }

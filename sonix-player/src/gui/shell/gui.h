@@ -35,6 +35,28 @@ bool gui_init(gui_config_t *cfg, bool split);
 // drain, so no page is ever shown or updated before it exists.
 void gui_init_rest(void);
 
+// Pages built on first use. UI thread only, like everything that touches LVGL.
+//
+// A page that is rarely opened -- a settings sub-page, the process list, the
+// radio directory -- does not have to hold its few hundred objects from boot
+// on. Its module's *_init() then only creates (or is handed) its empty screen
+// and registers `build` here against it; the screen pointer is valid from the
+// start, so every row, tile and back-stack entry that points at it keeps
+// working, and the switcher calls gui_page_ensure() on every screen it is about
+// to load, which runs `build` the first time and is a short scan after that.
+//
+// What a deferred page must NOT have: anything outside it that reaches into
+// its widgets (a refresh called from another module, a gui_post callback, a
+// timer or a theme_register_refresh() callback set up before the build) --
+// those would find NULL; the page sets them up in `build` instead. Code of the page's
+// own that has to touch a widget outside a navigation (an *_open() that fills
+// a field and then switches) calls gui_page_ensure() itself first.
+void gui_page_defer(lv_obj_t *screen, void (*build)(gui_config_t *cfg));
+
+// Builds `screen`'s page now if it was deferred and is not built yet; nothing
+// otherwise (NULL included).
+void gui_page_ensure(lv_obj_t *screen);
+
 // The bridge from any thread to the UI thread: `cb(user)` runs on the UI
 // thread within a few tens of milliseconds.
 //

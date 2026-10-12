@@ -80,9 +80,19 @@ static bool job_busy;
 static void job_done(void *user);
 static void result_clicked(lv_event_t *event);
 
+// By hand rather than with snprintf: the result is the same, but GCC, once it
+// inlines this into a caller with a fixed-size buffer, warns about the
+// truncation snprintf would do even though it is checked for right here.
 static bool path_join(char *out, size_t size, const char *parent, const char *name) {
-	int n = snprintf(out, size, "%s/%s", parent, name);
-	return n > 0 && (size_t)n < size;
+	size_t parent_len = strlen(parent);
+	size_t name_len = strlen(name);
+	if (parent_len + 1 + name_len >= size) {
+		return false;
+	}
+	memcpy(out, parent, parent_len);
+	out[parent_len] = '/';
+	memcpy(out + parent_len + 1, name, name_len + 1);
+	return true;
 }
 
 static bool make_dir(const char *path) {
@@ -789,7 +799,6 @@ static void update_database(lv_event_t *event) {
 }
 
 static void build_pages(gui_config_t *config) {
-	search_screen = lv_obj_create(NULL);
 	lv_obj_t *search_container = settingsrow_page(search_screen, config, "peq_autoeq_search");
 	lv_obj_set_height(search_container, config->screen_height - settingsrow_content_top(config) - 316);
 
@@ -822,7 +831,6 @@ static void build_pages(gui_config_t *config) {
 
 	search_keyboard = keyboard_create(search_screen, config->screen_width, 316, search_field, &icon_search, NULL, search_accept, NULL);
 
-	results_screen = lv_obj_create(NULL);
 	search_list = settingsrow_page(results_screen, config, "peq_autoeq_results");
 	results_empty = lv_label_create(results_screen);
 	lv_label_set_text(results_empty, tr("peq_autoeq_no_results"));
@@ -834,10 +842,17 @@ static void build_pages(gui_config_t *config) {
 	lv_obj_set_hidden(results_empty, true);
 }
 
+// The two screens exist from boot, their contents from the first search (see
+// gui_page_defer): AutoEq is a once-in-a-while errand and the search page alone
+// carries a whole keyboard. Every way in goes through peqautoeq_open(), which
+// asks for the build first; the results page is only ever switched to from a
+// search started there, so it is built by then too.
 void peqautoeq_init(gui_config_t *config) {
 	cfg = config;
 	set_paths();
-	build_pages(config);
+	search_screen = lv_obj_create(NULL);
+	results_screen = lv_obj_create(NULL);
+	gui_page_defer(search_screen, build_pages);
 }
 
 lv_obj_t *peqautoeq_screen(void) { return search_screen; }
@@ -845,6 +860,7 @@ lv_obj_t *peqautoeq_screen(void) { return search_screen; }
 void peqautoeq_set_reload_cb(void (*cb)(void)) { reload_cb = cb; }
 
 void peqautoeq_open(void) {
+	gui_page_ensure(search_screen); // the field below is filled before the switch
 	lv_textarea_set_text(search_field, "");
 	keyboard_reset(search_keyboard);
 	switch_screen(search_screen);

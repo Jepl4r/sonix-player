@@ -6,6 +6,7 @@
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/popover.h"
@@ -315,10 +316,7 @@ static void build_list_page(gui_config_t *cfg) {
 	switcher_attach_back_gesture(list_screen);
 }
 
-void peqsettings_init(gui_config_t *cfg) {
-	config = cfg;
-
-	settings_screen = lv_obj_create(NULL);
+static void build(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(settings_screen, cfg, "peq_settings");
 
 	// No factory presets here: the graphic equalizer's canned curves are ten
@@ -332,4 +330,12 @@ void peqsettings_init(gui_config_t *cfg) {
 	build_name_dialog(cfg);
 
 	switcher_attach_back_gesture(settings_screen);
+}
+
+// Like the graphic EQ's settings: the screen from boot (peqpage's gear switches
+// to it), the rows, the preset list and the name dialog on the first visit.
+void peqsettings_init(gui_config_t *cfg) {
+	config = cfg;
+	settings_screen = lv_obj_create(NULL);
+	gui_page_defer(settings_screen, build);
 }

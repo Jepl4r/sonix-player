@@ -40,6 +40,9 @@ static lv_obj_t *airpods_icon;
 static lv_obj_t *codec_row;
 static lv_obj_t *codec_value;
 static lv_obj_t *coexist_note; // LDAC 990 and a busy Wi-Fi radio; hidden otherwise
+static lv_obj_t *battery_row;  // the headset's own level; hidden while unknown
+static lv_obj_t *battery_value;
+static lv_obj_t *battery_switch;
 static lv_timer_t *poll_timer;
 
 // The codec list is its own page: how many entries there are depends on what
@@ -291,7 +294,7 @@ static void airpods_row_cb(lv_event_t *e) {
 	switch_screen(airpodspage_screen);
 }
 
-static void refresh_airpods_row(void) {
+static bool refresh_airpods_row(void) {
 	airpods_state_t state;
 	bool present = airpods_get(&state);
 
@@ -304,6 +307,35 @@ static void refresh_airpods_row(void) {
 	} else {
 		lv_obj_set_hidden(airpods_row, true);
 	}
+	return present;
+}
+
+// ---------------------------------------------------------------------------
+// The headset battery
+//
+// Any headset's own level, read over the hands-free control channel when the
+// switch below lets bluealsa run as a hands-free gateway (bluetooth.h says
+// what that costs). The row exists only while there is a number: off, nothing
+// connected, or a headset that has not said leave the page as it was. AirPods
+// have their own page with a level per bud, so the row stays out of their way.
+// ---------------------------------------------------------------------------
+
+static void refresh_battery_row(bool airpods_present) {
+	int percent = bluetooth_headset_battery(NULL);
+	bool show = percent >= 0 && !airpods_present;
+	if (show) {
+		char text[16];
+		snprintf(text, sizeof(text), "%d %%", percent);
+		if (strcmp(lv_label_get_text(battery_value), text) != 0) {
+			lv_label_set_text(battery_value, text);
+		}
+	}
+	lv_obj_set_hidden(battery_row, !show);
+}
+
+static void battery_toggle_cb(lv_event_t *e) {
+	(void)e;
+	bluetooth_set_headset_battery_enabled(lv_obj_has_state(battery_switch, LV_STATE_CHECKED));
 }
 
 static void volume_toggle_cb(lv_event_t *e) {
@@ -489,7 +521,7 @@ static void refresh_page(void) {
 	// so with nothing on the other end there is nothing behind the row.
 	settingsrow_chevron_active(codec_row, connected && count > 0);
 
-	refresh_airpods_row();
+	refresh_battery_row(refresh_airpods_row());
 	refresh_coexist_note(connected);
 
 	bool sync = bluetooth_volume_sync();
@@ -774,6 +806,12 @@ void btaudio_init(gui_config_t *cfg) {
 	lv_obj_align(airpods_icon, LV_ALIGN_RIGHT_MID, -AIRPODS_ICON_INSET, 0);
 	lv_obj_set_hidden(airpods_row, true);
 
+	// Any other headset's battery, in the same place and on the same terms:
+	// there only while there is something to show. Not a button.
+	battery_row = settingsrow_add(container, "btaudio_battery", &battery_value, NULL, NULL);
+	lv_obj_set_clickable(battery_row, false);
+	lv_obj_set_hidden(battery_row, true);
+
 	// The codec in use, and the list of what the sink offered.
 	codec_row = settingsrow_add(container, "btaudio_codecs", &codec_value, codec_row_cb, NULL);
 	coexist_note = option_note(container, "btaudio_ldac_wifi_busy");
@@ -787,6 +825,13 @@ void btaudio_init(gui_config_t *cfg) {
 	if (bluetooth_volume_sync()) {
 		lv_obj_add_state(volume_switch, LV_STATE_CHECKED);
 	}
+
+	// The headset battery, opt-in: see refresh_battery_row() above.
+	settingsrow_toggle(container, "btaudio_headset_battery", &battery_switch, battery_toggle_cb);
+	if (bluetooth_headset_battery_enabled()) {
+		lv_obj_add_state(battery_switch, LV_STATE_CHECKED);
+	}
+	option_note(container, "btaudio_headset_battery_note");
 
 	build_encoder_options(container);
 	build_keep_on_options(container);

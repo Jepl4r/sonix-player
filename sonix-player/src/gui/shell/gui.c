@@ -575,7 +575,60 @@ static void build_rest(gui_config_t *cfg, bool final);
 // be built; NULL before gui_init() and once it is done.
 static gui_config_t *rest_cfg;
 
+// ---------------------------------------------------------------------------
+// pages built on first use (see gui_page_defer)
+// ---------------------------------------------------------------------------
+
+// A dozen is room to spare: the list is fixed at build time and only grows
+// when a page is moved here by hand. Full, a page is simply built at once.
+#define DEFERRED_PAGES_MAX 16
+
+typedef struct {
+	lv_obj_t *screen;
+	void (*build)(gui_config_t *cfg);
+} deferred_page_t;
+
+static deferred_page_t deferred_pages[DEFERRED_PAGES_MAX];
+static int deferred_page_count;
+
+// The configuration every page is built with; main() keeps it for the life of
+// the process, which is what lets a page be built long after gui_init().
+static gui_config_t *page_cfg;
+
+void gui_page_defer(lv_obj_t *screen, void (*build)(gui_config_t *cfg)) {
+	if (!screen || !build) {
+		return;
+	}
+	if (deferred_page_count == DEFERRED_PAGES_MAX) {
+		fprintf(stderr, "gui: deferred page list full, building now\n");
+		build(page_cfg);
+		return;
+	}
+	deferred_pages[deferred_page_count++] = (deferred_page_t){screen, build};
+}
+
+void gui_page_ensure(lv_obj_t *screen) {
+	if (!screen) {
+		return;
+	}
+	for (int i = 0; i < deferred_page_count; i++) {
+		if (deferred_pages[i].screen != screen) {
+			continue;
+		}
+		// Off the list before building: a build that navigates, or that asks
+		// for its own screen again, must not build the page twice.
+		void (*build)(gui_config_t *cfg) = deferred_pages[i].build;
+		deferred_pages[i] = deferred_pages[--deferred_page_count];
+		uint32_t started = lv_tick_get();
+		build(page_cfg);
+		fprintf(stderr, "gui: page built on first use in %u ms\n", (unsigned)lv_tick_elaps(started));
+		return;
+	}
+}
+
 bool gui_init(gui_config_t *cfg, bool split) {
+	page_cfg = cfg;
+
 	// Colours first: every screen below styles itself from the active palette.
 	theme_init();
 

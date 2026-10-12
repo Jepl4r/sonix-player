@@ -484,9 +484,17 @@ static void add_row(lv_obj_t *parent, const bt_device_t *device, bool paired_sec
 		// The headphones the sound is going to say what the link carries
 		// ("LDAC 990 · 48 kHz") in place of the bare "Connected", which the
 		// accent colour already says; anything else connected keeps the word.
+		//
+		// With the headset battery on (btaudio.c) and a level said, it goes on
+		// the end: "AAC · 44.1 kHz · 80 %".
 		char summary[64];
 		lv_obj_t *state = lv_label_create(row);
 		if (bluetooth_codec_summary(device->mac, summary, sizeof(summary))) {
+			int percent = bluetooth_headset_battery(NULL);
+			if (percent >= 0) {
+				size_t used = strlen(summary);
+				snprintf(summary + used, sizeof(summary) - used, " \xC2\xB7 %d %%", percent);
+			}
 			lv_label_set_text(state, summary);
 		} else {
 			lv_label_set_text(state, tr("connected"));
@@ -654,10 +662,16 @@ static void poll_cb(lv_timer_t *timer) {
 
 	refresh_status_label();
 
+	// The headset's battery moves on its own, a step at a time, without the
+	// device list changing: it is watched apart and costs a rebuild only when
+	// the number on the row would be different.
+	static int drawn_battery = -1;
+	int battery = bluetooth_headset_battery(NULL);
 	uint32_t serial = bluetooth_devices_serial();
-	if (serial != drawn_serial || on != drawn_enabled) {
+	if (serial != drawn_serial || on != drawn_enabled || battery != drawn_battery) {
 		drawn_serial = serial;
 		drawn_enabled = on;
+		drawn_battery = battery;
 		rebuild_lists();
 	}
 

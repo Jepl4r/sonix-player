@@ -232,6 +232,14 @@ void bluetooth_set_discoverable(bool on);
 // Changing it restarts bluealsa when the radio is on, because that is the only
 // moment the option is read. The link comes back by itself; the audio stops for
 // as long as that takes.
+//
+// Kept per pair of headphones ([wireless] bt_ldac_<address>), with
+// bt_ldac_quality as the default for a pair that has none: the getter answers
+// for the pair connected, or the last one with nothing connected, and the
+// setter writes for the pair connected and the default both. A pair that
+// connects with a rate of its own other than the daemon's gets it by a
+// restart made only while nothing plays (see daemon_options_check()).
+// Any thread; takes the module's lock, so not to be called under it.
 const char *bluetooth_ldac_quality(void);
 
 // Moves on each time the headphones' stream came back under a bluealsa this
@@ -256,7 +264,7 @@ void bluetooth_set_aac_vbr(bool on);
 // [wireless] bt_sample_rate = auto | 44100.
 // Wi-Fi coexistence for LDAC 990 (see bluetooth.c). The UI says whether the
 // Wi-Fi transfer server is on; with LDAC set to 990, the next connection then
-// gets 660 -- bluealsa is restarted only when no stream is up, never under one.
+// gets 660 -- bluealsa is restarted only when no music is playing, never under it.
 // UI thread; cheap when nothing changed, so it can be called on every tick.
 void bluetooth_set_wifi_busy(bool transfer_server_on);
 // True while that is in force: LDAC set to 990 and the transfer server on.
@@ -264,6 +272,25 @@ bool bluetooth_ldac_held_back(void);
 
 bool bluetooth_force_44k(void);
 void bluetooth_set_force_44k(bool on);
+
+// The headphones' own battery level, for any headset rather than only AirPods.
+// Off by default, and an opt-in for a reason: it means starting bluealsa as a
+// hands-free audio gateway too (-p hfp-ag), because the level travels on the
+// hands-free control channel: AT+IPHONEACCEV, which most headsets send after
+// their AT+XAPL is answered, whatever phone they think they are talking to,
+// or the HFP battery indicator. The player never
+// opens or routes the SCO voice channel that profile also brings; it only
+// reads the number. Kept in [wireless] bt_headset_battery = 0 | 1. Changing it
+// restarts bluealsa like the options above, but never under music that is
+// playing: then it waits until the headphones disconnect or the player has
+// been idle a while.
+bool bluetooth_headset_battery_enabled(void);
+void bluetooth_set_headset_battery_enabled(bool on);
+
+// The connected headphones' level, 0..100, or -1 with the setting off, nothing
+// connected, or nothing said yet. A cache read: any thread. `serial_out`, when
+// given, moves whenever any headset's level changes.
+int bluetooth_headset_battery(unsigned *serial_out);
 
 // ---------------------------------------------------------------------------
 // The other direction: a device streaming to this one

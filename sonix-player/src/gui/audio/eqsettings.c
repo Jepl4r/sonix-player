@@ -6,6 +6,7 @@
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/popover.h"
@@ -359,10 +360,7 @@ static void build_per_output(lv_obj_t *container) {
 	lv_label_set_text(note, tr("eq_per_output_note"));
 }
 
-void eqsettings_init(gui_config_t *cfg) {
-	config = cfg;
-
-	settings_screen = lv_obj_create(NULL);
+static void build(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(settings_screen, cfg, "eq_settings");
 
 	settingsrow_add(container, "eq_default_presets", NULL, open_default_list_cb, NULL);
@@ -375,4 +373,14 @@ void eqsettings_init(gui_config_t *cfg) {
 	build_name_dialog(cfg);
 
 	switcher_attach_back_gesture(settings_screen);
+}
+
+// Built on the first visit (see gui_page_defer), with its two list pages and
+// the name dialog: only the screen, which musicsettings's gear points at, has
+// to exist from boot. The "EQ per output" switch reads eqprofile when it is
+// built, so a page built late still shows the current state.
+void eqsettings_init(gui_config_t *cfg) {
+	config = cfg;
+	settings_screen = lv_obj_create(NULL);
+	gui_page_defer(settings_screen, build);
 }

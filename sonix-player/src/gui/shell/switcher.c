@@ -491,6 +491,11 @@ static bool page_has_no_chevron(lv_obj_t *screen) {
 }
 
 static void load_screen(lv_obj_t *target_screen) {
+	// A page left to be built on first use is built now, before anything below
+	// looks at it (see gui_page_defer). Once built, this is a scan of a short
+	// list that finds nothing.
+	gui_page_ensure(target_screen);
+
 	// Every page keeps the status bar. The player is not a page -- it slides
 	// over the top of one -- so nothing here has to make room for it.
 	topbar_set_hidden(false);

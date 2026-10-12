@@ -6,6 +6,7 @@
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/popover.h"
@@ -347,10 +348,7 @@ static void build_list_page(gui_config_t *cfg) {
 	switcher_attach_back_gesture(list_screen);
 }
 
-void msebsettings_init(gui_config_t *cfg) {
-	config = cfg;
-
-	settings_screen = lv_obj_create(NULL);
+static void build(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(settings_screen, cfg, "mseb_settings");
 
 	settingsrow_action(container, "save_preset", open_name_dialog_cb, NULL);
@@ -395,5 +393,17 @@ void msebsettings_init(gui_config_t *cfg) {
 	build_name_dialog(cfg);
 
 	switcher_attach_back_gesture(settings_screen);
+	// Registered here, not in _init(): the pills it repaints exist from now on.
 	theme_register_refresh(refresh_range_buttons);
+}
+
+// The screen exists from boot -- musicsettings asks for it to hang the gear off
+// the MSEB page -- and the rows, the preset list page and the name dialog with
+// its keyboard are built on the first visit (see gui_page_defer). Nothing else
+// reaches in: the reload callback musicsettings hands over is ours to call, and
+// the list page is only reached from a row on this one.
+void msebsettings_init(gui_config_t *cfg) {
+	config = cfg;
+	settings_screen = lv_obj_create(NULL);
+	gui_page_defer(settings_screen, build);
 }
