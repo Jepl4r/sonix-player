@@ -40,6 +40,18 @@ static void open_favourites(void) {
 static void open_most_played(void) {
 	medialist_open(tr("music_most_played"), LIBRARY_LIST_MOST_PLAYED, LIBRARY_FILTER_NONE, NULL);
 }
+// The records that arrived last and the tracks heard last: short lists, the
+// newest on top, LIBRARY_RECENT_MAX of each. The count is the album list's
+// filter value, so the same handle code that narrows a list to one year
+// narrows this one to the newest records.
+static void open_recently_added(void) {
+	char limit[8];
+	snprintf(limit, sizeof(limit), "%d", LIBRARY_RECENT_MAX);
+	medialist_open(tr("music_recently_added"), LIBRARY_LIST_ALBUMS, LIBRARY_FILTER_RECENT, limit);
+}
+static void open_recently_played(void) {
+	medialist_open(tr("music_recently_played"), LIBRARY_LIST_RECENTLY_PLAYED, LIBRARY_FILTER_NONE, NULL);
+}
 static void open_browse(void) { switch_screen(browser_screen); }
 static void open_playlists(void) { playlistpage_open(); }
 
@@ -71,6 +83,14 @@ static const struct {
 	[MUSIC_TILE_FAVOURITES] = {"favourites", {"favourites", &icon_menu_favourites, NULL, open_favourites}},
 	[MUSIC_TILE_MOST_PLAYED] = {"most_played",
 								{"music_most_played", &icon_menu_most_played, NULL, open_most_played}},
+	// Pictures borrowed from elsewhere rather than drawn for these two: the
+	// transfer arrows for what has just come onto the card, the resume glyph
+	// for what was being listened to.
+	[MUSIC_TILE_RECENTLY_ADDED] = {"recent_added",
+								   {"music_recently_added", &icon_menu_wifi_transfer, NULL, open_recently_added}},
+	[MUSIC_TILE_RECENTLY_PLAYED] = {"recent_played",
+									{"music_recently_played", &icon_menu_audiobook_continue, NULL,
+									 open_recently_played}},
 	[MUSIC_TILE_PLAYLISTS] = {"playlists", {"playlists", &icon_menu_playlist, NULL, open_playlists}},
 	[MUSIC_TILE_BROWSE] = {"browse", {"music_browse", &icon_menu_explorer, NULL, open_browse}},
 };

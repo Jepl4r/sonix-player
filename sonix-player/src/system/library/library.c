@@ -329,6 +329,16 @@ static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
 #define PLAYS_ORDER "plays DESC, last_played DESC, rowid"
 #define PLAYS_NAME "(SELECT m.name FROM MEDIA_TABLE m WHERE m.path = PLAY_COUNTS.path LIMIT 1)"
 #define PLAYS_ARTIST "(SELECT m.artist FROM MEDIA_TABLE m WHERE m.path = PLAY_COUNTS.path LIMIT 1)"
+#define LIBRARY_RECENT_MAX_SQL "100" // LIBRARY_RECENT_MAX, spelled out for the SQL below
+_Static_assert(LIBRARY_RECENT_MAX == 100, "LIBRARY_RECENT_MAX_SQL must spell LIBRARY_RECENT_MAX");
+
+// The latest LIBRARY_RECENT_MAX counted plays still in the index, latest first.
+// The limit sits inside the IN so that the count of the list -- the same query
+// with its outer ORDER BY cut off, see library_index_open() -- is limited too.
+#define PLAYS_RECENT                                                                                                  \
+	"rowid IN (SELECT rowid FROM PLAY_COUNTS WHERE " PLAYS_IN_INDEX " ORDER BY last_played DESC, rowid DESC LIMIT "  \
+	LIBRARY_RECENT_MAX_SQL ")"
+#define PLAYS_RECENT_ORDER "last_played DESC, rowid DESC"
 
 typedef enum {
 	GEN_MEDIA = 0, // MEDIA_TABLE and the four lookup tables the scan fills
@@ -1288,7 +1298,7 @@ static bool list_uses_sortkey(library_list_t kind) {
 	// Favourites run by when they were starred and a playlist by the order it
 	// was built, so neither has a sort key to read.
 	return sortkeys_ready && kind != LIBRARY_LIST_FAVOURITES && kind != LIBRARY_LIST_PLAYLIST &&
-		   kind != LIBRARY_LIST_MOST_PLAYED;
+		   kind != LIBRARY_LIST_MOST_PLAYED && kind != LIBRARY_LIST_RECENTLY_PLAYED;
 }
 
 static void next_mount_serial(void);
@@ -1670,6 +1680,8 @@ static const char *filter_column(library_filter_t filter) {
 		return "genre";
 	case LIBRARY_FILTER_YEAR:
 		return "year";
+	case LIBRARY_FILTER_RECENT:
+		return "ctime";
 	default:
 		return NULL;
 	}
@@ -1696,6 +1708,11 @@ static const char *filter_where(library_filter_t filter) {
 		// the track's own, so the tracks are those of the records listed.
 		return "(album, album_key) IN (SELECT g.album, g.album_key FROM ALBUM_GROUP_TABLE g WHERE " ALBUM_GROUP_YEAR
 			   " = CAST(?1 AS INTEGER))";
+	case LIBRARY_FILTER_RECENT:
+		// The tracks of the records added last: the same albums, and as many,
+		// as the album list of them shows.
+		return "(album, album_key) IN (SELECT g.album, g.album_key FROM ALBUM_GROUP_TABLE g WHERE g.album <> ''"
+			   " ORDER BY " ALBUM_GROUP_NEWEST " DESC LIMIT CAST(?1 AS INTEGER))";
 	default:
 		return NULL;
 	}
@@ -2363,6 +2380,11 @@ int library_for_each(library_list_t kind, library_filter_t filter, const char *v
 	"(SELECT MAX(CASE WHEN y.year > 0 THEN y.year END) FROM MEDIA_TABLE y"                                           \
 	" WHERE y.album = MEDIA_TABLE.album AND y.album_key = MEDIA_TABLE.album_key)"
 
+// When the newest file of the album a MEDIA_TABLE row belongs to arrived,
+// as ALBUM_GROUP_NEWEST has it for the album list.
+#define TRACK_ALBUM_NEWEST                                                                                            \
+	"(SELECT MAX(y.ctime) FROM MEDIA_TABLE y WHERE y.album = MEDIA_TABLE.album AND y.album_key = MEDIA_TABLE.album_key)"
+
 // -1 until first asked; then the [library] artist_albums_by_year setting,
 // kept here so the queries built off the interface thread (SonixLink) read
 // a flag rather than the configuration.
@@ -2396,6 +2418,9 @@ static void track_order_sql(char *out, size_t size, library_order_t order, libra
 		// the ones with no year at the end, a year's records by name.
 		snprintf(out, size, YEAR_KEY_UP(TRACK_ALBUM_YEAR) ", " ALBUM_ORDER_KEY ", " TRACK_ORDER_IN_ALBUM ", %s",
 				 by_name);
+	} else if (order == LIBRARY_ORDER_ALBUM && filter == LIBRARY_FILTER_RECENT) {
+		// The records added last, played newest record first, as listed.
+		snprintf(out, size, TRACK_ALBUM_NEWEST " DESC, " ALBUM_ORDER_KEY ", " TRACK_ORDER_IN_ALBUM ", %s", by_name);
 	} else if (order == LIBRARY_ORDER_ALBUM) {
 		snprintf(out, size, ALBUM_ORDER_KEY ", " TRACK_ORDER_IN_ALBUM ", %s", by_name);
 	} else if (order == LIBRARY_ORDER_ADDED) {
@@ -2427,6 +2452,9 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 	} else if (kind == LIBRARY_LIST_MOST_PLAYED) {
 		snprintf(sql, sizeof(sql), "SELECT " PLAYS_NAME ", path, " PLAYS_ARTIST " FROM PLAY_COUNTS WHERE " PLAYS_IN_INDEX
 								   " ORDER BY " PLAYS_ORDER);
+	} else if (kind == LIBRARY_LIST_RECENTLY_PLAYED) {
+		snprintf(sql, sizeof(sql), "SELECT " PLAYS_NAME ", path, " PLAYS_ARTIST " FROM PLAY_COUNTS WHERE " PLAYS_RECENT
+								   " ORDER BY " PLAYS_RECENT_ORDER);
 	} else if (kind == LIBRARY_LIST_TRACKS) {
 		char order_sql[384];
 		track_order_sql(order_sql, sizeof(order_sql), order, filter, col && value && filter == LIBRARY_FILTER_ALBUM,
@@ -2605,6 +2633,28 @@ static bool search_pattern(const char *query, char *out, size_t size) {
 	return true;
 }
 
+// The first " ORDER BY " of `sql` outside brackets and quotes, or NULL.
+static char *top_level_order_by(char *sql) {
+	int depth = 0;
+	char quote = 0;
+	for (char *c = sql; *c; c++) {
+		if (quote) {
+			if (*c == quote) {
+				quote = 0;
+			}
+		} else if (*c == '\'' || *c == '"') {
+			quote = *c;
+		} else if (*c == '(') {
+			depth++;
+		} else if (*c == ')') {
+			depth--;
+		} else if (depth == 0 && *c == ' ' && strncmp(c, " ORDER BY ", 10) == 0) {
+			return c;
+		}
+	}
+	return NULL;
+}
+
 static void list_sql(char *sql, size_t size, const char *select, library_list_t kind, library_filter_t filter,
 					 const char *value, library_order_t order) {
 	const char *col = filter_column(filter);
@@ -2646,6 +2696,22 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 
 	if (kind == LIBRARY_LIST_MOST_PLAYED) {
 		snprintf(sql, size, "SELECT %s FROM PLAY_COUNTS WHERE " PLAYS_IN_INDEX " ORDER BY " PLAYS_ORDER, select);
+		return;
+	}
+
+	if (kind == LIBRARY_LIST_RECENTLY_PLAYED) {
+		snprintf(sql, size, "SELECT %s FROM PLAY_COUNTS WHERE " PLAYS_RECENT " ORDER BY " PLAYS_RECENT_ORDER, select);
+		return;
+	}
+
+	// The records added last, newest first. As with the plays above, the limit
+	// is inside the IN, so the count is of the same rows.
+	if (kind == LIBRARY_LIST_ALBUMS && filter == LIBRARY_FILTER_RECENT && value) {
+		snprintf(sql, size,
+				 "SELECT %s FROM ALBUM_GROUP_TABLE g WHERE g.rowid IN (SELECT g.rowid FROM ALBUM_GROUP_TABLE g"
+				 " WHERE g.album <> '' ORDER BY " ALBUM_GROUP_NEWEST " DESC LIMIT CAST(?1 AS INTEGER))"
+				 " ORDER BY " ALBUM_GROUP_NEWEST " DESC, %s",
+				 select, list_uses_sortkey(kind) ? "g.sortkey" : "g.album COLLATE listorder");
 		return;
 	}
 
@@ -2850,6 +2916,7 @@ static const char *row_by_id_sql(library_list_t kind, const char *value, char *o
 	case LIBRARY_LIST_FAVOURITES:
 		return "SELECT " FAV_NAME ", path, " FAV_ARTIST " FROM FAVOURITES WHERE rowid=?";
 	case LIBRARY_LIST_MOST_PLAYED:
+	case LIBRARY_LIST_RECENTLY_PLAYED:
 		return "SELECT " PLAYS_NAME ", path, " PLAYS_ARTIST " FROM PLAY_COUNTS WHERE rowid=?";
 	default:
 		return NULL;
@@ -2870,6 +2937,7 @@ static const char *name_column(library_list_t kind) {
 	case LIBRARY_LIST_GENRES:
 		return "genre";
 	case LIBRARY_LIST_MOST_PLAYED:
+	case LIBRARY_LIST_RECENTLY_PLAYED:
 		// No name of its own: the table holds the path, and the list is not
 		// filed by letter anyway.
 		return "path";
@@ -2897,7 +2965,7 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 				 (kind == LIBRARY_LIST_TRACKS ||
 				  (kind == LIBRARY_LIST_ALBUMS &&
 				   (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST ||
-					filter == LIBRARY_FILTER_GENRE || filter == LIBRARY_FILTER_YEAR)));
+					filter == LIBRARY_FILTER_GENRE || filter == LIBRARY_FILTER_YEAR || filter == LIBRARY_FILTER_RECENT)));
 	// A search binds the pattern the value becomes, not the value.
 	char pattern[2 * 256 + 3];
 	if (filter == LIBRARY_FILTER_SEARCH) {
@@ -2935,7 +3003,11 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 	// COUNT(*) has no business sorting: the ORDER BY the builder appended is
 	// dead weight on a query that returns one row, and SQLite would still build
 	// the sorter for it.
-	char *order_by = strstr(count_sql, " ORDER BY ");
+	//
+	// The query's own ORDER BY only, the one outside every bracket: a
+	// subquery's -- the limit of the recent lists is one -- is part of which
+	// rows there are, and cutting there would leave half a statement.
+	char *order_by = top_level_order_by(count_sql);
 	if (order_by) {
 		*order_by = '\0';
 	}
@@ -3013,7 +3085,8 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 		// album by disc position, an artist's records by album -- three lists
 		// whose order has nothing to do with the alphabet.
 		bool by_name = kind != LIBRARY_LIST_FAVOURITES && kind != LIBRARY_LIST_PLAYLIST && kind != LIBRARY_LIST_YEARS &&
-					   kind != LIBRARY_LIST_MOST_PLAYED &&
+					   kind != LIBRARY_LIST_MOST_PLAYED && kind != LIBRARY_LIST_RECENTLY_PLAYED &&
+					   filter != LIBRARY_FILTER_RECENT &&
 					   order != LIBRARY_ORDER_ALBUM && order != LIBRARY_ORDER_ADDED && order != LIBRARY_ORDER_YEAR &&
 					   order != LIBRARY_ORDER_YEAR_DESC && order != LIBRARY_ORDER_ARTIST &&
 					   !(kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM) &&
@@ -3205,7 +3278,8 @@ int library_index_find_path(const library_index_t *ix, const char *path) {
 		}
 	} else {
 		const char *table = ix->kind == LIBRARY_LIST_FAVOURITES	 ? "FAVOURITES"
-							: ix->kind == LIBRARY_LIST_MOST_PLAYED ? "PLAY_COUNTS"
+							: ix->kind == LIBRARY_LIST_MOST_PLAYED || ix->kind == LIBRARY_LIST_RECENTLY_PLAYED
+								? "PLAY_COUNTS"
 																   : "MEDIA_TABLE";
 		snprintf(sql, sizeof(sql), "SELECT rowid FROM %s WHERE path = ?", table);
 	}

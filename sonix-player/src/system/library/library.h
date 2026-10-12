@@ -252,7 +252,16 @@ typedef enum {
 	// The tracks played most, most plays first: those still in the index that
 	// library_note_play() has counted. Handles only.
 	LIBRARY_LIST_MOST_PLAYED,
+	// The tracks played last, the latest on top: the same counted plays as
+	// LIBRARY_LIST_MOST_PLAYED, by when each was last heard, the latest
+	// LIBRARY_RECENT_MAX of them. Handles only.
+	LIBRARY_LIST_RECENTLY_PLAYED,
 } library_list_t;
+
+// How many rows the two "recent" lists keep: the tracks played last, and the
+// records added last (LIBRARY_FILTER_RECENT). Enough to scroll back a few weeks,
+// few enough that neither turns into a second copy of the whole library.
+#define LIBRARY_RECENT_MAX 100
 
 // Fills `out` with up to `max` names, in the collation's order (see above).
 // Returns how many were written.
@@ -273,6 +282,11 @@ typedef enum {
 	// those albums: an album whose tracks carry different years is filed under
 	// the latest of them, here as in LIBRARY_ORDER_YEAR. For the handles only.
 	LIBRARY_FILTER_YEAR,
+	// The records that arrived last, newest first: the albums whose newest file
+	// landed on the card latest, as many as the value says (a number, normally
+	// LIBRARY_RECENT_MAX), and the tracks of those albums -- gathered newest
+	// record first under LIBRARY_ORDER_ALBUM. For the handles only.
+	LIBRARY_FILTER_RECENT,
 } library_filter_t;
 
 // Streams the whole result set, sorted by the collation, one row per call:

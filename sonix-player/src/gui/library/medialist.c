@@ -1114,10 +1114,12 @@ static bool panel_shows_artist(const panel_t *p) {
 	if (!show_artist || p->from_paths) {
 		return false;
 	}
-	if ((p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_NONE) || p->kind == LIBRARY_LIST_MOST_PLAYED) {
+	if ((p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_NONE) || p->kind == LIBRARY_LIST_MOST_PLAYED ||
+		p->kind == LIBRARY_LIST_RECENTLY_PLAYED) {
 		return (artist_lists & MEDIALIST_ARTIST_TRACKS) != 0;
 	}
-	if ((p->kind == LIBRARY_LIST_ALBUMS && (p->filter == LIBRARY_FILTER_NONE || p->filter == LIBRARY_FILTER_YEAR)) ||
+	if ((p->kind == LIBRARY_LIST_ALBUMS && (p->filter == LIBRARY_FILTER_NONE || p->filter == LIBRARY_FILTER_YEAR ||
+											p->filter == LIBRARY_FILTER_RECENT)) ||
 		(p->kind == LIBRARY_LIST_TRACKS && (p->filter == LIBRARY_FILTER_ALBUM || p->filter == LIBRARY_FILTER_YEAR))) {
 		return (artist_lists & MEDIALIST_ARTIST_ALBUMS) != 0;
 	}
@@ -1175,7 +1177,8 @@ static bool panel_selectable(const panel_t *p) {
 	}
 	return p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_ALBUMS || p->kind == LIBRARY_LIST_ARTISTS ||
 		   p->kind == LIBRARY_LIST_ALBUM_ARTISTS || p->kind == LIBRARY_LIST_PLAYLIST ||
-		   p->kind == LIBRARY_LIST_FAVOURITES || p->kind == LIBRARY_LIST_MOST_PLAYED;
+		   p->kind == LIBRARY_LIST_FAVOURITES || p->kind == LIBRARY_LIST_MOST_PLAYED ||
+		   p->kind == LIBRARY_LIST_RECENTLY_PLAYED;
 }
 
 // What a row stands for in the selection: its position on a playlist, which
@@ -3158,7 +3161,7 @@ static library_index_t *menu_tracks_open(panel_t *p) {
 
 	library_index_t *ix = NULL;
 	if (p->kind == LIBRARY_LIST_TRACKS || p->kind == LIBRARY_LIST_FAVOURITES || p->kind == LIBRARY_LIST_PLAYLIST ||
-		p->kind == LIBRARY_LIST_MOST_PLAYED) {
+		p->kind == LIBRARY_LIST_MOST_PLAYED || p->kind == LIBRARY_LIST_RECENTLY_PLAYED) {
 		ix = library_index_clone(p->ix);
 	} else if (p->kind == LIBRARY_LIST_ALBUMS) {
 		ix = library_index_open(LIBRARY_LIST_TRACKS, p->filter, p->filter_value[0] ? p->filter_value : NULL,
@@ -4908,10 +4911,14 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// last level; an album list narrowed to one artist or genre is the middle
 	// one; everything else is where a walk starts.
 	bool tracks_like = (kind == LIBRARY_LIST_TRACKS || kind == LIBRARY_LIST_FAVOURITES ||
-						kind == LIBRARY_LIST_PLAYLIST || kind == LIBRARY_LIST_MOST_PLAYED);
+						kind == LIBRARY_LIST_PLAYLIST || kind == LIBRARY_LIST_MOST_PLAYED ||
+						kind == LIBRARY_LIST_RECENTLY_PLAYED);
+	// The records added last count as one of these too: a short list in an
+	// order of its own, with no letters to jump by and nothing to re-sort.
 	bool artist_albums =
 		kind == LIBRARY_LIST_ALBUMS && (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST ||
-										filter == LIBRARY_FILTER_GENRE || filter == LIBRARY_FILTER_YEAR);
+										filter == LIBRARY_FILTER_GENRE || filter == LIBRARY_FILTER_YEAR ||
+										filter == LIBRARY_FILTER_RECENT);
 	panel_t *p = tracks_like ? &panel_tracks : (artist_albums ? &panel_artist_albums : &panel_names);
 
 	char signature[600];
@@ -4966,7 +4973,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// on the name lists, where a row is not a set of tracks.
 	bool want_play = artist_albums || (kind == LIBRARY_LIST_ALBUMS && filter == LIBRARY_FILTER_NONE) ||
 					 kind == LIBRARY_LIST_FAVOURITES || kind == LIBRARY_LIST_PLAYLIST ||
-					 kind == LIBRARY_LIST_MOST_PLAYED ||
+					 kind == LIBRARY_LIST_MOST_PLAYED || kind == LIBRARY_LIST_RECENTLY_PLAYED ||
 					 (kind == LIBRARY_LIST_TRACKS &&
 					  (filter == LIBRARY_FILTER_NONE || filter == LIBRARY_FILTER_ARTIST ||
 					   filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_ALBUM));
@@ -5045,8 +5052,11 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// wrapped inside the page, since a translation can run wider than the
 	// screen; the usual one keeps the width of its own lines.
 	bool most_played = kind == LIBRARY_LIST_MOST_PLAYED;
-	lv_label_set_text(p->empty, tr(most_played ? "medialist_most_played_empty" : "library_empty_note"));
-	lv_obj_set_width(p->empty, most_played ? lv_pct(90) : LV_SIZE_CONTENT);
+	bool recently_played = kind == LIBRARY_LIST_RECENTLY_PLAYED;
+	lv_label_set_text(p->empty, tr(most_played		 ? "medialist_most_played_empty"
+								   : recently_played ? "medialist_recently_played_empty"
+													 : "library_empty_note"));
+	lv_obj_set_width(p->empty, most_played || recently_played ? lv_pct(90) : LV_SIZE_CONTENT);
 
 	p->from_paths = false;
 	p->list_order = order;
