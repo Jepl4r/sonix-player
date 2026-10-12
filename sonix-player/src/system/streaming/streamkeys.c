@@ -25,6 +25,10 @@ static char podcast_key[64];
 static char podcast_secret[128];
 static char lastfm_key[64];
 static char lastfm_secret[64];
+static char yandex_client_id[64];
+static char yandex_client_secret[64];
+static char yandex_sign_key[64];
+static char yandex_client_header[128];
 static char source_path[256];
 static bool loaded_any;
 
@@ -112,6 +116,20 @@ static void parse_line(char *line, char section[32]) {
 		} else if (strcmp(key, "api_secret") == 0) {
 			dest = lastfm_secret;
 			dest_size = sizeof(lastfm_secret);
+		}
+	} else if (strcmp(section, "yandex") == 0) {
+		if (strcmp(key, "client_id") == 0) {
+			dest = yandex_client_id;
+			dest_size = sizeof(yandex_client_id);
+		} else if (strcmp(key, "client_secret") == 0) {
+			dest = yandex_client_secret;
+			dest_size = sizeof(yandex_client_secret);
+		} else if (strcmp(key, "sign_key") == 0) {
+			dest = yandex_sign_key;
+			dest_size = sizeof(yandex_sign_key);
+		} else if (strcmp(key, "client_header") == 0) {
+			dest = yandex_client_header;
+			dest_size = sizeof(yandex_client_header);
 		}
 	} else if (strcmp(section, "tidal") == 0) {
 		if (strcmp(key, "client_id") == 0) {
@@ -270,11 +288,13 @@ void streamkeys_init(void) {
 	// The log records that the keys are present, never their values: the log
 	// lands on the card and from there goes to whoever asks for it about any
 	// problem at all.
-	printf("streamkeys: from %s -- Qobuz %s, Tidal %s, Podcast %s, Last.fm %s\n", path,
+	printf("streamkeys: from %s -- Qobuz %s, Tidal %s, Podcast %s, Last.fm %s, Yandex %s\n", path,
 		   qobuz_app_id[0] && qobuz_app_secret[0] ? "yes" : "no",
 		   tidal_client_id[0] && tidal_client_secret[0] ? "yes" : "no",
 		   podcast_key[0] && podcast_secret[0] ? "yes" : "no",
-		   lastfm_key[0] && lastfm_secret[0] ? "yes" : "no");
+		   lastfm_key[0] && lastfm_secret[0] ? "yes" : "no",
+		   yandex_client_id[0] && yandex_client_secret[0] && yandex_sign_key[0] && yandex_client_header[0] ? "yes"
+																										: "no");
 }
 
 static const char *or_null(const char *s) { return s[0] ? s : NULL; }
@@ -289,5 +309,10 @@ const char *streamkeys_podcast_secret(void) { return or_null(podcast_secret); }
 
 const char *streamkeys_lastfm_key(void) { return or_null(lastfm_key); }
 const char *streamkeys_lastfm_secret(void) { return or_null(lastfm_secret); }
+
+const char *streamkeys_yandex_client_id(void) { return or_null(yandex_client_id); }
+const char *streamkeys_yandex_client_secret(void) { return or_null(yandex_client_secret); }
+const char *streamkeys_yandex_sign_key(void) { return or_null(yandex_sign_key); }
+const char *streamkeys_yandex_client_header(void) { return or_null(yandex_client_header); }
 
 const char *streamkeys_source(void) { return loaded_any ? source_path : NULL; }
