@@ -665,6 +665,25 @@ static void build_volume_limit_page(gui_config_t *cfg) {
 static lv_obj_t *rg_switch;
 static lv_obj_t *rg_card, *rg_pills;
 static lv_obj_t *rg_track_pill, *rg_album_pill, *rg_track_when_shuffled_pill;
+// The preamp and the fallback for untagged files: a slider each, shown while
+// ReplayGain is on.
+static lv_obj_t *rg_preamp_card, *rg_preamp_value, *rg_preamp_slider;
+static lv_obj_t *rg_fallback_card, *rg_fallback_value, *rg_fallback_slider;
+
+#define RG_PREAMP_STEPS ((REPLAYGAIN_PREAMP_MAX - REPLAYGAIN_PREAMP_MIN) / REPLAYGAIN_PREAMP_STEP + 1)
+#define RG_FALLBACK_STEPS ((REPLAYGAIN_FALLBACK_MAX - REPLAYGAIN_FALLBACK_MIN) / REPLAYGAIN_FALLBACK_STEP + 1)
+
+// Tenths of a decibel as "+1.5 dB", by hand like the balance's: no float
+// formatter on this page. Zero reads "0 dB", without a sign.
+static void rg_db_label(lv_obj_t *label, int tenths) {
+	int magnitude = tenths < 0 ? -tenths : tenths;
+	const char *sign = tenths > 0 ? "+" : (tenths < 0 ? "-" : "");
+	if (magnitude % 10) {
+		lv_label_set_text_fmt(label, "%s%d.%d dB", sign, magnitude / 10, magnitude % 10);
+	} else {
+		lv_label_set_text_fmt(label, "%s%d dB", sign, magnitude / 10);
+	}
+}
 
 static void rg_refresh(void) {
 	if (!rg_switch) {
@@ -683,6 +702,12 @@ static void rg_refresh(void) {
 	settingsrow_pill_active(rg_track_pill, mode == REPLAYGAIN_TRACK);
 	settingsrow_pill_active(rg_album_pill, mode == REPLAYGAIN_ALBUM);
 	settingsrow_pill_active(rg_track_when_shuffled_pill, mode == REPLAYGAIN_TRACK_WHEN_SHUFFLED);
+	if (rg_preamp_card) {
+		lv_obj_set_hidden(rg_preamp_card, !on);
+		lv_obj_set_hidden(rg_fallback_card, !on);
+		rg_db_label(rg_preamp_value, replaygain_preamp());
+		rg_db_label(rg_fallback_value, replaygain_fallback());
+	}
 }
 
 // Whatever the setting becomes, the track already loaded has to be re-measured
@@ -714,6 +739,23 @@ static void rg_pick_cb(lv_event_t *e) {
 	config_save();
 	rg_apply_to_loaded_track();
 	rg_refresh();
+}
+
+// Both re-measure the loaded track as the slider moves, so the change is heard
+// at once rather than at the next song.
+static void rg_preamp_cb(lv_event_t *e) {
+	(void)e;
+	replaygain_set_preamp(REPLAYGAIN_PREAMP_MIN + (int)lv_slider_get_value(rg_preamp_slider) * REPLAYGAIN_PREAMP_STEP);
+	rg_db_label(rg_preamp_value, replaygain_preamp());
+	rg_apply_to_loaded_track();
+}
+
+static void rg_fallback_cb(lv_event_t *e) {
+	(void)e;
+	replaygain_set_fallback(REPLAYGAIN_FALLBACK_MIN +
+							(int)lv_slider_get_value(rg_fallback_slider) * REPLAYGAIN_FALLBACK_STEP);
+	rg_db_label(rg_fallback_value, replaygain_fallback());
+	rg_apply_to_loaded_track();
 }
 
 // ---------------------------------------------------------------------------
@@ -1838,6 +1880,14 @@ static void build_playback_page(gui_config_t *cfg) {
 	rg_track_pill = settingsrow_pill(rg_pills, "track", REPLAYGAIN_TRACK, rg_pick_cb);
 	rg_album_pill = settingsrow_pill(rg_pills, "albums", REPLAYGAIN_ALBUM, rg_pick_cb);
 	rg_track_when_shuffled_pill = settingsrow_pill(rg_pills, "track_when_shuffled", REPLAYGAIN_TRACK_WHEN_SHUFFLED, rg_pick_cb);
+	rg_preamp_card = settingsrow_slider(container, "musicsettings_replay_gain_preamp", RG_PREAMP_STEPS, &rg_preamp_value,
+										&rg_preamp_slider, rg_preamp_cb);
+	lv_slider_set_value(rg_preamp_slider, (replaygain_preamp() - REPLAYGAIN_PREAMP_MIN) / REPLAYGAIN_PREAMP_STEP,
+						LV_ANIM_OFF);
+	rg_fallback_card = settingsrow_slider(container, "musicsettings_replay_gain_fallback", RG_FALLBACK_STEPS,
+										  &rg_fallback_value, &rg_fallback_slider, rg_fallback_cb);
+	lv_slider_set_value(rg_fallback_slider,
+						(replaygain_fallback() - REPLAYGAIN_FALLBACK_MIN) / REPLAYGAIN_FALLBACK_STEP, LV_ANIM_OFF);
 	rg_refresh();
 
 	// The fade at the two ends of a track: a page of its own because it carries

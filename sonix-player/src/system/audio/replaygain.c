@@ -34,6 +34,40 @@ void replaygain_set_mode(replaygain_mode_t mode) {
 	config_save();
 }
 
+static int clamp_step(int value, int lo, int hi, int step) {
+	if (value < lo) {
+		value = lo;
+	}
+	if (value > hi) {
+		value = hi;
+	}
+	// Onto the grid the slider has, rounding towards zero: a hand edit of
+	// the file cannot leave the slider between two of its positions.
+	return value / step * step;
+}
+
+int replaygain_preamp(void) {
+	return clamp_step((int)config_get_int("audio", "replaygain_preamp", 0), REPLAYGAIN_PREAMP_MIN,
+					  REPLAYGAIN_PREAMP_MAX, REPLAYGAIN_PREAMP_STEP);
+}
+
+void replaygain_set_preamp(int tenths) {
+	config_set_int("audio", "replaygain_preamp",
+				   clamp_step(tenths, REPLAYGAIN_PREAMP_MIN, REPLAYGAIN_PREAMP_MAX, REPLAYGAIN_PREAMP_STEP));
+	config_save();
+}
+
+int replaygain_fallback(void) {
+	return clamp_step((int)config_get_int("audio", "replaygain_fallback", 0), REPLAYGAIN_FALLBACK_MIN,
+					  REPLAYGAIN_FALLBACK_MAX, REPLAYGAIN_FALLBACK_STEP);
+}
+
+void replaygain_set_fallback(int tenths) {
+	config_set_int("audio", "replaygain_fallback",
+				   clamp_step(tenths, REPLAYGAIN_FALLBACK_MIN, REPLAYGAIN_FALLBACK_MAX, REPLAYGAIN_FALLBACK_STEP));
+	config_save();
+}
+
 void replaygain_load(const song_metadata_t *meta) {
 	replaygain_mode_t mode = replaygain_mode();
 
@@ -56,6 +90,7 @@ void replaygain_load(const song_metadata_t *meta) {
 
 	double db;
 	double peak;
+	bool fallback = false;
 	if (mode == REPLAYGAIN_ALBUM && meta->has_album_gain) {
 		db = meta->album_gain_db;
 		peak = meta->album_peak;
@@ -69,7 +104,21 @@ void replaygain_load(const song_metadata_t *meta) {
 		db = meta->album_gain_db;
 		peak = meta->album_peak;
 	} else {
-		return; // nothing to go on
+		// Nothing to go on: the fallback, if one was set. Played as it is,
+		// without the preamp -- it is already the level such a file should
+		// sit at -- and without a peak, which it never needs: it only cuts.
+		db = replaygain_fallback() / 10.0;
+		peak = 0.0;
+		fallback = true;
+		if (db == 0.0) {
+			return;
+		}
+	}
+
+	// The preamp goes on every tagged figure, before the bounds and the peak
+	// guard below: those are what keep it safe.
+	if (!fallback) {
+		db += replaygain_preamp() / 10.0;
 	}
 
 	if (db > GAIN_MAX_DB) {
@@ -101,7 +150,8 @@ void replaygain_load(const song_metadata_t *meta) {
 	current_db = db;
 	active = (q != 32768);
 
-	printf("replaygain: %s %+.2f dB (peak %.4f)\n", mode == REPLAYGAIN_ALBUM ? "album" : "track", db, peak);
+	printf("replaygain: %s %+.2f dB (peak %.4f)\n", fallback ? "fallback" : mode == REPLAYGAIN_ALBUM ? "album" : "track",
+		   db, peak);
 }
 
 bool replaygain_active(void) { return active != 0; }

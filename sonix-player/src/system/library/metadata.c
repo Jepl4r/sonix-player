@@ -117,6 +117,34 @@ static bool replaygain_field(song_metadata_t *out, const char *key, const char *
 	return true;
 }
 
+// Opus's own loudness tags (RFC 7845): R128_TRACK_GAIN and R128_ALBUM_GAIN,
+// a whole number of 1/256 dB -- Q7.8 -- that brings the track to -23 LUFS,
+// the EBU R128 reference. ReplayGain aims 5 dB louder (-18 LUFS), so the
+// figure is moved up by 5 dB to mean what a REPLAYGAIN_ tag would. An Opus
+// file carries no peak: the clipping guard has nothing to go on, and the
+// correction is left as it is. Only when the file has no REPLAYGAIN_ tag of
+// the same kind, which, where a tagger wrote both, is the one it meant.
+static void r128_field(song_metadata_t *out, const char *key, const char *value, size_t value_len) {
+	char buf[16];
+	size_t n = value_len < sizeof(buf) - 1 ? value_len : sizeof(buf) - 1;
+	memcpy(buf, value, n);
+	buf[n] = '\0';
+
+	char *end = NULL;
+	long q78 = strtol(buf, &end, 10);
+	if (end == buf) {
+		return;
+	}
+	float db = (float)q78 / 256.0f + 5.0f;
+	if (strcmp(key, "R128_TRACK_GAIN") == 0 && !out->has_track_gain) {
+		out->track_gain_db = db;
+		out->has_track_gain = true;
+	} else if (strcmp(key, "R128_ALBUM_GAIN") == 0 && !out->has_album_gain) {
+		out->album_gain_db = db;
+		out->has_album_gain = true;
+	}
+}
+
 // Applies a single "KEY=VALUE" Vorbis comment string (not null-terminated) to
 // the relevant metadata field.
 // ---------------------------------------------------------------------------
@@ -423,6 +451,9 @@ static void apply_vorbis_comment(song_metadata_t *out, const char *comment, size
 		return;
 	} else if (strncmp(key, "REPLAYGAIN_", 11) == 0) {
 		replaygain_field(out, key, value, value_len);
+		return;
+	} else if (strncmp(key, "R128_", 5) == 0) {
+		r128_field(out, key, value, value_len);
 		return;
 	} else if (strcmp(key, "SERIES") == 0 || (strcmp(key, "MOVEMENTNAME") == 0 && !out->series[0])) {
 		dst = out->series;
