@@ -2355,8 +2355,48 @@ int library_for_each(library_list_t kind, library_filter_t filter, const char *v
 // album key, so two records of one name do not mix their tracks.
 #define ALBUM_ORDER_KEY "sortkey(album), album_key"
 
-static void track_order_sql(char *out, size_t size, library_order_t order, bool in_album, const char *by_name) {
-	if (order == LIBRARY_ORDER_ALBUM) {
+// The year of the album a MEDIA_TABLE row belongs to, worked out as
+// ALBUM_GROUP_YEAR works it out for the album list -- the latest its tracks
+// carry -- so an artist's tracks fall into the same order as their records. A
+// lookup on media_album_key_idx per row, on a list as long as one artist.
+#define TRACK_ALBUM_YEAR                                                                                              \
+	"(SELECT MAX(CASE WHEN y.year > 0 THEN y.year END) FROM MEDIA_TABLE y"                                           \
+	" WHERE y.album = MEDIA_TABLE.album AND y.album_key = MEDIA_TABLE.album_key)"
+
+// -1 until first asked; then the [library] artist_albums_by_year setting,
+// kept here so the queries built off the interface thread (SonixLink) read
+// a flag rather than the configuration.
+static volatile int albums_by_year = -1;
+
+bool library_artist_albums_by_year(void) {
+	if (albums_by_year < 0) {
+		albums_by_year = config_get_bool("library", "artist_albums_by_year", true) ? 1 : 0;
+	}
+	return albums_by_year != 0;
+}
+
+void library_set_artist_albums_by_year(bool on) {
+	albums_by_year = on ? 1 : 0;
+	config_set_bool("library", "artist_albums_by_year", on);
+	config_save();
+}
+
+// The lists an artist or a genre is made of: the records, and the tracks
+// gathered by record. Those run by release year when the setting says so.
+static bool filter_by_year(library_filter_t filter) {
+	return (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST ||
+			filter == LIBRARY_FILTER_GENRE) &&
+		   library_artist_albums_by_year();
+}
+
+static void track_order_sql(char *out, size_t size, library_order_t order, library_filter_t filter, bool in_album,
+							const char *by_name) {
+	if (order == LIBRARY_ORDER_ALBUM && filter_by_year(filter)) {
+		// One artist's records the way their page lists them: oldest first,
+		// the ones with no year at the end, a year's records by name.
+		snprintf(out, size, YEAR_KEY_UP(TRACK_ALBUM_YEAR) ", " ALBUM_ORDER_KEY ", " TRACK_ORDER_IN_ALBUM ", %s",
+				 by_name);
+	} else if (order == LIBRARY_ORDER_ALBUM) {
 		snprintf(out, size, ALBUM_ORDER_KEY ", " TRACK_ORDER_IN_ALBUM ", %s", by_name);
 	} else if (order == LIBRARY_ORDER_ADDED) {
 		snprintf(out, size, TRACK_ORDER_ADDED ", %s", by_name);
@@ -2388,8 +2428,9 @@ int library_for_each_ordered(library_list_t kind, library_filter_t filter, const
 		snprintf(sql, sizeof(sql), "SELECT " PLAYS_NAME ", path, " PLAYS_ARTIST " FROM PLAY_COUNTS WHERE " PLAYS_IN_INDEX
 								   " ORDER BY " PLAYS_ORDER);
 	} else if (kind == LIBRARY_LIST_TRACKS) {
-		char order_sql[256];
-		track_order_sql(order_sql, sizeof(order_sql), order, col && value && filter == LIBRARY_FILTER_ALBUM, by_name);
+		char order_sql[384];
+		track_order_sql(order_sql, sizeof(order_sql), order, filter, col && value && filter == LIBRARY_FILTER_ALBUM,
+						by_name);
 		if (col && value) {
 			snprintf(sql, sizeof(sql), "SELECT name, path, artist FROM MEDIA_TABLE WHERE %s ORDER BY %s",
 					 filter_where(filter), order_sql);
@@ -2632,8 +2673,9 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 	const char *by_name = list_uses_sortkey(kind) ? "sortkey" : "name COLLATE listorder";
 
 	if (kind == LIBRARY_LIST_TRACKS) {
-		char order_sql[256];
-		track_order_sql(order_sql, sizeof(order_sql), order, col && value && filter == LIBRARY_FILTER_ALBUM, by_name);
+		char order_sql[384];
+		track_order_sql(order_sql, sizeof(order_sql), order, filter, col && value && filter == LIBRARY_FILTER_ALBUM,
+						by_name);
 		if (col && value) {
 			snprintf(sql, size, "SELECT %s FROM MEDIA_TABLE WHERE %s ORDER BY %s", select, filter_where(filter),
 					 order_sql);
@@ -2674,11 +2716,16 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 	// a lookup and not a scan.
 	if (kind == LIBRARY_LIST_ALBUMS && col && value &&
 		(filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST || filter == LIBRARY_FILTER_GENRE)) {
+		// By release year when the setting is on (it is by default): a
+		// discography reads in the order it was made, and a name order puts
+		// a debut after the record that made it famous. A year's records,
+		// and the ones that carry no year at all, after them, by name.
 		snprintf(sql, size,
-				 "SELECT %s FROM ALBUM_GROUP_TABLE WHERE album <> ''"
-				 " AND (album, album_key) IN (SELECT album, album_key FROM MEDIA_TABLE WHERE %s)"
-				 " ORDER BY %s",
-				 select, filter_where(filter), list_uses_sortkey(kind) ? "sortkey" : "album COLLATE listorder");
+				 "SELECT %s FROM ALBUM_GROUP_TABLE g WHERE g.album <> ''"
+				 " AND (g.album, g.album_key) IN (SELECT album, album_key FROM MEDIA_TABLE WHERE %s)"
+				 " ORDER BY %s%s",
+				 select, filter_where(filter), filter_by_year(filter) ? YEAR_KEY_UP(ALBUM_GROUP_YEAR) ", " : "",
+				 list_uses_sortkey(kind) ? "g.sortkey" : "g.album COLLATE listorder");
 		return;
 	}
 
@@ -2956,7 +3003,8 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 					   kind != LIBRARY_LIST_MOST_PLAYED &&
 					   order != LIBRARY_ORDER_ALBUM && order != LIBRARY_ORDER_ADDED && order != LIBRARY_ORDER_YEAR &&
 					   order != LIBRARY_ORDER_YEAR_DESC &&
-					   !(kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM);
+					   !(kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM) &&
+					   !(kind == LIBRARY_LIST_ALBUMS && filter_by_year(filter));
 		ix->buckets_valid = by_name && ix->count > 0;
 	}
 

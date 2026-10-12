@@ -135,6 +135,14 @@ char **library_artist_exceptions(int *count);
 void library_artist_exceptions_free(char **names, int count);
 void library_set_artist_exceptions(const char *const *names, int count);
 
+// [library] artist_albums_by_year, on by default: an artist's, an album
+// artist's or a genre's records listed by release year (an album's year being
+// its tracks' latest), then by name, the ones without a year last -- and the
+// tracks of "Play artist" and the like, gathered by record, in that same order.
+// Off, the records go by name. Read when a list is opened.
+bool library_artist_albums_by_year(void);
+void library_set_artist_albums_by_year(bool on);
+
 // [library] join_albums, off by default.
 bool library_join_albums(void);
 void library_set_join_albums(bool on);

@@ -1494,6 +1494,10 @@ static void album_view_cb(lv_event_t *e) {
 	medialist_set_album_view(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
+static void albums_by_year_cb(lv_event_t *e) {
+	library_set_artist_albums_by_year(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
+
 static void album_head_cb(lv_event_t *e) {
 	medialist_set_album_head(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
@@ -1652,6 +1656,13 @@ static void build_library_page(gui_config_t *cfg) {
 	if (medialist_album_view()) {
 		lv_obj_add_state(album_view_switch, LV_STATE_CHECKED);
 	}
+
+	// An artist's or a genre's records, and "Play artist", in the order they
+	// came out rather than by name.
+	lv_obj_t *albums_by_year_switch = NULL;
+	settingsrow_toggle(container, "musicsettings_artist_albums_by_year", &albums_by_year_switch, albums_by_year_cb);
+	option_note(container, "musicsettings_artist_albums_by_year_note");
+	lv_obj_set_state(albums_by_year_switch, LV_STATE_CHECKED, library_artist_albums_by_year());
 
 	// How an album's own page is laid out: the plain list, or the cover and
 	// what the record is at the top with the tracks under it.
