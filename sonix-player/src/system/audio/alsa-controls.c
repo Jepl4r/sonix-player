@@ -9,6 +9,7 @@
 #include "src/system/device/sysinfo.h"
 
 #include <alsa/asoundlib.h>
+#include <ctype.h>
 #include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
@@ -856,6 +857,26 @@ static const char *PROFILE_NAMES[VOLUME_OUTPUT_COUNT] = {
 
 static bool output_in_range(volume_output_t out) { return out >= 0 && out < VOLUME_OUTPUT_COUNT; }
 
+// The Bluetooth profile, one pair of headphones at a time.
+//
+// Earbuds at 40 and a pair of over-ears at 70 are as different as the two
+// jacks, so the Bluetooth level is also kept per device, by address, beside
+// the generic one: the slot for the headphones the sound is going to is what
+// level[VOLUME_OUTPUT_BLUETOOTH] holds, and the generic key keeps being written
+// too, as the level for a pair that has none of its own yet.
+//
+//   [wireless]
+//   bt_volume_A0B1C2D3E4F5 = 45
+//
+// Like the four outputs, the levels follow the device all the time, and
+// "Remember volume" decides only what survives a restart: with it off, a level
+// written down by an earlier run is not read back, only one from this run.
+#define BT_DEVICE_KEY_MAX 32
+#define BT_DEVICES_SEEN 8
+static char bt_device_key[BT_DEVICE_KEY_MAX]; // the headphones last routed to, "" before any
+static char bt_devices_seen[BT_DEVICES_SEEN][BT_DEVICE_KEY_MAX];
+static int bt_devices_seen_next;
+
 // ---------------------------------------------------------------------------
 // The volume limit (see alsa-controls.h)
 // ---------------------------------------------------------------------------
@@ -992,6 +1013,9 @@ static void write_profiles(void) {
 			config_set_int(PROFILE_KEYS[i].section, PROFILE_KEYS[i].key, level[i]);
 		}
 	}
+	if (bt_device_key[0] && level[VOLUME_OUTPUT_BLUETOOTH] >= 0) {
+		config_set_int("wireless", bt_device_key, level[VOLUME_OUTPUT_BLUETOOTH]);
+	}
 	config_save();
 }
 
@@ -1038,6 +1062,60 @@ void volume_profile_set_output(volume_output_t out) {
 	printf("volume: %s -> %s, %d%%\n", PROFILE_NAMES[leaving], PROFILE_NAMES[out], wanted);
 	set_volume_percent(wanted);
 	volume_profile_persist();
+}
+
+static bool bt_device_seen(const char *key) {
+	for (int i = 0; i < BT_DEVICES_SEEN; i++) {
+		if (strcmp(bt_devices_seen[i], key) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+void volume_profile_set_bluetooth_device(const char *mac) {
+	char key[BT_DEVICE_KEY_MAX] = "";
+	if (mac && mac[0]) {
+		size_t used = (size_t)snprintf(key, sizeof(key), "bt_volume_");
+		for (const char *p = mac; *p && used + 1 < sizeof(key); p++) {
+			if (isxdigit((unsigned char)*p)) {
+				key[used++] = (char)toupper((unsigned char)*p);
+			}
+		}
+		key[used] = '\0';
+	}
+	if (!key[0] || strcmp(key, bt_device_key) == 0) {
+		return;
+	}
+
+	// The outgoing pair's level where it belongs, before the slot is handed
+	// over: level[] holds it, kept current by set_volume_percent().
+	if (bt_device_key[0] && level[VOLUME_OUTPUT_BLUETOOTH] >= 0) {
+		config_set_int("wireless", bt_device_key, level[VOLUME_OUTPUT_BLUETOOTH]);
+		profile_dirty = true;
+	}
+	snprintf(bt_device_key, sizeof(bt_device_key), "%s", key);
+
+	bool from_disk = config_get_int("player", "remember_volume", 0) != 0;
+	long remembered = (from_disk || bt_device_seen(key)) ? config_get_int("wireless", key, -1) : -1;
+	if (!bt_device_seen(key)) {
+		snprintf(bt_devices_seen[bt_devices_seen_next], BT_DEVICE_KEY_MAX, "%s", key);
+		bt_devices_seen_next = (bt_devices_seen_next + 1) % BT_DEVICES_SEEN;
+	}
+	if (remembered < 0 || remembered > 100) {
+		// Nothing for this pair yet: the generic Bluetooth level stands, and
+		// is written down as theirs at the next save.
+		return;
+	}
+
+	volume_profile_set_level(VOLUME_OUTPUT_BLUETOOTH, (int)remembered);
+	profile_dirty = true;
+	if (profile_out == VOLUME_OUTPUT_BLUETOOTH && !lineout_on) {
+		// One pair handed straight over to another, without the jack in
+		// between: the output does not change, so the level is applied here.
+		printf("volume: bluetooth %s, %ld%%\n", key + 10, remembered);
+		set_volume_percent((int)remembered);
+	}
 }
 
 void volume_profile_set_bluetooth(bool bluetooth) {

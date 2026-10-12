@@ -116,6 +116,7 @@ typedef enum {
 	JOB_FORGET,
 	JOB_CODECS,		  // re-read what the connected sink offers
 	JOB_LDAC_QUALITY, // restart bluealsa so it reads the new --ldac-quality
+	JOB_DAEMON_OPTION, // text: why; restart bluealsa for another start-up option
 	JOB_RECEIVER_PROFILE, // restart bluealsa with or without the A2DP sink
 	JOB_DISCOVERABLE, // arg_int: 1 visible to everyone, 0 not
 	// The name the adapter answers with. Carried in g_local_name rather than in
@@ -1218,11 +1219,46 @@ static bool ensure_bluealsa(void) {
 		if (ldac[0]) {
 			fprintf(stderr, "bluetooth: LDAC %s\n", ldac);
 		}
+		// AAC's bit-rate mode, a daemon option for the same reason as LDAC's.
+		//
+		// VBR by default: bluealsa then runs FDK-AAC in its top variable mode,
+		// which spends the bits where the music needs them instead of a flat
+		// 220 kbps on everything, and it only does so with headphones that
+		// declare VBR in their capabilities -- the rest are given CBR whatever
+		// this says, so the option cannot break a pair that never asked for it.
+		// CBR stays a choice for the odd sink that declares VBR and then
+		// stutters on it.
+		//
+		// The FDK "afterburner" is deliberately not asked for: it buys a little
+		// quality with a lot of encoder time, and on one MIPS core that time is
+		// taken from the decoder and the interface.
+		char aac[32] = {0};
+		if (bluetooth_aac_vbr()) {
+			if (bluealsa_knows_option("--aac-vbr")) {
+				snprintf(aac, sizeof(aac), "--aac-vbr");
+			}
+		} else if (bluealsa_knows_option("--aac-bitrate")) {
+			snprintf(aac, sizeof(aac), "--aac-bitrate=%d", BT_AAC_CBR_BPS);
+		}
+		if (aac[0]) {
+			fprintf(stderr, "bluetooth: AAC %s\n", aac);
+		}
+		// The link's sampling rate. Left alone, bluealsa takes the highest rate
+		// both ends can do, which is 48 kHz for nearly every pair of
+		// headphones -- and nearly every record is 44.1 kHz, so every track is
+		// resampled here, on the one core, before it is encoded. Forcing the
+		// CD rate makes a 44.1 kHz track go out as it is; a 48 or 96 kHz file
+		// is resampled down instead, which is the rarer case. Only a
+		// preference: a sink without 44.1 kHz gets what it can take.
+		bool audio_cd = bluetooth_force_44k() && bluealsa_knows_option("--a2dp-force-audio-cd");
+		if (audio_cd) {
+			fprintf(stderr, "bluetooth: asking for a 44.1 kHz link\n");
+		}
 
 		char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
 		int codec_count = codecs_to_ask_for(codecs, BT_MAX_CODECS);
 
-		char *argv[11 + BT_MAX_CODECS * 2];
+		char *argv[13 + BT_MAX_CODECS * 2];
 		int at = 0;
 		argv[at++] = (char *)"bluealsa";
 		argv[at++] = (char *)"-p";
@@ -1239,6 +1275,12 @@ static bool ensure_bluealsa(void) {
 		}
 		if (ldac[0]) {
 			argv[at++] = ldac;
+		}
+		if (aac[0]) {
+			argv[at++] = aac;
+		}
+		if (audio_cd) {
+			argv[at++] = (char *)"--a2dp-force-audio-cd";
 		}
 		for (int i = 0; i < codec_count; i++) {
 			argv[at++] = (char *)"-c";
@@ -2482,10 +2524,93 @@ static int codec_rank(const char *name) {
 	return 0; // unknown: left alone
 }
 
-// The best the two ends have in common, once per connection, with no setting in
-// front of it: choosing the codec is the player's job and not a question to ask.
-// A choice made by hand on the codec page changes the link that is up and is not
-// written down, so the next connection starts from the top again.
+// ---------------------------------------------------------------------------
+// The codec chosen by hand, per pair of headphones
+//
+// A choice made on the codec page is written down against the device's
+// address and asked for again at every later connection of that device: AAC
+// picked for a pair whose LDAC drops out in a pocket stays AAC tomorrow, and a
+// second pair is not affected. "Auto" on the same page rubs it out.
+//
+//   [wireless]
+//   bt_codec_A0B1C2D3E4F5 = AAC
+//
+// Written on the worker, like the last device's address above; read on it
+// too, copied out at once rather than held as a pointer into the store.
+// ---------------------------------------------------------------------------
+
+static void codec_choice_key(const char *mac, char *out, size_t size) {
+	size_t used = (size_t)snprintf(out, size, "bt_codec_");
+	for (const char *p = mac; *p && used + 1 < size; p++) {
+		if (isxdigit((unsigned char)*p)) {
+			out[used++] = (char)toupper((unsigned char)*p);
+		}
+	}
+	out[used] = '\0';
+}
+
+static void codec_choice_get(const char *mac, char *out, size_t size) {
+	char key[40];
+	codec_choice_key(mac, key, sizeof(key));
+	snprintf(out, size, "%s", config_get("wireless", key, ""));
+}
+
+// "" forgets the choice.
+static void codec_choice_set(const char *mac, const char *codec) {
+	char key[40];
+	codec_choice_key(mac, key, sizeof(key));
+	if (strcmp(config_get("wireless", key, ""), codec) == 0) {
+		return; // already what it says: no write, no wear
+	}
+	config_set("wireless", key, codec);
+	config_save();
+}
+
+static bool codec_same(const char *a, const char *b) {
+	char ka[BT_CODEC_MAX];
+	char kb[BT_CODEC_MAX];
+	codec_normalise(a, ka, sizeof(ka));
+	codec_normalise(b, kb, sizeof(kb));
+	return ka[0] && strcmp(ka, kb) == 0;
+}
+
+// The codec chosen by hand for this device, if it is on offer and is accepted.
+// False sends the caller on to the automatic choice: nothing was chosen, the
+// headphones no longer offer it (a firmware update, a different mode), or they
+// refused it now.
+static bool apply_codec_choice(const char *mac, char codecs[][BT_CODEC_MAX], int count, const char *selected) {
+	char wanted[BT_CODEC_MAX];
+	codec_choice_get(mac, wanted, sizeof(wanted));
+	if (!wanted[0]) {
+		return false;
+	}
+	int at = -1;
+	for (int i = 0; i < count && at < 0; i++) {
+		if (codec_same(codecs[i], wanted)) {
+			at = i;
+		}
+	}
+	if (at < 0) {
+		fprintf(stderr, "bluetooth: %s no longer offers %s, chosen by hand; choosing automatically\n", mac, wanted);
+		return false;
+	}
+	if (codec_same(selected, wanted)) {
+		fprintf(stderr, "bluetooth: %s is already on %s, as chosen by hand\n", mac, wanted);
+		return true;
+	}
+	fprintf(stderr, "bluetooth: %s: asking for %s, chosen by hand\n", mac, codecs[at]);
+	if (btstack_select_codec(mac, codecs[at])) {
+		do_read_codecs();
+		return true;
+	}
+	fprintf(stderr, "bluetooth: %s refused %s; choosing automatically\n", mac, codecs[at]);
+	return false;
+}
+
+// The best the two ends have in common, once per connection: choosing the
+// codec is the player's job and not a question to ask. The exception is a
+// codec chosen by hand for this device on the codec page (see above), which is
+// asked for first; only if that fails does the ranking below decide.
 static void do_auto_codec(const char *mac) {
 	if (!mac || !mac[0]) {
 		return;
@@ -2499,6 +2624,9 @@ static void do_auto_codec(const char *mac) {
 	char selected[BT_CODEC_MAX] = "";
 	int count = btstack_codecs(mac, codecs, BT_MAX_CODECS, selected, sizeof(selected));
 	if (count <= 0) {
+		return;
+	}
+	if (apply_codec_choice(mac, codecs, count, selected)) {
 		return;
 	}
 
@@ -2564,14 +2692,31 @@ static void do_read_codecs(void) {
 	pthread_mutex_unlock(&lock);
 }
 
+// An empty codec is "Auto": the choice for this device is forgotten and the
+// automatic one made again at once, from what is in force upwards.
 static void do_set_codec(const char *codec) {
 	char mac[BT_MAC_MAX];
-	if (!codec || !codec[0] || !connected_mac(mac, sizeof(mac))) {
+	if (!codec || !connected_mac(mac, sizeof(mac))) {
 		set_op(BT_OP_FAILED, NULL);
 		return;
 	}
 
+	if (!codec[0]) {
+		codec_choice_set(mac, "");
+		codec_auto_done[0] = '\0';
+		do_auto_codec(mac);
+		sleep_ms(600);
+		do_read_codecs();
+		set_op(BT_OP_OK, "auto");
+		return;
+	}
+
 	bool done = btstack_select_codec(mac, codec);
+	// Written down only once the headphones have taken it: a codec they
+	// refuse would otherwise be asked for, and refused, at every connection.
+	if (done) {
+		codec_choice_set(mac, codec);
+	}
 	// Renegotiating tears the stream down and builds it again; the PCM comes
 	// back a moment later and the codec with it.
 	sleep_ms(600);
@@ -3084,6 +3229,12 @@ static void *bluetooth_worker(void *arg) {
 					char why[48];
 					snprintf(why, sizeof(why), "LDAC %s", bluetooth_ldac_quality());
 					restart_bluealsa(why);
+				}
+				break;
+
+			case JOB_DAEMON_OPTION:
+				if (process_running("bluealsa")) {
+					restart_bluealsa(job.text);
 				}
 				break;
 
@@ -3630,6 +3781,36 @@ void bluetooth_set_ldac_quality(const char *mode) {
 	post_job(&job);
 }
 
+// The options below are read when bluealsa starts and never again, exactly
+// like LDAC's quality, so a change restarts a running daemon on the worker.
+static void restart_for_option(const char *why) {
+	job_t job = {.type = JOB_DAEMON_OPTION};
+	snprintf(job.text, sizeof(job.text), "%s", why);
+	post_job(&job);
+}
+
+bool bluetooth_aac_vbr(void) { return strcmp(config_get("wireless", "bt_aac_mode", "vbr"), "cbr") != 0; }
+
+void bluetooth_set_aac_vbr(bool on) {
+	if (on == bluetooth_aac_vbr()) {
+		return;
+	}
+	config_set("wireless", "bt_aac_mode", on ? "vbr" : "cbr");
+	config_save();
+	restart_for_option(on ? "AAC VBR" : "AAC CBR");
+}
+
+bool bluetooth_force_44k(void) { return strcmp(config_get("wireless", "bt_sample_rate", "auto"), "44100") == 0; }
+
+void bluetooth_set_force_44k(bool on) {
+	if (on == bluetooth_force_44k()) {
+		return;
+	}
+	config_set("wireless", "bt_sample_rate", on ? "44100" : "auto");
+	config_save();
+	restart_for_option(on ? "44.1 kHz link" : "automatic link rate");
+}
+
 void bluetooth_set_receiver_profile(bool on) {
 	pthread_mutex_lock(&lock);
 	bool changed = g_receiver_profile != on;
@@ -3645,14 +3826,85 @@ void bluetooth_set_codec(const char *codec) {
 	if (!codec || !codec[0]) {
 		return;
 	}
-	// Sent, not written down. The player picks the best one on its own at every
-	// connection; this is the one link that is up being told to use something
-	// else, and it lasts as long as that link does.
+	// Sent, and written down against the device once it is accepted (see
+	// do_set_codec), so the same headphones come back on it next time.
 	set_op(BT_OP_BUSY, NULL);
 
 	job_t job = {.type = JOB_SET_CODEC};
 	snprintf(job.text, sizeof(job.text), "%s", codec);
 	post_job(&job);
+}
+
+void bluetooth_set_codec_auto(void) {
+	set_op(BT_OP_BUSY, NULL);
+	job_t job = {.type = JOB_SET_CODEC}; // empty text: forget the choice
+	post_job(&job);
+}
+
+bool bluetooth_codec_chosen(char *out, int size) {
+	if (out && size > 0) {
+		out[0] = '\0';
+	}
+	pthread_mutex_lock(&lock);
+	char mac[BT_MAC_MAX];
+	copy_field(mac, sizeof(mac), g_a2dp_connected ? g_a2dp_mac : "", sizeof(g_a2dp_mac));
+	pthread_mutex_unlock(&lock);
+	if (!mac[0]) {
+		return false;
+	}
+	char codec[BT_CODEC_MAX];
+	codec_choice_get(mac, codec, sizeof(codec));
+	if (out && size > 0) {
+		snprintf(out, (size_t)size, "%s", codec);
+	}
+	return codec[0] != '\0';
+}
+
+bool bluetooth_codec_summary(const char *mac, char *out, int size) {
+	if (!out || size <= 0) {
+		return false;
+	}
+	out[0] = '\0';
+
+	pthread_mutex_lock(&lock);
+	bool ours = g_enabled && g_a2dp_connected && g_codec_selected[0] && (!mac || strcasecmp(mac, g_a2dp_mac) == 0);
+	char codec[BT_CODEC_MAX];
+	copy_field(codec, sizeof(codec), g_codec_selected, sizeof(g_codec_selected));
+	unsigned rate = g_sink_rate;
+	pthread_mutex_unlock(&lock);
+	if (!ours) {
+		return false;
+	}
+
+	// LDAC's bit rate is not on the bus; it is the daemon option this player
+	// started bluealsa with, so it is read back from the same setting.
+	char name[BT_CODEC_MAX + 8];
+	if (strcasecmp(codec, "LDAC") == 0) {
+		static const struct {
+			const char *mode;
+			const char *label;
+		} LDAC_LABELS[] = {{"high", "LDAC 990"}, {"standard", "LDAC 660"}, {"mobile", "LDAC 330"}, {"abr", "LDAC ABR"}};
+		const char *quality = bluetooth_ldac_quality();
+		snprintf(name, sizeof(name), "%s", codec);
+		for (size_t i = 0; i < sizeof(LDAC_LABELS) / sizeof(LDAC_LABELS[0]); i++) {
+			if (strcmp(quality, LDAC_LABELS[i].mode) == 0) {
+				snprintf(name, sizeof(name), "%s", LDAC_LABELS[i].label);
+			}
+		}
+	} else {
+		snprintf(name, sizeof(name), "%s", codec);
+	}
+
+	// "48 kHz" rather than "48.0 kHz": the rates everyone knows by heart are
+	// written the way they are known.
+	if (rate == 0) {
+		snprintf(out, (size_t)size, "%s", name);
+	} else if (rate % 1000 == 0) {
+		snprintf(out, (size_t)size, "%s \xC2\xB7 %u kHz", name, rate / 1000);
+	} else {
+		snprintf(out, (size_t)size, "%s \xC2\xB7 %.1f kHz", name, rate / 1000.0);
+	}
+	return true;
 }
 
 void bluetooth_set_discoverable(bool on) {

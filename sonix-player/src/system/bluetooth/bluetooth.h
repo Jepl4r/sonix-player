@@ -178,16 +178,29 @@ bool bluetooth_a2dp_streams(char *out, int size, int *age_ms);
 // The codecs the connected sink offers and the one in use. The list is read
 // on the worker; this only copies what it last found.
 //
-// The player picks the best of them by itself at every connection and there is
-// no setting in front of that. bluetooth_set_codec() moves the link that is up
-// onto something else and is not remembered: the next connection starts from the
-// top again.
+// The player picks the best of them by itself at every connection.
+// bluetooth_set_codec() moves the link that is up onto something else and,
+// once the headphones accept it, remembers it for that device: the next
+// connection of the same headphones asks for it first and falls back to the
+// automatic choice only if it is refused. bluetooth_set_codec_auto() forgets
+// it and makes the automatic choice again now. bluetooth_codec_chosen() says
+// what is remembered for the connected device ("" and false for nothing).
 //
 // Only the headphone direction. As a receiver the phone is the source and the
 // choice is the phone's; nothing here can move it.
 int bluetooth_get_codecs(char out[][BT_CODEC_MAX], int max, char *selected, int selected_size);
 void bluetooth_refresh_codecs(void);
 void bluetooth_set_codec(const char *codec);
+void bluetooth_set_codec_auto(void);
+bool bluetooth_codec_chosen(char *out, int size);
+
+// What the headphones' link is carrying, for a person to read: the codec, with
+// LDAC's bit rate from the setting the daemon was started with, and the rate
+// the link runs at -- "LDAC 990 · 48 kHz", "AAC · 44.1 kHz". False and "" with
+// no headphones, or when `mac` (NULL for whichever is connected) is not the
+// device the sound is going to. Cache reads plus one config read, so for the
+// GUI thread.
+bool bluetooth_codec_summary(const char *mac, char *out, int size);
 
 // What THIS player can encode and decode, which is a property of the bluealsa
 // binary the firmware ships and is known as soon as the stack comes up --
@@ -227,6 +240,22 @@ const char *bluetooth_ldac_quality(void);
 // a daemon that is gone: whoever plays has to open it again.
 unsigned bluetooth_output_generation(void);
 void bluetooth_set_ldac_quality(const char *mode);
+
+// AAC's bit-rate mode, a daemon option like LDAC's quality and restarted for
+// the same way. True (the default) asks bluealsa for VBR, which it uses only
+// with headphones that declare VBR support; false is CBR at BT_AAC_CBR_BPS.
+// Kept in [wireless] bt_aac_mode = vbr | cbr.
+#define BT_AAC_CBR_BPS 220000
+bool bluetooth_aac_vbr(void);
+void bluetooth_set_aac_vbr(bool on);
+
+// The rate the link is asked to run at: false (the default) lets bluealsa take
+// the highest both ends can do, nearly always 48 kHz; true passes
+// --a2dp-force-audio-cd so a 44.1 kHz track reaches the encoder without being
+// resampled. A start-up option, restarted for like the two above. Kept in
+// [wireless] bt_sample_rate = auto | 44100.
+bool bluetooth_force_44k(void);
+void bluetooth_set_force_44k(bool on);
 
 // ---------------------------------------------------------------------------
 // The other direction: a device streaming to this one

@@ -15,7 +15,8 @@
 ## Audio
 
 - **Volume** - The same volume curve as the stock player is used.
-- **Remember Volume** Four levels remembered separately, one per output: 3.5 mm, 4.4 mm, USB-C, Bluetooth.
+- **Remember Volume** Four levels remembered separately, one per output: 3.5 mm, 4.4 mm, USB-C, Bluetooth,
+  and over Bluetooth one per pair of headphones.
 - **Graphic EQ** - 10 bands at 31 Hz to 16 kHz, ±12 dB. Ten built-in presets and
   as many of your own as you like.
 - **Parametric EQ** - 10 bands, each with frequency 20 Hz to 20 kHz, gain

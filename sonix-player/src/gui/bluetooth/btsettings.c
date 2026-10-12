@@ -481,8 +481,16 @@ static void add_row(lv_obj_t *parent, const bt_device_t *device, bool paired_sec
 	lv_obj_set_style_text_font(name, &font_ui_24, 0);
 
 	if (device->connected) {
+		// The headphones the sound is going to say what the link carries
+		// ("LDAC 990 · 48 kHz") in place of the bare "Connected", which the
+		// accent colour already says; anything else connected keeps the word.
+		char summary[64];
 		lv_obj_t *state = lv_label_create(row);
-		lv_label_set_text(state, tr("connected"));
+		if (bluetooth_codec_summary(device->mac, summary, sizeof(summary))) {
+			lv_label_set_text(state, summary);
+		} else {
+			lv_label_set_text(state, tr("connected"));
+		}
 		lv_obj_add_style(state, &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(state, &font_ui_20, 0);
 		lv_obj_set_style_text_color(state, theme()->accent, 0);
