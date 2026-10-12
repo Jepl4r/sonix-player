@@ -1858,6 +1858,23 @@ static void refresh_audio_state(void) {
 	}
 	apply_output_routing();
 	do_read_codecs();
+
+	// Headphones with an LDAC rate of their own that the running daemon was
+	// not started with: queued rather than made here, so the connection is
+	// settled first, and through the path that never restarts under music.
+	if (sink) {
+		const char *own = ldac_quality_effective();
+		pthread_mutex_lock(&lock);
+		bool on_ldac = strcasecmp(g_codec_selected, "LDAC") == 0;
+		bool other_rate = g_ldac_started[0] && strcmp(g_ldac_started, own) != 0;
+		pthread_mutex_unlock(&lock);
+		if (on_ldac && other_rate) {
+			fprintf(stderr, "bluetooth: %s has its own LDAC rate (%s); bluealsa follows when nothing plays\n", mac,
+					own);
+			job_t job = {.type = JOB_DAEMON_CHECK};
+			post_job(&job);
+		}
+	}
 }
 
 // Whether a device bluez has no name for is worth a row anyway.
@@ -2839,8 +2856,9 @@ static int codec_rank(const char *name) {
 // too, copied out at once rather than held as a pointer into the store.
 // ---------------------------------------------------------------------------
 
-static void codec_choice_key(const char *mac, char *out, size_t size) {
-	size_t used = (size_t)snprintf(out, size, "bt_codec_");
+// "bt_codec_" and "AA:BB:CC:DD:EE:FF" -> "bt_codec_AABBCCDDEEFF".
+static void device_key(const char *prefix, const char *mac, char *out, size_t size) {
+	size_t used = (size_t)snprintf(out, size, "%s", prefix);
 	for (const char *p = mac; *p && used + 1 < size; p++) {
 		if (isxdigit((unsigned char)*p)) {
 			out[used++] = (char)toupper((unsigned char)*p);
@@ -2851,19 +2869,85 @@ static void codec_choice_key(const char *mac, char *out, size_t size) {
 
 static void codec_choice_get(const char *mac, char *out, size_t size) {
 	char key[40];
-	codec_choice_key(mac, key, sizeof(key));
+	device_key("bt_codec_", mac, key, sizeof(key));
 	snprintf(out, size, "%s", config_get("wireless", key, ""));
 }
 
 // "" forgets the choice.
 static void codec_choice_set(const char *mac, const char *codec) {
 	char key[40];
-	codec_choice_key(mac, key, sizeof(key));
+	device_key("bt_codec_", mac, key, sizeof(key));
 	if (strcmp(config_get("wireless", key, ""), codec) == 0) {
 		return; // already what it says: no write, no wear
 	}
 	config_set("wireless", key, codec);
 	config_save();
+}
+
+// ---------------------------------------------------------------------------
+// LDAC's bit rate, per pair of headphones
+//
+// The same idea for the LDAC rows of the codec page: 990 for the pair used at
+// home, 330 for the earbuds that drop out on the underground. A choice made
+// there is written against the headphones that are connected, and the global
+// value -- what the page used to set alone -- stays as the default for any pair
+// with nothing written down; it follows the last choice, so a pair never set
+// by hand behaves exactly as before.
+//
+//   [wireless]
+//   bt_ldac_quality = abr                  the default
+//   bt_ldac_A0B1C2D3E4F5 = high            one pair's own
+//
+// The rate is still a daemon option, read once when bluealsa starts, so a pair
+// is only ever "on" its own rate after a restart. bluealsa is started with the
+// rate of the pair it is most likely to serve: the one connected, or else the
+// last one, which is the pair a power-on reconnects to. When another pair
+// connects and its rate differs, the restart goes through
+// daemon_options_check(): at once if nothing is playing, otherwise once the
+// music stops for a while or the headphones go -- never under the music.
+// ---------------------------------------------------------------------------
+
+static bool ldac_quality_known(const char *mode) {
+	return strcmp(mode, "abr") == 0 || strcmp(mode, "high") == 0 || strcmp(mode, "standard") == 0 ||
+		   strcmp(mode, "mobile") == 0;
+}
+
+static const char *ldac_quality_default(void) {
+	const char *mode = config_get("wireless", "bt_ldac_quality", "abr");
+	return ldac_quality_known(mode) ? mode : "abr";
+}
+
+// The headphones the running daemon is for: those connected, else the last.
+static void ldac_headset(char *out, size_t size) {
+	pthread_mutex_lock(&lock);
+	copy_field(out, size, g_a2dp_connected ? g_a2dp_mac : "", sizeof(g_a2dp_mac));
+	pthread_mutex_unlock(&lock);
+	if (!out[0]) {
+		snprintf(out, size, "%s", config_get("wireless", BT_LAST_DEVICE_KEY, ""));
+	}
+}
+
+// Their own rate if one was chosen for them, the default otherwise. The
+// pointer is into the settings or a literal, like bluetooth_ldac_quality()'s.
+static const char *ldac_quality_for(const char *mac) {
+	if (mac && mac[0]) {
+		char key[40];
+		device_key("bt_ldac_", mac, key, sizeof(key));
+		const char *mode = config_get("wireless", key, "");
+		if (ldac_quality_known(mode)) {
+			return mode;
+		}
+	}
+	return ldac_quality_default();
+}
+
+static void ldac_choice_set(const char *mac, const char *mode) {
+	char key[40];
+	device_key("bt_ldac_", mac, key, sizeof(key));
+	if (strcmp(config_get("wireless", key, ""), mode) == 0) {
+		return;
+	}
+	config_set("wireless", key, mode);
 }
 
 static bool codec_same(const char *a, const char *b) {
@@ -3391,9 +3475,10 @@ static bool music_playing_out(void) {
 // playing it is made at once: restart_bluealsa() asks them for their stream
 // again.
 //
-// This is the Wi-Fi coexistence change's path and the one for the headset
-// battery switch; the LDAC choice made by hand on the codec page restarts at
-// once instead, because the user is there waiting for it.
+// This is the path of the Wi-Fi coexistence change, of the headset battery
+// switch, and of headphones that connect with an LDAC rate of their own
+// (ldac_quality_for()); the LDAC choice made by hand on the codec page
+// restarts at once instead, because the user is there waiting for it.
 #define DAEMON_IDLE_MS 30000
 
 static void daemon_options_check(void) {
@@ -3407,9 +3492,13 @@ static void daemon_options_check(void) {
 	char started[sizeof(g_ldac_started)];
 	snprintf(started, sizeof(started), "%s", g_ldac_started);
 	bool hfp_started = g_hfp_started;
+	// With headphones on another codec their LDAC rate is nothing to restart
+	// for; with none connected a restart costs nothing, so it is made for the
+	// pair that comes next.
+	bool ldac_matters = !g_a2dp_connected || strcasecmp(g_codec_selected, "LDAC") == 0;
 	pthread_mutex_unlock(&lock);
 
-	bool ldac_due = started[0] && strcmp(started, wanted) != 0;
+	bool ldac_due = ldac_matters && started[0] && strcmp(started, wanted) != 0;
 	bool hfp_due = hfp_started != want_hfp;
 	if (!ldac_due && !hfp_due) {
 		g_daemon_pending = false;
@@ -3604,13 +3693,19 @@ static void *bluetooth_worker(void *arg) {
 				daemon_options_check();
 				break;
 
-			case JOB_LDAC_QUALITY:
-				if (process_running("bluealsa")) {
+			case JOB_LDAC_QUALITY: {
+				const char *wanted = ldac_quality_effective();
+				pthread_mutex_lock(&lock);
+				bool differs = strcmp(g_ldac_started, wanted) != 0;
+				pthread_mutex_unlock(&lock);
+				if (process_running("bluealsa") && differs) {
 					char why[48];
-					snprintf(why, sizeof(why), "LDAC %s", bluetooth_ldac_quality());
+					snprintf(why, sizeof(why), "LDAC %s", wanted);
 					restart_bluealsa(why);
+					g_daemon_pending = false; // that was the restart anything waiting wanted
 				}
 				break;
+			}
 
 			case JOB_DAEMON_OPTION:
 				if (process_running("bluealsa")) {
@@ -4130,11 +4225,6 @@ int bluetooth_local_codecs(char out[][BT_CODEC_MAX], int max, bool receiving) {
 	return count;
 }
 
-static bool ldac_quality_known(const char *mode) {
-	return strcmp(mode, "abr") == 0 || strcmp(mode, "high") == 0 || strcmp(mode, "standard") == 0 ||
-		   strcmp(mode, "mobile") == 0;
-}
-
 unsigned bluetooth_output_generation(void) {
 	pthread_mutex_lock(&lock);
 	unsigned g = g_output_generation;
@@ -4143,20 +4233,35 @@ unsigned bluetooth_output_generation(void) {
 }
 
 const char *bluetooth_ldac_quality(void) {
-	const char *mode = config_get("wireless", "bt_ldac_quality", "abr");
-	return ldac_quality_known(mode) ? mode : "abr";
+	char mac[BT_MAC_MAX];
+	ldac_headset(mac, sizeof(mac));
+	return ldac_quality_for(mac);
 }
 
 void bluetooth_set_ldac_quality(const char *mode) {
-	if (!mode || !ldac_quality_known(mode) || strcmp(mode, bluetooth_ldac_quality()) == 0) {
+	if (!mode || !ldac_quality_known(mode)) {
 		return;
 	}
-	config_set("wireless", "bt_ldac_quality", mode);
-	config_save();
+	// Written against the headphones connected, and as the default for any
+	// pair with nothing of its own (see ldac_quality_for()).
+	pthread_mutex_lock(&lock);
+	char mac[BT_MAC_MAX];
+	copy_field(mac, sizeof(mac), g_a2dp_connected ? g_a2dp_mac : "", sizeof(g_a2dp_mac));
+	pthread_mutex_unlock(&lock);
+	if (mac[0]) {
+		ldac_choice_set(mac, mode);
+	}
+	if (strcmp(mode, ldac_quality_default()) != 0) {
+		config_set("wireless", "bt_ldac_quality", mode);
+	}
+	config_save(); // writes nothing when nothing changed
 
 	// The option is read when the daemon starts and never again, so a running
-	// one has to be replaced for the choice to mean anything now. Queued on the
-	// worker like everything else that touches the stack.
+	// one has to be replaced for the choice to mean anything now -- at once,
+	// because the user is on the codec page waiting for it. Queued on the
+	// worker like everything else that touches the stack; the job compares
+	// with what the daemon was given, so choosing what is already in force
+	// costs nothing.
 	job_t job = {.type = JOB_LDAC_QUALITY};
 	post_job(&job);
 }
@@ -4325,9 +4430,11 @@ bool bluetooth_codec_summary(const char *mac, char *out, int size) {
 		} LDAC_LABELS[] = {{"high", "LDAC 990"}, {"standard", "LDAC 660"}, {"mobile", "LDAC 330"}, {"abr", "LDAC ABR"}};
 		// What the running daemon was given, which is not the setting while a
 		// Wi-Fi coexistence change is in force (daemon_options_check).
+		// The setting is read before the lock: it takes the lock itself.
+		const char *setting = bluetooth_ldac_quality();
 		char quality[sizeof(g_ldac_started)];
 		pthread_mutex_lock(&lock);
-		snprintf(quality, sizeof(quality), "%s", g_ldac_started[0] ? g_ldac_started : bluetooth_ldac_quality());
+		snprintf(quality, sizeof(quality), "%s", g_ldac_started[0] ? g_ldac_started : setting);
 		pthread_mutex_unlock(&lock);
 		snprintf(name, sizeof(name), "%s", codec);
 		for (size_t i = 0; i < sizeof(LDAC_LABELS) / sizeof(LDAC_LABELS[0]); i++) {

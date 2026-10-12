@@ -232,6 +232,14 @@ void bluetooth_set_discoverable(bool on);
 // Changing it restarts bluealsa when the radio is on, because that is the only
 // moment the option is read. The link comes back by itself; the audio stops for
 // as long as that takes.
+//
+// Kept per pair of headphones ([wireless] bt_ldac_<address>), with
+// bt_ldac_quality as the default for a pair that has none: the getter answers
+// for the pair connected, or the last one with nothing connected, and the
+// setter writes for the pair connected and the default both. A pair that
+// connects with a rate of its own other than the daemon's gets it by a
+// restart made only while nothing plays (see daemon_options_check()).
+// Any thread; takes the module's lock, so not to be called under it.
 const char *bluetooth_ldac_quality(void);
 
 // Moves on each time the headphones' stream came back under a bluealsa this
