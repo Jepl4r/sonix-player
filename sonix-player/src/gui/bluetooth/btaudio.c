@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "lvgl/lvgl.h"
@@ -20,8 +21,14 @@
 #include "src/system/bluetooth/airpods.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
+#include "src/system/audio/eqprofile.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/core/config.h"
+#include "src/system/device/ota.h"
+#include "src/system/net/wifitransfer.h"
+#include "src/system/streaming/podcastcache.h"
+#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/tidalcache.h"
 #include "src/system/core/lang.h"
 
 lv_obj_t *btaudio_screen;
@@ -33,6 +40,7 @@ static lv_obj_t *airpods_row;
 static lv_obj_t *airpods_icon;
 static lv_obj_t *codec_row;
 static lv_obj_t *codec_value;
+static lv_obj_t *coexist_note; // LDAC 990 and a busy Wi-Fi radio; hidden otherwise
 static lv_timer_t *poll_timer;
 
 // The codec list is its own page: how many entries there are depends on what
@@ -374,6 +382,87 @@ static void build_encoder_options(lv_obj_t *container) {
 	theme_register_refresh(encoder_pills_refresh);
 }
 
+// ---------------------------------------------------------------------------
+// Keep Bluetooth on
+//
+// How long the radio stays up, idle, after the screen goes dark before it is
+// parked (power.c). Longer means headphones put back on after a pause find the
+// player still there and reconnect by themselves; shorter saves the few mA of an
+// idle radio. A wait past the standby delay keeps the player out of standby
+// until it runs out, which the note says.
+// ---------------------------------------------------------------------------
+
+static const int KEEP_ON_SECONDS[] = {15, 60, 5 * 60, 15 * 60};
+#define KEEP_ON_COUNT ((int)(sizeof(KEEP_ON_SECONDS) / sizeof(KEEP_ON_SECONDS[0])))
+static lv_obj_t *keep_on_pills[KEEP_ON_COUNT];
+
+static void keep_on_refresh(void) {
+	uint32_t current = power_bt_park_seconds();
+	// The nearest choice lights up, so a hand-edited config still shows one.
+	int best = 0;
+	for (int i = 1; i < KEEP_ON_COUNT; i++) {
+		long d_best = labs((long)KEEP_ON_SECONDS[best] - (long)current);
+		long d_this = labs((long)KEEP_ON_SECONDS[i] - (long)current);
+		if (d_this < d_best) {
+			best = i;
+		}
+	}
+	for (int i = 0; i < KEEP_ON_COUNT; i++) {
+		settingsrow_pill_active(keep_on_pills[i], i == best);
+	}
+}
+
+static void keep_on_pick_cb(lv_event_t *e) {
+	if (switcher_back_drag_active()) {
+		return;
+	}
+	int seconds = (int)(intptr_t)lv_event_get_user_data(e);
+	power_set_bt_park_seconds((uint32_t)seconds);
+	config_set_int("power", "bt_park_seconds", seconds);
+	config_save();
+	keep_on_refresh();
+}
+
+static void build_keep_on_options(lv_obj_t *container) {
+	lv_obj_t *pills = NULL;
+	settingsrow_pills(container, "btaudio_keep_on", &pills);
+	for (int i = 0; i < KEEP_ON_COUNT; i++) {
+		char text[16];
+		if (KEEP_ON_SECONDS[i] < 60) {
+			snprintf(text, sizeof(text), "%d s", KEEP_ON_SECONDS[i]);
+		} else {
+			snprintf(text, sizeof(text), "%d min", KEEP_ON_SECONDS[i] / 60);
+		}
+		keep_on_pills[i] = settingsrow_pill_text(pills, text, KEEP_ON_SECONDS[i], keep_on_pick_cb);
+	}
+	option_note(container, "btaudio_keep_on_note");
+	keep_on_refresh();
+	theme_register_refresh(keep_on_refresh);
+}
+
+// Whether the Wi-Fi radio is moving data in bulk right now: a track being
+// cached for Qobuz, Tidal or a podcast, or a firmware update downloading. The
+// transfer server is the other case and is handled by bluetooth.c itself.
+static bool wifi_downloading(void) {
+	return qobuzcache_downloading_id() > 0 || tidalcache_downloading_id() > 0 || podcastcache_downloading_id() > 0 ||
+		   ota_busy();
+}
+
+// The hint under the codec row: only with LDAC set to 990, the one quality that
+// leaves no room for the Wi-Fi side of the shared chip (bluetooth.c).
+static void refresh_coexist_note(bool connected) {
+	bool ldac_990 = strcmp(bluetooth_ldac_quality(), "high") == 0;
+	bool held = bluetooth_ldac_held_back();
+	bool show = connected && ldac_990 && (held || wifi_downloading());
+	if (show) {
+		const char *text = tr(held ? "btaudio_ldac_wifi_transfer" : "btaudio_ldac_wifi_busy");
+		if (strcmp(lv_label_get_text(coexist_note), text) != 0) {
+			lv_label_set_text(coexist_note, text);
+		}
+	}
+	lv_obj_set_hidden(coexist_note, !show);
+}
+
 static void refresh_name_row(void);
 
 static void refresh_page(void) {
@@ -402,6 +491,7 @@ static void refresh_page(void) {
 	settingsrow_chevron_active(codec_row, connected && count > 0);
 
 	refresh_airpods_row();
+	refresh_coexist_note(connected);
 
 	bool sync = bluetooth_volume_sync();
 	if (lv_obj_has_state(volume_switch, LV_STATE_CHECKED) != sync) {
@@ -431,6 +521,22 @@ static void poll_cb(lv_timer_t *timer) {
 static void routing_watch_cb(lv_timer_t *timer) {
 	bool matters = power_screen_is_on() || audio_get_status() == AUDIO_STATUS_PLAYING;
 	lv_timer_set_period(timer, matters ? ROUTING_WATCH_MS : ROUTING_WATCH_IDLE_MS);
+
+	// LDAC 990 and the Wi-Fi transfer server (bluetooth.c). Nothing happens
+	// unless the switch moved.
+	bluetooth_set_wifi_busy(wifitransfer_get_enabled());
+
+	// Short downloads under LDAC 990 are only said, in the log here and on the
+	// page above: changing the quality under them would cost more than it saves.
+	static bool was_downloading;
+	bool downloading = wifi_downloading();
+	if (downloading != was_downloading) {
+		was_downloading = downloading;
+		if (bluetooth_audio_active() && strcmp(bluetooth_ldac_quality(), "high") == 0) {
+			printf("btaudio: Wi-Fi %s under LDAC 990%s\n", downloading ? "downloading" : "quiet again",
+				   downloading ? "; dropouts are possible meanwhile" : "");
+		}
+	}
 
 	char now[160];
 	audio_get_output_device(now, sizeof(now));
@@ -466,11 +572,16 @@ static void routing_watch_cb(lv_timer_t *timer) {
 			}
 		}
 		volume_profile_set_bluetooth_device(mac);
+		// And the EQ, from the same place and for the same reasons as the
+		// volume (eqprofile.h); a no-op with "EQ per output" off.
+		eqprofile_output_changed(EQPROFILE_BLUETOOTH, mac);
 		out = VOLUME_OUTPUT_BLUETOOTH;
 	} else if (strncmp(now, "plughw:", 7) == 0) {
 		out = VOLUME_OUTPUT_USB;
+		eqprofile_output_changed(EQPROFILE_USB, NULL);
 	} else {
 		out = headphone_jack_state() == JACK_BALANCED ? VOLUME_OUTPUT_BALANCED : VOLUME_OUTPUT_PHONES;
+		eqprofile_output_changed(out == VOLUME_OUTPUT_BALANCED ? EQPROFILE_BALANCED : EQPROFILE_PHONES, NULL);
 	}
 	volume_profile_set_output(out);
 
@@ -666,6 +777,8 @@ void btaudio_init(gui_config_t *cfg) {
 
 	// The codec in use, and the list of what the sink offered.
 	codec_row = settingsrow_add(container, "btaudio_codecs", &codec_value, codec_row_cb, NULL);
+	coexist_note = option_note(container, "btaudio_ldac_wifi_busy");
+	lv_obj_set_hidden(coexist_note, true);
 
 	// One level or two, on by default. On, the keys here move the headphones
 	// over AVRCP absolute volume and their own buttons move the number on the
@@ -677,6 +790,7 @@ void btaudio_init(gui_config_t *cfg) {
 	}
 
 	build_encoder_options(container);
+	build_keep_on_options(container);
 
 	// --- the codec list, on a page of its own ---
 	codec_screen = lv_obj_create(NULL);
