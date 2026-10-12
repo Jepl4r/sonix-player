@@ -4104,7 +4104,18 @@ static void insert_track(const char *path, const char *filename, const song_meta
 		}
 	}
 
-	const char *album_artist = tags->album_artist[0] ? tags->album_artist : tags->artist;
+	// Whose record the track is filed under. A compilation whose tracks carry
+	// no album artist -- the flag set, the ALBUMARTIST left out, as plenty of
+	// rippers and shop downloads do -- would otherwise be filed under every
+	// performer on it, one album each, and the record would fall apart into as
+	// many albums as it has singers. It goes under "Various Artists" instead:
+	// the name MusicBrainz and every tagger use, so it is stored in English,
+	// whatever the interface language, and such a disc lands on the same
+	// shelf as one tagged by hand. The track's own artist stays as it is, so
+	// the artist pages still find each song under whoever sings it.
+	const char *album_artist = tags->album_artist[0] ? tags->album_artist
+							   : tags->compilation	 ? LIBRARY_VARIOUS_ARTISTS
+													 : tags->artist;
 
 	char character[16];
 	int group = 0;

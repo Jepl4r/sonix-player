@@ -322,6 +322,12 @@ size_t library_track_places(const char *const *paths, size_t count, library_plac
 // saved before albums were told apart still means.
 #define LIBRARY_ALBUM_KEY_SEP '\x1f'
 
+// The album artist a compilation is filed under when its tracks carry the
+// compilation flag but no album artist of their own: all of its tracks then
+// make one album rather than one per performer. Stored as it is, in English,
+// like the tag MusicBrainz writes, so it matches discs tagged that way by hand.
+#define LIBRARY_VARIOUS_ARTISTS "Various Artists"
+
 // The part of such a value a person reads: the name, without the key.
 void library_album_title(const char *value, char *out, size_t size);
 
