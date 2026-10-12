@@ -288,14 +288,24 @@ static void scan_cb(lv_event_t *e) {
 	libraryscan_choose_folders();
 }
 
-static void screen_loaded_cb(lv_event_t *e) {
-	(void)e;
+// The tiles, or what stands in for them: a note that the card is missing --
+// the index lives on it -- or the scan panel while nothing is indexed.
+static void show_tiles_or_panel(void) {
+	if (!gui_card_available()) {
+		gridpage_show_no_card(tile_grid, empty_panel, show_tiles_or_panel);
+		return;
+	}
 	bool empty = !library_scan_running() && library_track_count() == 0;
 	gridpage_show_empty(tile_grid, empty_panel, empty);
 	// More tiles than the screen holds: the scrollbar shows for a moment.
 	if (!empty) {
 		gridpage_hint_scroll(tile_grid);
 	}
+}
+
+static void screen_loaded_cb(lv_event_t *e) {
+	(void)e;
+	show_tiles_or_panel();
 }
 
 // The corner buttons share everything but icon and action.

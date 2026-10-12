@@ -39,6 +39,7 @@
 #include "src/system/streaming/provider.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
+#include "src/system/streaming/podcaststate.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
@@ -793,6 +794,7 @@ static void card_databases_detach(void) {
 	// of play would otherwise read as "the track ended, start it again".
 	device_state_note_storage_gone();
 	audio_stop();
+	podcaststate_set_root(NULL);
 
 	logging_suspend_for_usb(); // closes the on-card log file
 	btlog_card_release();
@@ -836,6 +838,7 @@ static void card_databases_attach(const char *root) {
 	stream_provider_set_root_all(root);
 	podcastcache_set_root(root);
 	podcastsubs_set_root(root);
+	podcaststate_set_root(root);
 	dlna_set_root(root);
 	gbdb_set_root(root);
 

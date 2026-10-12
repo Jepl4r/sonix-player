@@ -44,6 +44,11 @@
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/provider.h"
+#include "src/system/streaming/podcaststate.h"
+#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/qobuzsync.h"
+#include "src/system/streaming/tidalcache.h"
+#include "src/system/streaming/tidalsync.h"
 #include "src/system/core/utils.h"
 #include "src/system/audio/waveform.h"
 
@@ -3835,6 +3840,17 @@ static void update_progress(void) {
 			audiobook_note_position(state.progress_current_secs, state.progress_total_secs,
 									changed || state.status != AUDIO_STATUS_PLAYING);
 		}
+	}
+
+	// Where a podcast episode got to, kept per episode in the same spirit:
+	// throttled inside podcaststate_note(), forced when the playback state
+	// changes.
+	if (!state.live && podcastcache_is_episode(state.current_file)) {
+		static audio_status_t episode_last_status = AUDIO_STATUS_STOPPED;
+		bool episode_changed = state.status != episode_last_status;
+		episode_last_status = state.status;
+		podcaststate_note(state.current_file, state.progress_current_secs, state.progress_total_secs,
+						  episode_changed);
 	}
 
 	// "Remember track". The decision, and the writing, live in device_state.c:

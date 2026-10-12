@@ -24,8 +24,10 @@
 // takes 36..59 -- its twelve track hits and twelve album hits; the audiobook
 // list takes 60..71 for its twelve rows; one artist's records take 72..83; the
 // album carousel takes 84..89; and the cover at the head of an album's tracks
-// takes 90 -- so the pools never trample each other's requests.
-#define COVERLOADER_SLOTS 91
+// takes 90; the podcasts on the card take 91..102 for their twelve rows, 103
+// for the cover at the head of one of them and 104..107 for the episodes being
+// listened to -- so the pools never trample each other's requests.
+#define COVERLOADER_SLOTS 108
 #define COVERLOADER_SEARCH_BASE 36
 #define COVERLOADER_SEARCH_COUNT 24
 #define COVERLOADER_AUDIOBOOKS_BASE 60
