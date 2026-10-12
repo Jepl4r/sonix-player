@@ -4689,6 +4689,14 @@ static void panel_edge_drag_cb(lv_event_t *e) {
 	}
 }
 
+static void artist_label_clicked_cb(lv_event_t *e) {
+	(void)e;
+	if (drag_committed) {
+		return; // the end of a swipe, not a tap
+	}
+	trackmenu_show_artist();
+}
+
 void player_sheet_attach_drag(lv_obj_t *obj, bool opening) {
 	if (!obj) {
 		return;
@@ -4806,6 +4814,12 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_add_style(song_artist_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(song_artist_label, &font_ui_24, 0);
 	scrolltext_apply(song_artist_label);
+	// A tap on it opens the artist, as "Show artist" in the menu does. The
+	// label follows the track info wherever the layouts move it (the pill,
+	// the studio column), and the flag and the handler move with it.
+	lv_obj_set_clickable(song_artist_label, true);
+	lv_obj_set_ext_click_area(song_artist_label, 8);
+	lv_obj_add_event_cb(song_artist_label, artist_label_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	// Right side: the favourite star over the stream format.
 	lv_obj_t *song_side = lv_obj_create(song_info);

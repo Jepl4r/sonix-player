@@ -344,6 +344,14 @@ bool library_track_album(const char *path, char *out, size_t out_size);
 // name: what "Show album" opens.
 bool library_track_album_value(const char *path, char *out, size_t out_size);
 
+// Whose page "Show artist" opens for a track: the album artist it is filed
+// under -- the whole discography, features and all -- with *by_album_artist
+// set; or, on a compilation filed under "Various Artists" or the like, the
+// track's own performer, since a page of every compilation on the card is not
+// what anyone asking about one song wants. False when the file is not indexed
+// or names no artist at all.
+bool library_track_artist_page(const char *path, char *out, size_t out_size, bool *by_album_artist);
+
 // Finds indexed tracks by file name alone -- the whole batch in one pass over
 // the table, because a name without its folders cannot use an index and would
 // otherwise cost a scan each. `cb` fires once per match with the position the

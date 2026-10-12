@@ -24,6 +24,13 @@ void trackmenu_open_queue(void);
 // Opens the details page for a specific file (from a library list's menu).
 void trackmenu_details_open(const char *path);
 
+// "Show artist" for the playing track, as the menu has it: what the artist
+// line on the player opens when tapped. Quiet, unlike the menu line: false,
+// with nothing opened and nothing said, when the track is not in the library --
+// a radio station's line is tapped by accident far more often than on purpose.
+// UI thread.
+bool trackmenu_show_artist(void);
+
 // The playing track changed: move the accent mark in the queue to the row that
 // carries it now. The rows themselves do not change -- the queue is the same
 // list -- so nothing here rebinds or re-reads anything.

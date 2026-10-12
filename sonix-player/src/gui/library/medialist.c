@@ -3029,6 +3029,24 @@ void medialist_open_artist(const char *name) {
 	medialist_open(name, artist_records ? LIBRARY_LIST_ALBUMS : LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ARTIST, name);
 }
 
+// What "Show artist" opens an artist as: what a tap on them in the Artists list
+// opens -- their records with the album view on or the disc button left lit,
+// their tracks otherwise.
+static library_list_t track_artist_kind(void) {
+	return medialist_album_view() || artist_records ? LIBRARY_LIST_ALBUMS : LIBRARY_LIST_TRACKS;
+}
+
+bool medialist_open_track_artist(const char *path) {
+	char name[256];
+	bool by_album_artist = false;
+	if (!library_track_artist_page(path, name, sizeof(name), &by_album_artist)) {
+		return false;
+	}
+	medialist_open(name, track_artist_kind(), by_album_artist ? LIBRARY_FILTER_ALBUM_ARTIST : LIBRARY_FILTER_ARTIST,
+				   name);
+	return true;
+}
+
 // Copies the path of the one row a window was asked for.
 static bool take_one_path_cb(const char *name, const char *path, const char *artist, void *user) {
 	(void)name;
@@ -3463,6 +3481,21 @@ static void menu_album_action(void *user) {
 	}
 }
 
+// "Show artist": whose the track is -- the album artist's page, or on a
+// compilation the performer's (see library_track_artist_page()). Looked up at
+// the moment the menu opens, like the album, and only offered when there is a
+// page to open that is not the one on screen.
+static char menu_artist[256];
+static bool menu_artist_by_album_artist;
+
+static void menu_artist_action(void *user) {
+	(void)user;
+	if (menu_artist[0]) {
+		medialist_open(menu_artist, track_artist_kind(),
+					   menu_artist_by_album_artist ? LIBRARY_FILTER_ALBUM_ARTIST : LIBRARY_FILTER_ARTIST, menu_artist);
+	}
+}
+
 static void menu_btn_cb(lv_event_t *e) {
 	lv_event_stop_bubbling(e);
 
@@ -3498,7 +3531,12 @@ static void menu_btn_cb(lv_event_t *e) {
 		menu_album[0] = '\0';
 	}
 
-	popover_item_t items[5];
+	menu_artist[0] = '\0';
+	if (!library_track_artist_page(menu_path, menu_artist, sizeof(menu_artist), &menu_artist_by_album_artist)) {
+		menu_artist[0] = '\0';
+	}
+
+	popover_item_t items[6];
 	int n = 0;
 	// The two "add to" lines stay next to each other: they are the same kind
 	// of thing, and reading past one to reach the other is friction with no
@@ -3521,6 +3559,13 @@ static void menu_btn_cb(lv_event_t *e) {
 	// that album: offering to open the page already on screen is noise.
 	if (menu_album[0] && !(p->filter == LIBRARY_FILTER_ALBUM && library_album_same(p->filter_value, menu_album))) {
 		items[n++] = (popover_item_t){"show_album", menu_album_action, NULL};
+	}
+	// The same rule for the artist: not on that artist's own page, whichever
+	// of the two lists -- artists or album artists -- it was opened from.
+	if (menu_artist[0] &&
+		!((p->filter == LIBRARY_FILTER_ARTIST || p->filter == LIBRARY_FILTER_ALBUM_ARTIST) &&
+		  strcasecmp(p->filter_value, menu_artist) == 0)) {
+		items[n++] = (popover_item_t){"show_artist", menu_artist_action, NULL};
 	}
 
 	items[n++] = (popover_item_t){"details", menu_details_action, NULL};

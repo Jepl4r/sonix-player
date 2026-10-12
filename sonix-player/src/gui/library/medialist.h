@@ -108,6 +108,12 @@ bool medialist_step_back_to_player(void);
 // the tracks strung out. What the search opens an artist with.
 void medialist_open_artist(const char *name);
 
+// "Show artist" for one track: opens the page of whoever the track is filed
+// under (library_track_artist_page()), as their records or their tracks the way
+// a tap on them in the Artists list would. False, with nothing opened, when the
+// track is not indexed or names no artist.
+bool medialist_open_track_artist(const char *path);
+
 // Re-reads what is playing and moves the accent mark to whichever rows now
 // carry it. Called from the player whenever the track changes; cheap enough
 // to call on a track that has not (it walks two dozen pool rows).

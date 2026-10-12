@@ -2083,6 +2083,46 @@ bool library_track_album_value(const char *path, char *out, size_t out_size) {
 	return track_album(path, true, out, out_size);
 }
 
+// The album artists that say nothing about who is singing: the one a
+// compilation without an album artist is filed under, and the spellings
+// taggers use for the same thing.
+static bool album_artist_various(const char *name) {
+	return strcasecmp(name, LIBRARY_VARIOUS_ARTISTS) == 0 || strcasecmp(name, "Various") == 0 ||
+		   strcasecmp(name, "VA") == 0 || strcasecmp(name, "V.A.") == 0;
+}
+
+bool library_track_artist_page(const char *path, char *out, size_t out_size, bool *by_album_artist) {
+	if (!path || !path[0] || !out || out_size == 0) {
+		return false;
+	}
+	out[0] = '\0';
+	bool album_artist = false;
+
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "SELECT artist, album_artist FROM MEDIA_TABLE WHERE path=? LIMIT 1", -1, &stmt,
+								 NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			const char *artist = (const char *)sqlite3_column_text(stmt, 0);
+			const char *owner = (const char *)sqlite3_column_text(stmt, 1);
+			if (owner && owner[0] && !(album_artist_various(owner) && artist && artist[0])) {
+				snprintf(out, out_size, "%s", owner);
+				album_artist = true;
+			} else if (artist && artist[0]) {
+				snprintf(out, out_size, "%s", artist);
+			}
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+
+	if (by_album_artist) {
+		*by_album_artist = album_artist;
+	}
+	return out[0] != '\0';
+}
+
 void library_album_title(const char *value, char *out, size_t size) {
 	if (!out || size == 0) {
 		return;

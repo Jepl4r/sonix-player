@@ -730,6 +730,42 @@ static void open_album_cb(void *user) {
 	}
 }
 
+// "Show artist": the page of whoever the playing track is filed under -- the
+// album artist, or the performer on a compilation. Only the library knows
+// that, so a track it has not indexed (a stream, a file played from outside the
+// card's music) gets a note instead of an empty page.
+static bool open_artist(bool quiet) {
+	device_state_t state;
+	device_state_get(&state);
+	if (!state.current_file[0]) {
+		return false;
+	}
+
+	char name[256];
+	if (!library_track_artist_page(state.current_file, name, sizeof(name), NULL)) {
+		if (!quiet) {
+			gui_notify_popup("trackmenu_no_artist");
+		}
+		return false;
+	}
+
+	player_sheet_close(false);
+	medialist_open_track_artist(state.current_file);
+	// The artist's records or tracks, whichever screen that is: backing out
+	// of it returns to the player, like everything else this menu opens.
+	if (!medialist_step_back_to_player()) {
+		switcher_set_player_return(lv_screen_active());
+	}
+	return true;
+}
+
+static void open_artist_cb(void *user) {
+	(void)user;
+	open_artist(false);
+}
+
+bool trackmenu_show_artist(void) { return open_artist(true); }
+
 static void open_settings_cb(void *user) {
 	(void)user;
 	player_sheet_close(false);
@@ -763,6 +799,7 @@ void trackmenu_open(lv_obj_t *anchor) {
 		{"trackmenu_queue", open_queue_cb, NULL},
 		{"add_to_playlist", add_to_playlist_cb, NULL},
 		{"show_album", open_album_cb, NULL},
+		{"show_artist", open_artist_cb, NULL},
 		{"details", open_details_cb, NULL},
 		{"settings", open_settings_cb, NULL},
 	};
@@ -778,7 +815,13 @@ void trackmenu_open(lv_obj_t *anchor) {
 	device_state_get(&state);
 	bool podcast = state.current_file[0] && podcastcache_is_episode(state.current_file);
 
-	popover_show(anchor, podcast ? ITEMS_PODCAST : ITEMS, 5);
+	// A podcast episode has no artist page to show, so its menu is a line
+	// shorter.
+	if (podcast) {
+		popover_show(anchor, ITEMS_PODCAST, sizeof(ITEMS_PODCAST) / sizeof(ITEMS_PODCAST[0]));
+	} else {
+		popover_show(anchor, ITEMS, sizeof(ITEMS) / sizeof(ITEMS[0]));
+	}
 }
 
 void trackmenu_init(gui_config_t *cfg) {
