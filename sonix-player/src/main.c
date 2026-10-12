@@ -1258,6 +1258,11 @@ void display_set_rotated(bool rotated) { host_rotated = rotated; }
 void panel_touch_enable(bool enabled) { (void)enabled; }
 const char *panel_touch_device(void) { return NULL; }
 
+// No evdev descriptor to wait on: SDL's mouse is read by its timer as before.
+static int touch_poll_fd(void) { return -1; }
+static void touch_wake(void) {}
+static void touch_give_up_events(void) {}
+
 // There is no framebuffer to read on the simulator, but the SDL renderer can
 // be read back. The rest of the path is identical (same copy, same flash, same
 // PNG writer); only the source of the pixels differs.
@@ -1629,9 +1634,104 @@ const char *panel_touch_device(void) { return fb_touch_node[0] ? fb_touch_node :
 // not polled and stops reading the node, so events pile up unread in the
 // kernel queue. Whatever re-enables it must wait a moment before trusting the
 // first touch (see gearboyplay.c).
+// ---------------------------------------------------------------------------
+// Touch read on demand
+//
+// LVGL reads an input device from a timer, every LV_DEF_REFR_PERIOD: some sixty
+// wakeups a second for as long as the screen is on, nearly all of them to learn
+// that nobody is touching it. On a single core that is a steady tax on battery
+// and on whatever the audio thread wanted to do instead.
+//
+// So the timer is parked while it has nothing to do -- finger up, no fling
+// still gliding, nothing waiting in the kernel queue -- and the main loop's
+// poll() watches the evdev descriptor instead: the first event of a touch makes
+// it readable, the loop wakes, the timer is resumed and run at once, and from
+// there it reads at the normal rate until the finger is lifted and any fling
+// has come to rest. Everything time-based in LVGL's pointer handling -- long
+// press and its repeat, scroll throw, gestures -- happens while the timer
+// runs, so it is all unchanged.
+//
+// Parking is decided after every read, by this file's own callback wrapped
+// around LVGL's. The pending-data check matters: a read during a screen
+// animation, or with the indev disabled, returns early without draining the
+// queue, and parking then would have poll() report the same events forever,
+// a busy loop. In those moments the timer just keeps polling as it always did.
+//
+// Standby needs nothing special: power.c pauses this timer itself, and the
+// descriptor is only watched while the screen is on and the timer is parked
+// by this code, so a touch in the dark wakes nothing. Gearboy's hand-over
+// (panel_touch_enable(false)) unparks for the same reason: the indev is then
+// not reading, and the queue on this descriptor would fill up and stay
+// readable.
+//
+// [display] touch_events=0 in device_config.ini restores plain timer polling.
+// ---------------------------------------------------------------------------
+
+static int fb_touch_fd = -1;  // the descriptor lv_evdev reads; -1 without on-demand reading
+static bool touch_parked;	  // the read timer is paused by this code, waiting on the fd
+static bool touch_enabled = true;
+
+static bool fd_has_input(int fd) {
+	struct pollfd p = {.fd = fd, .events = POLLIN};
+	return poll(&p, 1, 0) > 0 && (p.revents & POLLIN);
+}
+
+static void touch_read_timer_cb(lv_timer_t *t) {
+	lv_indev_t *indev = lv_timer_get_user_data(t);
+	lv_indev_read(indev);
+
+	if (fb_touch_fd < 0 || !touch_enabled) {
+		return;
+	}
+	if (lv_indev_get_state(indev) == LV_INDEV_STATE_RELEASED && lv_indev_get_scroll_obj(indev) == NULL &&
+		!fd_has_input(fb_touch_fd)) {
+		lv_timer_pause(t);
+		touch_parked = true;
+	}
+}
+
+static int touch_poll_fd(void) {
+	if (fb_touch_fd < 0 || !touch_parked || !touch_enabled || !power_screen_is_on()) {
+		return -1;
+	}
+	lv_timer_t *t = lv_indev_get_read_timer(fb_touch);
+	// Resumed by someone else meanwhile (the wake from standby does): it is
+	// reading again, and will park itself when there is reason to.
+	if (!t || !lv_timer_get_paused(t)) {
+		touch_parked = false;
+		return -1;
+	}
+	return fb_touch_fd;
+}
+
+// The descriptor became readable: a finger is down. Read it now, not a period
+// from now.
+static void touch_wake(void) {
+	if (!fb_touch || !touch_parked) {
+		return;
+	}
+	touch_parked = false;
+	lv_timer_t *t = lv_indev_get_read_timer(fb_touch);
+	if (t) {
+		lv_timer_resume(t);
+		lv_timer_ready(t);
+	}
+}
+
+static void touch_give_up_events(void) {
+	fprintf(stderr, "touch: the panel's descriptor reports an error, back to timed reading\n");
+	touch_wake();
+	fb_touch_fd = -1;
+}
+
 void panel_touch_enable(bool enabled) {
 	if (fb_touch) {
 		lv_indev_enable(fb_touch, enabled);
+		touch_enabled = enabled;
+		// Either way the timer runs: disabled, so the descriptor is not
+		// watched while someone else owns the panel; enabled, to drain what
+		// piled up meanwhile and park from there.
+		touch_wake();
 	}
 }
 
@@ -1707,6 +1807,22 @@ static bool input_bit(const unsigned long *bits, int bit) {
 	return (bits[bit / (8 * (int)sizeof(long))] >> (bit % (8 * (int)sizeof(long)))) & 1UL;
 }
 
+// lv_evdev_create() with the open done here, so the descriptor is known: the
+// main loop waits on it (see touch_read_timer_cb). Same flags as LVGL's own
+// open; lv_evdev_create_fd() takes the descriptor over, closing it on failure.
+static lv_indev_t *touch_open(const char *node) {
+	int fd = open(node, O_RDONLY | O_NOCTTY | O_CLOEXEC);
+	if (fd < 0) {
+		return NULL;
+	}
+	lv_indev_t *touch = lv_evdev_create_fd(LV_INDEV_TYPE_POINTER, fd);
+	if (touch) {
+		fb_touch_fd = fd;
+		snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", node);
+	}
+	return touch;
+}
+
 static bool find_touch_node(char *out, size_t out_size) {
 	for (int waited = 0; waited <= TOUCH_PROBE_WAIT_MS; waited += 100) {
 		int fallback = -1;
@@ -1767,30 +1883,30 @@ static lv_display_t *init_target_display(void) {
 	char found[sizeof(fb_touch_node)];
 	lv_indev_t *touch = NULL;
 	if (find_touch_node(found, sizeof(found))) {
-		touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, found);
-		if (touch) {
-			snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", found);
-		}
+		touch = touch_open(found);
 	}
 	if (!touch) {
-		touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, "/dev/input/event1");
-		if (touch) {
-			snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", "/dev/input/event1");
-		}
+		touch = touch_open("/dev/input/event1");
 	}
 	if (!touch) {
 		fprintf(stderr, "Warning: Failed to open /dev/input/event1. Trying event0...\n");
-		touch = lv_evdev_create(LV_INDEV_TYPE_POINTER, "/dev/input/event0");
-		if (touch) {
-			snprintf(fb_touch_node, sizeof(fb_touch_node), "%s", "/dev/input/event0");
-		}
+		touch = touch_open("/dev/input/event0");
 	}
 
 	if (touch) {
 		lv_indev_set_display(touch, disp);
 		tune_pointer(touch);
 		fb_touch = touch;
-		printf("Touch screen input driver successfully registered.\n");
+		// On-demand reading (see touch_read_timer_cb): the read timer gets
+		// this file's callback, which parks it when idle.
+		lv_timer_t *t = lv_indev_get_read_timer(touch);
+		if (t && fb_touch_fd >= 0 && config_get_int("display", "touch_events", 1)) {
+			lv_timer_set_cb(t, touch_read_timer_cb);
+		} else {
+			fb_touch_fd = -1;
+		}
+		printf("Touch screen input driver successfully registered%s.\n",
+			   fb_touch_fd >= 0 ? " (read on demand)" : "");
 	} else {
 		fprintf(stderr, "Warning: No touch input device found.\n");
 	}
@@ -2398,11 +2514,26 @@ int main(int argc, char **argv) {
 			time_till_next = MAIN_LOOP_MAX_SLEEP_MS; // also catches LV_NO_TIMER_READY
 		}
 
-		struct pollfd wake = {.fd = gui_post_wake_fd(), .events = POLLIN};
-		if (poll(&wake, 1, (int)time_till_next) > 0) {
+		// The touch panel's descriptor too, while its read timer is parked
+		// (see touch_read_timer_cb); -1 otherwise, which poll() ignores.
+		struct pollfd fds[2] = {
+			{.fd = gui_post_wake_fd(), .events = POLLIN},
+			{.fd = touch_poll_fd(), .events = POLLIN},
+		};
+		if (poll(fds, 2, (int)time_till_next) > 0) {
+			if (fds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) {
+				// The node went away or broke: stop watching it rather than
+				// spin on an error that will be reported forever, and go back
+				// to reading on the timer.
+				touch_give_up_events();
+			} else if (fds[1].revents & POLLIN) {
+				touch_wake();
+			}
 			// Something was posted: drain the queue now instead of waiting
 			// for the bridge's own timer to come round.
-			gui_post_service();
+			if (fds[0].revents & POLLIN) {
+				gui_post_service();
+			}
 		}
 	}
 
