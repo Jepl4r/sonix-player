@@ -6,7 +6,10 @@
 #include <stdlib.h>
 #include <string.h>
 #include <strings.h> // strcasecmp, for the freeform tag names
+#include <sys/stat.h>
 #include <unistd.h>
+
+#include "growfile.h"
 
 // See mp4.h for why this exists and why the big tables stay in the file.
 
@@ -19,6 +22,8 @@
 #define MAX_SMALL_BOX (4 * 1024 * 1024)
 #define MAX_DEPTH 12
 #define MAX_FREEFORM 8
+#define MAX_FRAGMENTS 200000   // ~5 MB of index at the very worst; a song has a few dozen
+#define MAX_FRAG_SAMPLES 65536 // samples one fragment may hold before it is refused
 
 struct chunk_run {
 	uint32_t first_chunk; // 1-based, as the file writes it
@@ -80,7 +85,29 @@ typedef struct {
 	uint32_t max_bitrate;
 
 	uint32_t chap_id; // the text track this one takes its chapters from
+
+	// The `trex` defaults for a fragmented file: what every fragment of this
+	// track uses unless its own `tfhd` or `trun` says otherwise.
+	uint32_t trex_duration;
+	uint32_t trex_size;
 } track_t;
+
+// One movie fragment (`moof` + its `mdat`) of a fragmented file, as indexed
+// when the file is opened. Only the totals are kept: the per-sample sizes and
+// offsets stay in the file and are read one fragment at a time, so a long file
+// costs 24 bytes of RAM per fragment rather than 8 per sample.
+struct fragment {
+	uint64_t moof;	 // where the `moof` box starts
+	uint64_t start;	 // ticks before this fragment, in the track's timescale
+	uint32_t first;	 // index of its first sample
+	uint32_t count;	 // its samples (of the audio track)
+};
+
+struct frag_sample {
+	uint64_t offset;
+	uint32_t size;
+	uint32_t duration;
+};
 
 struct mp4_file {
 	int fd;
@@ -137,6 +164,38 @@ struct mp4_file {
 	uint32_t seq_index;	 // the sample this prediction is for
 	uint64_t seq_offset; // ...and where it starts
 	uint32_t seq_chunk_end;
+
+	// Fragmented MP4 (DASH, CMAF, `-movflags frag_keyframe`): the moov carries
+	// no sample tables, only an `mvex`, and the samples are described fragment
+	// by fragment in `moof` boxes between the `mdat`s. See frag_scan().
+	bool fragmented;
+	uint64_t mehd_duration; // the whole length, in the movie timescale; 0 when absent
+	uint64_t sidx_ticks;	// the first `sidx`'s total, in sidx_timescale
+	uint32_t sidx_timescale;
+	struct {
+		uint32_t track_id, duration, size;
+	} trex[MAX_TRACKS];
+	int trex_count;
+
+	struct fragment *frags;
+	uint32_t frag_count;
+	uint32_t frag_capacity;
+	uint32_t frag_samples; // samples in all fragments indexed so far
+	uint64_t frag_ticks;   // ...and their total duration
+	uint64_t frag_bytes;   // where the last of their samples ends in the file
+	uint64_t scan_pos;	   // where the next unindexed top-level box starts
+	bool scan_done;		   // the whole file has been indexed
+
+	// The one fragment whose samples are loaded.
+	int64_t cur_frag; // -1 when none
+	struct frag_sample *cur;
+	uint32_t cur_capacity;
+	uint32_t cur_count;
+
+	// Set while the file is still being downloaded (decode/growfile.c): reads
+	// past the end then wait for the bytes instead of failing, and the index
+	// is extended as new fragments arrive.
+	char *grow_path;
 };
 
 // ---------------------------------------------------------------------------
@@ -147,6 +206,16 @@ static bool read_at(const mp4_file_t *m, uint64_t off, void *buf, size_t len) {
 	size_t done = 0;
 	while (done < len) {
 		ssize_t n = pread(m->fd, (char *)buf + done, len - done, (off_t)(off + done));
+		if (n == 0 && m->grow_path) {
+			// The end of what has been downloaded so far, not of the file:
+			// wait for the writer, and only give up when it has finished (or
+			// stalled, or a command is pending) without reaching these bytes.
+			long have = growfile_wait_path(m->grow_path, (long)(off + len));
+			if (have >= 0 && (uint64_t)have > off + done) {
+				continue;
+			}
+			return false;
+		}
 		if (n <= 0) {
 			return false;
 		}
@@ -887,6 +956,56 @@ static void parse_boxes(mp4_file_t *m, uint64_t start, uint64_t end, track_t *cu
 		uint64_t next = box.next;
 
 		switch (box.type) {
+		case FOURCC('m', 'v', 'e', 'x'):
+			// Only a fragmented file has one: its samples are in the `moof`s.
+			m->fragmented = true;
+			parse_boxes(m, box.content, box.content + box.body_size, current, depth + 1);
+			break;
+
+		case FOURCC('m', 'e', 'h', 'd'): {
+			unsigned char b[12];
+			if (box.body_size >= 8 && read_at(m, box.content, b, box.body_size >= 12 ? 12 : 8)) {
+				m->mehd_duration = (b[0] == 1 && box.body_size >= 12) ? be64(b + 4) : be32(b + 4);
+			}
+			break;
+		}
+
+		case FOURCC('t', 'r', 'e', 'x'): {
+			// version/flags, track_ID, description index, duration, size, flags
+			unsigned char b[24];
+			if (box.body_size >= 24 && m->trex_count < MAX_TRACKS && read_at(m, box.content, b, 24)) {
+				m->trex[m->trex_count].track_id = be32(b + 4);
+				m->trex[m->trex_count].duration = be32(b + 12);
+				m->trex[m->trex_count].size = be32(b + 16);
+				m->trex_count++;
+			}
+			break;
+		}
+
+		case FOURCC('s', 'i', 'd', 'x'):
+			// The segment index: the total length of a fragmented file without
+			// reading every fragment, when the muxer wrote one. Only the first.
+			if (depth == 0 && m->sidx_timescale == 0 && box.body_size >= 24) {
+				size_t len = 0;
+				unsigned char *b = load_box(m, &box, &len);
+				if (b) {
+					uint32_t timescale = be32(b + 8);
+					size_t pos = (b[0] == 0) ? 20 : 28;
+					if (pos + 4 <= len && timescale) {
+						uint32_t refs = be16(b + pos + 2);
+						uint64_t ticks = 0;
+						pos += 4;
+						for (uint32_t i = 0; i < refs && pos + 12 <= len; i++, pos += 12) {
+							ticks += be32(b + pos + 4);
+						}
+						m->sidx_timescale = timescale;
+						m->sidx_ticks = ticks;
+					}
+					free(b);
+				}
+			}
+			break;
+
 		case FOURCC('m', 'o', 'o', 'v'):
 		case FOURCC('m', 'd', 'i', 'a'):
 		case FOURCC('m', 'i', 'n', 'f'):
@@ -1275,6 +1394,379 @@ static bool frame_location(mp4_file_t *m, int track_index, uint32_t index, uint6
 }
 
 // ---------------------------------------------------------------------------
+// fragmented files
+// ---------------------------------------------------------------------------
+//
+// A fragmented MP4 -- what DASH and CMAF deliver, what Tidal's segments add up
+// to when concatenated, what `ffmpeg -movflags frag_keyframe` writes -- has an
+// empty moov: the sample tables are replaced by a run of `moof` boxes, each
+// describing the samples of the `mdat` that follows it. There is no table of
+// all the samples anywhere in the file.
+//
+// The rest of this reader, and the decoder above it, think in sample numbers.
+// So the file is indexed once at open: each `moof` is read (a few hundred
+// bytes) and only its totals are kept -- the first sample number, the sample
+// count and the start time. The sizes and offsets of a fragment's samples are
+// read when playback reaches that fragment, into a buffer reused for the next.
+// RAM is then 24 bytes per fragment plus one fragment's samples, whatever the
+// length of the file.
+
+// Walks one `moof`, collecting the samples of the audio track. With `out`
+// NULL only counts them and sums their durations (the indexing pass); with
+// `out` fills it, up to `capacity` samples (the loading pass). The rules for
+// where a sample's bytes are follow ISO/IEC 14496-12 8.8: a base offset from
+// the `tfhd` (explicit, else the start of the moof), a data offset per `trun`
+// relative to it, and runs without one continuing where the last one ended.
+static bool parse_moof(const mp4_file_t *m, uint64_t moof_off, const box_t *moof, struct frag_sample *out,
+					   uint32_t capacity, uint32_t *count_out, uint64_t *ticks_out, uint64_t *end_out) {
+	const track_t *t = &m->tracks[m->audio];
+	size_t len = 0;
+	unsigned char *b = load_box(m, moof, &len);
+	if (!b) {
+		return false;
+	}
+
+	uint32_t count = 0;
+	uint64_t ticks = 0, data_end = 0;
+	size_t pos = 0;
+	while (pos + 8 <= len) {
+		uint32_t traf_size = be32(b + pos);
+		uint32_t traf_type = be32(b + pos + 4);
+		if (traf_size < 8 || pos + traf_size > len) {
+			break;
+		}
+		if (traf_type != FOURCC('t', 'r', 'a', 'f')) {
+			pos += traf_size;
+			continue;
+		}
+
+		size_t end = pos + traf_size;
+		size_t c = pos + 8;
+		bool ours = false;
+		uint64_t base = moof_off;
+		uint32_t def_duration = t->trex_duration;
+		uint32_t def_size = t->trex_size;
+		uint64_t data_next = 0; // where a trun without its own offset starts
+		bool have_next = false;
+
+		while (c + 8 <= end) {
+			uint32_t size = be32(b + c);
+			uint32_t type = be32(b + c + 4);
+			if (size < 8 || c + size > end) {
+				break;
+			}
+			const unsigned char *p = b + c + 8;
+			size_t plen = size - 8;
+
+			if (type == FOURCC('t', 'f', 'h', 'd') && plen >= 8) {
+				uint32_t flags = be32(p) & 0xFFFFFF;
+				ours = be32(p + 4) == t->id;
+				size_t q = 8;
+				if ((flags & 0x01) && q + 8 <= plen) {
+					base = be64(p + q);
+					q += 8;
+				}
+				if (flags & 0x02) {
+					q += 4;
+				}
+				if ((flags & 0x08) && q + 4 <= plen) {
+					def_duration = be32(p + q);
+					q += 4;
+				}
+				if ((flags & 0x10) && q + 4 <= plen) {
+					def_size = be32(p + q);
+				}
+			} else if (type == FOURCC('t', 'r', 'u', 'n') && ours && plen >= 8) {
+				uint32_t flags = be32(p) & 0xFFFFFF;
+				uint32_t samples = be32(p + 4);
+				size_t q = 8;
+				uint64_t data = have_next ? data_next : base;
+				if (flags & 0x01) {
+					if (q + 4 > plen) {
+						break;
+					}
+					data = base + (uint64_t)(int64_t)(int32_t)be32(p + q);
+					q += 4;
+				}
+				if (flags & 0x04) {
+					q += 4;
+				}
+				size_t per = 0;
+				per += (flags & 0x100) ? 4 : 0;
+				per += (flags & 0x200) ? 4 : 0;
+				per += (flags & 0x400) ? 4 : 0;
+				per += (flags & 0x800) ? 4 : 0;
+				if (per && (plen - q) / per < samples) {
+					samples = (uint32_t)((plen - q) / per); // a truncated box: keep what is there
+				}
+				if (count + samples > MAX_FRAG_SAMPLES) {
+					free(b);
+					return false;
+				}
+				for (uint32_t i = 0; i < samples; i++) {
+					uint32_t duration = def_duration, sz = def_size;
+					if (flags & 0x100) {
+						duration = be32(p + q);
+						q += 4;
+					}
+					if (flags & 0x200) {
+						sz = be32(p + q);
+						q += 4;
+					}
+					q += ((flags & 0x400) ? 4 : 0) + ((flags & 0x800) ? 4 : 0);
+					if (out) {
+						if (count >= capacity) {
+							free(b);
+							return false;
+						}
+						out[count].offset = data;
+						out[count].size = sz;
+						out[count].duration = duration;
+					}
+					data += sz;
+					ticks += duration;
+					count++;
+				}
+				data_next = data;
+				have_next = true;
+				if (data > data_end) {
+					data_end = data;
+				}
+			}
+			c += size;
+		}
+		pos = end;
+	}
+	free(b);
+	*count_out = count;
+	*ticks_out = ticks;
+	if (end_out) {
+		*end_out = data_end;
+	}
+	return true;
+}
+
+static off_t current_size(const mp4_file_t *m) {
+	struct stat st;
+	return fstat(m->fd, &st) == 0 ? st.st_size : 0;
+}
+
+// Indexes the fragments from `scan_pos` on, as far as the file goes. A file
+// still downloading stops at the first box not wholly there yet, and the next
+// call carries on from it; one that is complete is indexed in a single call
+// and marked done.
+static void frag_scan(mp4_file_t *m) {
+	if (m->scan_done) {
+		return;
+	}
+	uint64_t size = (uint64_t)current_size(m);
+	bool growing = m->grow_path && growfile_is_growing(m->grow_path);
+
+	while (m->scan_pos + 8 <= size) {
+		box_t box;
+		if (!read_box(m, m->scan_pos, size, &box)) {
+			break; // a box not wholly downloaded yet, or the end of a damaged file
+		}
+		if (box.type == FOURCC('m', 'o', 'o', 'f')) {
+			uint32_t count = 0;
+			uint64_t ticks = 0;
+			uint64_t data_end = 0;
+			if (!parse_moof(m, m->scan_pos, &box, NULL, 0, &count, &ticks, &data_end)) {
+				m->scan_done = true; // unreadable: play what was indexed
+				return;
+			}
+			if (count > 0) {
+				if (m->frag_count == m->frag_capacity) {
+					if (m->frag_count >= MAX_FRAGMENTS) {
+						m->scan_done = true;
+						return;
+					}
+					uint32_t cap = m->frag_capacity ? m->frag_capacity * 2 : 64;
+					struct fragment *grown = realloc(m->frags, cap * sizeof(*grown));
+					if (!grown) {
+						m->scan_done = true;
+						return;
+					}
+					m->frags = grown;
+					m->frag_capacity = cap;
+				}
+				struct fragment *f = &m->frags[m->frag_count++];
+				f->moof = m->scan_pos;
+				f->start = m->frag_ticks;
+				f->first = m->frag_samples;
+				f->count = count;
+				m->frag_samples += count;
+				m->frag_ticks += ticks;
+				if (data_end > m->frag_bytes) {
+					m->frag_bytes = data_end;
+				}
+			}
+		}
+		if (box.next <= m->scan_pos) {
+			break;
+		}
+		m->scan_pos = box.next;
+	}
+
+	// A finished file is indexed in one pass. One that stopped short of its
+	// end with nobody writing it has a truncated tail: what came before plays.
+	if (!growing) {
+		m->scan_done = true;
+	}
+}
+
+// Waits for the fragment holding sample `index` to arrive, when the file is
+// still downloading. False when it never will: the download finished (or
+// died) first, or playback has something else to do.
+static bool frag_wait_for(mp4_file_t *m, uint32_t index) {
+	while (index >= m->frag_samples && !m->scan_done) {
+		uint64_t before = m->scan_pos;
+		uint32_t samples = m->frag_samples;
+		frag_scan(m);
+		if (index < m->frag_samples || m->scan_done) {
+			break;
+		}
+		if (m->frag_samples == samples) {
+			// Nothing new: wait for the next box (its header, then its body).
+			uint64_t want = before + 8;
+			unsigned char head[8];
+			if (pread(m->fd, head, 8, (off_t)before) == 8) {
+				uint64_t sz = be32(head);
+				want = before + (sz >= 8 ? sz : 8) + 8; // and the header after it
+			}
+			long have = growfile_wait_path(m->grow_path, (long)want);
+			if (have < 0) {
+				frag_scan(m); // the download just finished: index the rest
+				m->scan_done = true;
+				break;
+			}
+			if ((uint64_t)have < want && !growfile_is_growing(m->grow_path)) {
+				frag_scan(m);
+				m->scan_done = true;
+				break;
+			}
+			if ((uint64_t)have <= before + 8) {
+				return false; // stalled, or a command is pending
+			}
+		}
+	}
+	return index < m->frag_samples;
+}
+
+static int64_t frag_find(const mp4_file_t *m, uint32_t index) {
+	uint32_t lo = 0, hi = m->frag_count;
+	while (lo < hi) {
+		uint32_t mid = lo + (hi - lo) / 2;
+		const struct fragment *f = &m->frags[mid];
+		if (index < f->first) {
+			hi = mid;
+		} else if (index >= f->first + f->count) {
+			lo = mid + 1;
+		} else {
+			return mid;
+		}
+	}
+	return -1;
+}
+
+// Makes fragment `n` the loaded one.
+static bool frag_load(mp4_file_t *m, int64_t n) {
+	if (m->cur_frag == n) {
+		return true;
+	}
+	const struct fragment *f = &m->frags[n];
+	if (f->count > m->cur_capacity) {
+		struct frag_sample *grown = realloc(m->cur, f->count * sizeof(*grown));
+		if (!grown) {
+			return false;
+		}
+		m->cur = grown;
+		m->cur_capacity = f->count;
+	}
+	box_t box;
+	uint32_t count = 0;
+	uint64_t ticks = 0;
+	if (!read_box(m, f->moof, UINT64_MAX, &box) ||
+		!parse_moof(m, f->moof, &box, m->cur, m->cur_capacity, &count, &ticks, NULL) || count != f->count) {
+		m->cur_frag = -1;
+		return false;
+	}
+	m->cur_count = count;
+	m->cur_frag = n;
+	return true;
+}
+
+static bool frag_location(mp4_file_t *m, uint32_t index, uint64_t *offset, uint32_t *size) {
+	if (index >= m->frag_samples && !frag_wait_for(m, index)) {
+		return false;
+	}
+	int64_t n = (m->cur_frag >= 0 && index >= m->frags[m->cur_frag].first &&
+				 index < m->frags[m->cur_frag].first + m->frags[m->cur_frag].count)
+					? m->cur_frag
+					: frag_find(m, index);
+	if (n < 0 || !frag_load(m, n)) {
+		return false;
+	}
+	const struct frag_sample *s = &m->cur[index - m->frags[n].first];
+	*offset = s->offset;
+	*size = s->size;
+	return true;
+}
+
+// When sample `index` starts, in ticks of the track's timescale.
+static uint64_t frag_ticks_of(mp4_file_t *m, uint32_t index) {
+	if (m->frag_count == 0) {
+		return 0;
+	}
+	if (index >= m->frag_samples) {
+		return m->frag_ticks;
+	}
+	int64_t n = frag_find(m, index);
+	if (n < 0) {
+		return m->frag_ticks;
+	}
+	uint64_t ticks = m->frags[n].start;
+	if (frag_load(m, n)) {
+		for (uint32_t i = m->frags[n].first; i < index; i++) {
+			ticks += m->cur[i - m->frags[n].first].duration;
+		}
+	}
+	return ticks;
+}
+
+// Which sample covers `want` ticks: the fragment by binary search on the start
+// times, then a walk through its durations. Past the indexed part of a file
+// still downloading, the last sample indexed: a seek cannot go where the bytes
+// are not yet.
+static uint32_t frag_sample_at(mp4_file_t *m, uint64_t want) {
+	if (m->frag_count == 0) {
+		return 0;
+	}
+	uint32_t lo = 0, hi = m->frag_count;
+	while (hi - lo > 1) {
+		uint32_t mid = lo + (hi - lo) / 2;
+		if (m->frags[mid].start <= want) {
+			lo = mid;
+		} else {
+			hi = mid;
+		}
+	}
+	const struct fragment *f = &m->frags[lo];
+	if (!frag_load(m, lo)) {
+		return f->first;
+	}
+	uint64_t ticks = f->start;
+	for (uint32_t i = 0; i < f->count; i++) {
+		uint32_t d = m->cur[i].duration;
+		if (want < ticks + d || i + 1 == f->count) {
+			return f->first + i;
+		}
+		ticks += d;
+	}
+	return f->first + f->count - 1;
+}
+
+// ---------------------------------------------------------------------------
 // public interface
 // ---------------------------------------------------------------------------
 
@@ -1302,6 +1794,7 @@ mp4_file_t *mp4_open(const char *path) {
 	}
 	m->audio = -1;
 	m->cache_track = -1;
+	m->cur_frag = -1;
 
 	m->fd = open(path, O_RDONLY);
 	if (m->fd < 0) {
@@ -1321,7 +1814,7 @@ mp4_file_t *mp4_open(const char *path) {
 	for (int i = 0; i < m->track_count; i++) {
 		track_t *t = &m->tracks[i];
 		if (t->handler == FOURCC('s', 'o', 'u', 'n') && t->codec != MP4_CODEC_NONE && t->asc_len > 0 &&
-			t->sample_count > 0) {
+			(t->sample_count > 0 || m->fragmented)) {
 			m->audio = i;
 			break;
 		}
@@ -1329,6 +1822,29 @@ mp4_file_t *mp4_open(const char *path) {
 	if (m->audio < 0) {
 		mp4_close(m);
 		return NULL;
+	}
+
+	if (m->fragmented && m->tracks[m->audio].sample_count == 0) {
+		track_t *t = &m->tracks[m->audio];
+		for (int i = 0; i < m->trex_count; i++) {
+			if (m->trex[i].track_id == t->id) {
+				t->trex_duration = m->trex[i].duration;
+				t->trex_size = m->trex[i].size;
+			}
+		}
+		// A file still downloading is read as far as it goes, and the rest
+		// is indexed as it arrives (frag_wait_for).
+		if (growfile_is_growing(path)) {
+			m->grow_path = strdup(path);
+		}
+		m->scan_pos = 0;
+		frag_scan(m);
+		if (m->frag_samples == 0 && !m->grow_path) {
+			mp4_close(m);
+			return NULL;
+		}
+	} else {
+		m->fragmented = false; // an mvex beside full sample tables: play the tables
 	}
 
 	// Chapters: the audio track's own text track if it names one, otherwise
@@ -1374,6 +1890,9 @@ void mp4_close(mp4_file_t *m) {
 	free(m->lyrics);
 	free(m->description);
 	free(m->size_cache);
+	free(m->frags);
+	free(m->cur);
+	free(m->grow_path);
 	if (m->fd >= 0) {
 		close(m->fd);
 	}
@@ -1467,6 +1986,40 @@ double mp4_duration_seconds(const mp4_file_t *m) {
 	if (t->timescale == 0) {
 		return 0;
 	}
+	if (m->fragmented) {
+		// Every fragment indexed is the exact answer; before that (a file
+		// still downloading) the length the init segment or the segment index
+		// declares, else what has arrived so far.
+		if (m->scan_done) {
+			return (double)m->frag_ticks / (double)t->timescale;
+		}
+		if (m->mehd_duration && m->movie_timescale) {
+			return (double)m->mehd_duration / (double)m->movie_timescale;
+		}
+		if (t->duration) {
+			return (double)t->duration / (double)t->timescale;
+		}
+		// Nothing declared (Tidal's DASH segments, ffmpeg's empty_moov): the
+		// length so far scaled by the bytes still to come, which for audio
+		// at a steady bitrate is within a second or so of the truth. Better
+		// than a seek bar four seconds long.
+		if (m->grow_path && m->frag_bytes > 0) {
+			growfile_t *g = growfile_open(m->grow_path);
+			long done = 0, total = 0;
+			bool known = growfile_span(g, &done, &total);
+			growfile_close(g);
+			if (known && (uint64_t)total > m->frag_bytes) {
+				return (double)m->frag_ticks * ((double)total / (double)m->frag_bytes) / (double)t->timescale;
+			}
+		}
+		// A segment index, when it covers more than what has arrived: DASH
+		// segments carry one each, describing only themselves.
+		if (m->sidx_ticks && m->sidx_timescale &&
+			(double)m->sidx_ticks / m->sidx_timescale > (double)m->frag_ticks / t->timescale) {
+			return (double)m->sidx_ticks / (double)m->sidx_timescale;
+		}
+		return (double)m->frag_ticks / (double)t->timescale;
+	}
 	if (t->duration) {
 		return (double)t->duration / (double)t->timescale;
 	}
@@ -1478,6 +2031,11 @@ double mp4_duration_seconds(const mp4_file_t *m) {
 }
 
 uint32_t mp4_audio_frame_count(const mp4_file_t *m) {
+	if (m && m->audio >= 0 && m->fragmented) {
+		// Unknown while the file is still arriving: "as many as there turn
+		// out to be", and mp4_read_audio_frame() answers 0 at the real end.
+		return m->scan_done ? m->frag_samples : 0x7FFFFFFFu;
+	}
 	return (m && m->audio >= 0) ? m->tracks[m->audio].sample_count : 0;
 }
 
@@ -1511,7 +2069,8 @@ int mp4_read_audio_frame(mp4_file_t *m, uint32_t index, unsigned char *buf, uint
 	}
 	uint64_t offset = 0;
 	uint32_t size = 0;
-	if (!frame_location(m, m->audio, index, &offset, &size) || size == 0) {
+	bool found = m->fragmented ? frag_location(m, index, &offset, &size) : frame_location(m, m->audio, index, &offset, &size);
+	if (!found || size == 0) {
 		return 0;
 	}
 	if (size > buf_size) {
@@ -1530,6 +2089,10 @@ double mp4_frame_time(const mp4_file_t *m, uint32_t index) {
 	const track_t *t = &m->tracks[m->audio];
 	if (t->timescale == 0) {
 		return 0;
+	}
+	if (m->fragmented) {
+		// The loaded fragment is a cache, not part of the answer: hence the cast.
+		return (double)frag_ticks_of((mp4_file_t *)m, index) / (double)t->timescale;
 	}
 	uint64_t ticks = 0, seen = 0;
 	for (uint32_t r = 0; r < t->stts_count; r++) {
@@ -1553,6 +2116,9 @@ uint32_t mp4_frame_at_time(const mp4_file_t *m, double secs) {
 		return 0;
 	}
 	uint64_t want = (uint64_t)(secs * (double)t->timescale);
+	if (m->fragmented) {
+		return frag_sample_at((mp4_file_t *)m, want);
+	}
 	uint64_t ticks = 0, seen = 0;
 	for (uint32_t r = 0; r < t->stts_count; r++) {
 		uint64_t count = t->stts[r].count;

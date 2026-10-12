@@ -13,3 +13,11 @@ api_secret =
 [lastfm]
 api_key = 
 api_secret = 
+
+; Yandex Music: the public desktop-application values, as published by the
+; open-source clients (yandex-music-api, yandex-music-downloader).
+[yandex]
+client_id = 23cabbbdc6cd418abb4b39c32c41195d
+client_secret = 53bc75238f0c4d08a118e51fe9203300
+sign_key = kzqU4XhfCaY6B6JTHODeq5
+client_header = X-Yandex-Music-Client: YandexMusicDesktopAppWindows/5.95.0

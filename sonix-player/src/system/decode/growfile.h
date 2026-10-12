@@ -77,6 +77,13 @@ size_t growfile_read(growfile_t *g, void *out, size_t bytes);
 // the destination has not arrived yet. False when it cannot be reached.
 bool growfile_seek(growfile_t *g, long offset, int origin);
 
+// Waits until at least `need` bytes of the file at `path` are on disk, for a
+// reader that does its own pread()s (the MP4 reader, which jumps between a
+// fragment's header and its samples). Returns how many bytes there are when it
+// stops waiting -- fewer than `need` when the download ended, stalled or a
+// command is pending -- and -1 when nobody is writing that file.
+long growfile_wait_path(const char *path, long need);
+
 // The current position, for decoders that ask for it.
 long growfile_tell(growfile_t *g);
 

@@ -31,6 +31,12 @@
 //     api_key = ...
 //     api_secret = ...
 //
+//     [yandex]
+//     client_id = ...
+//     client_secret = ...
+//     sign_key = ...
+//     client_header = X-Yandex-Music-Client: ...
+//
 // and shipped sealed, as /usr/resource/sonix/components/streaming-keys.bin, by
 // tools/seal_streamkeys.py. The key that opens it is not in the source: the
 // tool keeps it in streaming-keys.key, outside git, and the Makefile compiles
@@ -72,6 +78,15 @@ const char *streamkeys_podcast_secret(void);
 // every call with the MD5 of the sorted parameters plus the secret.
 const char *streamkeys_lastfm_key(void);
 const char *streamkeys_lastfm_secret(void);
+
+// Yandex Music: the desktop application's OAuth client, the key that signs
+// get-file-info, and the X-Yandex-Music-Client header line it sends ("Name:
+// value", whole). Section [yandex]: client_id, client_secret, sign_key,
+// client_header.
+const char *streamkeys_yandex_client_id(void);
+const char *streamkeys_yandex_client_secret(void);
+const char *streamkeys_yandex_sign_key(void);
+const char *streamkeys_yandex_client_header(void);
 
 // Where they were read from, for the log and the information page. NULL when
 // none were found.

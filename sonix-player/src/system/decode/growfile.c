@@ -228,6 +228,18 @@ static long wait_for_bytes(growfile_t *g, long need) {
 	return wait_for_bytes_timeout(g, need, GROWFILE_WAIT_TIMEOUT_MS);
 }
 
+long growfile_wait_path(const char *path, long need) {
+	if (!path) {
+		return -1;
+	}
+	// A throwaway handle: the wait only needs the path to find the writer's
+	// slot, and building it here keeps the slot logic in one place.
+	growfile_t g;
+	memset(&g, 0, sizeof(g));
+	snprintf(g.path, sizeof(g.path), "%s", path);
+	return wait_for_bytes_timeout(&g, need, GROWFILE_WAIT_TIMEOUT_MS);
+}
+
 size_t growfile_read(growfile_t *g, void *out, size_t bytes) {
 	if (!g || !out || bytes == 0) {
 		return 0;
