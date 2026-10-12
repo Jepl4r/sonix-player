@@ -2741,6 +2741,19 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 				 select, list_uses_sortkey(kind) ? "sortkey" : "album COLLATE listorder");
 		return;
 	}
+	// Every record by its artist -- the name the row shows under the title,
+	// put through the same sort key the artist lists use, so "The Beatles"
+	// files under B here as it does there -- then each artist's records by
+	// year, the ones without a year last, then by name. Two lookups on
+	// media_album_key_idx per album, and a sort: run when the list is opened,
+	// not when it scrolls.
+	if (order == LIBRARY_ORDER_ARTIST && kind == LIBRARY_LIST_ALBUMS) {
+		snprintf(sql, size,
+				 "SELECT %s FROM ALBUM_GROUP_TABLE g WHERE album <> '' ORDER BY sortkey(" ALBUM_GROUP_FIRST(
+					 "COALESCE(NULLIF(m.album_artist,''), m.artist)") "), " YEAR_KEY_UP(ALBUM_GROUP_YEAR) ", %s",
+				 select, list_uses_sortkey(kind) ? "sortkey" : "album COLLATE listorder");
+		return;
+	}
 	// Every record by year, the albums of one year by name.
 	if ((order == LIBRARY_ORDER_YEAR || order == LIBRARY_ORDER_YEAR_DESC) && kind == LIBRARY_LIST_ALBUMS) {
 		snprintf(sql, size, "SELECT %s FROM ALBUM_GROUP_TABLE g WHERE album <> '' ORDER BY %s, %s", select,
@@ -3002,7 +3015,7 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 		bool by_name = kind != LIBRARY_LIST_FAVOURITES && kind != LIBRARY_LIST_PLAYLIST && kind != LIBRARY_LIST_YEARS &&
 					   kind != LIBRARY_LIST_MOST_PLAYED &&
 					   order != LIBRARY_ORDER_ALBUM && order != LIBRARY_ORDER_ADDED && order != LIBRARY_ORDER_YEAR &&
-					   order != LIBRARY_ORDER_YEAR_DESC &&
+					   order != LIBRARY_ORDER_YEAR_DESC && order != LIBRARY_ORDER_ARTIST &&
 					   !(kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM) &&
 					   !(kind == LIBRARY_LIST_ALBUMS && filter_by_year(filter));
 		ix->buckets_valid = by_name && ix->count > 0;
