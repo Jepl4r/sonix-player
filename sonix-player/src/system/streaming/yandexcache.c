@@ -1,5 +1,6 @@
 #include "yandexcache.h"
 
+#include <dirent.h>
 #include <errno.h>
 #include <pthread.h>
 #include <stdarg.h>
@@ -79,6 +80,8 @@ void yandexcache_set_root(const char *sd_root) {
 
 bool yandexcache_ready(void) { return cache_dir[0] != '\0'; }
 
+const char *yandexcache_dir(void) { return cache_dir[0] ? cache_dir : NULL; }
+
 const char *yandexcache_extension(const char *codec) {
 	if (strncmp(codec, "flac", 4) == 0) {
 		return "flac"; // flac-mp4 too: it is unwrapped on the way in
@@ -129,6 +132,68 @@ void yandexcache_downloading_id(char *out, size_t size) {
 	pthread_mutex_lock(&lock);
 	snprintf(out, size, "%s", current && !current->finished ? current->track_id : "");
 	pthread_mutex_unlock(&lock);
+}
+
+bool yandexcache_busy(void) {
+	pthread_mutex_lock(&lock);
+	bool busy = current && !current->finished;
+	pthread_mutex_unlock(&lock);
+	return busy;
+}
+
+static volatile bool network_wanted;
+
+void yandexcache_set_network_wanted(bool wanted) { network_wanted = wanted; }
+bool yandexcache_network_wanted(void) { return network_wanted; }
+
+// The audio files of the cache; everything else in it (".tags", ".jpg",
+// ".part") is a track's companion, not a track.
+static bool is_audio_name(const char *name) {
+	const char *dot = strrchr(name, '.');
+	if (!dot || dot == name) {
+		return false;
+	}
+	static const char *const EXTS[] = {".flac", ".mp3", ".m4a", ".aac"};
+	for (size_t i = 0; i < sizeof(EXTS) / sizeof(EXTS[0]); i++) {
+		if (strcmp(dot, EXTS[i]) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+bool yandexcache_is_track(const char *path) {
+	if (!yandexcache_owns(path)) {
+		return false;
+	}
+	const char *name = path + strlen(cache_dir) + 1;
+	return !strchr(name, '/') && strcspn(name, ".") > 0 && is_audio_name(name);
+}
+
+bool yandexcache_album_id(const char *path, char *out, size_t size) {
+	if (!out || size == 0) {
+		return false;
+	}
+	out[0] = '\0';
+	if (!yandexcache_is_track(path)) {
+		return false;
+	}
+	char tags[600];
+	snprintf(tags, sizeof(tags), "%.560s.tags", path);
+	FILE *f = fopen(tags, "r");
+	if (!f) {
+		return false;
+	}
+	char line[256];
+	while (fgets(line, sizeof(line), f)) {
+		if (strncmp(line, "album_id=", 9) == 0) {
+			line[strcspn(line, "\r\n")] = '\0';
+			snprintf(out, size, "%s", line + 9);
+			break;
+		}
+	}
+	fclose(f);
+	return out[0] != '\0';
 }
 
 void yandexcache_abandon_all(void) {
@@ -398,6 +463,8 @@ static bool hex_key(const char *hex, uint8_t out[16]) {
 
 static void streamturn_hook(void) { yandexcache_abandon_all(); }
 
+static void prune(long room); // below, with the rest of the cache's bounds
+
 bool yandexcache_start(const yandex_track_t *track, const yandex_file_t *file, char *out, size_t size) {
 	last_error[0] = '\0';
 	static bool registered;
@@ -445,6 +512,9 @@ bool yandexcache_start(const yandex_track_t *track, const yandex_file_t *file, c
 		}
 		d->encrypted = true;
 	}
+	// Room for this one before it starts. Its size is only known once the
+	// first window answers, so the headroom is a generous hi-res track.
+	prune(YANDEXCACHE_PRUNE_HEADROOM);
 	const char *target = d->whole ? d->part : d->path;
 	d->f = fopen(target, "wb");
 	if (!d->f) {
@@ -499,6 +569,190 @@ bool yandexcache_start(const yandex_track_t *track, const yandex_file_t *file, c
 		set_error("%s", tr("download_failed"));
 	}
 	return ok;
+}
+
+// ---------------------------------------------------------------------------
+// keeping the cache in bounds
+//
+// The Qobuz policy (qobuzcache.c), for the same reasons: the cache is a
+// waypoint on the user's card, in a directory they never see, so it is swept
+// every YANDEXCACHE_CLEAR_EVERY tracks and on the way out, and held under
+// YANDEXCACHE_MAX_BYTES in between. What the queue still expects (the track
+// playing and those after it), what was fetched a moment ago and is about to
+// be queued, and what is coming down right now are never touched by the
+// automatic passes.
+// ---------------------------------------------------------------------------
+
+static pthread_mutex_t keep_lock = PTHREAD_MUTEX_INITIALIZER;
+static char protected_paths[YANDEXCACHE_PROTECTED_MAX][512];
+static int protected_count;
+
+// Ring of the most recently fetched tracks: the safety net for the moment
+// between "the file exists" and "the queue knows about it".
+#define RECENT_MAX 8
+static char recent_paths[RECENT_MAX][512];
+static int recent_next;
+static int played_since_clear;
+
+void yandexcache_set_protected(const char *const *paths, int count) {
+	pthread_mutex_lock(&keep_lock);
+	protected_count = 0;
+	for (int i = 0; i < count && protected_count < YANDEXCACHE_PROTECTED_MAX; i++) {
+		if (paths[i] && paths[i][0]) {
+			snprintf(protected_paths[protected_count++], sizeof(protected_paths[0]), "%s", paths[i]);
+		}
+	}
+	pthread_mutex_unlock(&keep_lock);
+}
+
+// True when `stem` (a path with its last extension cut) is the start of `path`
+// up to one of its dots: "…/101" and "…/101.flac" both belong to "…/101.flac",
+// "…/10" does not.
+static bool stem_of(const char *stem, const char *path) {
+	size_t len = strlen(stem);
+	return path[0] && strncmp(path, stem, len) == 0 && (path[len] == '.' || path[len] == '\0');
+}
+
+static bool is_kept_stem(const char *stem) {
+	if (growfile_prefix_is_growing(stem)) {
+		return true;
+	}
+	bool keep = false;
+	pthread_mutex_lock(&keep_lock);
+	for (int i = 0; i < protected_count && !keep; i++) {
+		keep = stem_of(stem, protected_paths[i]);
+	}
+	for (int i = 0; i < RECENT_MAX && !keep; i++) {
+		keep = stem_of(stem, recent_paths[i]);
+	}
+	pthread_mutex_unlock(&keep_lock);
+	return keep;
+}
+
+typedef struct {
+	char name[64];
+	long size;
+	long atime; // last access: what is actually being listened to
+} entry_t;
+
+#define PRUNE_MAX_ENTRIES 512
+
+// Visits every file of the cache. `keep` (may be NULL) spares those whose
+// stem it accepts. Fills `out` (up to `max`) with what may go and returns how
+// many; `total` gets the size of everything.
+static int scan(entry_t *out, int max, long *total, bool (*keep)(const char *stem)) {
+	*total = 0;
+	int count = 0;
+	DIR *d = opendir(cache_dir);
+	if (!d) {
+		return 0;
+	}
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL) {
+		if (e->d_name[0] == '.') {
+			continue;
+		}
+		char path[640];
+		if ((size_t)snprintf(path, sizeof(path), "%s/%s", cache_dir, e->d_name) >= sizeof(path)) {
+			continue;
+		}
+		struct stat st;
+		if (stat(path, &st) != 0 || !S_ISREG(st.st_mode)) {
+			continue;
+		}
+		*total += (long)st.st_size;
+		char *dot = strrchr(path + strlen(cache_dir) + 1, '.');
+		if (dot) {
+			*dot = '\0';
+		}
+		if (keep && keep(path)) {
+			continue;
+		}
+		if (out && count < max && strlen(e->d_name) < sizeof(out[0].name)) {
+			snprintf(out[count].name, sizeof(out[count].name), "%s", e->d_name);
+			out[count].size = (long)st.st_size;
+			out[count].atime = (long)st.st_atime;
+			count++;
+		}
+	}
+	closedir(d);
+	return count;
+}
+
+// Drops the least recently listened to until `room` more bytes fit under the
+// ceiling. Borrowed memory, given straight back: this runs once per download.
+static void prune(long room) {
+	entry_t *entries = malloc(sizeof(*entries) * PRUNE_MAX_ENTRIES);
+	if (!entries) {
+		return;
+	}
+	long total;
+	int count = scan(entries, PRUNE_MAX_ENTRIES, &total, is_kept_stem);
+	for (int i = 0; i < count && total + room > YANDEXCACHE_MAX_BYTES; i++) {
+		int oldest = i;
+		for (int k = i + 1; k < count; k++) {
+			if (entries[k].atime < entries[oldest].atime) {
+				oldest = k;
+			}
+		}
+		entry_t tmp = entries[i];
+		entries[i] = entries[oldest];
+		entries[oldest] = tmp;
+		char path[640];
+		snprintf(path, sizeof(path), "%s/%s", cache_dir, entries[i].name);
+		if (remove(path) == 0) {
+			total -= entries[i].size;
+			printf("yandexcache: removed %s (%ld KB)\n", entries[i].name, entries[i].size / 1024);
+		}
+	}
+	free(entries);
+}
+
+static void clear_files(bool (*keep)(const char *stem)) {
+	if (!yandexcache_ready()) {
+		return;
+	}
+	entry_t *entries = malloc(sizeof(*entries) * PRUNE_MAX_ENTRIES);
+	if (!entries) {
+		return;
+	}
+	long total;
+	int count = scan(entries, PRUNE_MAX_ENTRIES, &total, keep);
+	int removed = 0;
+	for (int i = 0; i < count; i++) {
+		char path[640];
+		snprintf(path, sizeof(path), "%s/%s", cache_dir, entries[i].name);
+		removed += remove(path) == 0;
+	}
+	free(entries);
+	printf("yandexcache: cleared (%d files)\n", removed);
+}
+
+void yandexcache_note_played(const char *path) {
+	if (!yandexcache_ready() || !path || !path[0]) {
+		return;
+	}
+	pthread_mutex_lock(&keep_lock);
+	snprintf(recent_paths[recent_next], sizeof(recent_paths[0]), "%s", path);
+	recent_next = (recent_next + 1) % RECENT_MAX;
+	bool sweep = ++played_since_clear >= YANDEXCACHE_CLEAR_EVERY;
+	if (sweep) {
+		played_since_clear = 0;
+	}
+	pthread_mutex_unlock(&keep_lock);
+	if (sweep) {
+		printf("yandexcache: %d tracks since the last sweep, cleaning up\n", YANDEXCACHE_CLEAR_EVERY);
+		clear_files(is_kept_stem);
+	}
+}
+
+void yandexcache_clear_on_exit(void) {
+	if (!yandexcache_ready()) {
+		return;
+	}
+	printf("yandexcache: shutting down, clearing the cache\n");
+	yandexcache_abandon_all();
+	clear_files(NULL);
 }
 
 // ---------------------------------------------------------------------------

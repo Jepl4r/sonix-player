@@ -236,6 +236,7 @@ extern const lv_image_dsc_t icon_menu_qobuz;
 extern const lv_image_dsc_t icon_menu_radio;
 extern const lv_image_dsc_t icon_menu_podcast;
 extern const lv_image_dsc_t icon_menu_subsonic;
+extern const lv_image_dsc_t icon_menu_yandex;
 extern const lv_image_dsc_t icon_menu_audiobooks;
 extern const lv_image_dsc_t icon_menu_audiobook_library;
 extern const lv_image_dsc_t icon_menu_audiobook_series;
@@ -252,5 +253,6 @@ extern const lv_image_dsc_t icon_qobuz_badge;
 extern const lv_image_dsc_t icon_tidal_badge;
 extern const lv_image_dsc_t icon_podcast_badge;
 extern const lv_image_dsc_t icon_subsonic_badge;
+extern const lv_image_dsc_t icon_yandex_badge;
 
 #endif // ICONS_H

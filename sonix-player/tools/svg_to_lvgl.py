@@ -408,6 +408,7 @@ COLOR_ICONS = [
     ("radio.png", "menu_radio", SECTION_ICON_SIZE),
     ("podcast.png", "menu_podcast", SECTION_ICON_SIZE),
     ("subsonic.png", "menu_subsonic", SECTION_ICON_SIZE),
+    ("yandex.png", "menu_yandex", SECTION_ICON_SIZE),
     ("audiobooks.png", "menu_audiobooks", MAIN_MENU_ICON_SIZE),
     ("audiobook-library.png", "menu_audiobook_library", SECTION_ICON_SIZE),
     ("audiobook-series.png", "menu_audiobook_series", SECTION_ICON_SIZE),
@@ -430,6 +431,7 @@ COLOR_ICONS = [
     ("tidal-badge.png", "tidal_badge", 52),
     ("podcast-badge.png", "podcast_badge", 52),
     ("subsonic-badge.png", "subsonic_badge", 52),
+    ("yandex-badge.png", "yandex_badge", 52),
 ]
 
 

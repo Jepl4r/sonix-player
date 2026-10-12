@@ -59,4 +59,42 @@ void yandexcache_downloading_id(char *out, size_t size);
 // Gives up every download in flight (registered with streamturn as well).
 void yandexcache_abandon_all(void);
 
+// --- what the rest of the player asks (provider.h, through yandexsync.c) ---
+
+// The cache directory, NULL without a card.
+const char *yandexcache_dir(void);
+// A download is in progress right now.
+bool yandexcache_busy(void);
+// One of the cache's audio files (not a sidecar, not a half-written .part).
+bool yandexcache_is_track(const char *path);
+// The album the track came off, from its sidecar; false when it does not say.
+bool yandexcache_album_id(const char *path, char *out, size_t size);
+
+// "Yandex needs the network", with nothing downloading this instant: between
+// a track's end and the next one's first bytes sit the stop and a
+// get-file-info request, and the Wi-Fi parking (power.c) must not read that
+// gap as idle. Raised by the page as soon as it asks for a track, lowered by
+// its once-a-second watch. See qobuzcache_network_wanted() for the long story.
+void yandexcache_set_network_wanted(bool wanted);
+bool yandexcache_network_wanted(void);
+
+// --- keeping it in bounds: the Qobuz policy (qobuzcache.h) ---------------
+
+// The ceiling, the free space a new download makes sure of first, and how
+// many tracks between sweeps.
+#define YANDEXCACHE_MAX_BYTES (1024L * 1024L * 1024L)
+#define YANDEXCACHE_PRUNE_HEADROOM (96L * 1024 * 1024)
+#define YANDEXCACHE_CLEAR_EVERY 10
+#define YANDEXCACHE_PROTECTED_MAX 64
+
+// Every track fetched, with its path: counts towards the next sweep and is
+// spared by it for a while (the queue may not know about it yet).
+void yandexcache_note_played(const char *path);
+// The tracks the queue still expects: the current one and those after it. The
+// sweep and the ceiling skip them. GUI thread.
+void yandexcache_set_protected(const char *const *paths, int count);
+// Shutdown, restart, update, factory reset: the cache does not survive a power
+// cycle.
+void yandexcache_clear_on_exit(void);
+
 #endif /* YANDEXCACHE_H */

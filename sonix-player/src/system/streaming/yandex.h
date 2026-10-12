@@ -116,10 +116,21 @@ int yandex_artist_albums(const char *artist_id, yandex_album_t *out, int max);
 // filled on the way out.
 bool yandex_search(const char *text, yandex_artist_t *artists, int *n_artists, yandex_album_t *albums, int *n_albums, yandex_track_t *tracks, int *n_tracks);
 
-// Likes. `like` false removes it.
+// Likes. `like` false removes it. A like written updates the mirror below.
 bool yandex_like_track(const char *track_id, const char *album_id, bool like);
 bool yandex_dislike_track(const char *track_id, const char *album_id);
-bool yandex_is_liked(const char *track_id); // from the last yandex_liked_tracks()
+
+// The mirror of the liked ids the player's star reads: filled by
+// yandex_liked_tracks() or yandex_liked_refresh() (ids only, one request),
+// empty until then. The three below are cheap, never touch the network and
+// may be called from any thread, the GUI's included.
+#define YANDEX_LIKED_ID_MAX 16
+bool yandex_liked_refresh(void);
+bool yandex_liked_known(void);
+bool yandex_is_liked(const char *track_id);
+// Flips one id in the mirror without asking anyone: what a tap on the star
+// shows at once, put back by the caller if the write is refused.
+void yandex_liked_mark(const char *track_id, bool liked);
 
 // ---------------------------------------------------------------------------
 // My Wave (rotor). One session at a time.

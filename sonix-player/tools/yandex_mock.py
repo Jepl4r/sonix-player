@@ -25,6 +25,10 @@ get-file-info signature -- HMAC-SHA256 of ts + trackId + quality + codecs
 without commas + transports, base64 without '=' -- which it recomputes with
 the public sign key and refuses with 403 when it differs. Feedback events are
 printed, so a test can read what My Wave was told.
+
+YANDEX_MOCK_KBPS=N in the environment serves the audio at N KB/s, slow
+enough to watch a download in progress (the Wi-Fi keep-alive, the cache's
+"busy" state).
 """
 
 import base64
@@ -34,6 +38,7 @@ import json
 import os
 import sys
 import threading
+import time
 import urllib.parse
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -70,7 +75,7 @@ TRACKS = {
     "105": track(105, "AAC in MP4", "Mock Artist", 12, "Second Album", 30),
 }
 
-state = {"polls": 0, "batch": 0}
+state = {"polls": 0, "batch": 0, "liked": ["101", "102", "103", "104", "105"]}
 lock = threading.Lock()
 
 
@@ -112,7 +117,8 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/account/status":
             return self.send_json({"result": {"account": {"uid": UID, "login": "tester", "displayName": "Test User"}}})
         if p == f"/users/{UID}/likes/tracks":
-            ids = [{"id": t, "albumId": "11"} for t in ("101", "102", "103", "104", "105")]
+            with lock:
+                ids = [{"id": t, "albumId": "11"} for t in state["liked"]]
             return self.send_json({"result": {"library": {"uid": UID, "tracks": ids}}})
         if p == f"/users/{UID}/playlists/list":
             return self.send_json({"result": [{"kind": 3, "title": "Road Trip", "trackCount": 2, "owner": {"uid": UID}}]})
@@ -170,8 +176,13 @@ class Handler(BaseHTTPRequestHandler):
         if rng:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
+        kbps = int(os.environ.get("YANDEX_MOCK_KBPS", "0"))
+        chunk = kbps * 1024 // 10 if kbps > 0 else len(data) or 1
         try:
-            self.wfile.write(data)
+            for at in range(0, len(data), chunk):
+                self.wfile.write(data[at:at + chunk])
+                if kbps > 0:
+                    time.sleep(0.1)
         except (BrokenPipeError, ConnectionResetError):
             pass
 
@@ -218,6 +229,16 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"result": "ok"})
         if p.startswith(f"/users/{UID}/likes/tracks/") or p.startswith(f"/users/{UID}/dislikes/tracks/"):
             sys.stderr.write(f"mock: {p} {body}\n")
+            # The likes are remembered, so a reload shows what the player wrote.
+            ids = [i.split(":")[0] for i in body.get("track-ids", "").split(",") if i]
+            if "/likes/" in p:
+                with lock:
+                    for i in ids:
+                        if p.endswith("/remove") and i in state["liked"]:
+                            state["liked"].remove(i)
+                        elif p.endswith("/add-multiple") and i not in state["liked"]:
+                            state["liked"].insert(0, i)
+                    sys.stderr.write(f"mock: LIKED now {state['liked']}\n")
             return self.send_json({"result": {"revision": 2}})
         self.send_json({"error": "not found"}, 404)
 

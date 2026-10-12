@@ -21,9 +21,11 @@
 #include "src/system/decode/growfile.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/playback/playlist.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/streamturn.h"
 #include "src/system/streaming/yandex.h"
 #include "src/system/streaming/yandexcache.h"
+#include "src/system/streaming/yandexsync.h"
 
 // See yandexpage.h. Deliberately smaller than the Tidal page: no artwork in
 // the lists (the cover still arrives with each track, beside the file), no
@@ -59,7 +61,6 @@ typedef enum {
 	JOB_PLAY,
 	JOB_FETCH,
 	JOB_FEEDBACK,
-	JOB_LIKE,
 	JOB_DISLIKE,
 } job_kind_t;
 
@@ -108,13 +109,17 @@ static bool queue_is_wave;
 static pthread_mutex_t job_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t job_cond = PTHREAD_COND_INITIALIZER;
 static job_t pending;
-// Feedback and likes queue up instead: each one is an event the service
+// Feedback and dislikes queue up instead: each one is an event the service
 // should hear about, and a skip lost behind the next trackStarted would teach
 // My Wave the wrong thing.
 #define FEEDBACK_MAX 8
 static job_t feedback[FEEDBACK_MAX];
 static int feedback_count;
 static bool worker_started;
+// What the worker is doing right now (JOB_NONE when waiting), for the watch:
+// a track being asked for is a reason to keep Wi-Fi up, and a second fetch is
+// not queued over one already running. Under job_lock.
+static job_kind_t running_kind;
 
 static void job_done_async(void *user);
 static void fetch_done_async(void *user);
@@ -122,7 +127,7 @@ static void play_done_async(void *user);
 
 static void submit(const job_t *job) {
 	pthread_mutex_lock(&job_lock);
-	if (job->kind == JOB_FEEDBACK || job->kind == JOB_LIKE || job->kind == JOB_DISLIKE) {
+	if (job->kind == JOB_FEEDBACK || job->kind == JOB_DISLIKE) {
 		if (feedback_count < FEEDBACK_MAX) {
 			feedback[feedback_count++] = *job;
 		}
@@ -173,6 +178,8 @@ static bool fetch_queued(int index, char *path, size_t size) {
 		return false;
 	}
 	yandexcache_write_sidecars(t, path);
+	// Counts towards the next sweep and is spared by it until the queue knows.
+	yandexcache_note_played(path);
 	return true;
 }
 
@@ -250,6 +257,7 @@ static void *worker_main(void *arg) {
 	(void)arg;
 	for (;;) {
 		pthread_mutex_lock(&job_lock);
+		running_kind = JOB_NONE;
 		while (pending.kind == JOB_NONE && feedback_count == 0) {
 			pthread_cond_wait(&job_cond, &job_lock);
 		}
@@ -261,6 +269,7 @@ static void *worker_main(void *arg) {
 			job = pending;
 			pending.kind = JOB_NONE;
 		}
+		running_kind = job.kind;
 		pthread_mutex_unlock(&job_lock);
 
 		result_error[0] = '\0';
@@ -280,11 +289,6 @@ static void *worker_main(void *arg) {
 		case JOB_FEEDBACK:
 			yandex_wave_feedback((yandex_wave_event_t)job.n, job.a, job.b, job.secs);
 			continue;
-		case JOB_LIKE:
-			if (!yandex_like_track(job.a, job.b, job.n != 0)) {
-				snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
-			}
-			break;
 		case JOB_DISLIKE:
 			if (!yandex_dislike_track(job.a, job.b)) {
 				snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
@@ -372,17 +376,32 @@ static int queue_index_of(const char *path) {
 	return -1;
 }
 
+// True while the worker has a track to ask for, or is asking: pending, or
+// running. Under job_lock, which is held only for the read.
+static bool worker_fetching(void) {
+	pthread_mutex_lock(&job_lock);
+	job_kind_t kinds[2] = {pending.kind, running_kind};
+	pthread_mutex_unlock(&job_lock);
+	bool fetching = false;
+	for (int i = 0; i < 2; i++) {
+		fetching |= kinds[i] == JOB_PLAY || kinds[i] == JOB_FETCH || kinds[i] == JOB_WAVE_MORE;
+	}
+	return fetching;
+}
+
 // Asks for queue entry `index` ahead of playback, unless it is already on the
-// card or on its way: starting it again would abandon the download in flight.
+// card, or anything at all is coming down: the cache downloads one track at a
+// time and starting another abandons the one in flight -- which, right after a
+// track starts, is the very file being played. The watch below asks again
+// every second, so the next track follows as soon as this one is complete.
 static void fetch_ahead(int index) {
-	if (index < 0 || index >= queued_count) {
+	if (index < 0 || index >= queued_count || yandexcache_busy() || worker_fetching()) {
 		return;
 	}
-	char busy[YANDEX_ID_MAX];
-	yandexcache_downloading_id(busy, sizeof(busy));
-	if (strcmp(busy, queued[index].id) == 0 || yandexcache_find(queued[index].id, NULL, 0)) {
+	if (yandexcache_find(queued[index].id, NULL, 0)) {
 		return;
 	}
+	yandexcache_set_network_wanted(true);
 	run(JOB_FETCH, NULL, NULL, index);
 }
 
@@ -441,31 +460,23 @@ bool yandexpage_prepare_track(const char *path) {
 	if (index < 0) {
 		return true; // not ours to fetch: let the decoder say what it thinks
 	}
+	// The network is needed now, before the stop: see
+	// yandexcache_network_wanted().
+	yandexcache_set_network_wanted(true);
 	device_state_stop();
 	run(JOB_FETCH, NULL, NULL, index);
 	gui_notify_popup("downloading");
 	return false;
 }
 
-// My Wave bookkeeping, once a second: what started, what was skipped, and a
-// new batch when the queue runs low.
+// My Wave bookkeeping: what started, what was skipped, and a new batch when
+// the queue runs low. Called by the watch when the playing track changes.
 static char wave_current[YANDEX_ID_MAX], wave_current_album[YANDEX_ID_MAX];
 static time_t wave_started_at;
 static int wave_duration;
 static bool wave_asked_more;
 
-static void wave_watch_cb(lv_timer_t *timer) {
-	(void)timer;
-	if (!queue_is_wave) {
-		return;
-	}
-	device_state_t state;
-	device_state_get(&state);
-	char id[YANDEX_ID_MAX];
-	yandexcache_track_id(state.current_file, id, sizeof(id));
-	if (!id[0] || strcmp(id, wave_current) == 0) {
-		return;
-	}
+static void wave_track_changed(const char *id, int index) {
 	if (wave_current[0]) {
 		int played = (int)(time(NULL) - wave_started_at);
 		bool finished = wave_duration > 0 && played >= wave_duration - 5;
@@ -476,16 +487,60 @@ static void wave_watch_cb(lv_timer_t *timer) {
 		submit(&job);
 	}
 	snprintf(wave_current, sizeof(wave_current), "%s", id);
-	int index = queue_index_of(state.current_file);
 	snprintf(wave_current_album, sizeof(wave_current_album), "%s", index >= 0 ? queued[index].album_id : "");
 	wave_duration = index >= 0 ? queued[index].duration : 0;
 	wave_started_at = time(NULL);
 	run(JOB_FEEDBACK, id, wave_current_album, YANDEX_WAVE_TRACK_STARTED);
 	if (index >= 0 && index + 2 >= queued_count && !wave_asked_more) {
 		wave_asked_more = true;
+		yandexcache_set_network_wanted(true);
 		run(JOB_WAVE_MORE, id, NULL, 0);
-	} else if (index >= 0) {
+	}
+}
+
+// The queue watch, once a second on the GUI thread, the Qobuz page's in small:
+//   * protects the queued files -- the one playing and those after it -- from
+//     the cache's sweep and ceiling;
+//   * asks for the next track once nothing else is coming down;
+//   * works out whether Yandex still needs the network, which is the only
+//     place that lowers the flag (those that raise it do so at once);
+//   * and tells My Wave what happened.
+// Nothing of ours ever queued: one comparison and out.
+static void queue_watch_cb(lv_timer_t *timer) {
+	(void)timer;
+	if (queued_count == 0) {
+		return;
+	}
+	bool library_queue = playlist_is_library_backed();
+	int count = playlist_count();
+	int current = playlist_current_index();
+
+	static char keep[YANDEXCACHE_PROTECTED_MAX][512];
+	static const char *keep_ptr[YANDEXCACHE_PROTECTED_MAX];
+	int protect = 0;
+	for (int i = current; !library_queue && i >= 0 && i < count && protect < YANDEXCACHE_PROTECTED_MAX; i++) {
+		if (playlist_path_at(i, keep[protect], sizeof(keep[0])) && yandexcache_owns(keep[protect])) {
+			keep_ptr[protect] = keep[protect];
+			protect++;
+		}
+	}
+	yandexcache_set_protected(keep_ptr, protect);
+
+	device_state_t state;
+	device_state_get(&state);
+	int index = queue_index_of(state.current_file);
+	if (index >= 0 && !library_queue) {
 		fetch_ahead(index + 1);
+	}
+	yandexcache_set_network_wanted(yandexcache_busy() || worker_fetching());
+
+	if (!queue_is_wave) {
+		return;
+	}
+	char id[YANDEX_ID_MAX];
+	yandexcache_track_id(state.current_file, id, sizeof(id));
+	if (id[0] && strcmp(id, wave_current) != 0) {
+		wave_track_changed(id, index);
 	}
 }
 
@@ -612,6 +667,7 @@ static void play_rows(int tapped) {
 	wave_current[0] = '\0';
 	wave_asked_more = false;
 	lv_obj_set_hidden(list_spin, false);
+	yandexcache_set_network_wanted(true);
 	run(JOB_PLAY, NULL, NULL, start);
 }
 
@@ -637,7 +693,23 @@ static void row_clicked_cb(lv_event_t *e) {
 	}
 }
 
-// Like and dislike act on what is playing now, from My Wave.
+static void like_failed_async(void *user) {
+	char *why = user;
+	toast_error(why && why[0] ? why : tr("yandex_like_failed"));
+	free(why);
+}
+
+// The worker's answer to a like from the bar below; a refusal is said out
+// loud (the star on Now Playing has already been put back by yandexsync).
+static void like_done(bool ok, const char *error, void *user) {
+	(void)user;
+	if (!ok) {
+		gui_post(like_failed_async, strdup(error ? error : ""));
+	}
+}
+
+// Like and dislike act on what is playing now, from My Wave. The like goes
+// the way the player's star goes (yandexsync.c), so the two always agree.
 static void wave_rate_cb(lv_event_t *e) {
 	bool like = lv_event_get_user_data(e) != NULL;
 	device_state_t state;
@@ -646,7 +718,11 @@ static void wave_rate_cb(lv_event_t *e) {
 	if (index < 0) {
 		return;
 	}
-	run(like ? JOB_LIKE : JOB_DISLIKE, queued[index].id, queued[index].album_id, 1);
+	if (like) {
+		yandexsync_like(queued[index].id, queued[index].album_id, true, like_done, NULL);
+	} else {
+		run(JOB_DISLIKE, queued[index].id, queued[index].album_id, 1);
+	}
 	toast_success(tr(like ? "yandex_liked_it" : "yandex_disliked_it"));
 	if (!like) {
 		char next[512];
@@ -859,7 +935,7 @@ static void job_done_async(void *user) {
 		login_result();
 		return;
 	}
-	if (result_kind == JOB_LIKE || result_kind == JOB_DISLIKE) {
+	if (result_kind == JOB_DISLIKE) {
 		if (result_error[0]) {
 			toast_error(result_error);
 		}
@@ -939,9 +1015,23 @@ static lv_obj_t *column(lv_obj_t *parent, gui_config_t *cfg, int top) {
 
 bool yandexpage_available(void) { return yandex_configured(); }
 
+bool yandexpage_open_album(const char *album_id, const char *title) {
+	if (!album_id || !album_id[0] || !yandex_logged_in()) {
+		return false;
+	}
+	open_list(title && title[0] ? title : tr("yandex"), JOB_ALBUM, album_id, NULL);
+	return true;
+}
+
+static void *provider_open_album(const char *album_id, const char *title) { return yandexpage_open_album(album_id, title) ? list_screen : NULL; }
+
 void yandexpage_init(gui_config_t *cfg) {
-	yandex_init();
-	yandexcache_set_root(cfg->sd_root_path);
+	// yandex.c is started from main() with the other services, and the cache
+	// follows the card through the registry (stream_provider_set_root_all):
+	// here only the parts that need the GUI -- the mark over the artwork and
+	// "Show album" (provider.h).
+	const stream_provider_gui_t provider_gui = {.badge = &icon_yandex_badge, .open_album = provider_open_album};
+	stream_provider_attach_gui("yandex", &provider_gui);
 
 	yandex_screen = lv_obj_create(NULL);
 	lv_obj_add_style(yandex_screen, &theme_style_screen, 0);
@@ -970,5 +1060,5 @@ void yandexpage_init(gui_config_t *cfg) {
 	build_search_page(cfg);
 
 	device_state_add_prepare_cb(yandexpage_prepare_track);
-	lv_timer_create(wave_watch_cb, 1000, NULL);
+	lv_timer_create(queue_watch_cb, 1000, NULL);
 }

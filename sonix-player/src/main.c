@@ -43,6 +43,7 @@
 #include "src/system/streaming/qobuz.h"
 #include "src/system/streaming/tidal.h"
 #include "src/system/streaming/subsonic.h"
+#include "src/system/streaming/yandex.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/gearboy/gbdb.h"
 #include "src/system/gearboy/gearboy.h"
@@ -2155,6 +2156,7 @@ int main(int argc, char **argv) {
 	qobuz_init();
 	tidal_init();
 	subsonic_init();
+	yandex_init();
 	lastfm_init();
 
 	lv_init();

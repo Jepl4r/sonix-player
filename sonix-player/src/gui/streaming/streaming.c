@@ -28,7 +28,7 @@ void streaming_init(gui_config_t *cfg) {
 		{"podcasts", &icon_menu_podcast, &podcast_screen, NULL},
 		// The user's own server: Navidrome, Gonic, Airsonic...
 		{"subsonic", &icon_menu_subsonic, &subsonic_screen, NULL},
-		{"yandex", &icon_menu_music, &yandex_screen, NULL}, // last: dropped without keys
+		{"yandex", &icon_menu_yandex, &yandex_screen, NULL}, // last: dropped without keys
 	};
 	int count = (int)(sizeof(entries) / sizeof(entries[0])) - (yandexpage_available() ? 0 : 1);
 

@@ -15,6 +15,7 @@
 #include "src/system/core/sha256.h"
 #include "src/system/net/http.h"
 #include "src/system/streaming/streamkeys.h"
+#include "src/system/streaming/yandexsync.h"
 
 // See yandex.h for what this is and the thread contract.
 
@@ -51,10 +52,16 @@ static __thread char last_error[256];
 static char wave_session[96];
 static char wave_batch[96];
 
-// The ids of the liked tracks as of the last listing, for the star.
+// The ids of the liked tracks, for the player's star. Filled by the liked
+// list or yandex_liked_refresh(), kept current by every like written. Read
+// from the GUI thread on every redraw of the star while the workers write it,
+// hence the lock; allocated on first fill, so a player never signed in spends
+// nothing on it.
 #define LIKED_MAX 2000
-static char (*liked_ids)[16];
+static pthread_mutex_t liked_lock = PTHREAD_MUTEX_INITIALIZER;
+static char (*liked_ids)[YANDEX_LIKED_ID_MAX];
 static int liked_count;
+static bool liked_loaded;
 
 static void set_error(const char *fmt, ...) {
 	va_list ap;
@@ -147,6 +154,10 @@ void yandex_init(void) {
 	pthread_mutex_lock(&session_lock);
 	load_session();
 	pthread_mutex_unlock(&session_lock);
+	// The cache is the service's as soon as there is a card, keys or not,
+	// signed in or not: the exit paths and the card watcher must find what an
+	// earlier session left there.
+	yandexsync_register_provider();
 	printf("yandex: %s, %s\n", yandex_configured() ? "keys present" : "no keys (tile hidden)", yandex_logged_in() ? "saved session" : "no session");
 }
 
@@ -161,9 +172,12 @@ void yandex_logout(void) {
 	wave_session[0] = wave_batch[0] = '\0';
 	save_session();
 	pthread_mutex_unlock(&session_lock);
+	pthread_mutex_lock(&liked_lock);
 	free(liked_ids);
 	liked_ids = NULL;
 	liked_count = 0;
+	liked_loaded = false;
+	pthread_mutex_unlock(&liked_lock);
 }
 
 // ---------------------------------------------------------------------------
@@ -612,7 +626,7 @@ static int tracks_from_array(const json_doc_t *doc, int arr, yandex_track_t *out
 // ---------------------------------------------------------------------------
 
 // POST /tracks, in batches of 100, for lists that arrive as bare ids.
-static int tracks_by_id(char (*ids)[16], int count, yandex_track_t *out, int max) {
+static int tracks_by_id(char (*ids)[YANDEX_LIKED_ID_MAX], int count, yandex_track_t *out, int max) {
 	int got = 0;
 	for (int from = 0; from < count && got < max; from += 100) {
 		char *form = malloc(32 + 17 * 100);
@@ -638,7 +652,10 @@ static int tracks_by_id(char (*ids)[16], int count, yandex_track_t *out, int max
 	return got;
 }
 
-int yandex_liked_tracks(yandex_track_t *out, int max) {
+// GET likes/tracks: the bare ids, newest first, into a fresh buffer the
+// caller frees. -1 on error. The mirror takes a copy.
+static int fetch_liked_ids(char (**out)[YANDEX_LIKED_ID_MAX]) {
+	*out = NULL;
 	char url[400];
 	snprintf(url, sizeof(url), "%s/users/%s/likes/tracks", api_url, user_uid);
 	char *body;
@@ -651,27 +668,101 @@ int yandex_liked_tracks(yandex_track_t *out, int max) {
 	if (n > LIKED_MAX) {
 		n = LIKED_MAX;
 	}
-	if (!liked_ids) {
-		liked_ids = malloc(LIKED_MAX * sizeof(*liked_ids));
+	char(*ids)[YANDEX_LIKED_ID_MAX] = malloc((size_t)(n > 0 ? n : 1) * sizeof(*ids));
+	if (!ids) {
+		api_done(body, &doc);
+		set_error("%s", tr("out_of_memory"));
+		return -1;
 	}
-	liked_count = 0;
-	for (int i = 0; liked_ids && i < n; i++) {
-		id_of(&doc, json_at(&doc, arr, i), "id", liked_ids[liked_count], sizeof(liked_ids[0]));
-		if (liked_ids[liked_count][0]) {
-			liked_count++;
+	int count = 0;
+	for (int i = 0; i < n; i++) {
+		id_of(&doc, json_at(&doc, arr, i), "id", ids[count], sizeof(ids[0]));
+		if (ids[count][0]) {
+			count++;
 		}
 	}
 	api_done(body, &doc);
-	return liked_ids ? tracks_by_id(liked_ids, liked_count < max ? liked_count : max, out, max) : -1;
+
+	pthread_mutex_lock(&liked_lock);
+	if (!liked_ids) {
+		liked_ids = malloc(LIKED_MAX * sizeof(*liked_ids));
+	}
+	if (liked_ids) {
+		memcpy(liked_ids, ids, (size_t)count * sizeof(*ids));
+		liked_count = count;
+		liked_loaded = true;
+	}
+	pthread_mutex_unlock(&liked_lock);
+	*out = ids;
+	return count;
+}
+
+int yandex_liked_tracks(yandex_track_t *out, int max) {
+	char(*ids)[YANDEX_LIKED_ID_MAX];
+	int count = fetch_liked_ids(&ids);
+	if (count < 0) {
+		return -1;
+	}
+	int got = tracks_by_id(ids, count < max ? count : max, out, max);
+	free(ids);
+	return got;
+}
+
+bool yandex_liked_refresh(void) {
+	char(*ids)[YANDEX_LIKED_ID_MAX];
+	int count = fetch_liked_ids(&ids);
+	free(ids);
+	return count >= 0;
+}
+
+bool yandex_liked_known(void) {
+	pthread_mutex_lock(&liked_lock);
+	bool known = liked_loaded;
+	pthread_mutex_unlock(&liked_lock);
+	return known;
+}
+
+// Call with liked_lock held.
+static int liked_index_locked(const char *track_id) {
+	for (int i = 0; liked_ids && i < liked_count; i++) {
+		if (strcmp(liked_ids[i], track_id) == 0) {
+			return i;
+		}
+	}
+	return -1;
 }
 
 bool yandex_is_liked(const char *track_id) {
-	for (int i = 0; liked_ids && i < liked_count; i++) {
-		if (strcmp(liked_ids[i], track_id) == 0) {
-			return true;
-		}
+	if (!track_id || !track_id[0]) {
+		return false;
 	}
-	return false;
+	pthread_mutex_lock(&liked_lock);
+	bool found = liked_index_locked(track_id) >= 0;
+	pthread_mutex_unlock(&liked_lock);
+	return found;
+}
+
+void yandex_liked_mark(const char *track_id, bool liked) {
+	if (!track_id || !track_id[0]) {
+		return;
+	}
+	pthread_mutex_lock(&liked_lock);
+	int i = liked_index_locked(track_id);
+	if (liked && i < 0) {
+		if (!liked_ids) {
+			liked_ids = malloc(LIKED_MAX * sizeof(*liked_ids));
+		}
+		if (liked_ids && liked_count < LIKED_MAX) {
+			// Newest first, like the account's own list.
+			memmove(liked_ids[1], liked_ids[0], (size_t)liked_count * sizeof(liked_ids[0]));
+			snprintf(liked_ids[0], sizeof(liked_ids[0]), "%s", track_id);
+			liked_count++;
+		}
+	} else if (!liked && i >= 0) {
+		memmove(liked_ids[i], liked_ids[i + 1], (size_t)(liked_count - i - 1) * sizeof(liked_ids[0]));
+		liked_count--;
+	}
+	pthread_mutex_unlock(&liked_lock);
 }
 
 int yandex_playlists(yandex_playlist_t *out, int max) {
@@ -805,18 +896,8 @@ static bool likes_write(const char *what, const char *action, const char *track_
 
 bool yandex_like_track(const char *track_id, const char *album_id, bool like) {
 	bool ok = likes_write("likes", like ? "add-multiple" : "remove", track_id, album_id);
-	if (ok && liked_ids) {
-		if (like && !yandex_is_liked(track_id) && liked_count < LIKED_MAX) {
-			snprintf(liked_ids[liked_count++], sizeof(liked_ids[0]), "%s", track_id);
-		} else if (!like) {
-			for (int i = 0; i < liked_count; i++) {
-				if (strcmp(liked_ids[i], track_id) == 0) {
-					memmove(liked_ids[i], liked_ids[i + 1], (size_t)(liked_count - i - 1) * sizeof(liked_ids[0]));
-					liked_count--;
-					break;
-				}
-			}
-		}
+	if (ok) {
+		yandex_liked_mark(track_id, like);
 	}
 	if (ok && wave_session[0]) {
 		yandex_wave_feedback(like ? YANDEX_WAVE_LIKE : YANDEX_WAVE_SKIP, track_id, album_id, 0);
