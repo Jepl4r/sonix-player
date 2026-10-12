@@ -28,6 +28,10 @@
 // label's own layer, which is what lets it work over the player's blurred
 // artwork as well as over a flat card.
 //
+// The text moves in steps of two pixels, under thirty times a second, rather
+// than by a pixel on every one of LVGL's sixty frames: the same speed, half the
+// redraws. See SCROLL_STEP_PX.
+//
 // Used by every place a track name is shown in a box it may outgrow: the
 // player, the control centre and the screensaver.
 void scrolltext_apply(lv_obj_t *label);

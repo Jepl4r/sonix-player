@@ -31,6 +31,22 @@
 
 #define SCROLL_DELAY_MS 2500
 
+// How often the text actually moves: in steps of SCROLL_STEP_PX, and never
+// more often than every SCROLL_STEP_MIN_MS.
+//
+// LVGL drives the scroll from its animation timer, which runs at the refresh
+// period (LV_DEF_REFR_PERIOD, 16 ms), so on its own a title at 55 px/s moves
+// by a pixel or so sixty times a second -- and every one of those moves is a
+// redraw of the label over the artwork, through the fade's layer (see below),
+// on the one core that is also decoding the music. At reading pace nobody can
+// tell sixty steps of one pixel from twenty-seven of two; the core can. The
+// position is still computed from the elapsed time, so the speed and the
+// pauses are exactly what they were: only the value handed to the label is
+// held between steps, and lv_anim does not call the label (nor invalidate it)
+// while the value it would be given is unchanged.
+#define SCROLL_STEP_PX 2
+#define SCROLL_STEP_MIN_MS 33
+
 // LVGL scrolls the text width plus this many spaces, so there is a visible gap
 // between the end of one pass and the start of the next
 // (LV_LABEL_WAIT_CHAR_COUNT in lv_conf_internal.h, which is not a public
@@ -192,7 +208,8 @@ static const fade_masks_t *fade_masks(int32_t w, int32_t h) {
 // The labels a mask has been worked out for, and which pair it is.
 typedef struct {
 	lv_obj_t *label;
-	const fade_masks_t *masks; // NULL while the text fits
+	const fade_masks_t *masks; // NULL while the text fits, or no mask could be had
+	bool overflows;			   // the text does not fit: it scrolls, so it is paced
 } fade_label_t;
 
 static fade_label_t fade_labels[FADE_LABELS_MAX];
@@ -210,6 +227,7 @@ static fade_label_t *fade_entry(lv_obj_t *label) {
 	}
 	fade_labels[fade_label_count].label = label;
 	fade_labels[fade_label_count].masks = NULL;
+	fade_labels[fade_label_count].overflows = false;
 	return &fade_labels[fade_label_count++];
 }
 
@@ -222,8 +240,46 @@ static bool text_is_moving(lv_obj_t *label) {
 	return anim && anim->act_time > 0;
 }
 
+// The scroll's path: LVGL's linear one, sampled only at whole steps. See
+// SCROLL_STEP_PX. The step is worked out from the animation itself, since the
+// duration is clamped (SCROLL_MIN_MS, SCROLL_MAX_MS) and the speed is not
+// always the nominal one; the last frame of a pass is never held back, so a pass
+// ends exactly where LVGL means it to.
+static int32_t stepped_path(const lv_anim_t *a) {
+	int32_t distance = a->end_value - a->start_value;
+	if (distance < 0) {
+		distance = -distance;
+	}
+	if (a->act_time <= 0 || a->act_time >= (int32_t)a->duration || distance == 0) {
+		return lv_anim_path_linear(a);
+	}
+	int32_t step_ms = (int32_t)(((int64_t)a->duration * SCROLL_STEP_PX) / distance);
+	if (step_ms < SCROLL_STEP_MIN_MS) {
+		step_ms = SCROLL_STEP_MIN_MS;
+	}
+	lv_anim_t held = *a;
+	held.act_time = (a->act_time / step_ms) * step_ms;
+	return lv_anim_path_linear(&held);
+}
+
+// Puts the stepped path on the label's scroll. LVGL builds that animation
+// afresh whenever the text, the size or the font changes, with the default
+// path and no way to say otherwise in the template (the label copies only the
+// timings from it), so this is looked at again from the poll and at every
+// change. It is a single pointer compare when nothing has changed.
+static void scroll_pace(lv_obj_t *label) {
+	lv_anim_t *anim = lv_anim_get(label, NULL);
+	if (anim && anim->path_cb != stepped_path) {
+		lv_anim_set_path_cb(anim, stepped_path);
+	}
+}
+
 // Puts the right mask of the pair on the label, or none at all.
 static void fade_pick(fade_label_t *entry) {
+	if (entry->overflows) {
+		scroll_pace(entry->label);
+	}
+
 	const lv_image_dsc_t *want = NULL;
 	if (entry->masks) {
 		want = text_is_moving(entry->label) ? &entry->masks->both : &entry->masks->tail;
@@ -241,7 +297,7 @@ static void fade_poll_cb(lv_timer_t *timer) {
 	(void)timer;
 	bool any = false;
 	for (int i = 0; i < fade_label_count; i++) {
-		if (!fade_labels[i].masks) {
+		if (!fade_labels[i].overflows) {
 			continue;
 		}
 		any = true;
@@ -263,17 +319,21 @@ static void fade_update(lv_obj_t *label) {
 	int32_t w = lv_obj_get_width(label);
 	int32_t h = lv_obj_get_height(label);
 	entry->masks = NULL;
+	entry->overflows = w > 0 && text_width(label, lv_label_get_text(label)) > lv_obj_get_content_width(label);
 
-	if (w > 0 && text_width(label, lv_label_get_text(label)) > lv_obj_get_content_width(label)) {
+	if (entry->overflows) {
 		entry->masks = fade_masks(w, h);
 	}
 
 	fade_pick(entry);
 
 	// The one timer that decides, for every scrolling label, whether its left
-	// end is a cut or the start of the title. Made when the first overflowing
-	// label turns up, and paused again by the poll once none is left.
-	if (entry->masks) {
+	// end is a cut or the start of the title, and keeps its scroll on the
+	// stepped path. Made when the first overflowing label turns up, and paused
+	// again by the poll once none is left. The first pass always starts after
+	// SCROLL_DELAY_MS, so the poll has long since paced an animation LVGL built
+	// later than this call (a label refreshes its text lazily) before it moves.
+	if (entry->overflows) {
 		if (!fade_timer) {
 			fade_timer = lv_timer_create(fade_poll_cb, FADE_POLL_MS, NULL);
 		} else {
