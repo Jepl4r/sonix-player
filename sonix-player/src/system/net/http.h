@@ -141,6 +141,13 @@ typedef struct {
 	// for a radio station, and almost never for a downloaded file.
 	long content_length;
 
+	// Where in the resource the body starts: the `from` of a ranged open the
+	// server honoured with a 206, 0 otherwise. And the whole resource's size
+	// when known -- from Content-Range on a 206, from Content-Length on a
+	// 200 -- or 0. For an ordinary open the two are 0 and content_length.
+	long range_start;
+	long total_length;
+
 	// Body bytes already read while parsing the headers. The first read has
 	// to hand these back before touching the socket again.
 	//
@@ -169,6 +176,29 @@ typedef struct {
 // https://, the host does not resolve, the connection or the TLS handshake
 // fails, or the status is not 200.
 bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs);
+
+// The same, asking for the resource from byte `from` on (Range: bytes=from-),
+// for resuming a download. A 206 is accepted only when its Content-Range starts
+// at `from`; a 200 is accepted too -- a server need not do ranges -- and then
+// the body starts at 0, which range_start says. No ICY metadata is requested:
+// this is for files, not radios. `from` 0 is an ordinary open.
+bool http_stream_open_range(http_stream_t *st, const char *url, long from, int timeout_secs);
+
+// Reads and discards `count` bytes, advancing range_start by as many. For a
+// resume the server answered with the whole body (a 200 to a Range): the bytes
+// already on disk are read past rather than written again, because the file is
+// being decoded while it grows and rewriting its beginning under the decoder,
+// or truncating it, is exactly what must not happen. Interruptible by
+// http_stream_wake() like any read. False when the stream ends first.
+bool http_stream_skip(http_stream_t *st, long count);
+
+// Resumes a download that holds `have` bytes: a ranged open, and when the
+// server answers with the whole body instead, the first `have` bytes are read
+// and thrown away, so that either way the next read returns byte `have` and
+// range_start is `have`. That keeps a file being decoded while it grows
+// intact: nothing already written is touched. False when the open fails or the
+// stream ends before `have`; the stream is closed then.
+bool http_stream_resume(http_stream_t *st, const char *url, long have, int timeout_secs);
 
 // Reads up to `len` bytes of *audio* into buf: any ICY metadata blocks in the
 // way are consumed and parsed out, never handed to the caller. Returns the

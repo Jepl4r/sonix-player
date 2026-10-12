@@ -2,6 +2,8 @@
 
 #include <pthread.h>
 #include <stdbool.h>
+#include <stdio.h>
+#include <unistd.h>
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
@@ -79,4 +81,73 @@ void streamturn_wait_idle(void) {
 		pthread_cond_wait(&changed, &lock);
 	}
 	pthread_mutex_unlock(&lock);
+}
+
+// ---------------------------------------------------------------------------
+// resuming
+// ---------------------------------------------------------------------------
+
+static void set_active(const streamturn_resume_t *r, http_stream_t *value) {
+	pthread_mutex_lock(r->active_lock);
+	if (value || *r->active_stream == r->stream) {
+		*r->active_stream = value;
+	}
+	pthread_mutex_unlock(r->active_lock);
+}
+
+bool streamturn_resume(const streamturn_resume_t *r, int *attempts) {
+	// Out of view first, closed second: the other order is a wake on a
+	// descriptor number that may already belong to someone else.
+	set_active(r, NULL);
+	http_stream_close(r->stream);
+
+	if (!r->url || !r->url[0]) {
+		return false;
+	}
+
+	while (*attempts < STREAM_RESUME_ATTEMPTS) {
+		// The pause, a tenth of a second at a time: an abandon must not have
+		// to wait it out while this download holds the turn.
+		int tenths = 10 << *attempts;
+		(*attempts)++;
+		for (int i = 0; i < tenths; i++) {
+			if (r->generation() != r->started_generation) {
+				return false;
+			}
+			usleep(100 * 1000);
+		}
+
+		fprintf(stderr, "%s: connection lost at %ld bytes, resuming (attempt %d)\n", r->who, r->have, *attempts);
+		if (!http_stream_open_range(r->stream, r->url, r->have, r->timeout_secs)) {
+			continue;
+		}
+
+		// Another size is another file -- a re-encode, a podcast host
+		// stitching in different adverts -- and splicing it onto what is
+		// already there would be noise. Better to give up as before.
+		if (r->total > 0 && r->stream->total_length > 0 && r->stream->total_length != r->total) {
+			fprintf(stderr, "%s: the server now has %ld bytes instead of %ld, not resuming\n", r->who, r->stream->total_length, r->total);
+			http_stream_close(r->stream);
+			return false;
+		}
+
+		set_active(r, r->stream);
+		if (r->generation() != r->started_generation) {
+			set_active(r, NULL);
+			http_stream_close(r->stream);
+			return false;
+		}
+
+		if (r->stream->range_start != r->have) {
+			fprintf(stderr, "%s: no ranges from this server, reading past %ld bytes\n", r->who, r->have);
+			if (!http_stream_skip(r->stream, r->have - r->stream->range_start)) {
+				set_active(r, NULL);
+				http_stream_close(r->stream);
+				continue;
+			}
+		}
+		return true;
+	}
+	fprintf(stderr, "%s: giving up after %d attempts\n", r->who, *attempts);
+	return false;
 }

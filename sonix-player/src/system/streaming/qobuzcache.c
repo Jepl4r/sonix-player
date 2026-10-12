@@ -538,6 +538,12 @@ typedef struct {
 	long done;
 	long total;
 	unsigned generation;
+
+	// Where it came from, for picking it up after a dropped connection
+	// (streamturn_resume); empty when the URL was too long to keep.
+	char url[2600];
+	int resumes;
+	long resumed_at;
 } download_t;
 
 // Changing track bumps this counter; threads downloading something else notice
@@ -680,6 +686,31 @@ static void download_end(download_t *d, bool ok) {
 	free(d);
 }
 
+// The connection dropped mid-download: pick it up where it stopped, in the
+// same file. See streamturn_resume() for the care taken with the stream an
+// abandon may be waking at the same moment.
+static bool download_resume(download_t *d) {
+	char who[64];
+	snprintf(who, sizeof(who), "qobuzcache: %ld", d->track_id);
+	streamturn_resume_t r = {
+		.stream = &d->stream,
+		.active_lock = &active_lock,
+		.active_stream = &active_stream,
+		.generation = current_generation,
+		.started_generation = d->generation,
+		.url = d->url,
+		.have = d->done,
+		.total = d->total,
+		.timeout_secs = FETCH_TIMEOUT_SECS,
+		.who = who,
+	};
+	if (!streamturn_resume(&r, &d->resumes)) {
+		return false;
+	}
+	d->resumed_at = d->done;
+	return true;
+}
+
 // Writes until `until` bytes are on disk (or, with until == 0, to the end of
 // the stream). Returns false when it went wrong.
 static bool download_pump(download_t *d, long until, bool *finished) {
@@ -692,7 +723,12 @@ static bool download_pump(download_t *d, long until, bool *finished) {
 		}
 
 		int n = http_stream_read(&d->stream, buf, (int)sizeof(buf));
-		if (n < 0) {
+		// An error, or an end before the promised length: the connection
+		// dropped. Reconnect for the rest rather than lose what is here.
+		if (n < 0 || (n == 0 && d->total > 0 && d->done < d->total)) {
+			if (download_resume(d)) {
+				continue;
+			}
 			return false;
 		}
 		if (n == 0) {
@@ -709,6 +745,9 @@ static bool download_pump(download_t *d, long until, bool *finished) {
 		fflush(d->f);
 		d->done += n;
 		growfile_progress(d->path, d->done);
+		if (d->resumes && d->done - d->resumed_at >= STREAM_RESUME_GOOD_BYTES) {
+			d->resumes = 0;
+		}
 
 		if (until == 0 && *finished) {
 			break;
@@ -764,6 +803,9 @@ bool qobuzcache_start(long track_id, const char *url, const char *mime, int dura
 		return false;
 	}
 	d->track_id = track_id;
+	if (url && strlen(url) < sizeof(d->url)) {
+		snprintf(d->url, sizeof(d->url), "%s", url);
+	}
 	qobuzcache_path(track_id, mime, d->path, sizeof(d->path));
 	marker_path(d->path, d->marker, sizeof(d->marker));
 
