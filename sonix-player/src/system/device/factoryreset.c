@@ -172,7 +172,7 @@ void factoryreset_run(void) {
 	// Streaming caches (tracks and covers) go before the card is unmounted:
 	// after unmount_card() those files are unreachable, and a factory reset
 	// must not leave streamed tracks behind.
-	stream_provider_clear_on_exit_all();
+	stream_provider_wipe_all();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
 

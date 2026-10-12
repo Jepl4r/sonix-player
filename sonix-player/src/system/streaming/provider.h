@@ -85,8 +85,12 @@ typedef struct stream_provider {
 	// (between a track's end and the next one's first bytes). NULL = never.
 	bool (*network_wanted)(void);
 
-	// The cache does not survive a power cycle: every exit path calls this.
+	// Shutdown, restart, firmware update: what of the cache must not survive a
+	// power cycle goes. NULL when the cache is meant to persist.
 	void (*clear_on_exit)(void);
+
+	// Factory reset: everything goes, persistent or not. NULL = clear_on_exit.
+	void (*wipe)(void);
 
 	// --- the account ------------------------------------------------------
 
@@ -163,5 +167,6 @@ bool stream_provider_any_network_wanted(void);
 
 void stream_provider_set_root_all(const char *sd_root);
 void stream_provider_clear_on_exit_all(void);
+void stream_provider_wipe_all(void);
 
 #endif /* STREAM_PROVIDER_H */

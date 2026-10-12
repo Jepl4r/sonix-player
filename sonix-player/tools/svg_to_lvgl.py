@@ -407,6 +407,7 @@ COLOR_ICONS = [
     ("qobuz.png", "menu_qobuz", SECTION_ICON_SIZE),
     ("radio.png", "menu_radio", SECTION_ICON_SIZE),
     ("podcast.png", "menu_podcast", SECTION_ICON_SIZE),
+    ("subsonic.png", "menu_subsonic", SECTION_ICON_SIZE),
     ("audiobooks.png", "menu_audiobooks", MAIN_MENU_ICON_SIZE),
     ("audiobook-library.png", "menu_audiobook_library", SECTION_ICON_SIZE),
     ("audiobook-series.png", "menu_audiobook_series", SECTION_ICON_SIZE),
@@ -424,10 +425,11 @@ COLOR_ICONS = [
     # The service badges in the player's top right corner, where the radio puts
     # its LIVE mark. They sit over the cover art, so these are the outlined
     # versions rather than the menu ones, which would vanish on a dark cover.
-    # One size for all three: they replace each other in the same place.
+    # One size for all of them: they replace each other in the same place.
     ("qobuz-badge.png", "qobuz_badge", 52),
     ("tidal-badge.png", "tidal_badge", 52),
     ("podcast-badge.png", "podcast_badge", 52),
+    ("subsonic-badge.png", "subsonic_badge", 52),
 ]
 
 

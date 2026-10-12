@@ -95,3 +95,12 @@ void stream_provider_clear_on_exit_all(void) {
 		}
 	}
 }
+
+void stream_provider_wipe_all(void) {
+	for (int i = 0; i < provider_count; i++) {
+		void (*wipe)(void) = providers[i]->wipe ? providers[i]->wipe : providers[i]->clear_on_exit;
+		if (wipe) {
+			wipe();
+		}
+	}
+}
