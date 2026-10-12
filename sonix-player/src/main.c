@@ -1329,7 +1329,7 @@ static struct fb_var_screeninfo fb_var;
 // rendering moves off the framebuffer: LVGL draws into ONE full-screen RAM
 // page, and what it draws is copied into the framebuffer turned through 180
 // degrees. Unrotated, LVGL renders straight into the mapped pages, with no
-// copy at all.
+// copy at all -- unless [display] cached_render is on, see below.
 //
 // One RAM page, not two, deliberately. With two, LVGL's direct mode keeps
 // them coherent by re-drawing the previous frame's areas into the buffer it
@@ -1340,18 +1340,34 @@ static struct fb_var_screeninfo fb_var;
 // framebuffer page is still missing.
 //
 // The touch panel is turned with it, by inverting the evdev calibration.
+//
+// Rendering into cached memory ([display] cached_render)
+//
+// The same RAM page serves a second purpose. On this SoC the framebuffer is
+// mapped uncached (jzfb_mmap clears the cacheable attribute, so the panel's
+// DMA never reads stale lines), and LVGL drawing straight into it pays for
+// that on every pixel it touches: blending reads the destination back, and
+// every such read is a trip to DRAM, as are the refr_sync_areas() copies that
+// keep the two pages coherent. With cached_render on, LVGL draws into the RAM
+// page -- ordinary cached memory -- and each frame's damage is copied into the
+// off-screen framebuffer page with plain memcpy()s, which only write. It is
+// the rotated path exactly, with a straight copy instead of a turned one, so
+// the page bookkeeping is shared. Costs one page of RAM (fb_page_size, about
+// 675 KB on a 480x720 panel) for as long as the player runs. Off by default
+// until it has been measured on the device.
 // ---------------------------------------------------------------------------
 
 static lv_display_t *fb_display;   // the page-flipping display, NULL on the fallback
 static lv_indev_t *fb_touch;	   // so the calibration can be flipped with the screen
 static bool fb_rotated;
-static uint8_t *rot_page;		   // the RAM page LVGL draws into while rotated
+static bool fb_cached_render;	   // [display] cached_render took effect: the RAM page is permanent
+static uint8_t *shadow_page;	   // the RAM page LVGL draws into while rotated or rendering cached
 
 // What this frame touched, and what each framebuffer page has not been given
 // yet (a bounding box each -- cheap, and a frame's damage is one region in
 // practice). Empty is x1 > x2.
-static lv_area_t rot_frame_dirty;
-static lv_area_t rot_page_pending[2];
+static lv_area_t shadow_frame_dirty;
+static lv_area_t shadow_page_pending[2];
 
 static void area_clear(lv_area_t *a) {
 	a->x1 = 1;
@@ -1409,13 +1425,37 @@ static void blit_rotated_180(uint16_t *dst, const uint16_t *src, const lv_area_t
 	}
 }
 
+// The same, the right way up: row by row, or one copy when the rectangle spans
+// whole lines (and so is contiguous in both).
+static void blit_straight(uint16_t *dst, const uint16_t *src, const lv_area_t *area, int32_t width,
+						  int32_t height) {
+	int32_t x1 = area->x1 < 0 ? 0 : area->x1;
+	int32_t y1 = area->y1 < 0 ? 0 : area->y1;
+	int32_t x2 = area->x2 >= width ? width - 1 : area->x2;
+	int32_t y2 = area->y2 >= height ? height - 1 : area->y2;
+	if (x1 > x2 || y1 > y2) {
+		return;
+	}
+
+	if (x1 == 0 && x2 == width - 1) {
+		size_t offset = (size_t)y1 * width;
+		memcpy(dst + offset, src + offset, (size_t)(y2 - y1 + 1) * width * sizeof(uint16_t));
+		return;
+	}
+	size_t row_bytes = (size_t)(x2 - x1 + 1) * sizeof(uint16_t);
+	for (int32_t y = y1; y <= y2; y++) {
+		size_t offset = (size_t)y * width + x1;
+		memcpy(dst + offset, src + offset, row_bytes);
+	}
+}
+
 static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
 	bool second_page;
 
-	if (fb_rotated) {
+	if (fb_rotated || fb_cached_render) {
 		// Collect this frame's damage; the copy happens once, on the last
 		// area, into the page that is NOT on screen.
-		area_merge(&rot_frame_dirty, area);
+		area_merge(&shadow_frame_dirty, area);
 		if (!lv_display_flush_is_last(disp)) {
 			lv_display_flush_ready(disp);
 			return;
@@ -1425,17 +1465,21 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 		int target = second_page ? 1 : 0;
 
 		// Everything this page still owes, plus what just changed.
-		lv_area_t redraw = rot_page_pending[target];
-		area_merge(&redraw, &rot_frame_dirty);
+		lv_area_t redraw = shadow_page_pending[target];
+		area_merge(&redraw, &shadow_frame_dirty);
 
 		if (!area_is_empty(&redraw)) {
-			blit_rotated_180((uint16_t *)(fb_mem + (second_page ? fb_page_size : 0)), (const uint16_t *)px, &redraw,
-							 (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			uint16_t *dst = (uint16_t *)(fb_mem + (second_page ? fb_page_size : 0));
+			if (fb_rotated) {
+				blit_rotated_180(dst, (const uint16_t *)px, &redraw, (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			} else {
+				blit_straight(dst, (const uint16_t *)px, &redraw, (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			}
 		}
 
-		area_clear(&rot_page_pending[target]);
-		area_merge(&rot_page_pending[target ? 0 : 1], &rot_frame_dirty); // the other page still owes it
-		area_clear(&rot_frame_dirty);
+		area_clear(&shadow_page_pending[target]);
+		area_merge(&shadow_page_pending[target ? 0 : 1], &shadow_frame_dirty); // the other page still owes it
+		area_clear(&shadow_frame_dirty);
 	} else {
 		second_page = (px >= fb_mem + fb_page_size);
 	}
@@ -1522,12 +1566,35 @@ static lv_display_t *try_panned_display(void) {
 	}
 
 	lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-	lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
-						   LV_DISPLAY_RENDER_MODE_DIRECT);
+
+	// Cached rendering when asked for and the page can be had; the mapped
+	// pages directly otherwise, as before.
+	if (config_get_int("display", "cached_render", 0)) {
+		shadow_page = malloc(fb_page_size);
+		if (shadow_page) {
+			memset(shadow_page, 0, fb_page_size);
+			fb_cached_render = true;
+			// Both pages hold whatever was there before (the boot logo): each
+			// owes a full frame, the same as after turning rotation on.
+			area_clear(&shadow_frame_dirty);
+			area_set_full(&shadow_page_pending[0]);
+			area_set_full(&shadow_page_pending[1]);
+		} else {
+			fprintf(stderr, "fb: no memory for cached rendering (%zu bytes), drawing into the framebuffer\n",
+					fb_page_size);
+		}
+	}
+	if (fb_cached_render) {
+		lv_display_set_buffers(disp, shadow_page, NULL, (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
+	} else {
+		lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
+							   LV_DISPLAY_RENDER_MODE_DIRECT);
+	}
 	lv_display_set_flush_cb(disp, fb_pan_flush_cb);
 	fb_display = disp;
 
-	printf("fb: double-buffered, page flip on FBIOPAN_DISPLAY (%ux%u)\n", fb_var.xres, fb_var.yres);
+	printf("fb: double-buffered, page flip on FBIOPAN_DISPLAY (%ux%u)%s\n", fb_var.xres, fb_var.yres,
+		   fb_cached_render ? ", rendered in cached RAM" : "");
 	return disp;
 }
 
@@ -1612,13 +1679,13 @@ void display_wake_end(lv_display_t *disp) {
 
 // Frees the RAM pages once the refresh that may still be reading them is
 // over: an async call runs at the top of the next lv_timer_handler pass.
-static void free_rot_pages_cb(void *unused) {
+static void free_shadow_page_cb(void *unused) {
 	(void)unused;
-	if (fb_rotated) {
-		return; // turned back on in the meantime
+	if (fb_rotated || fb_cached_render) {
+		return; // turned back on in the meantime, or the page is permanent
 	}
-	free(rot_page);
-	rot_page = NULL;
+	free(shadow_page);
+	shadow_page = NULL;
 }
 
 bool display_rotation_supported(void) { return fb_display != NULL; }
@@ -1743,28 +1810,35 @@ void display_set_rotated(bool rotated) {
 	}
 
 	if (rotated) {
-		if (!rot_page) {
-			rot_page = malloc(fb_page_size);
+		if (!shadow_page) {
+			shadow_page = malloc(fb_page_size);
 		}
-		if (!rot_page) {
+		if (!shadow_page) {
 			fprintf(stderr, "fb: no memory for the rotated page (%zu bytes)\n", fb_page_size);
 			return;
 		}
-		memset(rot_page, 0, fb_page_size);
+		memset(shadow_page, 0, fb_page_size);
 
 		// Both framebuffer pages still hold the picture the right way up, so
 		// they each owe a full frame.
-		area_clear(&rot_frame_dirty);
-		area_set_full(&rot_page_pending[0]);
-		area_set_full(&rot_page_pending[1]);
+		area_clear(&shadow_frame_dirty);
+		area_set_full(&shadow_page_pending[0]);
+		area_set_full(&shadow_page_pending[1]);
 
-		lv_display_set_buffers(fb_display, rot_page, NULL, (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
+		lv_display_set_buffers(fb_display, shadow_page, NULL, (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
 		fb_rotated = true;
+	} else if (fb_cached_render) {
+		// Back the right way up, still through the RAM page: both framebuffer
+		// pages now hold the turned picture and owe a full frame.
+		area_clear(&shadow_frame_dirty);
+		area_set_full(&shadow_page_pending[0]);
+		area_set_full(&shadow_page_pending[1]);
+		fb_rotated = false;
 	} else {
 		lv_display_set_buffers(fb_display, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
 							   LV_DISPLAY_RENDER_MODE_DIRECT);
 		fb_rotated = false;
-		lv_async_call(free_rot_pages_cb, NULL);
+		lv_async_call(free_shadow_page_cb, NULL);
 	}
 
 	// The touch panel turns with the picture: an inverted calibration maps
