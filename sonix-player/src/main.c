@@ -2335,12 +2335,27 @@ int main(int argc, char **argv) {
 	// they are built, and read before this they all say off, 0 minutes.
 	sleeptimer_init();
 
-	gui_init(&gui_cfg);
+	// Only what the first frame shows, unless that frame is the now-playing
+	// page (see the restore further down), which needs the player built and
+	// its track put back first.
+	bool nowplaying_first =
+		config_get_int("player", "remember_track", 0) && config_get_bool("music", "nowplaying_at_boot", false);
+	bool rest_pending = gui_init(&gui_cfg, !nowplaying_first);
 
 	// "Rotate screen", as it was left. After gui_init so there are screens to
 	// redraw, and before the first frame the user sees.
 	if (config_get_int("screen", "rotate_180", 0)) {
 		display_set_rotated(true);
+	}
+
+	// The home screen up now, and the rest of the interface built behind it.
+	// Building every page was most of the wait for the first frame, and none of
+	// them is on it. Still before the main loop: nothing -- no timer, no posted
+	// callback, no touch -- runs between the two, so nothing can meet a page
+	// that does not exist yet.
+	if (rest_pending) {
+		lv_refr_now(NULL);
+		gui_init_rest();
 	}
 
 	// The USB-C port, allowed to take a peripheral. Before the volume restore

@@ -429,6 +429,10 @@ void switcher_attach_back_gesture(lv_obj_t *obj) {
 }
 
 void switch_screen(lv_obj_t *target_screen) {
+	// Every page must exist before one is shown (see gui_init): a no-op except
+	// in the instant between the first frame and the rest of the build.
+	gui_init_rest();
+
 	// The player is not a page: it is a panel that slides in over whatever is
 	// already on screen, so there is nothing to load and nothing to remember.
 	if (target_screen == player_screen) {
