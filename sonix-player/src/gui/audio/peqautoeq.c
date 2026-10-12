@@ -652,6 +652,7 @@ static bool save_and_apply(job_t *job) {
 		return false;
 	}
 
+	peq_set_preset_name(job->preset); // loaded as the staging file, kept under this name
 	peq_set_enabled(true);
 	if (reload_cb) {
 		reload_cb();

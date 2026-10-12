@@ -21,6 +21,7 @@
 #include "src/system/bluetooth/airpods.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
+#include "src/system/audio/eqprofile.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
@@ -525,11 +526,16 @@ static void routing_watch_cb(lv_timer_t *timer) {
 			}
 		}
 		volume_profile_set_bluetooth_device(mac);
+		// And the EQ, from the same place and for the same reasons as the
+		// volume (eqprofile.h); a no-op with "EQ per output" off.
+		eqprofile_output_changed(EQPROFILE_BLUETOOTH, mac);
 		out = VOLUME_OUTPUT_BLUETOOTH;
 	} else if (strncmp(now, "plughw:", 7) == 0) {
 		out = VOLUME_OUTPUT_USB;
+		eqprofile_output_changed(EQPROFILE_USB, NULL);
 	} else {
 		out = headphone_jack_state() == JACK_BALANCED ? VOLUME_OUTPUT_BALANCED : VOLUME_OUTPUT_PHONES;
+		eqprofile_output_changed(out == VOLUME_OUTPUT_BALANCED ? EQPROFILE_BALANCED : EQPROFILE_PHONES, NULL);
 	}
 	volume_profile_set_output(out);
 

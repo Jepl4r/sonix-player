@@ -14,6 +14,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/audio/eq.h"
+#include "src/system/audio/eqprofile.h"
 #include "src/system/core/lang.h"
 
 #define PRESET_NAME_MAX 100
@@ -337,6 +338,27 @@ static void build_list_page(gui_config_t *cfg) {
 	switcher_attach_back_gesture(list_screen);
 }
 
+// "EQ per output" (eqprofile.h). Here rather than on each equaliser's own page
+// because it is about all three at once: the graphic EQ, the PEQ and MSEB.
+static void per_output_cb(lv_event_t *e) {
+	lv_obj_t *sw = lv_event_get_target(e);
+	eqprofile_set_enabled(lv_obj_has_state(sw, LV_STATE_CHECKED));
+}
+
+static void build_per_output(lv_obj_t *container) {
+	lv_obj_t *sw = NULL;
+	settingsrow_toggle(container, "eq_per_output", &sw, per_output_cb);
+	if (eqprofile_enabled()) {
+		lv_obj_add_state(sw, LV_STATE_CHECKED);
+	}
+	lv_obj_t *note = lv_label_create(container);
+	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(note, lv_pct(100));
+	lv_obj_add_style(note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(note, &font_ui_22, 0);
+	lv_label_set_text(note, tr("eq_per_output_note"));
+}
+
 void eqsettings_init(gui_config_t *cfg) {
 	config = cfg;
 
@@ -346,6 +368,7 @@ void eqsettings_init(gui_config_t *cfg) {
 	settingsrow_add(container, "eq_default_presets", NULL, open_default_list_cb, NULL);
 	settingsrow_action(container, "save_preset", open_name_dialog_cb, NULL);
 	settingsrow_add(container, "load_preset", NULL, open_preset_list_cb, NULL);
+	build_per_output(container);
 
 	build_list_page(cfg);
 	build_default_list_page(cfg);

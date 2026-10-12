@@ -214,8 +214,33 @@ static void peq_save_band(int index) {
 	config_save();
 }
 
+// The PEQ preset the bands came from, for the EQ-per-output profiles
+// (eqprofile.c): set when a preset is loaded or saved, cleared by any edit by
+// hand, which makes the bands no longer that preset. Kept in [peq] preset_name
+// so it outlives a restart. UI thread.
+static char peq_preset_name[104];
+
+static void peq_name_set(const char *name) {
+	snprintf(peq_preset_name, sizeof(peq_preset_name), "%s", name ? name : "");
+	config_set("peq", "preset_name", peq_preset_name);
+}
+
+static void peq_name_forget(void) {
+	if (peq_preset_name[0]) {
+		peq_name_set("");
+	}
+}
+
+const char *peq_current_preset(void) { return peq_preset_name; }
+
+void peq_set_preset_name(const char *name) {
+	peq_name_set(name);
+	config_save();
+}
+
 static void peq_load(void) {
 	peq_enabled = (int)config_get_int("peq", "enabled", 0);
+	snprintf(peq_preset_name, sizeof(peq_preset_name), "%s", config_get("peq", "preset_name", ""));
 	peq_preamp_tenths =
 		clamp_int((int)config_get_int("peq", "preamp", 0), PEQ_PREAMP_MIN_TENTHS, PEQ_PREAMP_MAX_TENTHS);
 
@@ -553,6 +578,7 @@ void peq_set_band(int index, const peq_band_t *band) {
 	// Version bumped after the value: it is what the audio thread watches to
 	// know there is something new to read.
 	settings_version++;
+	peq_name_forget();
 	peq_save_band(index);
 }
 
@@ -561,6 +587,7 @@ int peq_get_preamp(void) { return peq_preamp_tenths; }
 void peq_set_preamp(int tenths) {
 	peq_preamp_tenths = clamp_int(tenths, PEQ_PREAMP_MIN_TENTHS, PEQ_PREAMP_MAX_TENTHS);
 	settings_version++;
+	peq_name_forget();
 	config_set_int("peq", "preamp", peq_preamp_tenths);
 	config_save();
 }
@@ -930,7 +957,11 @@ bool peq_preset_save(const char *name) {
 
 	char path[700];
 	snprintf(path, sizeof(path), "%s/%s.txt", peq_preset_dir, name);
-	return peq_write_apo(path, peq_bands, peq_preamp_tenths);
+	if (!peq_write_apo(path, peq_bands, peq_preamp_tenths)) {
+		return false;
+	}
+	peq_set_preset_name(name);
+	return true;
 }
 
 bool peq_preset_load(const char *name, int *ignored) {
@@ -959,6 +990,7 @@ bool peq_preset_load(const char *name, int *ignored) {
 	}
 	peq_preamp_tenths = preamp;
 	config_set_int("peq", "preamp", peq_preamp_tenths);
+	peq_name_set(name);
 	config_save();
 	settings_version++;
 
@@ -1027,6 +1059,7 @@ void peq_reset_band(int index) {
 		return;
 	}
 	peq_bands[index] = peq_default_band(index);
+	peq_name_forget();
 	peq_save_band(index);
 	settings_version++;
 }

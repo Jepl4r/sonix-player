@@ -125,6 +125,13 @@ void peq_reset(void);
 // pre-gain is left alone -- it belongs to the chain, not to the band.
 void peq_reset_band(int index);
 
+// The preset the PEQ bands were last loaded from or saved as, or "" once they
+// have been edited by hand since. Kept across restarts. UI thread.
+const char *peq_current_preset(void);
+// For a preset that reached the card under another name (the AutoEq download
+// is loaded from a staging file and then renamed).
+void peq_set_preset_name(const char *name);
+
 // Parametric presets: Equalizer APO text files, the ParametricEQ.txt AutoEq
 // publishes for every headphone, one per name in <card>/PEQ. A preset saved
 // here is written in the same form, so it opens in APO too. Setting the

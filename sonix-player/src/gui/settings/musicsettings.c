@@ -890,6 +890,22 @@ static void refresh_mseb_sliders_values(void) {
 	}
 }
 
+// Read again on every load, for the same reason as the EQ page
+// (eq_screen_loaded_cb): "EQ per output" can switch MSEB behind the page.
+static void mseb_screen_loaded_cb(lv_event_t *e) {
+	(void)e;
+	bool enabled = mseb_get_enabled();
+	if (mseb_enable_switch) {
+		if (enabled) {
+			lv_obj_add_state(mseb_enable_switch, LV_STATE_CHECKED);
+		} else {
+			lv_obj_remove_state(mseb_enable_switch, LV_STATE_CHECKED);
+		}
+	}
+	mseb_apply_sliders_enabled(enabled);
+	reset_button_enabled(mseb_reset_btn, enabled);
+}
+
 static void build_mseb_page(gui_config_t *cfg) {
 	mseb_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(mseb_screen, cfg, "mseb");
@@ -976,6 +992,7 @@ static void build_mseb_page(gui_config_t *cfg) {
 	msebsettings_set_reload_cb(refresh_mseb_sliders_values);
 
 	switcher_attach_back_gesture(mseb_screen);
+	lv_obj_add_event_cb(mseb_screen, mseb_screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	theme_register_refresh(refresh_mseb_sliders);
 }
 
@@ -1074,6 +1091,25 @@ static void refresh_eq_sliders(void) {
 	}
 }
 
+// The page read again from the engine on every load. The EQ can change behind
+// it: "EQ per output" (eqprofile.h) puts another output's state back when the
+// sound moves, and a page showing the old sliders would then save them over
+// the new state at the first touch.
+static void eq_screen_loaded_cb(lv_event_t *e) {
+	(void)e;
+	bool enabled = eq_get_enabled();
+	if (eq_enable_switch) {
+		if (enabled) {
+			lv_obj_add_state(eq_enable_switch, LV_STATE_CHECKED);
+		} else {
+			lv_obj_remove_state(eq_enable_switch, LV_STATE_CHECKED);
+		}
+	}
+	eq_apply_sliders_enabled(enabled);
+	reset_button_enabled(eq_reset_btn, enabled);
+	refresh_eq_sliders_values();
+}
+
 static void build_eq_page(gui_config_t *cfg) {
 	eq_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(eq_screen, cfg, "equaliser");
@@ -1161,6 +1197,7 @@ static void build_eq_page(gui_config_t *cfg) {
 
 	switcher_attach_back_gesture(eq_screen);
 	theme_register_refresh(refresh_eq_sliders);
+	lv_obj_add_event_cb(eq_screen, eq_screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 }
 
 // ---------------------------------------------------------------------------
