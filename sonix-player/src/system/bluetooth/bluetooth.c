@@ -116,6 +116,7 @@ typedef enum {
 	JOB_FORGET,
 	JOB_CODECS,		  // re-read what the connected sink offers
 	JOB_LDAC_QUALITY, // restart bluealsa so it reads the new --ldac-quality
+	JOB_LDAC_COEXIST, // the Wi-Fi side changed: see ldac_coexist_check()
 	JOB_DAEMON_OPTION, // text: why; restart bluealsa for another start-up option
 	JOB_RECEIVER_PROFILE, // restart bluealsa with or without the A2DP sink
 	JOB_DISCOVERABLE, // arg_int: 1 visible to everyone, 0 not
@@ -1286,6 +1287,45 @@ static bool bluealsa_has_sink(void) {
 	return sink;
 }
 
+// ---------------------------------------------------------------------------
+// LDAC and a busy Wi-Fi radio
+//
+// The two radios are one chip (the AP6212 / AW-NB372SM) sharing one antenna by
+// time slots. LDAC at a fixed 990 kbps leaves the Bluetooth side no slack at
+// all, so while Wi-Fi is moving a lot of data -- the transfer server receiving
+// an album, a Qobuz or Tidal track being cached, an update downloading -- the
+// stream misses its slots and stutters. ABR copes by itself; a fixed 990 does
+// not.
+//
+// What is done about it is deliberately small. The quality is a bluealsa start
+// option, and changing it means restarting bluealsa, which drops the audio
+// for seconds -- worse than the stutter it would fix. So:
+//   * with the Wi-Fi transfer server switched on (the one long, heavy use the
+//     user starts on purpose) and LDAC set to 990, 660 is used instead -- but
+//     only from the next connection: bluealsa is restarted at once when nothing
+//     is connected, and otherwise when the headphones next disconnect. The same
+//     in reverse once the server is off. The setting itself stays 990.
+//   * short downloads only show a hint on the Bluetooth audio page.
+//   * ABR stays the default quality, which is the real answer.
+//
+// A live switch would need bluealsa to take the LDAC encoder's quality over
+// D-Bus (a property on the transport, applied by ldacBT_alter_eqmid_priority()
+// between frames, the way ABR itself moves it) instead of only as --ldac-quality
+// at start. That is a patch to bluealsa, not something this player can do.
+// ---------------------------------------------------------------------------
+
+static bool g_wifi_heavy;		  // under `lock`: the Wi-Fi transfer server is on
+static char g_ldac_started[16];	  // under `lock`: what the running bluealsa was given, "" if unknown
+static bool g_ldac_pending;		  // worker: a change waits for the headphones to go
+
+static const char *ldac_quality_effective(void) {
+	const char *quality = bluetooth_ldac_quality();
+	pthread_mutex_lock(&lock);
+	bool heavy = g_wifi_heavy;
+	pthread_mutex_unlock(&lock);
+	return heavy && strcmp(quality, "high") == 0 ? "standard" : quality;
+}
+
 static bool ensure_bluealsa(void) {
 	// Before the daemon, not after: the help text comes from running the binary
 	// with -h, not from the bus, and the -c arguments below are built out of it.
@@ -1373,7 +1413,10 @@ static bool ensure_bluealsa(void) {
 		// Adaptive is the default because it is the one that survives a bad
 		// link -- 990 kbps into a pocket is 990 kbps of dropouts.
 		char ldac[48] = {0};
-		const char *quality = bluetooth_ldac_quality();
+		const char *quality = ldac_quality_effective();
+		pthread_mutex_lock(&lock);
+		snprintf(g_ldac_started, sizeof(g_ldac_started), "%s", quality);
+		pthread_mutex_unlock(&lock);
 		if (strcmp(quality, "abr") == 0) {
 			if (bluealsa_knows_option("--ldac-abr")) {
 				snprintf(ldac, sizeof(ldac), "--ldac-abr");
@@ -1718,6 +1761,12 @@ static void refresh_audio_state(void) {
 		return;
 	}
 	fprintf(stderr, "bluetooth: audio %s%s\n", sink ? "on " : "back on the jack", sink ? mac : "");
+	if (!sink && g_ldac_pending) {
+		// The stream that held a Wi-Fi coexistence change back has gone: the
+		// next connection gets the new quality.
+		job_t job = {.type = JOB_LDAC_COEXIST};
+		post_job(&job);
+	}
 	if (sink) {
 		// First, because the patched bluealsa reads its LDAC and UAT quality
 		// settings out of that file and the choice below can land on LDAC.
@@ -3260,6 +3309,40 @@ static void restart_bluealsa(const char *why) {
 	}
 }
 
+// Worker. Brings the running bluealsa in line with ldac_quality_effective(),
+// never under live audio: with a stream up it only notes that the change is
+// due, and refresh_audio_state() asks again when that stream goes.
+static void ldac_coexist_check(void) {
+	if (!process_running("bluealsa")) {
+		g_ldac_pending = false;
+		return; // the next start reads the right quality by itself
+	}
+	const char *wanted = ldac_quality_effective();
+	pthread_mutex_lock(&lock);
+	char started[sizeof(g_ldac_started)];
+	snprintf(started, sizeof(started), "%s", g_ldac_started);
+	bool streaming = g_a2dp_connected;
+	pthread_mutex_unlock(&lock);
+
+	if (!started[0] || strcmp(started, wanted) == 0) {
+		g_ldac_pending = false;
+		return;
+	}
+	if (streaming) {
+		if (!g_ldac_pending) {
+			fprintf(stderr, "bluetooth: LDAC %s is due (Wi-Fi transfer %s); kept at %s until the headphones "
+							"reconnect, so the music does not stop\n",
+					wanted, strcmp(wanted, "standard") == 0 ? "on" : "off", started);
+		}
+		g_ldac_pending = true;
+		return;
+	}
+	g_ldac_pending = false;
+	char why[64];
+	snprintf(why, sizeof(why), "LDAC %s with nothing connected (Wi-Fi coexistence)", wanted);
+	restart_bluealsa(why);
+}
+
 // With the receiver just opened: a phone or a computer already linked to this
 // device found no sink here when it connected, so its A2DP stream is asked for
 // now rather than left to the user to reconnect. Headphones are skipped.
@@ -3412,6 +3495,10 @@ static void *bluetooth_worker(void *arg) {
 
 			case JOB_CODECS:
 				do_read_codecs();
+				break;
+
+			case JOB_LDAC_COEXIST:
+				ldac_coexist_check();
 				break;
 
 			case JOB_LDAC_QUALITY:
@@ -3971,6 +4058,30 @@ void bluetooth_set_ldac_quality(const char *mode) {
 	post_job(&job);
 }
 
+void bluetooth_set_wifi_busy(bool transfer_server_on) {
+	pthread_mutex_lock(&lock);
+	bool changed = g_wifi_heavy != transfer_server_on;
+	g_wifi_heavy = transfer_server_on;
+	bool running = worker_running && g_enabled;
+	pthread_mutex_unlock(&lock);
+	if (!changed) {
+		return;
+	}
+	fprintf(stderr, "bluetooth: Wi-Fi transfer server %s%s\n", transfer_server_on ? "on" : "off",
+			strcmp(bluetooth_ldac_quality(), "high") == 0 ? "; LDAC 990 follows it at the next connection" : "");
+	if (running) {
+		job_t job = {.type = JOB_LDAC_COEXIST};
+		post_job(&job);
+	}
+}
+
+bool bluetooth_ldac_held_back(void) {
+	pthread_mutex_lock(&lock);
+	bool heavy = g_wifi_heavy;
+	pthread_mutex_unlock(&lock);
+	return heavy && strcmp(bluetooth_ldac_quality(), "high") == 0;
+}
+
 // The options below are read when bluealsa starts and never again, exactly
 // like LDAC's quality, so a change restarts a running daemon on the worker.
 static void restart_for_option(const char *why) {
@@ -4074,7 +4185,12 @@ bool bluetooth_codec_summary(const char *mac, char *out, int size) {
 			const char *mode;
 			const char *label;
 		} LDAC_LABELS[] = {{"high", "LDAC 990"}, {"standard", "LDAC 660"}, {"mobile", "LDAC 330"}, {"abr", "LDAC ABR"}};
-		const char *quality = bluetooth_ldac_quality();
+		// What the running daemon was given, which is not the setting while a
+		// Wi-Fi coexistence change is in force (ldac_coexist_check).
+		char quality[sizeof(g_ldac_started)];
+		pthread_mutex_lock(&lock);
+		snprintf(quality, sizeof(quality), "%s", g_ldac_started[0] ? g_ldac_started : bluetooth_ldac_quality());
+		pthread_mutex_unlock(&lock);
 		snprintf(name, sizeof(name), "%s", codec);
 		for (size_t i = 0; i < sizeof(LDAC_LABELS) / sizeof(LDAC_LABELS[0]); i++) {
 			if (strcmp(quality, LDAC_LABELS[i].mode) == 0) {

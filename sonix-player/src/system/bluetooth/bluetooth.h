@@ -254,6 +254,14 @@ void bluetooth_set_aac_vbr(bool on);
 // --a2dp-force-audio-cd so a 44.1 kHz track reaches the encoder without being
 // resampled. A start-up option, restarted for like the two above. Kept in
 // [wireless] bt_sample_rate = auto | 44100.
+// Wi-Fi coexistence for LDAC 990 (see bluetooth.c). The UI says whether the
+// Wi-Fi transfer server is on; with LDAC set to 990, the next connection then
+// gets 660 -- bluealsa is restarted only when no stream is up, never under one.
+// UI thread; cheap when nothing changed, so it can be called on every tick.
+void bluetooth_set_wifi_busy(bool transfer_server_on);
+// True while that is in force: LDAC set to 990 and the transfer server on.
+bool bluetooth_ldac_held_back(void);
+
 bool bluetooth_force_44k(void);
 void bluetooth_set_force_44k(bool on);
 
