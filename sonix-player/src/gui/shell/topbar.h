@@ -56,6 +56,16 @@ void topbar_set_hidden(bool hidden);
 // the picture as it changes or slides; without, nothing at all is behind it.
 // Off gives it back the colours of the page underneath.
 void topbar_set_over_artwork(bool on, bool blur);
+
+// Holds that blur off, the darkening alone standing in for it, for as long as
+// what is under the bar is moving: the player sheet sliding in or being
+// dragged. A live backdrop blur is redone over the whole bar on every frame the
+// picture under it changes, and during a slide that is every frame -- the most
+// expensive thing drawn while the sheet moves, for a soft smear nobody can see
+// in a quarter of a second. Released, the blur comes back as it was. Cheap to
+// call on every frame: nothing is written while the hold does not change. UI
+// thread only, like the rest of this file.
+void topbar_hold_backdrop_blur(bool hold);
 bool topbar_is_hidden(void);
 
 // Draws the bar above everything else on the top layer. The control centre

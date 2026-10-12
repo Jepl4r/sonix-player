@@ -43,14 +43,21 @@ static char current_metadata_file[512] = {0};
 //
 //   the position moved by more than REMEMBER_MOVE_SECS since the last write.
 //   Without this a seek made while PAUSED is never written at all: nothing
-//   about the state has changed and the ten-second timer only runs while
+//   about the state has changed and the periodic write only runs while
 //   playing;
 //
 //   every REMEMBER_PERIOD_MS while playing, so a flat battery loses that much
-//   and no more;
+//   and no more. Thirty seconds rather than ten: each write is a commit to
+//   library.db on the card (a rollback journal created, synced and truncated
+//   again), and six of those a minute for the whole of every listening
+//   session was the player's steadiest source of card writes. Every way out
+//   the player itself takes -- the power menu, the automatic shutdown, the
+//   reboot, a standby suspend -- flushes the exact position first
+//   (device_state_remember_flush), so the thirty seconds are only ever lost
+//   to a battery that runs flat while playing, one pulled out, or a crash;
 //
 //   once when playback stops, so a queue that runs to its end does not come
-//   back up to ten seconds short of where it finished.
+//   back up to a whole period short of where it finished.
 //
 // And the one thing it refuses to do: write a zero over a position it has just
 // restored. A track brought back at boot goes through a moment where the
@@ -62,7 +69,7 @@ static char current_metadata_file[512] = {0};
 // feature for the session.
 // ---------------------------------------------------------------------------
 
-#define REMEMBER_PERIOD_MS 10000
+#define REMEMBER_PERIOD_MS 30000
 #define REMEMBER_MOVE_SECS 1.0
 #define REMEMBER_RESTORE_GRACE_MS 8000
 
@@ -106,7 +113,7 @@ static bool remember_should_write(remember_state_t *st, const char *file, audio_
 	bool changed = !same_file || status != st->status;
 	// A position that moved while nothing was PLAYING is a seek: nobody else
 	// can have moved it. A drag of the slider with the track paused changes no
-	// state, and the ten-second timer only runs while the music does, so this is
+	// state, and the periodic write only runs while the music does, so this is
 	// the only rule that catches it.
 	//
 	// While playing it deliberately does NOT apply: the position moves by

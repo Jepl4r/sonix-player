@@ -225,10 +225,11 @@ void device_state_refresh_battery(void);
 //
 // note()    called from the player's poll. Decides on its own whether there is
 //           anything worth writing; cheap when there is not.
-// flush()   called on the way out -- the power menu and the automatic
-//           shutdown. Neither of those passes through the interface, so
-//           without it the position is up to ten seconds stale after a normal
-//           power-off, and stale by a whole seek after one made while paused.
+// flush()   called on the way out -- the power menu, the automatic
+//           shutdown and a standby suspend. None of those passes through the
+//           interface, so without it the position is up to thirty seconds
+//           stale after a normal power-off, and stale by a whole seek after one
+//           made while paused.
 // restored() told what the boot restore asked for, so a poll that lands before
 //           the decoder has seeked cannot write a zero over it.
 // ---------------------------------------------------------------------------

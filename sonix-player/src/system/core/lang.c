@@ -408,14 +408,28 @@ const char *lang_current(void) { return current; }
 
 static bool read_declared_name(const char *name, char *out, size_t size);
 
+// What lang_list() last found, and the name each of those files declared.
+//
+// The settings page asks for the list and then for every entry's display name,
+// and both answers come from the same header line. Kept here so that line is
+// read once per file at boot, not once by the list, again for every file
+// compared against it, and once more by lang_display_name(): with eleven
+// languages that was some seventy opens of a file on the card before the
+// first frame. Filled by lang_list() on the UI thread, read by
+// lang_display_name() on the same thread.
+static char found[16][64];
+static char found_label[16][64];
+static bool found_declared[16];
+static int found_count;
+
 int lang_list(const char **names, int max) {
 	// Whatever .ini files are in the folder, and nothing else. Dropping a new
 	// one in is all it takes to add a language: the list is the directory.
 	// Nothing is offered that has no file behind it -- the keys in the source
 	// are tags, so a language with no file would show those tags rather than
 	// any readable text.
-	static char found[16][64];
 	int count = 0;
+	found_count = 0;
 
 	DIR *d = opendir(dir_path);
 	if (!d) {
@@ -439,17 +453,14 @@ int lang_list(const char **names, int max) {
 		// `Francais.ini` and its `#U00e7` spelling -- and the list must not show
 		// it twice. They are compared by what they declare, not by file name.
 		char label[64];
-		if (!read_declared_name(name, label, sizeof(label))) {
+		bool declared = read_declared_name(name, label, sizeof(label));
+		if (!declared) {
 			snprintf(label, sizeof(label), "%s", name);
 		}
 
 		bool already = false;
 		for (int i = 0; i < count; i++) {
-			char other[64];
-			if (!read_declared_name(names[i], other, sizeof(other))) {
-				snprintf(other, sizeof(other), "%s", names[i]);
-			}
-			if (strcmp(other, label) == 0) {
+			if (strcmp(found_label[i], label) == 0) {
 				already = true;
 				break;
 			}
@@ -458,8 +469,11 @@ int lang_list(const char **names, int max) {
 			continue;
 		}
 		snprintf(found[count], sizeof(found[0]), "%s", name);
+		snprintf(found_label[count], sizeof(found_label[0]), "%s", label);
+		found_declared[count] = declared;
 		names[count] = found[count];
 		count++;
+		found_count = count;
 	}
 	closedir(d);
 	return count;
@@ -494,6 +508,13 @@ static bool read_declared_name(const char *name, char *out, size_t size) {
 	if (!f) {
 		return false;
 	}
+	// A small buffer: stdio would otherwise size it to the filesystem's block,
+	// which on the card's FAT is a whole cluster (often 32 KB) -- half of a
+	// language file read in to look at its first line. The header is that first
+	// line in every file shipped; a file without one is still read to the end,
+	// just in smaller pieces.
+	char buf[512];
+	setvbuf(f, buf, _IOFBF, sizeof(buf));
 
 	bool got = false;
 	char line[256];
@@ -532,6 +553,14 @@ void lang_display_name(const char *name, char *out, size_t size) {
 	if (!name) {
 		out[0] = '\0';
 		return;
+	}
+
+	// Already read by lang_list(), which is how the settings page comes here.
+	for (int i = 0; i < found_count; i++) {
+		if (found_declared[i] && strcmp(found[i], name) == 0) {
+			snprintf(out, size, "%s", found_label[i]);
+			return;
+		}
 	}
 
 	if (read_declared_name(name, out, size)) {

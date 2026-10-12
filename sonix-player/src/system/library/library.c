@@ -1377,6 +1377,17 @@ static bool db_open_file(const char *db_path) {
 	// A card is slow and may be pulled out at any moment. WAL needs shared
 	// memory the FAT driver does not provide, so stay on the default journal
 	// and just stop waiting for the platter on every commit.
+	//
+	// WAL without the shared memory exists -- locking_mode=EXCLUSIVE set before
+	// the first access keeps the WAL index on the heap and never makes a -shm
+	// file -- and it would turn the small frequent commits (the playback
+	// position, the queue) into appends to one file. It is not used because
+	// this is not the only connection: SonixLink (sonixlink.c) opens the same
+	// file read-only on its own thread for the favourites, the playlists and
+	// the index hash, so that the phone sees them live, and an exclusive lock
+	// held for the life of this connection would lock it out for good. The card
+	// writes are kept down at the other end instead: the playback position is
+	// written every thirty seconds, not ten (device_state.c).
 	exec("PRAGMA synchronous=NORMAL");
 	exec("PRAGMA journal_mode=TRUNCATE");
 	exec("PRAGMA cache_size=-256"); // 256 KB, not the 2 MB default

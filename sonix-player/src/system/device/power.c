@@ -971,8 +971,8 @@ static void rtc_alarm_arm_for_auto_off(void) {
 
 void power_shutdown(void) {
 	// Where the music had got to, before anything else stops. The player's own
-	// poll writes this only every ten seconds while playing and on a change of
-	// state, so without this flush a power-off loses up to ten seconds -- and a
+	// poll writes this only every thirty seconds while playing and on a change
+	// of state, so without this flush a power-off loses up to that much -- and a
 	// position seeked to while paused, which changes no state at all, would
 	// never be written.
 	device_state_remember_flush();
@@ -1033,6 +1033,13 @@ static void suspend_to_ram(void) {
 
 	printf("power: mem: starting the sequence (screen off for %u s)\n",
 		   (unsigned)((lv_tick_get() - g_screen_off_at) / 1000));
+
+	// 0. Where the music had got to, while the engine still knows: the freeze
+	//    below closes the track context, and a battery that runs flat during
+	//    the sleep is a power-off that never passes through power_shutdown().
+	//    The periodic write is thirty seconds apart (device_state.c), so this
+	//    is the one that makes the position exact. Also the book's.
+	device_state_remember_flush();
 
 	// 1. The freeze: a real stop, waited on until the track context is gone --
 	//    play_file() returned, decoder and FILE* closed, gapless empty, PCM

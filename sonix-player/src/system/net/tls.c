@@ -5,6 +5,7 @@
 #include "src/system/core/config.h"
 
 #include "src/system/core/lang.h"
+#include "src/system/core/utils.h"
 
 #include <dlfcn.h>
 #include <errno.h>
@@ -284,6 +285,43 @@ static bool ensure_loaded(void) {
 
 bool tls_available(void) {
 	return ensure_loaded();
+}
+
+// The preload's thread: SCHED_IDLE, so it only ever runs on a core nothing
+// else wants -- after the first frames, between the interface's redraws -- and
+// a station opened in the meantime simply finds the load done, or waits on
+// load_lock for the rest of it, exactly as it would have waited for it itself.
+static void *preload_thread(void *arg) {
+	(void)arg;
+	thread_be_background("tls-preload");
+	if (!ensure_loaded()) {
+		fprintf(stderr, "tls: unavailable; https radio stations cannot be opened\n");
+	}
+	return NULL;
+}
+
+void tls_preload(void) {
+	static bool started;
+	pthread_mutex_lock(&load_lock);
+	bool go = !started && load_state == LOAD_UNTRIED;
+	started = true;
+	pthread_mutex_unlock(&load_lock);
+	if (!go) {
+		return;
+	}
+
+	pthread_attr_t attr;
+	pthread_attr_init(&attr);
+	pthread_attr_setdetachstate(&attr, PTHREAD_CREATE_DETACHED);
+	// The PEM parse is OpenSSL's and its stack use is OpenSSL's business: the
+	// same room as the podcast downloader, which also ends up in TLS.
+	pthread_attr_setstacksize(&attr, 256 * 1024);
+	pthread_t thread;
+	if (pthread_create(&thread, &attr, preload_thread, NULL) != 0) {
+		// No thread to spare: the first https connection will load it instead.
+		fprintf(stderr, "tls: no thread for the preload, loading on first use\n");
+	}
+	pthread_attr_destroy(&attr);
 }
 
 const char *tls_version(void) {

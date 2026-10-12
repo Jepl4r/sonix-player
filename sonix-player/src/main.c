@@ -146,6 +146,19 @@ static void restore_track_timer_cb(lv_timer_t *timer) {
 	restore_saved_track();
 }
 
+// OpenSSL, loaded a moment after the interface has painted. It used to be
+// loaded right here in main(), synchronously, for the one log line that says
+// whether https stations can be opened -- two dlopen()s and the parse of the
+// whole CA bundle, a few hundred milliseconds on the device, all of it in
+// front of the first frame. Now on an idle-priority thread once the first
+// frames are out; the log line is the same, and so is everything else: the
+// first https connection made before it finishes simply waits for it, as it
+// always could have.
+static void tls_preload_timer_cb(lv_timer_t *timer) {
+	lv_timer_delete(timer);
+	tls_preload();
+}
+
 #ifndef HOST_BUILD
 // Powering the Bluetooth radio down waits for three daemons to take their
 // SIGTERM, so it happens off the interface thread. See the call site.
@@ -2184,9 +2197,8 @@ int main(int argc, char **argv) {
 	// rather than to the local database.
 	library_forget_under(qobuzcache_dir());
 	library_forget_under(tidalcache_dir());
-	if (!tls_available()) {
-		fprintf(stderr, "tls: unavailable; https radio stations cannot be opened\n");
-	}
+	// OpenSSL is loaded once the first frames are on screen, not here: see
+	// tls_preload_timer_cb.
 
 	// The radios, before the interface: both read their switch out of the
 	// config here, and the Wireless pages are built from those switches, so a
@@ -2273,6 +2285,8 @@ int main(int argc, char **argv) {
 		}
 	}
 
+
+	lv_timer_create(tls_preload_timer_cb, 1000, NULL);
 
 #ifdef HOST_BUILD
 	lv_timer_create(host_shot_poll_cb, 200, NULL); // see host_shot_poll_cb

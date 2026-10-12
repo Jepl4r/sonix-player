@@ -1900,13 +1900,39 @@ static decoder_t *decoder_open_cue(const char *sheet_path, int track, decode_for
 	return dec;
 }
 
+// Tells the kernel that a track about to be played will be read front to back.
+//
+// The card's read-ahead window is 128 KB by default; for a file marked
+// sequential the kernel doubles it, so the decoder's reads are served from
+// memory for twice as long and the card is woken half as often over a track
+// -- the same bytes read, in fewer, larger requests, with the card idle in
+// between. Per open file and not for the whole card (read_ahead_kb in sysfs):
+// the library scan, the tag reader and the covers read a few kilobytes here
+// and there, and a larger window everywhere would read far more than they
+// ask for. FLAC and MP3 only, the two read through a FILE* of their own that
+// can be reached; a file still being downloaded is left alone. Advice only:
+// nothing depends on it being taken.
+static void decoder_advise_sequential(decoder_t *dec) {
+	if (!dec || dec->growing) {
+		return;
+	}
+	FILE *f = NULL;
+	if (dec->format == DECODE_FORMAT_FLAC && dec->impl.flac) {
+		f = (FILE *)dec->impl.flac->bs.pUserData;
+	} else if (dec->format == DECODE_FORMAT_MP3 && dec->impl.mp3) {
+		f = (FILE *)dec->impl.mp3->pUserData;
+	}
+	if (f) {
+		posix_fadvise(fileno(f), 0, 0, POSIX_FADV_SEQUENTIAL);
+	}
+}
+
 decoder_t *decoder_open(const char *filepath, decode_format_t format) {
 	char sheet[512];
 	int track = cue_split_path(filepath, sheet, sizeof(sheet));
-	if (track > 0) {
-		return decoder_open_cue(sheet, track, format, true);
-	}
-	return decoder_open_file(filepath, format);
+	decoder_t *dec = track > 0 ? decoder_open_cue(sheet, track, format, true) : decoder_open_file(filepath, format);
+	decoder_advise_sequential(dec);
+	return dec;
 }
 
 decoder_t *decoder_open_info(const char *filepath, decode_format_t format) {

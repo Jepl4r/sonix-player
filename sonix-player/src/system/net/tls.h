@@ -34,8 +34,17 @@
 // https://curl.se/ca/cacert.pem.
 
 // True when libssl and libcrypto were found and every symbol resolved. Cheap
-// to call repeatedly; the loading happens once.
+// to call repeatedly; the loading happens once, in whichever thread asks first,
+// and anyone else asking meanwhile waits for it.
 bool tls_available(void);
+
+// Does that loading now, on a thread of its own at the lowest priority, and
+// logs once if TLS turns out to be unavailable. Returns at once. For boot,
+// after the first frame: the dlopen() of two libraries and the parse of a
+// couple of hundred certificates are a few hundred milliseconds on the device
+// that used to sit in front of the first frame. Any thread may call it; a
+// second call does nothing.
+void tls_preload(void);
 
 // What OpenSSL says it is, for the log. Empty when unavailable.
 const char *tls_version(void);
