@@ -269,14 +269,21 @@ int library_list(library_list_t kind, char out[][256], int max);
 
 // Optional filter for LIBRARY_LIST_TRACKS: only the tracks of one album,
 // artist, album artist or genre.
+// The most hits a search list holds. A query that matches more than this is
+// one to type more of; the page says "2000+" (search.c).
+#define LIBRARY_SEARCH_MAX 2000
+
 typedef enum {
 	LIBRARY_FILTER_NONE = 0,
 	LIBRARY_FILTER_ALBUM,
 	LIBRARY_FILTER_ARTIST,
 	LIBRARY_FILTER_ALBUM_ARTIST,
 	LIBRARY_FILTER_GENRE,
-	// The tracks, albums or artists whose name contains the value, matched the
-	// way library_search() matches. For the handles below only.
+	// The tracks, albums or artists that hold every word of the value, in any
+	// order, case and accents aside: a track by its title, artist, album or
+	// album artist, an album by its name or its artist, an artist by the
+	// name. At most LIBRARY_SEARCH_MAX of each, the first in list order. For
+	// the handles below only.
 	LIBRARY_FILTER_SEARCH,
 	// The albums of one year, the value being the year, and the tracks of
 	// those albums: an album whose tracks carry different years is filed under

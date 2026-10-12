@@ -188,6 +188,10 @@ static const char *const SCHEMA_COLUMNS[] = {
 	"ALTER TABLE PLAYLIST_COUNTS ADD COLUMN mount INT",
 	"ALTER TABLE PLAYBACK_QUEUE ADD COLUMN slot INT",
 	"ALTER TABLE CUE_STATE ADD COLUMN version INT",
+	// What the search reads instead of the four names it is made of: see
+	// search_key(). Written with the row by the scan, and by the backfill for
+	// rows from before the column -- nothing else changes those four names.
+	"ALTER TABLE MEDIA_TABLE ADD COLUMN searchkey TEXT",
 };
 
 // After the columns exist, never before: an index on a column the table does
@@ -218,6 +222,11 @@ static const char *const SCHEMA_INDEXES[] = {
 	"CREATE INDEX IF NOT EXISTS album_artist_link_path_idx ON ALBUM_ARTIST_LINK(path)",
 	"CREATE INDEX IF NOT EXISTS genre_link_name_idx ON GENRE_LINK(genre)",
 	"CREATE INDEX IF NOT EXISTS genre_link_path_idx ON GENRE_LINK(path)",
+	// Only the rows still without a search key, which is none of them once the
+	// backfill has been through: asking "is anything missing?" at every boot is
+	// then a seek into an empty index rather than a walk of the table. The scan
+	// writes the key with the row, so it never touches this index at all.
+	"CREATE INDEX IF NOT EXISTS media_searchkey_missing_idx ON MEDIA_TABLE(searchkey) WHERE searchkey IS NULL",
 };
 
 // Built only once every row has a key: an index on a column that is still half
@@ -856,6 +865,93 @@ static void foldcase_sql(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 	sqlite3_result_text(ctx, folded, -1, SQLITE_TRANSIENT);
 }
 
+// The search key of a track: its album, its album artist, its title and its
+// artist, each folded the way the collation compares them (case, accents, Ё
+// as Е), in that order, with the album's two set apart from the track's two
+// by RS and every name from the next by US. A word of a query never holds
+// either separator, so it can only be found inside one name.
+//
+// Kept in its own column because it is what every search reads, row after
+// row: folding four names per row per search is most of the time a search
+// took, and the folding gives the same answer every time.
+#define SEARCH_KEY_MAX 1024
+#define SEARCH_RS '\x1e'
+#define SEARCH_US '\x1f'
+
+static void search_key(const char *title, const char *artist, const char *album, const char *album_artist, char *out,
+					   size_t size) {
+	const char *parts[4] = {album, album_artist, title, artist};
+	size_t at = 0;
+	out[0] = '\0';
+	for (int i = 0; i < 4 && at + 2 < size; i++) {
+		if (i > 0) {
+			out[at++] = i == 2 ? SEARCH_RS : SEARCH_US;
+			out[at] = '\0';
+		}
+		at += fold_text(parts[i], out + at, size - at);
+	}
+}
+
+static void searchkey_sql(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	const char *text[4] = {NULL, NULL, NULL, NULL};
+	for (int i = 0; i < argc && i < 4; i++) {
+		text[i] = (const char *)sqlite3_value_text(argv[i]);
+	}
+	char key[SEARCH_KEY_MAX];
+	search_key(text[0], text[1], text[2], text[3], key, sizeof(key));
+	sqlite3_result_text(ctx, key, -1, SQLITE_TRANSIENT);
+}
+
+// searchmatch(key, words, scope): whether every word of `words` -- a query
+// already folded, words one space apart (search_terms) -- is somewhere in
+// `key`, in any order. Scope 1 reads only the album's part of a search key,
+// up to RS, which is how an album is found by its name and its artist but
+// not by the title of a song on it.
+//
+// One C call per row, against what it replaces: a LIKE, which on its own
+// cannot ask for two words in either order, over foldcase() of the name,
+// which folded the row anew on every search.
+static void searchmatch_sql(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	const char *key = argc > 0 ? (const char *)sqlite3_value_text(argv[0]) : NULL;
+	const char *words = argc > 1 ? (const char *)sqlite3_value_text(argv[1]) : NULL;
+	int scope = argc > 2 ? sqlite3_value_int(argv[2]) : 0;
+	if (!key || !words || !words[0]) {
+		sqlite3_result_int(ctx, 0);
+		return;
+	}
+	size_t key_len = strlen(key);
+	if (scope == 1) {
+		const char *rs = memchr(key, SEARCH_RS, key_len);
+		if (rs) {
+			key_len = (size_t)(rs - key);
+		}
+	}
+
+	const char *word = words;
+	while (*word) {
+		const char *space = strchr(word, ' ');
+		size_t len = space ? (size_t)(space - word) : strlen(word);
+		bool found = false;
+		if (len > 0 && len <= key_len) {
+			for (size_t i = 0; i + len <= key_len; i++) {
+				if (key[i] == word[0] && memcmp(key + i, word, len) == 0) {
+					found = true;
+					break;
+				}
+			}
+		}
+		if (!found && len > 0) {
+			sqlite3_result_int(ctx, 0);
+			return;
+		}
+		word += len;
+		while (*word == ' ') {
+			word++;
+		}
+	}
+	sqlite3_result_int(ctx, 1);
+}
+
 // Whose an album is, as a short key: what tells apart two records with the same
 // name. The album artist, or the artist on a file that has none -- the scan
 // keeps whichever it found in MEDIA_TABLE.album_artist -- and the folder on a
@@ -1204,9 +1300,55 @@ static void build_sort_indexes(void) {
 	pthread_mutex_unlock(&db_lock);
 }
 
+// Whether some track still has no search key: a card indexed before the column
+// existed. A seek into media_searchkey_missing_idx, which holds those rows and
+// nothing else.
+static bool searchkeys_missing(void) {
+	pthread_mutex_lock(&db_lock);
+	bool missing = db && count_rows("SELECT 1 FROM MEDIA_TABLE WHERE searchkey IS NULL LIMIT 1") > 0;
+	pthread_mutex_unlock(&db_lock);
+	return missing;
+}
+
+// The search keys of the rows that have none, a batch at a time off the
+// index of exactly those rows. Searching never waits for this: a row without a
+// key has one made for it on the spot (list_sql), only slower.
+static void searchkeys_fill(void) {
+	uint32_t started_ms = now_ms();
+	int filled = 0;
+	for (;;) {
+		if (backfill_stop || scan_running) {
+			return;
+		}
+		pthread_mutex_lock(&db_lock);
+		int changed = 0;
+		if (db && exec("UPDATE MEDIA_TABLE SET searchkey = searchkey(name, artist, album, album_artist)"
+					   " WHERE rowid IN (SELECT rowid FROM MEDIA_TABLE WHERE searchkey IS NULL LIMIT 2000)")) {
+			changed = sqlite3_changes(db);
+		}
+		pthread_mutex_unlock(&db_lock);
+		if (changed <= 0) {
+			break;
+		}
+		filled += changed;
+	}
+	if (filled > 0) {
+		printf("library: %d search keys filled in in %u ms\n", filled, now_ms() - started_ms);
+	}
+}
+
+// Set before the worker starts: whether the sort keys are what it is for, or
+// only the search keys.
+static bool backfill_sortkeys;
+
 static void *backfill_worker(void *arg) {
 	(void)arg;
 	thread_be_background("sortkeys");
+
+	if (!backfill_sortkeys) {
+		searchkeys_fill();
+		return NULL;
+	}
 
 	uint32_t started_ms = now_ms();
 	int filled = 0;
@@ -1263,18 +1405,23 @@ static void *backfill_worker(void *arg) {
 		printf("library: %d sort keys filled in in %u ms; the lists are indexed from now on\n", filled,
 			   now_ms() - started_ms);
 	}
+	searchkeys_fill();
 	return NULL;
 }
 
 static void sortkeys_start_backfill(void) {
 	// The ordinary case: every boot but the first one after the upgrade.
-	if (!sortkeys_missing()) {
+	backfill_sortkeys = sortkeys_missing();
+	if (!backfill_sortkeys) {
 		build_sort_indexes();
 		sortkeys_ready = true;
-		return;
+		if (!searchkeys_missing()) {
+			return;
+		}
+		printf("library: the index predates the search keys; filling them in the background\n");
+	} else {
+		printf("library: the index predates the sort keys; filling them in the background\n");
 	}
-
-	printf("library: the index predates the sort keys; filling them in the background\n");
 	backfill_stop = false;
 	if (pthread_create(&backfill_thread, NULL, backfill_worker, NULL) == 0) {
 		backfill_started = true;
@@ -1357,6 +1504,11 @@ static bool db_open_file(const char *db_path) {
 
 	// And the folding on its own, which the search matches through.
 	sqlite3_create_function(db, "foldcase", 1, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, foldcase_sql, NULL,
+							NULL);
+
+	// The search: the key a row is found by, and the test.
+	sqlite3_create_function(db, "searchkey", 4, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, searchkey_sql, NULL, NULL);
+	sqlite3_create_function(db, "searchmatch", 3, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, searchmatch_sql, NULL,
 							NULL);
 
 	// And whose an album is, for telling apart two records with one name.
@@ -2648,26 +2800,29 @@ static bool playlist_table(const char *name, char *out, size_t out_size) {
 
 // The ordered query behind a list, as SQL. `select` is what to ask for, so the
 // same builder serves both the row-id pass and the streaming reader.
-// The LIKE pattern a query becomes: folded the way foldcase() folds the rows,
-// wrapped in wildcards, and with LIKE's own two wildcards escaped -- a query is
-// a piece of a name, so a user typing "_" means an underscore and not "any
-// character". False for a query that folds to nothing.
-static bool search_pattern(const char *query, char *out, size_t size) {
+// The words a query becomes for searchmatch(): folded the way the search key
+// is, runs of white space made one space, none at either end. False for a
+// query with no word in it.
+static bool search_terms(const char *query, char *out, size_t size) {
 	char folded[256];
-	if (!query || size < 3 || fold_text(query, folded, sizeof(folded)) == 0) {
+	if (!query || size < 2 || fold_text(query, folded, sizeof(folded)) == 0) {
 		return false;
 	}
 	size_t at = 0;
-	out[at++] = '%';
-	for (size_t i = 0; folded[i] && at + 3 < size; i++) {
-		if (folded[i] == '%' || folded[i] == '_' || folded[i] == '\\') {
-			out[at++] = '\\';
+	bool gap = false;
+	for (size_t i = 0; folded[i] && at + 2 < size; i++) {
+		if (isspace((unsigned char)folded[i])) {
+			gap = at > 0;
+			continue;
+		}
+		if (gap) {
+			out[at++] = ' ';
+			gap = false;
 		}
 		out[at++] = folded[i];
 	}
-	out[at++] = '%';
 	out[at] = '\0';
-	return true;
+	return at > 0;
 }
 
 // The first " ORDER BY " of `sql` outside brackets and quotes, or NULL.
@@ -2696,32 +2851,45 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 					 const char *value, library_order_t order) {
 	const char *col = filter_column(filter);
 
-	// A search: the names that contain the query, in list order, with the
-	// pattern bound as ?1. Tracks, albums and artists only.
+	// A search: the rows that hold every word of the query, in list order,
+	// with the words bound as ?1 (search_terms). Tracks, albums and artists
+	// only, and at most LIBRARY_SEARCH_MAX of each: in list order, so the walk
+	// down the sort key index stops as soon as that many have turned up.
+	//
+	// A track is found by any of its four names -- "floyd wall" finds the
+	// songs of The Wall -- through the stored key, or one made on the spot
+	// for a row the backfill has not reached yet. An album by its name and
+	// its artist, which are the album's part of its tracks' keys. An artist
+	// by the name.
 	if (filter == LIBRARY_FILTER_SEARCH) {
-		static const struct {
-			library_list_t kind;
-			const char *table;
-			const char *column;
-		} SEARCHED[] = {
-			{LIBRARY_LIST_TRACKS, "MEDIA_TABLE", "name"},
-			{LIBRARY_LIST_ALBUMS, "ALBUM_GROUP_TABLE", "album"},
-			{LIBRARY_LIST_ARTISTS, "ARTIST_TABLE", "artist"},
-		};
+		const char *track_key = "COALESCE(searchkey, searchkey(name, artist, album, album_artist))";
 		sql[0] = '\0';
-		for (size_t i = 0; i < sizeof(SEARCHED) / sizeof(SEARCHED[0]); i++) {
-			if (SEARCHED[i].kind != kind) {
-				continue;
-			}
-			if (list_uses_sortkey(kind)) {
-				snprintf(sql, size, "SELECT %s FROM %s WHERE %s <> '' AND foldcase(%s) LIKE ?1 ESCAPE '\\' ORDER BY sortkey",
-						 select, SEARCHED[i].table, SEARCHED[i].column, SEARCHED[i].column);
-			} else {
-				snprintf(sql, size,
-						 "SELECT %s FROM %s WHERE %s <> '' AND foldcase(%s) LIKE ?1 ESCAPE '\\'"
-						 " ORDER BY %s COLLATE listorder",
-						 select, SEARCHED[i].table, SEARCHED[i].column, SEARCHED[i].column, SEARCHED[i].column);
-			}
+		if (kind == LIBRARY_LIST_TRACKS) {
+			// "+sortkey", not "sortkey": the plain column would have SQLite
+			// walk the sort key index and look each row up in the table in
+			// that order -- twenty thousand reads scattered over the card for
+			// a query that finds three. The plus makes it read the table
+			// front to back instead, once, and sort what it found.
+			snprintf(sql, size, "SELECT %s FROM MEDIA_TABLE WHERE name <> '' AND searchmatch(%s, ?1, 0) ORDER BY %s",
+					 select, track_key, list_uses_sortkey(kind) ? "+sortkey" : "name COLLATE listorder");
+		} else if (kind == LIBRARY_LIST_ALBUMS) {
+			// The album's part of the key of any one of its tracks: the name
+			// and the album artist are the same on all of them. One seek into
+			// media_album_key_idx per album, rather than a second walk of
+			// every track on the card.
+			snprintf(sql, size,
+					 "SELECT %s FROM ALBUM_GROUP_TABLE g WHERE album <> '' AND searchmatch((SELECT %s FROM MEDIA_TABLE m"
+					 " WHERE m.album = g.album AND m.album_key = g.album_key LIMIT 1), ?1, 1) ORDER BY %s",
+					 select, track_key, list_uses_sortkey(kind) ? "sortkey" : "album COLLATE listorder");
+		} else if (kind == LIBRARY_LIST_ARTISTS) {
+			snprintf(sql, size,
+					 "SELECT %s FROM ARTIST_TABLE WHERE artist <> '' AND searchmatch(foldcase(artist), ?1, 0)"
+					 " ORDER BY %s",
+					 select, list_uses_sortkey(kind) ? "sortkey" : "artist COLLATE listorder");
+		}
+		if (sql[0] && strncmp(select, "COUNT(", 6) != 0) {
+			size_t used = strlen(sql);
+			snprintf(sql + used, size - used, " LIMIT %d", LIBRARY_SEARCH_MAX);
 		}
 		return;
 	}
@@ -3003,10 +3171,10 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 				  (kind == LIBRARY_LIST_ALBUMS &&
 				   (filter == LIBRARY_FILTER_ARTIST || filter == LIBRARY_FILTER_ALBUM_ARTIST ||
 					filter == LIBRARY_FILTER_GENRE || filter == LIBRARY_FILTER_YEAR || filter == LIBRARY_FILTER_RECENT)));
-	// A search binds the pattern the value becomes, not the value.
-	char pattern[2 * 256 + 3];
+	// A search binds the words the value becomes, not the value.
+	char pattern[256];
 	if (filter == LIBRARY_FILTER_SEARCH) {
-		if (!search_pattern(value, pattern, sizeof(pattern))) {
+		if (!search_terms(value, pattern, sizeof(pattern))) {
 			free(ix);
 			return NULL;
 		}
@@ -3083,9 +3251,17 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 	// The count first, so the row ids land in one allocation of the right size
 	// rather than a dozen doublings with a copy each. Both queries run under
 	// the same lock, so nothing can change between them.
+	//
+	// Not for a search. Its count would be a second pass that tests every row
+	// against the words just as the first one does -- the whole cost of the
+	// query, twice -- to size an array that is at most LIBRARY_SEARCH_MAX
+	// entries long anyway. The rows land in an array of that size instead,
+	// which is 8 KB at most, and is cut down to what was found.
 	int expected = 0;
 	sqlite3_stmt *stmt = NULL;
-	if (db && sqlite3_prepare_v2(db, count_sql, -1, &stmt, NULL) == SQLITE_OK) {
+	if (filter == LIBRARY_FILTER_SEARCH) {
+		expected = LIBRARY_SEARCH_MAX;
+	} else if (db && sqlite3_prepare_v2(db, count_sql, -1, &stmt, NULL) == SQLITE_OK) {
 		if (bound) {
 			sqlite3_bind_text(stmt, 1, value, -1, SQLITE_TRANSIENT);
 		}
@@ -3129,6 +3305,18 @@ library_index_t *library_index_open(library_list_t kind, library_filter_t filter
 					   !(kind == LIBRARY_LIST_TRACKS && filter == LIBRARY_FILTER_ALBUM) &&
 					   !(kind == LIBRARY_LIST_ALBUMS && filter_by_year(filter));
 		ix->buckets_valid = by_name && ix->count > 0;
+	}
+
+	if (filter == LIBRARY_FILTER_SEARCH && ix->rows) {
+		if (ix->count == 0) {
+			free(ix->rows);
+			ix->rows = NULL;
+		} else if (ix->count < expected) {
+			int32_t *fitted = realloc(ix->rows, (size_t)ix->count * sizeof(*ix->rows));
+			if (fitted) {
+				ix->rows = fitted;
+			}
+		}
 	}
 
 	// Back to what the rest of the player runs on. Whatever the sorter took is
@@ -4459,8 +4647,8 @@ static bool prepare_statements(void) {
 						   "INSERT OR REPLACE INTO MEDIA_TABLE"
 						   "(id,path,name,album,artist,genre,year,dis_id,ck_id,has_child_file,begin_time,end_time,"
 						   "cue_id,character,size,sample_rate,bit_rate,bit,channel,format,quality,album_pic_path,"
-						   "lrc_path,track_gain,track_peak,album_artist,ctime,mtime,sortkey,disc,album_key)"
-						   " VALUES(?,?,?,?,?,?,?,?,0,0,0,?,0,?,?,?,0,?,0,?,\'\',NULL,NULL,0,0,?,?,?,?,?,?)",
+						   "lrc_path,track_gain,track_peak,album_artist,ctime,mtime,sortkey,disc,album_key,searchkey)"
+						   " VALUES(?,?,?,?,?,?,?,?,0,0,0,?,0,?,?,?,0,?,0,?,\'\',NULL,NULL,0,0,?,?,?,?,?,?,?)",
 						   -1, &stmt_track, NULL) != SQLITE_OK) {
 		fprintf(stderr, "library: prepare failed: %s\n", sqlite3_errmsg(db));
 		return false;
@@ -4600,6 +4788,10 @@ static void insert_track(const char *path, const char *filename, const song_meta
 	char track_album_key[ALBUM_KEY_MAX];
 	album_key(album_artist, path, track_album_key, sizeof(track_album_key));
 	sqlite3_bind_text(stmt_track, column++, track_album_key, -1, SQLITE_TRANSIENT); // album_key
+
+	char found_by[SEARCH_KEY_MAX];
+	search_key(title, tags->artist, tags->album, album_artist, found_by, sizeof(found_by));
+	sqlite3_bind_text(stmt_track, column++, found_by, -1, SQLITE_TRANSIENT); // searchkey
 
 	int step_rc = sqlite3_step(stmt_track);
 	if (step_rc != SQLITE_DONE) {
@@ -8323,8 +8515,9 @@ int library_queue_load_extra(char ***paths_out, int **slots_out) {
 }
 
 // ---------------------------------------------------------------------------
-// Search: names LIKE %query% across tracks, albums and artists, capped per
-// category -- the search page's data source.
+// Search: the same matching as the LIBRARY_FILTER_SEARCH lists (every word of
+// the query, in any order), across tracks, albums and artists, capped per
+// category.
 // ---------------------------------------------------------------------------
 
 int library_search(const char *query, int per_category, library_search_cb_t cb, void *user) {
@@ -8332,8 +8525,8 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 		return 0;
 	}
 
-	char like[2 * 256 + 3];
-	if (!search_pattern(query, like, sizeof(like))) {
+	char like[256];
+	if (!search_terms(query, like, sizeof(like))) {
 		return 0;
 	}
 
@@ -8343,8 +8536,9 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 	if (db) {
 		sqlite3_stmt *stmt = NULL;
 		if (sqlite3_prepare_v2(db,
-							   "SELECT name, path FROM MEDIA_TABLE WHERE foldcase(name) LIKE ? ESCAPE '\\'"
-							   " ORDER BY name LIMIT ?",
+							   "SELECT name, path FROM MEDIA_TABLE WHERE searchmatch("
+							   "COALESCE(searchkey, searchkey(name, artist, album, album_artist)), ?1, 0)"
+							   " ORDER BY name LIMIT ?2",
 							   -1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_text(stmt, 1, like, -1, SQLITE_TRANSIENT);
 			sqlite3_bind_int(stmt, 2, per_category);
@@ -8360,8 +8554,9 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 		// can load its artwork the same way the album list does.
 		if (sqlite3_prepare_v2(db,
 							   "SELECT " ALBUM_GROUP_VALUE ", " ALBUM_GROUP_FIRST("m.path")
-							   " FROM ALBUM_GROUP_TABLE g WHERE foldcase(album) LIKE ?"
-							   " ESCAPE '\\' ORDER BY album LIMIT ?",
+							   " FROM ALBUM_GROUP_TABLE g WHERE (album, album_key) IN (SELECT album, album_key FROM MEDIA_TABLE"
+							   " WHERE searchmatch(COALESCE(searchkey, searchkey(name, artist, album, album_artist)), ?1, 1))"
+							   " ORDER BY album LIMIT ?2",
 							   -1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_text(stmt, 1, like, -1, SQLITE_TRANSIENT);
 			sqlite3_bind_int(stmt, 2, per_category);
@@ -8376,8 +8571,8 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 			sqlite3_finalize(stmt);
 		}
 		if (sqlite3_prepare_v2(db,
-							   "SELECT artist FROM ARTIST_TABLE WHERE foldcase(artist) LIKE ? ESCAPE '\\'"
-							   " ORDER BY artist LIMIT ?",
+							   "SELECT artist FROM ARTIST_TABLE WHERE searchmatch(foldcase(artist), ?1, 0)"
+							   " ORDER BY artist LIMIT ?2",
 							   -1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_text(stmt, 1, like, -1, SQLITE_TRANSIENT);
 			sqlite3_bind_int(stmt, 2, per_category);

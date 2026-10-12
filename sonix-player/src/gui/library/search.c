@@ -681,8 +681,9 @@ static void run_search(const char *query, bool keep_place) {
 			cat_scroll[i] = scroll[i];
 		}
 
+		// A list cut at the cap says so: the count is a floor, not a total.
 		char text[16];
-		snprintf(text, sizeof(text), "%d", cat_count[i]);
+		snprintf(text, sizeof(text), cat_count[i] >= LIBRARY_SEARCH_MAX ? "%d+" : "%d", cat_count[i]);
 		lv_label_set_text(pill_count[i], text);
 		// A category with nothing in it has no pill: there is nothing to see.
 		lv_obj_set_hidden(pill[i], cat_count[i] == 0);
