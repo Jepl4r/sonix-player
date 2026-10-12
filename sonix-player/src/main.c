@@ -47,10 +47,9 @@
 #include "src/system/gearboy/gearboy.h"
 #include "src/system/remote/sonixlink.h"
 #include "src/system/core/panel.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/streaming/streamkeys.h"
 #include "src/system/lastfm/lastfm.h"
 #include "src/system/library/library.h"
@@ -2368,8 +2367,7 @@ int main(int argc, char **argv) {
 	// gui_cfg.sd_root_path, which on the simulator is a different folder: the
 	// cache and the code that cleans it must agree on one root.
 	const char *card_root = storage_sd_root();
-	qobuzcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
-	tidalcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
+	stream_provider_set_root_all(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastsubs_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	// And where a track arriving over DLNA lands: same card, same reason.
@@ -2386,8 +2384,9 @@ int main(int argc, char **argv) {
 	// Rows pointing into the stream caches are dropped once at boot: a cache
 	// file may be gone, and starring a streamed track goes to the account
 	// rather than to the local database.
-	library_forget_under(qobuzcache_dir());
-	library_forget_under(tidalcache_dir());
+	for (int i = 0; i < stream_provider_count(); i++) {
+		library_forget_under(stream_provider_at(i)->cache_dir());
+	}
 	// OpenSSL is loaded once the first frames are on screen, not here: see
 	// tls_preload_timer_cb.
 

@@ -61,4 +61,8 @@ void tidalsync_playlists_refresh(void (*done)(void));
 int tidalsync_playlists(tidal_playlist_t *out, int max);
 bool tidalsync_playlists_known(void);
 
+// Puts Tidal in the streaming-provider registry (provider.h). Once, at start-up:
+// tidal_init() calls it.
+void tidalsync_register_provider(void);
+
 #endif /* TIDALSYNC_H */

@@ -17,9 +17,8 @@
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
 #include "src/system/device/system.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/podcastcache.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/streaming/radio.h"
 
@@ -106,8 +105,7 @@ static void do_reboot(void) {
 	device_state_remember_flush();
 	clock_shutdown();
 	radio_store_close();
-	qobuzcache_clear_on_exit();
-	tidalcache_clear_on_exit();
+	stream_provider_clear_on_exit_all();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
 	power_screen_off(); // same instant-feedback trick as the shutdown

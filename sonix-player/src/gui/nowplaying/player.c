@@ -43,10 +43,7 @@
 #include "src/system/streaming/podcast.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
-#include "src/system/streaming/qobuzcache.h"
-#include "src/system/streaming/qobuzsync.h"
-#include "src/system/streaming/tidalcache.h"
-#include "src/system/streaming/tidalsync.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/core/utils.h"
 #include "src/system/audio/waveform.h"
 
@@ -194,8 +191,7 @@ static lv_obj_t *below_slider_obj; // the two clocks under the bar
 static int badge_top(void) { return BADGE_INSET + (bar_always ? bar_height : 0); }
 
 static lv_obj_t *live_badge;	   // live indicator, top right over the artwork
-static lv_obj_t *qobuz_badge;	   // the Qobuz mark, in the same corner
-static lv_obj_t *tidal_badge;	   // and the Tidal one, over it: only one ever shows
+static lv_obj_t *service_badge;	   // the streaming service's mark (Qobuz, Tidal...), same corner
 static lv_obj_t *podcast_badge;	   // and the podcast one, third in the same place
 static bool live_mode;
 static bool live_transport_hidden; // prev/next taken away on a stream
@@ -452,14 +448,11 @@ static void apply_live_mode(bool live) {
 	}
 	// The marks share one corner and can never go there together: a live
 	// stream does not come from Qobuz.
-	if (tidal_badge && live) {
-		lv_obj_set_hidden(tidal_badge, true);
+	if (service_badge && live) {
+		lv_obj_set_hidden(service_badge, true);
 	}
 	if (podcast_badge && live) {
 		lv_obj_set_hidden(podcast_badge, true);
-	}
-	if (qobuz_badge && live) {
-		lv_obj_set_hidden(qobuz_badge, true);
 	}
 
 	// A note means "track", a book means a book, and a station with no artwork
@@ -1201,7 +1194,7 @@ static bool playing_local_file(const device_state_t *state) {
 		return false;
 	}
 	const char *f = state->current_file;
-	return !qobuzcache_owns(f) && !tidalcache_owns(f) && !podcastcache_is_episode(f) && !dlna_owns_path(f) &&
+	return !stream_provider_owns(f) && !podcastcache_is_episode(f) && !dlna_owns_path(f) &&
 		   !dlna_owns_playback();
 }
 
@@ -2253,7 +2246,7 @@ static int studio_cover_geometry(int *top_out) {
 // `parent` of NULL leaves them where they are and only re-places them, which
 // is what studio_place() wants on a relayout.
 static void studio_badges_move(lv_obj_t *parent, int y) {
-	lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge};
+	lv_obj_t *const marks[] = {live_badge, service_badge, podcast_badge};
 	for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 		if (!marks[i]) {
 			continue;
@@ -2425,7 +2418,7 @@ static void studio_take_back(void) {
 		}
 		// The marks go back to the corner of the artwork they share with every
 		// other arrangement.
-		lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge};
+		lv_obj_t *const marks[] = {live_badge, service_badge, podcast_badge};
 		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 			if (marks[i]) {
 				lv_obj_set_parent(marks[i], cover_panel);
@@ -3150,7 +3143,7 @@ static void player_refresh_theme(void) {
 	}
 }
 
-static void update_qobuz_badge(void);
+static void update_service_badge(void);
 
 // Refreshes the now-playing info (title + artist) from the current
 // device state and resets the per-track length cache. Used both when the user
@@ -3214,7 +3207,7 @@ static void refresh_now_playing(void) {
 
 	update_fav_button();
 	update_format_label(&state);
-	update_qobuz_badge();
+	update_service_badge();
 
 	lyrics_request(&state);
 
@@ -3240,9 +3233,9 @@ static void refresh_live_texts(const device_state_t *state) {
 	}
 }
 
-// The mirror of the Qobuz favourites has arrived, so the star may need to
-// change face. It comes from the qobuzsync worker, hence the bounce onto the
-// UI thread.
+// The mirror of a service's favourites has arrived, so the star may need to
+// change face. It comes from the service's sync worker, hence the bounce onto
+// the UI thread.
 static void update_fav_button(void);
 
 static void fav_refresh_async(void *user) {
@@ -3250,17 +3243,22 @@ static void fav_refresh_async(void *user) {
 	update_fav_button();
 }
 
-static void qobuz_favorites_changed(void) { gui_post(fav_refresh_async, NULL); }
-static void tidal_favorites_changed(void) { gui_post(fav_refresh_async, NULL); }
+static void service_favorites_changed(void) { gui_post(fav_refresh_async, NULL); }
 
-// The Qobuz id of the loaded track, 0 when what is playing does not come from
-// Qobuz. This is the question that splits the star and "add to playlist" in
-// two: a user's own file is written to the local database, a Qobuz track to
-// the account.
-static long current_qobuz_track(void) {
+// The streaming service the loaded track comes from, NULL when what is playing
+// is not a streamed track. This is the question that splits the star and "add
+// to playlist" in two: a user's own file is written to the local database, a
+// streamed track to the account. The caches live in different directories, so
+// a path can belong to at most one service -- the player cannot believe a
+// track comes from two by construction.
+static const stream_provider_t *current_service(char *path, size_t size) {
 	device_state_t state;
 	device_state_get(&state);
-	return state.current_file[0] ? qobuzcache_track_id(state.current_file) : 0;
+	const stream_provider_t *service = stream_provider_for_track(state.current_file);
+	if (service && path && size) {
+		snprintf(path, size, "%s", state.current_file);
+	}
+	return service;
 }
 
 // The podcast the playing episode belongs to, plus what following it needs:
@@ -3307,45 +3305,30 @@ bool player_current_podcast_feed(long long *id_out, podcast_feed_t *feed_out) {
 	return podcast_current_feed(id_out, feed_out);
 }
 
-// The same for Tidal. Two separate questions rather than one returning "which
-// service": the two caches live in different directories, so a path can answer
-// yes to at most one, which makes it impossible by construction for the player
-// to believe a track comes from both.
-static long current_tidal_track(void) {
-	device_state_t state;
-	device_state_get(&state);
-	return state.current_file[0] ? tidalcache_track_id(state.current_file) : 0;
-}
-
-// The Qobuz mark, top right, when what is playing comes from there. Same place
-// and same purpose as the live badge for radio: say where the music comes from
-// without taking space from anything else.
+// The service's mark, top right, when what is playing comes from Qobuz, Tidal
+// or another streaming service. Same place and same purpose as the live badge
+// for radio: say where the music comes from without taking space from anything
+// else.
 //
-// The question is the star's own -- is the file in the Qobuz cache? -- so
+// The question is the star's own -- is the file in a service's cache? -- so
 // there is no extra state to keep in step.
-static void update_qobuz_badge(void) {
+static void update_service_badge(void) {
 	// The marks share one corner and can never appear together: a track comes
 	// from one service only. So which one shows is decided here, rather than
 	// leaving each badge to hide itself -- which is how they would eventually
-	// have overlapped.
-	bool from_qobuz = !live_mode && current_qobuz_track() != 0;
-	bool from_tidal = !live_mode && !from_qobuz && current_tidal_track() != 0;
-	bool from_podcast = !live_mode && !from_qobuz && !from_tidal && current_podcast_episode();
+	// have overlapped. One image serves every service: its picture is the
+	// service's own, swapped here.
+	const stream_provider_t *service = live_mode ? NULL : current_service(NULL, 0);
+	bool from_service = service && service->gui.badge;
+	bool from_podcast = !live_mode && !service && current_podcast_episode();
 
-	if (qobuz_badge) {
-		if (from_qobuz) {
-			lv_obj_set_hidden(qobuz_badge, false);
-			lv_obj_move_foreground(qobuz_badge);
+	if (service_badge) {
+		if (from_service) {
+			lv_image_set_src(service_badge, service->gui.badge);
+			lv_obj_set_hidden(service_badge, false);
+			lv_obj_move_foreground(service_badge);
 		} else {
-			lv_obj_set_hidden(qobuz_badge, true);
-		}
-	}
-	if (tidal_badge) {
-		if (from_tidal) {
-			lv_obj_set_hidden(tidal_badge, false);
-			lv_obj_move_foreground(tidal_badge);
-		} else {
-			lv_obj_set_hidden(tidal_badge, true);
+			lv_obj_set_hidden(service_badge, true);
 		}
 	}
 	if (podcast_badge) {
@@ -3370,8 +3353,8 @@ static void update_fav_button(void) {
 	// the one on the Radio page.
 	radio_station_t station;
 	bool starred = false;
-	long qobuz_id = 0;
-	long tidal_id = 0;
+	const stream_provider_t *service = NULL;
+	char service_path[512];
 	long long feed_id = 0;
 	if (radio_current_station(&station)) {
 		starred = radio_fav_contains(station.uuid);
@@ -3381,15 +3364,12 @@ static void update_fav_button(void) {
 		// list is on the card, so the answer is immediate and nothing has to
 		// be asked of the network.
 		starred = podcastsubs_is_followed(feed_id);
-	} else if ((qobuz_id = current_qobuz_track()) > 0) {
-		// A Qobuz track: the star reports what is on the account, not what is
-		// in the local database. Until the mirror arrives it is drawn empty
+	} else if ((service = current_service(service_path, sizeof(service_path))) != NULL) {
+		// A streamed track: the star reports what is on the account, not what
+		// is in the local database. Until the mirror arrives it is drawn empty
 		// and asked for -- one request per session, not one per song.
-		starred = qobuzsync_is_favorite(qobuz_id);
-		qobuzsync_favorites_refresh(qobuz_favorites_changed);
-	} else if ((tidal_id = current_tidal_track()) > 0) {
-		starred = tidalsync_is_favorite(tidal_id);
-		tidalsync_favorites_refresh(tidal_favorites_changed);
+		starred = service->fav_get(service_path);
+		service->fav_refresh(service_favorites_changed);
 	} else {
 		// device_state, not audio_get_current_file(): the star is drawn from
 		// one source and toggled from another, and when the two disagreed the
@@ -3418,7 +3398,7 @@ static void update_fav_button(void) {
 	lv_obj_set_style_image_recolor_opa(fav_btn_icon, LV_OPA_COVER, 0);
 }
 
-// The outcome of a Qobuz star, from the qobuzsync worker. Success says
+// The outcome of a streamed track's star, from the service's sync worker. Success says
 // nothing -- the filled star already did; failure has to be said, because the
 // star had filled in optimistically and is about to empty again.
 static char fav_error[192];
@@ -3431,15 +3411,12 @@ static void fav_error_async(void *user) {
 	update_fav_button();
 }
 
-static void qobuz_fav_done(bool ok, const char *error, void *user) {
-	(void)user;
-	snprintf(fav_error, sizeof(fav_error), "%s", ok ? "" : (error && error[0] ? error : tr("qobuz_favourites_failed")));
-	gui_post(fav_error_async, NULL);
-}
-
-static void tidal_fav_done(bool ok, const char *error, void *user) {
-	(void)user;
-	snprintf(fav_error, sizeof(fav_error), "%s", ok ? "" : (error && error[0] ? error : tr("tidal_favourites_failed")));
+// `user` is the provider that was written to: its fallback message names the
+// service, so a failed Tidal star does not send the user looking at Qobuz.
+static void service_fav_done(bool ok, const char *error, void *user) {
+	const stream_provider_t *service = user;
+	snprintf(fav_error, sizeof(fav_error), "%s",
+			 ok ? "" : (error && error[0] ? error : tr(service->fav_failed_key)));
 	gui_post(fav_error_async, NULL);
 }
 
@@ -3477,22 +3454,14 @@ static void fav_btn_event_cb(lv_event_t *e) {
 		return;
 	}
 
-	// A Qobuz track goes into the account's favourites. Saving it in the local
-	// database would mean keeping the path of a cache file that will be gone
-	// twenty tracks from now, and invisible from any other device.
-	long qobuz_id = qobuzcache_track_id(state.current_file);
-	if (qobuz_id > 0) {
-		bool want = !qobuzsync_is_favorite(qobuz_id);
-		qobuzsync_favorite_toggle(qobuz_id, want, qobuz_fav_done, NULL);
+	// A streamed track goes into the account's favourites. Saving it in the
+	// local database would mean keeping the path of a cache file that will be
+	// gone twenty tracks from now, and invisible from any other device.
+	const stream_provider_t *service = stream_provider_for_track(state.current_file);
+	if (service) {
+		bool want = !service->fav_get(state.current_file);
+		service->fav_toggle(state.current_file, want, service_fav_done, (void *)service);
 		update_fav_button(); // the mirror has already flipped: shows at once
-		return;
-	}
-
-	long tidal_id = tidalcache_track_id(state.current_file);
-	if (tidal_id > 0) {
-		bool want = !tidalsync_is_favorite(tidal_id);
-		tidalsync_favorite_toggle(tidal_id, want, tidal_fav_done, NULL);
-		update_fav_button();
 		return;
 	}
 
@@ -3596,7 +3565,7 @@ static void update_format_label(const device_state_t *state) {
 		// AAC) the real average stands in -- but only once the download has
 		// finished, for the reason just given.
 		struct stat st;
-		if (kbps <= 0 && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file) &&
+		if (kbps <= 0 && !stream_provider_owns(state->current_file) &&
 			state->progress_total_secs > 0.5 && stat(state->current_file, &st) == 0 && st.st_size > 0) {
 			kbps = (int)((double)st.st_size * 8.0 / state->progress_total_secs / 1000.0 + 0.5);
 		}
@@ -4432,7 +4401,7 @@ void player_set_statusbar_always(bool on) {
 	// The marks in the artwork's corner, and everything lined up with the
 	// chevron, follow it down or back up.
 	if (!studio_up) {
-		lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge};
+		lv_obj_t *const marks[] = {live_badge, service_badge, podcast_badge};
 		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 			if (marks[i]) {
 				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
@@ -5119,23 +5088,20 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_align(live_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(live_badge, true);
 
-	// The Qobuz mark, in the same corner and for the same reason: say where
-	// what is playing comes from. It is the white-outlined image, legible even
-	// over a black cover, and is not recoloured (theme_style_icon would turn
-	// it into a solid square).
-	qobuz_badge = lv_image_create(cover_panel);
-	lv_image_set_src(qobuz_badge, &icon_qobuz_badge);
-	lv_obj_align(qobuz_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
-	lv_obj_set_hidden(qobuz_badge, true);
+	// The streaming service's mark (Qobuz, Tidal...), in the same corner and
+	// for the same reason: say where what is playing comes from. The picture
+	// is the service's own (stream_provider_t.gui.badge), set by
+	// update_service_badge(): white-outlined images, legible even over a black
+	// cover, and not recoloured (theme_style_icon would turn them into a solid
+	// square).
+	service_badge = lv_image_create(cover_panel);
+	lv_image_set_src(service_badge, &icon_qobuz_badge);
+	lv_obj_align(service_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
+	lv_obj_set_hidden(service_badge, true);
 
-	// Same corner, same size: the marks replace each other instead of sitting
-	// side by side, and update_qobuz_badge() decides which.
-	tidal_badge = lv_image_create(cover_panel);
-	lv_image_set_src(tidal_badge, &icon_tidal_badge);
-	lv_obj_align(tidal_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
-	lv_obj_set_hidden(tidal_badge, true);
-
-	// And the third, same corner and same size as the other two.
+	// And the podcast one, same corner and same size: the marks replace each
+	// other instead of sitting side by side, and update_service_badge()
+	// decides which.
 	podcast_badge = lv_image_create(cover_panel);
 	lv_image_set_src(podcast_badge, &icon_podcast_badge);
 	lv_obj_align(podcast_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());

@@ -40,10 +40,7 @@
 #include "src/system/playback/playlist.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/device/power.h"
-#include "src/system/streaming/qobuzcache.h"
-#include "src/system/streaming/qobuzsync.h"
-#include "src/system/streaming/tidalcache.h"
-#include "src/system/streaming/tidalsync.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/remote/sonixlink.h"
@@ -394,30 +391,25 @@ static void refresh_now_playing_card(void) {
 	// there is no file to look up in the music library.
 	radio_station_t station;
 	bool fav;
-	long qobuz_id = 0;
-	long tidal_id = 0;
+	const stream_provider_t *service = NULL;
 	if (radio_current_station(&station)) {
 		fav = radio_fav_contains(station.uuid);
 	} else if (podcast) {
 		// On a podcast the star reports whether the feed is followed, exactly as
 		// the player's star does.
 		fav = podcastsubs_is_followed(podcast_feed_id);
-	} else if (state.current_file[0] && (tidal_id = tidalcache_track_id(state.current_file)) > 0) {
-		// Same reasoning as the Qobuz case below: the star must report what is on
-		// the account, not what is in the local database.
+	} else if ((service = stream_provider_for_track(state.current_file)) != NULL) {
+		// A streamed track: the star reports the account state, like the
+		// player's. Reading the local database here would draw a star that
+		// disagrees with the one a tap fills.
 		//
 		// The local mirror is also refreshed, because it may not be populated
-		// yet: the control centre can be opened on a Tidal track without the
+		// yet: the control centre can be opened on a streamed track without the
 		// player ever having been visited, and an empty star on a track that is
 		// a favourite turns the next tap into an "add" for something already
 		// added.
-		fav = tidalsync_is_favorite(tidal_id);
-		tidalsync_favorites_refresh(NULL);
-	} else if (state.current_file[0] && (qobuz_id = qobuzcache_track_id(state.current_file)) > 0) {
-		// A Qobuz track: the star reports the account state, like the player's.
-		// Reading the local database here would draw a star that disagrees with
-		// the one a tap fills.
-		fav = qobuzsync_is_favorite(qobuz_id);
+		fav = service->fav_get(state.current_file);
+		service->fav_refresh(NULL);
 	} else {
 		fav = state.current_file[0] && library_fav_contains(state.current_file);
 	}
@@ -847,7 +839,7 @@ static void repeat_cb(lv_event_t *e) {
 	refresh_repeat_icon();
 }
 
-// Result of a Qobuz star, delivered by the qobuzsync worker. Same contract as
+// Result of a streamed track's star, delivered by the service's sync worker. Same contract as
 // the player's star: success needs no message, since the filled star already
 // says it, but failure does, because the star filled on touch and now empties
 // again. Reported on the GUI thread via gui_post, never from the worker.
@@ -862,17 +854,11 @@ static void qp_fav_error_async(void *user) {
 	player_refresh_now_playing();
 }
 
+// `user` is the provider written to, whose fallback message names the service.
 static void qp_fav_done(bool ok, const char *error, void *user) {
-	(void)user;
+	const stream_provider_t *service = user;
 	snprintf(qp_fav_error, sizeof(qp_fav_error), "%s",
-			 ok ? "" : (error && error[0] ? error : tr("qobuz_favourites_failed")));
-	gui_post(qp_fav_error_async, NULL);
-}
-
-static void qp_tidal_fav_done(bool ok, const char *error, void *user) {
-	(void)user;
-	snprintf(qp_fav_error, sizeof(qp_fav_error), "%s",
-			 ok ? "" : (error && error[0] ? error : tr("tidal_favourites_failed")));
+			 ok ? "" : (error && error[0] ? error : tr(service->fav_failed_key)));
 	gui_post(qp_fav_error_async, NULL);
 }
 
@@ -912,23 +898,14 @@ static void star_cb(lv_event_t *e) {
 		return;
 	}
 
-	// A Qobuz track: the star goes to the account favourites, like the player's,
-	// and not to the local database, which would store the path of a cache file
-	// that is gone twenty tracks later.
-	long qobuz_id = qobuzcache_track_id(state.current_file);
-	if (qobuz_id > 0) {
-		bool want = !qobuzsync_is_favorite(qobuz_id);
-		qobuzsync_favorite_toggle(qobuz_id, want, qp_fav_done, NULL);
+	// A streamed track: the star goes to the account favourites, like the
+	// player's, and not to the local database, which would store the path of a
+	// cache file that is gone twenty tracks later.
+	const stream_provider_t *service = stream_provider_for_track(state.current_file);
+	if (service) {
+		bool want = !service->fav_get(state.current_file);
+		service->fav_toggle(state.current_file, want, qp_fav_done, (void *)service);
 		refresh_now_playing_card(); // the local mirror already flipped, so redraw at once
-		player_refresh_now_playing();
-		return;
-	}
-
-	long tidal_id = tidalcache_track_id(state.current_file);
-	if (tidal_id > 0) {
-		bool want = !tidalsync_is_favorite(tidal_id);
-		tidalsync_favorite_toggle(tidal_id, want, qp_tidal_fav_done, NULL);
-		refresh_now_playing_card();
 		player_refresh_now_playing();
 		return;
 	}

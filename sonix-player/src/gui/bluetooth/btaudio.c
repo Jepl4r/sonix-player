@@ -27,8 +27,7 @@
 #include "src/system/device/ota.h"
 #include "src/system/net/wifitransfer.h"
 #include "src/system/streaming/podcastcache.h"
-#include "src/system/streaming/qobuzcache.h"
-#include "src/system/streaming/tidalcache.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/core/lang.h"
 
 lv_obj_t *btaudio_screen;
@@ -444,7 +443,7 @@ static void build_keep_on_options(lv_obj_t *container) {
 // cached for Qobuz, Tidal or a podcast, or a firmware update downloading. The
 // transfer server is the other case and is handled by bluetooth.c itself.
 static bool wifi_downloading(void) {
-	return qobuzcache_downloading_id() > 0 || tidalcache_downloading_id() > 0 || podcastcache_downloading_id() > 0 ||
+	return stream_provider_any_downloading() || podcastcache_downloading_id() > 0 ||
 		   ota_busy();
 }
 

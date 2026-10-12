@@ -36,11 +36,10 @@
 #include "src/system/input/hookclicks.h"
 #include "src/system/input/keymap.h"
 #include "src/system/core/panel.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/radio.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
 #include "src/system/library/playlists.h"
@@ -834,8 +833,7 @@ static void card_databases_attach(const char *root) {
 	eq_presets_set_dir(root);
 	peq_presets_set_dir(root);
 	mseb_presets_set_dir(root);
-	qobuzcache_set_root(root);
-	tidalcache_set_root(root);
+	stream_provider_set_root_all(root);
 	podcastcache_set_root(root);
 	podcastsubs_set_root(root);
 	dlna_set_root(root);

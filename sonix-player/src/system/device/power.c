@@ -24,10 +24,9 @@
 #include "src/system/playback/device_state.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/remote/sonixlink.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastdl.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/device/adb.h"
 #include "src/system/library/library.h"
 #include "src/system/remote/airplay.h"
@@ -629,7 +628,7 @@ static bool streaming_playback_active(void) {
 	if (!path[0]) {
 		return false;
 	}
-	return qobuzcache_owns(path) || tidalcache_owns(path) || podcastcache_owns(path);
+	return stream_provider_owns(path) || podcastcache_owns(path);
 }
 
 // Whether the network is the point rather than an idle drain: an AirPlay
@@ -647,8 +646,7 @@ static bool wifi_in_use(void) {
 	// teardown it did not expect.
 	return wifi_busy() || wifi_scan_running() || streaming_playback_active() || airplay_get_enabled() ||
 		   dlna_get_enabled() || sonixlink_get_enabled() ||
-		   wifitransfer_get_enabled() || qobuzcache_downloading_id() > 0 ||
-		   qobuzcache_network_wanted() || tidalcache_downloading_id() > 0 || tidalcache_network_wanted() ||
+		   wifitransfer_get_enabled() || stream_provider_any_network_wanted() ||
 		   podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || podcastdl_busy() ||
 		   lastfm_network_wanted() || ota_busy();
 }
@@ -706,7 +704,7 @@ static bool player_is_busy(bool playing, uint32_t input_idle) {
 		   library_scan_running() ||			   // a scan, which is also writing to the card
 		   audiobookdb_scan_running() || wifitransfer_running() || dlna_running() || airplay_running() ||
 		   sonixlink_is_connected() || // a phone driving the player, not a switch left on
-		   qobuzcache_downloading_id() > 0 || tidalcache_downloading_id() > 0 || podcastcache_downloading_id() > 0 ||
+		   stream_provider_any_downloading() || podcastcache_downloading_id() > 0 ||
 		   ota_busy(); // a firmware update being fetched
 }
 
@@ -1000,8 +998,7 @@ void power_shutdown(void) {
 	// Streamed and downloaded tracks are transient and must not survive a
 	// power cycle: without this the hidden folders carry a gigabyte of files
 	// the user never put there and will not listen to again.
-	qobuzcache_clear_on_exit();
-	tidalcache_clear_on_exit();
+	stream_provider_clear_on_exit_all();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
 

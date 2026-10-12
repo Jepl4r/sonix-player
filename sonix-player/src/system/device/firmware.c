@@ -12,9 +12,8 @@
 #include "src/system/audio/audio.h"
 #include "src/system/device/clock.h"
 #include "src/system/core/config.h"
-#include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/podcastcache.h"
-#include "src/system/streaming/tidalcache.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/device/power.h"
 #include "src/system/device/sysinfo.h"
@@ -118,8 +117,7 @@ void firmware_update_start(void) {
 
 	// The streaming caches (tracks and covers) survive no power cycle, the
 	// update's included.
-	qobuzcache_clear_on_exit();
-	tidalcache_clear_on_exit();
+	stream_provider_clear_on_exit_all();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
 

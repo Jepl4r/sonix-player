@@ -10,6 +10,7 @@
 #include "src/system/core/config.h"
 #include "src/system/net/http.h"
 #include "src/system/core/json.h"
+#include "src/system/streaming/tidalsync.h"
 #include "src/system/streaming/streamkeys.h"
 #include "src/system/core/lang.h"
 
@@ -295,6 +296,11 @@ static void load_session(void) {
 }
 
 void tidal_init(void) {
+	// Into the provider registry first, whatever the keys say: the cache is
+	// the service's as soon as there is a card, and the exit paths must clear
+	// it even when Tidal is not configured.
+	tidalsync_register_provider();
+
 	snprintf(api_url, sizeof(api_url), "%s", config_get("tidal", "base_url", TIDAL_API_DEFAULT));
 	snprintf(auth_url, sizeof(auth_url), "%s", config_get("tidal", "auth_url", TIDAL_AUTH_DEFAULT));
 

@@ -10,6 +10,7 @@
 #include "src/system/net/http.h"
 #include "src/system/core/json.h"
 #include "src/system/core/md5.h"
+#include "src/system/streaming/qobuzsync.h"
 #include "src/system/streaming/streamkeys.h"
 #include "src/system/core/lang.h"
 
@@ -55,6 +56,11 @@ static void clear_error(void) { last_error[0] = '\0'; }
 // ---------------------------------------------------------------------------
 
 void qobuz_init(void) {
+	// Into the provider registry first, whatever the keys say: the cache is
+	// the service's as soon as there is a card, and the exit paths must clear
+	// it even when Qobuz is not configured.
+	qobuzsync_register_provider();
+
 	snprintf(base_url, sizeof(base_url), "%s", config_get("qobuz", "base_url", QOBUZ_BASE_DEFAULT));
 
 	const char *id = streamkeys_qobuz_app_id();

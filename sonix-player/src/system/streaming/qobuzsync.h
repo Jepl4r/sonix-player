@@ -76,4 +76,8 @@ int qobuzsync_playlists(qobuz_playlist_t *out, int max);
 // Whether the list has been received at least once.
 bool qobuzsync_playlists_known(void);
 
+// Puts Qobuz in the streaming-provider registry (provider.h). Once, at start-up:
+// qobuz_init() calls it.
+void qobuzsync_register_provider(void);
+
 #endif /* QOBUZSYNC_H */

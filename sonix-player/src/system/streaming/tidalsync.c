@@ -2,7 +2,11 @@
 
 #include <pthread.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
+
+#include "src/system/streaming/tidalcache.h"
+#include "src/system/streaming/provider.h"
 
 #include "src/system/core/utils.h"
 #include "src/system/core/lang.h"
@@ -374,3 +378,79 @@ int tidalsync_playlists(tidal_playlist_t *out, int max) {
 	pthread_mutex_unlock(&lock);
 	return count;
 }
+
+// ---------------------------------------------------------------------------
+// the service, as the rest of the program sees it (provider.h)
+//
+// Thin adapters: the provider speaks in paths and text ids, Tidal in numeric
+// track ids and playlist UUIDs. The path -> id step is tidalcache_track_id(),
+// pure string work, so doing it on every call costs nothing.
+// ---------------------------------------------------------------------------
+
+static bool provider_downloading(void) { return tidalcache_downloading_id() > 0; }
+
+static bool provider_is_track(const char *path) { return tidalcache_track_id(path) > 0; }
+
+static bool provider_fav_get(const char *path) { return tidalsync_is_favorite(tidalcache_track_id(path)); }
+
+static void provider_fav_toggle(const char *path, bool want, stream_provider_done_cb done, void *user) {
+	tidalsync_favorite_toggle(tidalcache_track_id(path), want, done, user);
+}
+
+static int provider_playlists(stream_provider_playlist_t *out, int max) {
+	if (!out || max <= 0) {
+		return 0;
+	}
+	if (max > TIDALSYNC_PLAYLISTS_MAX) {
+		max = TIDALSYNC_PLAYLISTS_MAX;
+	}
+	// Borrowed for the copy: the service's own records are large (cover URLs)
+	// and the picker only needs three fields of each.
+	tidal_playlist_t *got = malloc(sizeof(*got) * (size_t)max);
+	if (!got) {
+		return 0;
+	}
+	int count = tidalsync_playlists(got, max);
+	for (int i = 0; i < count; i++) {
+		snprintf(out[i].id, sizeof(out[i].id), "%s", got[i].id);
+		snprintf(out[i].name, sizeof(out[i].name), "%s", got[i].name);
+		out[i].track_count = got[i].track_count;
+	}
+	free(got);
+	return count;
+}
+
+static void provider_playlist_add(const char *playlist_id, const char *path, stream_provider_done_cb done, void *user) {
+	tidalsync_playlist_add(playlist_id, tidalcache_track_id(path), done, user);
+}
+
+static void provider_playlist_create_with(const char *name, const char *path, stream_provider_done_cb done,
+										  void *user) {
+	tidalsync_playlist_create_with(name, tidalcache_track_id(path), done, user);
+}
+
+static stream_provider_t provider = {
+	.id = "tidal",
+	.set_root = tidalcache_set_root,
+	.cache_dir = tidalcache_dir,
+	.owns_path = tidalcache_owns,
+	.downloading = provider_downloading,
+	.network_wanted = tidalcache_network_wanted,
+	.clear_on_exit = tidalcache_clear_on_exit,
+	.is_track = provider_is_track,
+	.fav_get = provider_fav_get,
+	.fav_refresh = tidalsync_favorites_refresh,
+	.fav_toggle = provider_fav_toggle,
+	.fav_failed_key = "tidal_favourites_failed",
+	.album_id = tidalcache_album_id,
+	.album_failed_key = "trackmenu_tidal_album_failed",
+	.playlists_known = tidalsync_playlists_known,
+	.playlists_refresh = tidalsync_playlists_refresh,
+	.playlists = provider_playlists,
+	.playlist_add = provider_playlist_add,
+	.playlist_create_with = provider_playlist_create_with,
+	.playlist_title_key = "playlist_tidal_playlist",
+	.change_refused_key = "tidal_change_refused",
+};
+
+void tidalsync_register_provider(void) { stream_provider_register(&provider); }

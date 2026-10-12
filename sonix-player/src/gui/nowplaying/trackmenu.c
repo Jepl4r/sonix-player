@@ -9,8 +9,6 @@
 #include "src/gui/library/medialist.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/library/playlistpage.h"
-#include "src/gui/streaming/qobuzpage.h"
-#include "src/gui/streaming/tidalpage.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/shell/settingsrow.h"
@@ -25,8 +23,7 @@
 #include "src/system/core/lang.h"
 #include "src/gui/streaming/podcastpage.h"
 #include "src/system/streaming/podcastcache.h"
-#include "src/system/streaming/qobuzcache.h"
-#include "src/system/streaming/tidalcache.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/library/library.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/core/utils.h"
@@ -431,7 +428,7 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	// duration, which is how dense the file is. Lossy files already carry it in
 	// the row above, and for a streamed track the cache file may be half
 	// downloaded, making the number meaningless.
-	if (!lossy && !qobuzcache_owns(file) && !tidalcache_owns(file) && duration_secs > 0.5) {
+	if (!lossy && !stream_provider_owns(file) && duration_secs > 0.5) {
 		struct stat st_kbps;
 		if (stat(file, &st_kbps) == 0 && st_kbps.st_size > 0) {
 			int avg = (int)((double)st_kbps.st_size * 8.0 / duration_secs / 1000.0 + 0.5);
@@ -461,7 +458,7 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	// which may still be downloading -- a number that grows on screen by itself
 	// and describes the download, not the track.
 	struct stat st;
-	if (!qobuzcache_owns(file) && !tidalcache_owns(file) && stat(file, &st) == 0) {
+	if (!stream_provider_owns(file) && stat(file, &st) == 0) {
 		snprintf(buffer, sizeof(buffer), "%.1f MB", st.st_size / (1024.0 * 1024.0));
 		details_add_row("trackmenu_size", buffer);
 	}
@@ -469,10 +466,9 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 	// The path, except for a streamed track: that lives in a cache directory
 	// nobody chose, under a numeric name, and showing it implies a file of the
 	// user's own that does not exist. The source service is shown instead.
-	if (qobuzcache_owns(file)) {
-		details_add_row("trackmenu_source", "qobuz");
-	} else if (tidalcache_owns(file)) {
-		details_add_row("trackmenu_source", "tidal");
+	const stream_provider_t *service = stream_provider_for_path(file);
+	if (service) {
+		details_add_row("trackmenu_source", service->id);
 	} else {
 		details_add_row("trackmenu_file", file);
 	}
@@ -541,7 +537,7 @@ static void details_rebuild(void) {
 	// As in the player: when the file declares no bitrate, fall back to the real
 	// average, but only for a local file -- a streamed one may still be half
 	// downloaded and the number would climb by itself.
-	if (lossy && kbps <= 0 && !qobuzcache_owns(state.current_file) && !tidalcache_owns(state.current_file) &&
+	if (lossy && kbps <= 0 && !stream_provider_owns(state.current_file) &&
 		state.progress_total_secs > 0.5) {
 		struct stat st_lossy;
 		if (stat(state.current_file, &st_lossy) == 0 && st_lossy.st_size > 0) {
@@ -676,11 +672,14 @@ static void open_album_cb(void *user) {
 		return;
 	}
 
-	// A Qobuz track is not in the local library, so its album is not looked up
-	// in the database: it is reopened on Qobuz, using the id the sidecar file
-	// kept when the track was downloaded.
-	char qobuz_album[40];
-	if (qobuzcache_album_id(state.current_file, qobuz_album, sizeof(qobuz_album))) {
+	// A streamed track is not in the local library, so its album is not looked
+	// up in the database: it is reopened on the service it came from, using the
+	// id the sidecar file kept when the track was downloaded. The name is not
+	// enough, since different albums share a title.
+	const stream_provider_t *service = stream_provider_for_path(state.current_file);
+	char service_album[64];
+	if (service && service->album_id && service->gui.open_album &&
+		service->album_id(state.current_file, service_album, sizeof(service_album))) {
 		char title[256];
 		if (!library_track_album(state.current_file, title, sizeof(title)) || !title[0]) {
 			device_state_t now;
@@ -688,30 +687,12 @@ static void open_album_cb(void *user) {
 			snprintf(title, sizeof(title), "%s", now.metadata.album);
 		}
 		player_sheet_close(false);
-		if (!qobuzpage_open_album(qobuz_album, title)) {
-			gui_notify_popup("trackmenu_qobuz_album_failed");
+		lv_obj_t *back_to = service->gui.open_album(service_album, title);
+		if (!back_to) {
+			gui_notify_popup(service->album_failed_key);
 			return;
 		}
-		switcher_set_player_return(qobuz_list_screen);
-		return;
-	}
-
-	// Same for Tidal, for the same reason: a streamed track's album is reopened
-	// on the service it came from, not in the local database, where it is not.
-	char tidal_album[40];
-	if (tidalcache_album_id(state.current_file, tidal_album, sizeof(tidal_album))) {
-		char title[256];
-		if (!library_track_album(state.current_file, title, sizeof(title)) || !title[0]) {
-			device_state_t now;
-			device_state_get(&now);
-			snprintf(title, sizeof(title), "%s", now.metadata.album);
-		}
-		player_sheet_close(false);
-		if (!tidalpage_open_album(tidal_album, title)) {
-			gui_notify_popup("trackmenu_tidal_album_failed");
-			return;
-		}
-		switcher_set_player_return(tidal_list_screen);
+		switcher_set_player_return(back_to);
 		return;
 	}
 

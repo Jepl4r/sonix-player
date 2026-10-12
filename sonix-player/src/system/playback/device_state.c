@@ -11,8 +11,7 @@
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/podcast.h"
 #include "src/system/streaming/podcastcache.h"
-#include "src/system/streaming/qobuzcache.h"
-#include "src/system/streaming/tidalcache.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/audio/replaygain.h"
 #include "src/system/device/system.h"
@@ -145,8 +144,7 @@ static bool remember_enabled(void) { return config_get_int("player", "remember_t
 // A track this player must not offer to come back to: a live stream has no
 // position, and a streaming cache file will not exist at the next boot.
 static bool remember_worth_saving(const device_state_t *state) {
-	return !state->live && state->current_file[0] && !qobuzcache_owns(state->current_file) &&
-		   !tidalcache_owns(state->current_file);
+	return !state->live && state->current_file[0] && !stream_provider_owns(state->current_file);
 }
 
 void device_state_remember_restored(const char *path, double position) {
@@ -401,7 +399,7 @@ static void queue_persist(void) {
 		// empty themselves) and the next boot would restore a queue of paths
 		// that no longer exist, mixed in with the user's own tracks. Both
 		// services, for the same reason.
-		if (qobuzcache_owns(path) || tidalcache_owns(path)) {
+		if (stream_provider_owns(path)) {
 			from_stream = true;
 			break;
 		}
@@ -426,9 +424,10 @@ static void queue_persist(void) {
 
 void device_state_queue_changed(void) { queue_persist(); }
 
-// One per streaming service plus headroom: four is already twice as many as
-// exist.
-#define PREPARE_CB_MAX 4
+// One per service that fetches a track on demand (Qobuz, Tidal, Subsonic,
+// podcasts) plus headroom for the next one: a callback that does not fit is
+// dropped with a log line, and its tracks would then never be fetched.
+#define PREPARE_CB_MAX 8
 static device_state_prepare_cb prepare_cbs[PREPARE_CB_MAX];
 static int prepare_cb_count;
 

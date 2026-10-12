@@ -28,6 +28,7 @@
 #include "src/system/device/system.h"
 #include "src/system/streaming/tidal.h"
 #include "src/system/streaming/tidalcache.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/streamturn.h"
 #include "src/system/streaming/tidalsync.h"
 #include "src/system/core/utils.h"
@@ -2861,7 +2862,18 @@ static void build_list_page(gui_config_t *cfg) {
 	player_sheet_attach_drag(list_container, true);
 }
 
+// "Show album" from the player, as the provider registry asks for it: the
+// screen back leads to, or NULL when the album could not be opened.
+static void *provider_open_album(const char *album_id, const char *title) {
+	return tidalpage_open_album(album_id, title) ? tidal_list_screen : NULL;
+}
+
 void tidalpage_init(gui_config_t *cfg) {
+	// What only the GUI can tell the rest of the program about Tidal: its mark
+	// over the artwork and how to open one of its albums (provider.h).
+	const stream_provider_gui_t provider_gui = {.badge = &icon_tidal_badge, .open_album = provider_open_album};
+	stream_provider_attach_gui("tidal", &provider_gui);
+
 	tidal_screen = lv_obj_create(NULL);
 	home_container = settingsrow_page(tidal_screen, cfg, "tidal");
 
