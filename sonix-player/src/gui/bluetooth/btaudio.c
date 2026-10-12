@@ -451,6 +451,21 @@ static void routing_watch_cb(lv_timer_t *timer) {
 	// ALSA device and differ in the route.
 	volume_output_t out;
 	if (now_bt) {
+		// Which pair, first: the Bluetooth level is kept per device, and the
+		// swap below applies whichever level that makes current. The address
+		// is read out of the PCM name -- "bluealsa:DEV=<mac>,PROFILE=a2dp" --
+		// so it is always the pair the sound is actually going to.
+		const char *dev = strstr(now, "DEV=");
+		char mac[BT_MAC_MAX] = "";
+		if (dev) {
+			dev += 4;
+			size_t length = strcspn(dev, ",");
+			if (length < sizeof(mac)) {
+				memcpy(mac, dev, length);
+				mac[length] = '\0';
+			}
+		}
+		volume_profile_set_bluetooth_device(mac);
 		out = VOLUME_OUTPUT_BLUETOOTH;
 	} else if (strncmp(now, "plughw:", 7) == 0) {
 		out = VOLUME_OUTPUT_USB;

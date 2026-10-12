@@ -184,6 +184,11 @@ void volume_profile_init(int wired_percent, int bt_percent);
 // carry. Silent about a percent outside 0..100: that is "no level yet".
 void volume_profile_set_level(volume_output_t out, int percent);
 void volume_profile_set_output(volume_output_t out);
+// Which headphones the Bluetooth profile is for, by address. Call it before
+// switching the output to VOLUME_OUTPUT_BLUETOOTH, and whenever the sound moves
+// to another pair: the Bluetooth level is kept per device, falling back to the
+// generic Bluetooth level for a pair that has none yet. GUI thread.
+void volume_profile_set_bluetooth_device(const char *mac);
 volume_output_t volume_profile_output(void);
 // Bluetooth on or off, resolving the wired side to the 3.5 mm profile. Kept for
 // callers that only know whether the sound is going over the air.
