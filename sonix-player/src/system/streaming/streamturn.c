@@ -28,14 +28,17 @@ void streamturn_release(void) {
 	pthread_mutex_unlock(&lock);
 }
 
-// Three registrants -- Qobuz, Tidal, podcasts -- plus margin.
+// Five registrants -- Qobuz, Tidal, Subsonic, podcasts, Yandex -- plus margin.
+// One that does not fit is refused with a log line rather than silently: its
+// downloads would never give way to a tap on another service's track, and that
+// is a fault worth seeing in the log.
 //
 // The table has its own lock: registration comes from the main thread at
 // startup, from the card supervisor thread (inserting a card redoes set_root)
 // and from the UI thread, while the readers are the pages' workers. Without it
 // the count can become visible before the function it counts -- one preemption
 // between two instructions -- and the call lands on a null pointer.
-#define ABANDON_MAX 4
+#define ABANDON_MAX 8
 static pthread_mutex_t abandon_lock = PTHREAD_MUTEX_INITIALIZER;
 static streamturn_abandon_fn abandon_fns[ABANDON_MAX];
 static int abandon_count;
@@ -45,15 +48,23 @@ void streamturn_register_abandon(streamturn_abandon_fn fn) {
 		return;
 	}
 	pthread_mutex_lock(&abandon_lock);
-	bool known = abandon_count >= ABANDON_MAX;
+	bool known = false;
 	for (int i = 0; i < abandon_count && !known; i++) {
 		known = abandon_fns[i] == fn;
 	}
+	bool full = false;
 	if (!known) {
-		abandon_fns[abandon_count] = fn;
-		abandon_count++;
+		if (abandon_count < ABANDON_MAX) {
+			abandon_fns[abandon_count] = fn;
+			abandon_count++;
+		} else {
+			full = true;
+		}
 	}
 	pthread_mutex_unlock(&abandon_lock);
+	if (full) {
+		fprintf(stderr, "streamturn: no room for another abandon function (%d), not registered\n", ABANDON_MAX);
+	}
 }
 
 void streamturn_abandon_all(void) {
