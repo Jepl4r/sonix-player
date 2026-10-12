@@ -228,6 +228,14 @@ const char *bluetooth_ldac_quality(void);
 unsigned bluetooth_output_generation(void);
 void bluetooth_set_ldac_quality(const char *mode);
 
+// AAC's bit-rate mode, a daemon option like LDAC's quality and restarted for
+// the same way. True (the default) asks bluealsa for VBR, which it uses only
+// with headphones that declare VBR support; false is CBR at BT_AAC_CBR_BPS.
+// Kept in [wireless] bt_aac_mode = vbr | cbr.
+#define BT_AAC_CBR_BPS 220000
+bool bluetooth_aac_vbr(void);
+void bluetooth_set_aac_vbr(bool on);
+
 // ---------------------------------------------------------------------------
 // The other direction: a device streaming to this one
 //

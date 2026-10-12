@@ -116,6 +116,7 @@ typedef enum {
 	JOB_FORGET,
 	JOB_CODECS,		  // re-read what the connected sink offers
 	JOB_LDAC_QUALITY, // restart bluealsa so it reads the new --ldac-quality
+	JOB_DAEMON_OPTION, // text: why; restart bluealsa for another start-up option
 	JOB_RECEIVER_PROFILE, // restart bluealsa with or without the A2DP sink
 	JOB_DISCOVERABLE, // arg_int: 1 visible to everyone, 0 not
 	// The name the adapter answers with. Carried in g_local_name rather than in
@@ -1218,11 +1219,35 @@ static bool ensure_bluealsa(void) {
 		if (ldac[0]) {
 			fprintf(stderr, "bluetooth: LDAC %s\n", ldac);
 		}
+		// AAC's bit-rate mode, a daemon option for the same reason as LDAC's.
+		//
+		// VBR by default: bluealsa then runs FDK-AAC in its top variable mode,
+		// which spends the bits where the music needs them instead of a flat
+		// 220 kbps on everything, and it only does so with headphones that
+		// declare VBR in their capabilities -- the rest are given CBR whatever
+		// this says, so the option cannot break a pair that never asked for it.
+		// CBR stays a choice for the odd sink that declares VBR and then
+		// stutters on it.
+		//
+		// The FDK "afterburner" is deliberately not asked for: it buys a little
+		// quality with a lot of encoder time, and on one MIPS core that time is
+		// taken from the decoder and the interface.
+		char aac[32] = {0};
+		if (bluetooth_aac_vbr()) {
+			if (bluealsa_knows_option("--aac-vbr")) {
+				snprintf(aac, sizeof(aac), "--aac-vbr");
+			}
+		} else if (bluealsa_knows_option("--aac-bitrate")) {
+			snprintf(aac, sizeof(aac), "--aac-bitrate=%d", BT_AAC_CBR_BPS);
+		}
+		if (aac[0]) {
+			fprintf(stderr, "bluetooth: AAC %s\n", aac);
+		}
 
 		char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
 		int codec_count = codecs_to_ask_for(codecs, BT_MAX_CODECS);
 
-		char *argv[11 + BT_MAX_CODECS * 2];
+		char *argv[12 + BT_MAX_CODECS * 2];
 		int at = 0;
 		argv[at++] = (char *)"bluealsa";
 		argv[at++] = (char *)"-p";
@@ -1239,6 +1264,9 @@ static bool ensure_bluealsa(void) {
 		}
 		if (ldac[0]) {
 			argv[at++] = ldac;
+		}
+		if (aac[0]) {
+			argv[at++] = aac;
 		}
 		for (int i = 0; i < codec_count; i++) {
 			argv[at++] = (char *)"-c";
@@ -3087,6 +3115,12 @@ static void *bluetooth_worker(void *arg) {
 				}
 				break;
 
+			case JOB_DAEMON_OPTION:
+				if (process_running("bluealsa")) {
+					restart_bluealsa(job.text);
+				}
+				break;
+
 			case JOB_RECEIVER_PROFILE: {
 				bool want = receiver_profile_wanted();
 				if (process_running("bluealsa") && bluealsa_has_sink() != want) {
@@ -3628,6 +3662,25 @@ void bluetooth_set_ldac_quality(const char *mode) {
 	// worker like everything else that touches the stack.
 	job_t job = {.type = JOB_LDAC_QUALITY};
 	post_job(&job);
+}
+
+// The options below are read when bluealsa starts and never again, exactly
+// like LDAC's quality, so a change restarts a running daemon on the worker.
+static void restart_for_option(const char *why) {
+	job_t job = {.type = JOB_DAEMON_OPTION};
+	snprintf(job.text, sizeof(job.text), "%s", why);
+	post_job(&job);
+}
+
+bool bluetooth_aac_vbr(void) { return strcmp(config_get("wireless", "bt_aac_mode", "vbr"), "cbr") != 0; }
+
+void bluetooth_set_aac_vbr(bool on) {
+	if (on == bluetooth_aac_vbr()) {
+		return;
+	}
+	config_set("wireless", "bt_aac_mode", on ? "vbr" : "cbr");
+	config_save();
+	restart_for_option(on ? "AAC VBR" : "AAC CBR");
 }
 
 void bluetooth_set_receiver_profile(bool on) {

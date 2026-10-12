@@ -1,5 +1,6 @@
 #include "btaudio.h"
 
+#include <stdint.h>
 #include <stdio.h>
 #include <string.h>
 
@@ -273,6 +274,55 @@ static void refresh_airpods_row(void) {
 static void volume_toggle_cb(lv_event_t *e) {
 	(void)e;
 	bluetooth_set_volume_sync(lv_obj_has_state(volume_switch, LV_STATE_CHECKED));
+}
+
+// ---------------------------------------------------------------------------
+// The encoder's own options
+//
+// Read by bluealsa when it starts and never again, so each change restarts it
+// (see bluetooth.h): the headphones drop out for a few seconds and come back on
+// their own. Kept as pills rather than switches because each is a choice
+// between two named things, not something that is on or off.
+// ---------------------------------------------------------------------------
+
+static lv_obj_t *aac_vbr_pill;
+static lv_obj_t *aac_cbr_pill;
+
+static void encoder_pills_refresh(void) {
+	if (aac_vbr_pill) {
+		bool vbr = bluetooth_aac_vbr();
+		settingsrow_pill_active(aac_vbr_pill, vbr);
+		settingsrow_pill_active(aac_cbr_pill, !vbr);
+	}
+}
+
+static void aac_pick_cb(lv_event_t *e) {
+	if (switcher_back_drag_active()) {
+		return;
+	}
+	bluetooth_set_aac_vbr((intptr_t)lv_event_get_user_data(e) != 0);
+	encoder_pills_refresh();
+}
+
+static lv_obj_t *option_note(lv_obj_t *parent, const char *text) {
+	lv_obj_t *note = lv_label_create(parent);
+	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(note, lv_pct(100));
+	lv_obj_add_style(note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(note, &font_ui_22, 0);
+	lv_label_set_text(note, tr(text));
+	return note;
+}
+
+static void build_encoder_options(lv_obj_t *container) {
+	lv_obj_t *pills = NULL;
+	settingsrow_pills(container, "btaudio_aac_mode", &pills);
+	aac_vbr_pill = settingsrow_pill_text(pills, "VBR", 1, aac_pick_cb);
+	aac_cbr_pill = settingsrow_pill_text(pills, "CBR 220", 0, aac_pick_cb);
+	option_note(container, "btaudio_aac_mode_note");
+
+	encoder_pills_refresh();
+	theme_register_refresh(encoder_pills_refresh);
 }
 
 static void refresh_name_row(void);
@@ -554,6 +604,8 @@ void btaudio_init(gui_config_t *cfg) {
 	if (bluetooth_volume_sync()) {
 		lv_obj_add_state(volume_switch, LV_STATE_CHECKED);
 	}
+
+	build_encoder_options(container);
 
 	// --- the codec list, on a page of its own ---
 	codec_screen = lv_obj_create(NULL);
