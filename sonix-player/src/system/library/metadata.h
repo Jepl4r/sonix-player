@@ -2,6 +2,7 @@
 #define METADATA_H
 
 #include <stdbool.h>
+#include <stdint.h>
 
 typedef struct {
 	char title[256];
@@ -40,6 +41,18 @@ typedef struct {
 	float album_gain_db;
 	float track_peak; // 0 when the file does not say
 	float album_peak;
+
+	// The stream itself, filled only by the readers that have it in hand while
+	// they look for the tags anyway: FLAC's STREAMINFO is the block in front of
+	// the comments, and an MP4's sample entry and movie header are parsed with
+	// its atoms. The library scan takes them from here instead of opening the
+	// file a second time to ask. `has_stream` says they were filled; with it
+	// false every one of them is zero and means nothing.
+	bool has_stream;
+	bool alac; // an MP4 whose audio is Apple Lossless
+	int sample_rate;
+	int bits_per_sample; // 0 for a lossy stream, which has no depth of its own
+	uint32_t duration_ms; // 0 when the header does not say
 } song_metadata_t;
 
 // Reads whatever tag metadata is available for the file (ID3v1/ID3v2 for MP3,

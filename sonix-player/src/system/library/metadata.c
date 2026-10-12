@@ -487,7 +487,135 @@ static void flac_meta_callback(void *pUserData, drflac_metadata *pMetadata) {
 	}
 }
 
+// The comments block whole, up to this: lyrics live in it. A block bigger than
+// this is stepped over like a picture.
+#define FLAC_COMMENT_MAX (1024 * 1024)
+
+static uint32_t flac_le32(const unsigned char *p) {
+	return (uint32_t)p[0] | ((uint32_t)p[1] << 8) | ((uint32_t)p[2] << 16) | ((uint32_t)p[3] << 24);
+}
+
+// A VORBIS_COMMENT block: the vendor string, then a count and that many
+// length-prefixed "KEY=value" entries, every length checked against the block.
+static void flac_comments(song_metadata_t *out, const unsigned char *block, uint32_t len) {
+	if (len < 8) {
+		return;
+	}
+	uint32_t vendor = flac_le32(block);
+	if (vendor > len - 8) {
+		return;
+	}
+	uint32_t at = 4 + vendor;
+	uint32_t count = flac_le32(block + at);
+	at += 4;
+	for (uint32_t i = 0; i < count && len - at >= 4; i++) {
+		uint32_t size = flac_le32(block + at);
+		at += 4;
+		if (size > len - at) {
+			return;
+		}
+		apply_vorbis_comment(out, (const char *)block + at, size);
+		at += size;
+	}
+}
+
+// STREAMINFO: the rate in 20 bits, the channels in 3, the depth in 5 and the
+// length in samples in 36, straddling bytes from the eleventh on.
+static void flac_streaminfo(song_metadata_t *out, const unsigned char *si) {
+	uint32_t rate = ((uint32_t)si[10] << 12) | ((uint32_t)si[11] << 4) | (uint32_t)(si[12] >> 4);
+	int bits = (int)((((si[12] & 0x01) << 4) | (si[13] >> 4)) + 1);
+	uint64_t samples = ((uint64_t)(si[13] & 0x0f) << 32) | ((uint32_t)si[14] << 24) | ((uint32_t)si[15] << 16) |
+					   ((uint32_t)si[16] << 8) | si[17];
+	out->has_stream = true;
+	out->sample_rate = (int)rate;
+	out->bits_per_sample = bits;
+	// Zero samples is the format's own "unknown" (a stream written live).
+	out->duration_ms = rate > 0 && samples > 0 ? (uint32_t)(samples * 1000 / rate) : 0;
+}
+
+// The metadata blocks of a FLAC file in one walk over the head of it:
+// STREAMINFO for the stream, VORBIS_COMMENT for the tags, and every other block
+// -- the PICTURE above all, which runs to megabytes -- stepped over with a
+// seek. dr_flac's reader, which this used to go through, read every picture
+// into memory on the way to the comments and then set up a decoder nobody
+// asked for; and the library scan opened the file a second time after it to
+// read STREAMINFO. Covers are not read here: the cover loader finds the
+// picture on its own.
+//
+// False when the file does not start like a native FLAC stream (an Ogg FLAC
+// under a .flac name, say), for dr_flac to try instead.
+static bool walk_flac_metadata(FILE *f, song_metadata_t *out) {
+	unsigned char head[10];
+	if (fread(head, 1, 4, f) != 4) {
+		return false;
+	}
+	// An ID3v2 tag in front of the stream is not allowed and is common anyway.
+	if (memcmp(head, "ID3", 3) == 0) {
+		if (fread(head + 4, 1, 6, f) != 6) {
+			return false;
+		}
+		long skip = ((long)(head[6] & 0x7f) << 21) | ((long)(head[7] & 0x7f) << 14) | ((long)(head[8] & 0x7f) << 7) |
+					(head[9] & 0x7f);
+		skip += (head[5] & 0x10) ? 20 : 10; // the header, and the footer when there is one
+		if (fseek(f, skip, SEEK_SET) != 0 || fread(head, 1, 4, f) != 4) {
+			return false;
+		}
+	}
+	if (memcmp(head, "fLaC", 4) != 0) {
+		return false;
+	}
+
+	// Bounded: a damaged length could otherwise send this round for ever on a
+	// file that is all zeros past the marker.
+	for (int blocks = 0; blocks < 256; blocks++) {
+		unsigned char bh[4];
+		if (fread(bh, 1, sizeof(bh), f) != sizeof(bh)) {
+			break;
+		}
+		bool last = (bh[0] & 0x80) != 0;
+		int type = bh[0] & 0x7f;
+		uint32_t len = ((uint32_t)bh[1] << 16) | ((uint32_t)bh[2] << 8) | bh[3];
+
+		if (type == 0 && len >= 34) {
+			unsigned char si[34];
+			if (fread(si, 1, sizeof(si), f) != sizeof(si)) {
+				break;
+			}
+			flac_streaminfo(out, si);
+			len -= 34;
+		} else if (type == 4 && len <= FLAC_COMMENT_MAX) {
+			unsigned char *block = malloc(len ? len : 1);
+			if (!block) {
+				break;
+			}
+			if (fread(block, 1, len, f) != len) {
+				free(block);
+				break;
+			}
+			flac_comments(out, block, len);
+			free(block);
+			len = 0;
+		}
+		if (last) {
+			break;
+		}
+		if (len > 0 && fseek(f, (long)len, SEEK_CUR) != 0) {
+			break;
+		}
+	}
+	return true;
+}
+
 static void read_flac_metadata(const char *filepath, song_metadata_t *out) {
+	FILE *f = fopen(filepath, "rb");
+	if (!f) {
+		return;
+	}
+	bool native = walk_flac_metadata(f, out);
+	fclose(f);
+	if (native) {
+		return;
+	}
 	drflac *flac = drflac_open_file_with_metadata(filepath, flac_meta_callback, out, NULL);
 	if (flac) {
 		drflac_close(flac);
@@ -1624,6 +1752,26 @@ static void read_mp4_metadata(const char *filepath, song_metadata_t *out) {
 	}
 	out->track_number = mp4_tag_track_number(m);
 	out->disc_number = mp4_tag_disc_number(m);
+
+	// The stream, from the same parse: the library scan used to open the file
+	// a second time for these.
+	out->has_stream = true;
+	out->sample_rate = mp4_audio_sample_rate(m);
+	if (mp4_audio_codec(m) == MP4_CODEC_ALAC) {
+		out->alac = true;
+		// ALACSpecificConfig: frameLength(4), compatibleVersion(1), then the
+		// depth. AAC has no depth to read -- it is lossy and the number would
+		// describe the decoder, not the recording.
+		int len = 0;
+		const unsigned char *cfg = mp4_audio_config(m, &len);
+		if (cfg && len >= 6) {
+			out->bits_per_sample = cfg[5];
+		}
+	}
+	double seconds = mp4_duration_seconds(m);
+	if (seconds > 0 && seconds < 4.0e6) {
+		out->duration_ms = (uint32_t)(seconds * 1000.0 + 0.5);
+	}
 
 	// The freeform "----" atoms, where iTunes-style ReplayGain lives.
 	const char *value;

@@ -1846,6 +1846,9 @@ bool library_album_info(const char *album, library_album_info_t *out) {
 	if (db && sqlite3_prepare_v2(db,
 								 "SELECT COALESCE(NULLIF(album_artist,''), artist), genre,"
 								 " (SELECT MAX(CASE WHEN year > 0 THEN year END) FROM MEDIA_TABLE WHERE " ALBUM_VALUE_MATCH
+								 "), (SELECT COUNT(*) FROM MEDIA_TABLE WHERE " ALBUM_VALUE_MATCH
+								 "), (SELECT TOTAL(MAX(end_time, 0)) FROM MEDIA_TABLE WHERE " ALBUM_VALUE_MATCH
+								 "), (SELECT COUNT(*) FROM MEDIA_TABLE WHERE " ALBUM_VALUE_MATCH " AND IFNULL(end_time, 0) <= 0"
 								 ") FROM MEDIA_TABLE WHERE " ALBUM_VALUE_MATCH " ORDER BY COALESCE(disc,1), dis_id LIMIT 1",
 								 -1, &stmt, NULL) == SQLITE_OK) {
 		sqlite3_bind_text(stmt, 1, album, -1, SQLITE_TRANSIENT);
@@ -1855,6 +1858,12 @@ bool library_album_info(const char *album, library_album_info_t *out) {
 			snprintf(out->artist, sizeof(out->artist), "%s", artist ? (const char *)artist : "");
 			snprintf(out->genre, sizeof(out->genre), "%s", genre ? (const char *)genre : "");
 			out->year = sqlite3_column_type(stmt, 2) == SQLITE_NULL ? 0 : sqlite3_column_int(stmt, 2);
+			// The same album's range of media_album_key_idx three more times:
+			// a dozen rows each, against the one page the head is built for.
+			out->tracks = sqlite3_column_int(stmt, 3);
+			double total = sqlite3_column_double(stmt, 4);
+			out->length_ms = total > 0 ? (uint64_t)total : 0;
+			out->length_partial = sqlite3_column_int(stmt, 5) > 0;
 			found = true;
 		}
 		sqlite3_finalize(stmt);
@@ -1933,7 +1942,20 @@ bool library_track_names(const char *path, char *title_out, size_t title_size, c
 	return found;
 }
 
+static library_quality_t track_quality(const char *path, int *rate_out, int *bits_out, uint32_t *length_out);
+
 library_quality_t library_track_quality(const char *path, int *rate_out, int *bits_out) {
+	return track_quality(path, rate_out, bits_out, NULL);
+}
+
+library_quality_t library_track_quality_length(const char *path, uint32_t *length_ms) {
+	return track_quality(path, NULL, NULL, length_ms);
+}
+
+static library_quality_t track_quality(const char *path, int *rate_out, int *bits_out, uint32_t *length_out) {
+	if (length_out) {
+		*length_out = 0;
+	}
 	if (rate_out) {
 		*rate_out = 0;
 	}
@@ -1947,13 +1969,17 @@ library_quality_t library_track_quality(const char *path, int *rate_out, int *bi
 	int format = -1, rate = 0, bits = 0;
 	pthread_mutex_lock(&db_lock);
 	sqlite3_stmt *stmt = NULL;
-	if (db && sqlite3_prepare_v2(db, "SELECT format, sample_rate, bit FROM MEDIA_TABLE WHERE path=? LIMIT 1", -1,
-								 &stmt, NULL) == SQLITE_OK) {
+	if (db && sqlite3_prepare_v2(db, "SELECT format, sample_rate, bit, end_time FROM MEDIA_TABLE WHERE path=? LIMIT 1",
+								 -1, &stmt, NULL) == SQLITE_OK) {
 		sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
 			format = sqlite3_column_int(stmt, 0);
 			rate = sqlite3_column_int(stmt, 1);
 			bits = sqlite3_column_int(stmt, 2);
+			if (length_out) {
+				sqlite3_int64 ms = sqlite3_column_int64(stmt, 3);
+				*length_out = ms > 0 && ms <= UINT32_MAX ? (uint32_t)ms : 0;
+			}
 		}
 		sqlite3_finalize(stmt);
 	}
@@ -3478,53 +3504,77 @@ static bool is_playable(const char *name) {
 // The quality badge in the lists needs three things about a track: whether it
 // is DSD, whether it is lossy, and -- for the lossless ones -- whether it is CD
 // or better than CD. The first two are the container; the third is the sample
-// rate and the bit depth, which nothing was writing down.
+// rate and the bit depth, which nothing was writing down. The track rows and
+// the album head also want how long a track runs, which the stock player kept
+// a column for (end_time, in milliseconds) and never filled.
 //
 // Opening a decoder to ask costs an order of magnitude more per file than
-// reading the tags, which is minutes on a large library for two integers. So
-// the header is read directly instead -- a few bytes at a known place -- and
-// only for the containers where the answer is not already settled by the
-// extension:
+// reading the tags, which is minutes on a large library for a few integers. So
+// the header is read directly instead -- a few bytes at a known place:
 //
-//   FLAC  STREAMINFO, the first metadata block, at a fixed offset
-//   WAV   the `fmt ` chunk, found by walking the chunk list
+//   FLAC  STREAMINFO, read by the tag reader in the same walk (metadata.c)
+//   MP4   the sample entry and the movie header, read by the tag reader too
+//   WAV   the `fmt ` chunk, then the size of the `data` chunk
 //   DSF   the `fmt ` chunk of a DSD stream, at a fixed offset
-//   MP4   through the parser the player already has (rate, and ALAC's depth)
 //   APE   the Monkey's Audio header, through apedec_probe()
+//   MP3   the first frame, and the Xing/Info or VBRI header in it when there
+//         is one; the bitrate and the file's size when there is not
+//   Ogg   the identification header, and the granule position of the last
+//         page, read from the tail of the file (Vorbis and Opus)
+//   WV    the first block header: the length only
 //
-// Anything else keeps zeros, and a row with zeros gets no badge: a wrong badge
-// is worse than none. That is mp3, ogg, opus, raw aac -- all lossy, so the
-// badge is decided by the container anyway -- and WavPack, which is the one
-// lossless format left without an answer.
+// Anything not known keeps zeros. A row with a zero rate gets no badge -- a
+// wrong badge is worse than none -- and one with no length shows none. The
+// lossy formats keep a zero rate on purpose: their badge is decided by the
+// container, and a rate would only invite a "hi-fi" one.
 // ---------------------------------------------------------------------------
 
+typedef struct {
+	int rate;
+	int bits;
+	bool alac;
+	uint32_t duration_ms;
+} stream_info_t;
 
 static uint32_t le32(const unsigned char *p) {
 	return ((uint32_t)p[3] << 24) | ((uint32_t)p[2] << 16) | ((uint32_t)p[1] << 8) | p[0];
 }
 
-// STREAMINFO packs the rate in 20 bits and the depth in 5, straddling bytes.
-static void probe_flac(FILE *f, int *rate, int *bits) {
-	unsigned char head[4];
-	if (fread(head, 1, 4, f) != 4) {
-		return;
-	}
-	// An ID3 tag before the stream is legal and common: skip it and look again.
-	if (head[0] == 'I' && head[1] == 'D' && head[2] == '3') {
-		unsigned char rest[6];
-		if (fread(rest, 1, 6, f) != 6) {
-			return;
-		}
-		long skip = ((long)(rest[2] & 0x7f) << 21) | ((long)(rest[3] & 0x7f) << 14) | ((long)(rest[4] & 0x7f) << 7) |
-					(rest[5] & 0x7f);
-		if (fseek(f, 10 + skip, SEEK_SET) != 0 || fread(head, 1, 4, f) != 4) {
-			return;
-		}
-	}
-	if (memcmp(head, "fLaC", 4) != 0) {
-		return;
-	}
+static uint64_t le64(const unsigned char *p) { return ((uint64_t)le32(p + 4) << 32) | le32(p); }
 
+static uint32_t be32(const unsigned char *p) {
+	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
+}
+
+static uint32_t samples_to_ms(uint64_t samples, uint32_t rate) {
+	if (rate == 0 || samples == 0) {
+		return 0;
+	}
+	uint64_t ms = samples * 1000 / rate;
+	return ms > UINT32_MAX ? UINT32_MAX : (uint32_t)ms;
+}
+
+// How far into the file the audio starts: past an ID3v2 tag, footer and all,
+// when there is one. 0 when there is none or the head cannot be read.
+static long id3v2_skip(FILE *f) {
+	unsigned char head[10];
+	if (fseek(f, 0, SEEK_SET) != 0 || fread(head, 1, sizeof(head), f) != sizeof(head) ||
+		memcmp(head, "ID3", 3) != 0) {
+		return 0;
+	}
+	long size = ((long)(head[6] & 0x7f) << 21) | ((long)(head[7] & 0x7f) << 14) | ((long)(head[8] & 0x7f) << 7) |
+				(head[9] & 0x7f);
+	return size + ((head[5] & 0x10) ? 20 : 10);
+}
+
+// STREAMINFO packs the rate in 20 bits, the depth in 5 and the length in
+// samples in 36, straddling bytes. Only for a FLAC whose tags did not come
+// through metadata.c's own walk.
+static void probe_flac(FILE *f, stream_info_t *out) {
+	unsigned char head[4];
+	if (fseek(f, id3v2_skip(f), SEEK_SET) != 0 || fread(head, 1, 4, f) != 4 || memcmp(head, "fLaC", 4) != 0) {
+		return;
+	}
 	unsigned char block[38]; // 4 bytes of block header, then 34 of STREAMINFO
 	if (fread(block, 1, sizeof(block), f) != sizeof(block)) {
 		return;
@@ -3533,18 +3583,22 @@ static void probe_flac(FILE *f, int *rate, int *bits) {
 		return; // the first block is meant to be STREAMINFO
 	}
 	const unsigned char *si = block + 4;
-	*rate = (int)(((uint32_t)si[10] << 12) | ((uint32_t)si[11] << 4) | (uint32_t)(si[12] >> 4));
-	*bits = (int)((((si[12] & 0x01) << 4) | (si[13] >> 4)) + 1);
+	uint32_t rate = ((uint32_t)si[10] << 12) | ((uint32_t)si[11] << 4) | (uint32_t)(si[12] >> 4);
+	uint64_t samples = ((uint64_t)(si[13] & 0x0f) << 32) | be32(si + 14);
+	out->rate = (int)rate;
+	out->bits = (int)((((si[12] & 0x01) << 4) | (si[13] >> 4)) + 1);
+	out->duration_ms = samples_to_ms(samples, rate);
 }
 
-static void probe_wav(FILE *f, int *rate, int *bits) {
+static void probe_wav(FILE *f, off_t file_size, stream_info_t *out) {
 	unsigned char head[12];
 	if (fread(head, 1, sizeof(head), f) != sizeof(head) || memcmp(head, "RIFF", 4) != 0 ||
 		memcmp(head + 8, "WAVE", 4) != 0) {
 		return;
 	}
-	// The chunks, until `fmt `. Bounded: a file that is not one would otherwise
+	// The chunks, until `data`. Bounded: a file that is not one would otherwise
 	// be walked to its end.
+	uint32_t byte_rate = 0;
 	for (int i = 0; i < 32; i++) {
 		unsigned char chunk[8];
 		if (fread(chunk, 1, sizeof(chunk), f) != sizeof(chunk)) {
@@ -3556,8 +3610,21 @@ static void probe_wav(FILE *f, int *rate, int *bits) {
 			if (size < sizeof(fmt) || fread(fmt, 1, sizeof(fmt), f) != sizeof(fmt)) {
 				return;
 			}
-			*rate = (int)le32(fmt + 4);
-			*bits = (int)(fmt[14] | ((uint32_t)fmt[15] << 8));
+			out->rate = (int)le32(fmt + 4);
+			out->bits = (int)(fmt[14] | ((uint32_t)fmt[15] << 8));
+			byte_rate = le32(fmt + 8);
+			size -= sizeof(fmt);
+		} else if (memcmp(chunk, "data", 4) == 0) {
+			// A recorder that never went back to write the size leaves 0 or
+			// 0xFFFFFFFF there: the rest of the file is the audio then.
+			long at = ftell(f);
+			uint64_t bytes = size;
+			if (at > 0 && (size == 0 || size == 0xFFFFFFFFu || (off_t)(at + (long)size) > file_size)) {
+				bytes = file_size > at ? (uint64_t)(file_size - at) : 0;
+			}
+			if (byte_rate > 0) {
+				out->duration_ms = samples_to_ms(bytes, byte_rate);
+			}
 			return;
 		}
 		if (fseek(f, (long)size + (size & 1), SEEK_CUR) != 0) {
@@ -3567,61 +3634,229 @@ static void probe_wav(FILE *f, int *rate, int *bits) {
 }
 
 // DSF: a 28-byte "DSD " chunk, then a `fmt ` chunk carrying the rate 28 bytes
-// in. The same offsets parse_dsf() in the decoder reads.
-static void probe_dsf(FILE *f, int *rate, int *bits) {
+// in and the samples per channel 36 bytes in. The same offsets parse_dsf() in
+// the decoder reads.
+static void probe_dsf(FILE *f, stream_info_t *out) {
 	unsigned char head[80]; // 28 of DSD chunk, then the head of the fmt chunk
 	if (fread(head, 1, sizeof(head), f) != sizeof(head) || memcmp(head, "DSD ", 4) != 0 ||
 		memcmp(head + 28, "fmt ", 4) != 0) {
 		return;
 	}
-	*rate = (int)le32(head + 28 + 28);
-	*bits = 1; // one bit per sample is what DSD is
+	out->rate = (int)le32(head + 28 + 28);
+	out->bits = 1; // one bit per sample is what DSD is
+	out->duration_ms = samples_to_ms(le64(head + 28 + 36), (uint32_t)out->rate);
 }
 
-// Fills the sample rate and bit depth of a file, or leaves them at zero when
-// they cannot be had cheaply. `alac` says the file is lossless MP4, which the
-// extension cannot say: a .m4a is AAC or ALAC and only the sample entry knows
-// which.
-static void probe_stream_format(const char *path, const char *filename, int *rate, int *bits, bool *alac) {
-	*rate = 0;
-	*bits = 0;
-	*alac = false;
+// MP3: the first frame header after the ID3v2 tag. A VBR file carries the
+// number of frames in it (Xing, or "Info" for CBR from LAME, or VBRI from
+// Fraunhofer), which times the samples per frame is the length exactly. A file
+// without one is taken as constant bitrate and timed by its size -- right for
+// the CBR files that lack the header, a guess for the rare VBR one.
+static void probe_mp3(FILE *f, off_t file_size, stream_info_t *out) {
+	static const uint16_t KBPS[2][16] = {
+		{0, 32, 40, 48, 56, 64, 80, 96, 112, 128, 160, 192, 224, 256, 320, 0}, // MPEG-1 layer III
+		{0, 8, 16, 24, 32, 40, 48, 56, 64, 80, 96, 112, 128, 144, 160, 0},	   // MPEG-2/2.5 layer III
+	};
+	static const uint32_t RATES[3] = {44100, 48000, 32000};
 
-	bool flac = has_extension(filename, ".flac");
-	bool wav = has_extension(filename, ".wav");
-	bool dsf = has_extension(filename, ".dsf");
+	long start = id3v2_skip(f);
+	if (fseek(f, start, SEEK_SET) != 0) {
+		return;
+	}
+	unsigned char buf[4096];
+	size_t got = fread(buf, 1, sizeof(buf), f);
+
+	for (size_t i = 0; i + 4 <= got; i++) {
+		if (buf[i] != 0xFF || (buf[i + 1] & 0xE0) != 0xE0) {
+			continue;
+		}
+		int version = (buf[i + 1] >> 3) & 3; // 3 MPEG-1, 2 MPEG-2, 0 MPEG-2.5
+		int layer = (buf[i + 1] >> 1) & 3;	  // 1 is layer III
+		int bitrate_index = buf[i + 2] >> 4;
+		int rate_index = (buf[i + 2] >> 2) & 3;
+		if (version == 1 || layer != 1 || bitrate_index == 0 || bitrate_index == 15 || rate_index == 3) {
+			continue;
+		}
+		bool mpeg1 = version == 3;
+		uint32_t rate = RATES[rate_index] >> (mpeg1 ? 0 : version == 2 ? 1 : 2);
+		uint32_t kbps = KBPS[mpeg1 ? 0 : 1][bitrate_index];
+		bool mono = (buf[i + 3] >> 6) == 3;
+		uint32_t per_frame = mpeg1 ? 1152 : 576;
+		uint32_t frame_len = (mpeg1 ? 144000 : 72000) * kbps / rate + ((buf[i + 2] >> 1) & 1);
+
+		// A sync word inside a tag's leftovers is not a frame: the next frame
+		// has to start where this one says it ends, when that is in the buffer.
+		if (i + frame_len + 2 <= got && (buf[i + frame_len] != 0xFF || (buf[i + frame_len + 1] & 0xE0) != 0xE0)) {
+			continue;
+		}
+
+		size_t side = mpeg1 ? (mono ? 17 : 32) : (mono ? 9 : 17);
+		size_t xing = i + 4 + side;
+		uint32_t frames = 0;
+		if (xing + 12 <= got && (memcmp(buf + xing, "Xing", 4) == 0 || memcmp(buf + xing, "Info", 4) == 0)) {
+			if (be32(buf + xing + 4) & 1) {
+				frames = be32(buf + xing + 8);
+			}
+		} else if (i + 4 + 32 + 18 <= got && memcmp(buf + i + 4 + 32, "VBRI", 4) == 0) {
+			frames = be32(buf + i + 4 + 32 + 14);
+		}
+
+		out->rate = 0; // lossy: see above
+		if (frames > 0) {
+			out->duration_ms = samples_to_ms((uint64_t)frames * per_frame, rate);
+		} else {
+			// An ID3v1 tag at the end is not audio either; 128 bytes is close
+			// enough to not matter on a file of megabytes, so it is not looked for.
+			off_t audio = file_size - (off_t)start - (off_t)i;
+			if (audio > 0) {
+				out->duration_ms = (uint32_t)((uint64_t)audio * 8 / kbps);
+			}
+		}
+		return;
+	}
+}
+
+// Ogg Vorbis and Opus: the rate from the identification header on the first
+// page, and the length from the granule position of the last page -- the
+// number of samples at the end of the stream, which for Opus counts the
+// pre-skip as well. The last page is found in the last 64 KB of the file, read
+// backwards for "OggS": a page is at most 65 307 bytes.
+#define OGG_TAIL (64 * 1024)
+
+static void probe_ogg(FILE *f, off_t file_size, stream_info_t *out) {
+	unsigned char head[512];
+	size_t got = fread(head, 1, sizeof(head), f);
+	if (got < 28 + 19 || memcmp(head, "OggS", 4) != 0) {
+		return;
+	}
+	uint32_t serial = le32(head + 14);
+	const unsigned char *payload = head + 27 + head[26];
+	size_t room = got - (size_t)(payload - head);
+	uint32_t rate = 0;
+	uint64_t pre_skip = 0;
+	if (room >= 19 && memcmp(payload, "OpusHead", 8) == 0) {
+		rate = 48000; // Opus always decodes at 48 kHz, whatever the input was
+		pre_skip = (uint64_t)(payload[10] | (payload[11] << 8));
+	} else if (room >= 16 && memcmp(payload, "\x01vorbis", 7) == 0) {
+		rate = le32(payload + 12);
+	}
+	if (rate == 0) {
+		return;
+	}
+
+	off_t from = file_size > OGG_TAIL ? file_size - OGG_TAIL : 0;
+	size_t want = (size_t)(file_size - from);
+	unsigned char *tail = malloc(want);
+	if (!tail) {
+		return;
+	}
+	if (want >= 27 && fseek(f, (long)from, SEEK_SET) == 0 && fread(tail, 1, want, f) == want) {
+		for (size_t i = want - 27;; i--) {
+			if (memcmp(tail + i, "OggS", 4) == 0 && tail[i + 4] == 0 && le32(tail + i + 14) == serial) {
+				uint64_t granule = le64(tail + i + 6);
+				// -1 is a page on which no packet ends; the one before it says.
+				if (granule != UINT64_MAX) {
+					out->duration_ms = samples_to_ms(granule > pre_skip ? granule - pre_skip : 0, rate);
+					break;
+				}
+			}
+			if (i == 0) {
+				break;
+			}
+		}
+	}
+	free(tail);
+}
+
+// WavPack: the first block header carries the total samples (40 bits, with
+// all ones for "unknown") and the rate as an index into a fixed table. A rate
+// outside the table is written elsewhere in the block, and that file keeps no
+// length.
+static void probe_wavpack(FILE *f, stream_info_t *out) {
+	static const uint32_t RATES[15] = {6000,  8000,	 9600,	11025, 12000, 16000, 22050, 24000,
+									   32000, 44100, 48000, 64000, 88200, 96000, 192000};
+	unsigned char head[32];
+	if (fread(head, 1, sizeof(head), f) != sizeof(head) || memcmp(head, "wvpk", 4) != 0) {
+		return;
+	}
+	uint32_t low = le32(head + 12);
+	if (low == 0xFFFFFFFFu) {
+		return;
+	}
+	uint64_t samples = ((uint64_t)head[11] << 32) | low;
+	uint32_t index = (le32(head + 24) >> 23) & 0x0f;
+	if (index < 15) {
+		out->duration_ms = samples_to_ms(samples, RATES[index]);
+	}
+}
+
+// Fills what can be had cheaply about the stream, zeros for the rest. `tags`
+// is what metadata_read() found on the way, which for FLAC and MP4 already
+// holds all of it. `alac` says the file is lossless MP4, which the extension
+// cannot say: a .m4a is AAC or ALAC and only the sample entry knows which.
+static void probe_stream(const char *path, const char *filename, const song_metadata_t *tags, off_t file_size,
+						 stream_info_t *out) {
+	memset(out, 0, sizeof(*out));
+
+	if (tags->has_stream) {
+		out->rate = tags->sample_rate;
+		out->bits = tags->bits_per_sample;
+		out->alac = tags->alac;
+		out->duration_ms = tags->duration_ms;
+		return;
+	}
 
 	if (has_extension(filename, ".ape")) {
-		if (!apedec_probe(path, rate, bits)) {
-			*rate = 0;
-			*bits = 0;
+		uint64_t samples = 0;
+		if (apedec_probe(path, &out->rate, &out->bits, &samples)) {
+			out->duration_ms = samples_to_ms(samples, (uint32_t)out->rate);
+		} else {
+			out->rate = 0;
+			out->bits = 0;
 		}
 		return;
 	}
 	bool mp4 = has_extension(filename, ".m4a") || has_extension(filename, ".alac") || has_extension(filename, ".mp4");
 
 	if (mp4) {
-		// The player's own parser: it is already opening these files to find out
-		// whether they are video, and it knows the rate.
+		// The tag reader parses these and fills the stream in on the way, so
+		// this is only reached by one whose atoms it could not read: asked
+		// again, the parser will most likely say no again, cheaply.
 		mp4_file_t *m = mp4_open(path);
 		if (m) {
-			*rate = mp4_audio_sample_rate(m);
+			out->rate = mp4_audio_sample_rate(m);
 			if (mp4_audio_codec(m) == MP4_CODEC_ALAC) {
-				*alac = true;
-				// ALACSpecificConfig: frameLength(4), compatibleVersion(1),
-				// then the depth. AAC has no depth to read -- it is lossy and
-				// the number would describe the decoder, not the recording.
+				out->alac = true;
 				int len = 0;
 				const unsigned char *cfg = mp4_audio_config(m, &len);
 				if (cfg && len >= 6) {
-					*bits = cfg[5];
+					out->bits = cfg[5];
 				}
+			}
+			double seconds = mp4_duration_seconds(m);
+			if (seconds > 0 && seconds < 4.0e6) {
+				out->duration_ms = (uint32_t)(seconds * 1000.0 + 0.5);
 			}
 			mp4_close(m);
 		}
 		return;
 	}
-	if (!flac && !wav && !dsf) {
+
+	enum { P_NONE, P_FLAC, P_WAV, P_DSF, P_MP3, P_OGG, P_WV } kind = P_NONE;
+	if (has_extension(filename, ".flac")) {
+		kind = P_FLAC;
+	} else if (has_extension(filename, ".wav")) {
+		kind = P_WAV;
+	} else if (has_extension(filename, ".dsf")) {
+		kind = P_DSF;
+	} else if (has_extension(filename, ".mp3")) {
+		kind = P_MP3;
+	} else if (has_extension(filename, ".ogg") || has_extension(filename, ".opus")) {
+		kind = P_OGG;
+	} else if (has_extension(filename, ".wv")) {
+		kind = P_WV;
+	}
+	if (kind == P_NONE) {
 		return;
 	}
 
@@ -3629,12 +3864,27 @@ static void probe_stream_format(const char *path, const char *filename, int *rat
 	if (!f) {
 		return;
 	}
-	if (flac) {
-		probe_flac(f, rate, bits);
-	} else if (wav) {
-		probe_wav(f, rate, bits);
-	} else {
-		probe_dsf(f, rate, bits);
+	switch (kind) {
+	case P_FLAC:
+		probe_flac(f, out);
+		break;
+	case P_WAV:
+		probe_wav(f, file_size, out);
+		break;
+	case P_DSF:
+		probe_dsf(f, out);
+		break;
+	case P_MP3:
+		probe_mp3(f, file_size, out);
+		break;
+	case P_OGG:
+		probe_ogg(f, file_size, out);
+		break;
+	case P_WV:
+		probe_wavpack(f, out);
+		break;
+	default:
+		break;
 	}
 	fclose(f);
 }
@@ -4210,7 +4460,7 @@ static bool prepare_statements(void) {
 						   "(id,path,name,album,artist,genre,year,dis_id,ck_id,has_child_file,begin_time,end_time,"
 						   "cue_id,character,size,sample_rate,bit_rate,bit,channel,format,quality,album_pic_path,"
 						   "lrc_path,track_gain,track_peak,album_artist,ctime,mtime,sortkey,disc,album_key)"
-						   " VALUES(?,?,?,?,?,?,?,?,0,0,0,0,0,?,?,?,0,?,0,?,\'\',NULL,NULL,0,0,?,?,?,?,?,?)",
+						   " VALUES(?,?,?,?,?,?,?,?,0,0,0,?,0,?,?,?,0,?,0,?,\'\',NULL,NULL,0,0,?,?,?,?,?,?)",
 						   -1, &stmt_track, NULL) != SQLITE_OK) {
 		fprintf(stderr, "library: prepare failed: %s\n", sqlite3_errmsg(db));
 		return false;
@@ -4307,6 +4557,12 @@ static void insert_track(const char *path, const char *filename, const song_meta
 	int group = 0;
 	index_character(title, character, sizeof(character), &group);
 
+	// The rate and depth the quality badge is worked out from, and the length.
+	// Zero when the container does not give them up cheaply -- see
+	// probe_stream().
+	stream_info_t stream;
+	probe_stream(path, filename, tags, st->st_size, &stream);
+
 	sqlite3_reset(stmt_track);
 	sqlite3_clear_bindings(stmt_track);
 
@@ -4319,17 +4575,14 @@ static void insert_track(const char *path, const char *filename, const song_meta
 	sqlite3_bind_text(stmt_track, column++, tags->genre, -1, SQLITE_TRANSIENT);	 // genre
 	sqlite3_bind_int(stmt_track, column++, tags->year);							 // year
 	sqlite3_bind_int(stmt_track, column++, tags->track_number);					 // dis_id: track number
+
+	sqlite3_bind_int(stmt_track, column++, (int)stream.duration_ms);			 // end_time: the length
 	sqlite3_bind_text(stmt_track, column++, character, -1, SQLITE_TRANSIENT);	 // character
 	sqlite3_bind_int64(stmt_track, column++, (sqlite3_int64)st->st_size);		 // size
 
-	// The two the quality badge is worked out from. Zero when the container
-	// does not give them up cheaply -- see probe_stream_format().
-	int rate = 0, bits = 0;
-	bool alac = false;
-	probe_stream_format(path, filename, &rate, &bits, &alac);
-	sqlite3_bind_int(stmt_track, column++, rate);									 // sample_rate
-	sqlite3_bind_int(stmt_track, column++, bits);									 // bit
-	sqlite3_bind_int(stmt_track, column++, alac ? FORMAT_ALAC : format_of(filename)); // format
+	sqlite3_bind_int(stmt_track, column++, stream.rate);										   // sample_rate
+	sqlite3_bind_int(stmt_track, column++, stream.bits);										   // bit
+	sqlite3_bind_int(stmt_track, column++, stream.alac ? FORMAT_ALAC : format_of(filename)); // format
 	sqlite3_bind_text(stmt_track, column++, album_artist, -1, SQLITE_TRANSIENT); // album_artist
 	sqlite3_bind_int64(stmt_track, column++, (sqlite3_int64)st->st_ctime);		 // ctime
 	sqlite3_bind_int64(stmt_track, column++, (sqlite3_int64)st->st_mtime);		 // mtime

@@ -551,7 +551,7 @@ int apedec_sample_rate(const apedec_t *a) { return a ? a->info.samplerate : 0; }
 int apedec_bits(const apedec_t *a) { return a ? a->info.bps : 16; }
 uint64_t apedec_total_frames(const apedec_t *a) { return a ? a->info.totalsamples : 0; }
 
-bool apedec_probe(const char *filepath, int *rate, int *bits) {
+bool apedec_probe(const char *filepath, int *rate, int *bits, uint64_t *samples) {
 	FILE *f = fopen(filepath, "rb");
 	if (!f) {
 		return false;
@@ -562,6 +562,9 @@ bool apedec_probe(const char *filepath, int *rate, int *bits) {
 	if (ok) {
 		*rate = info.samplerate;
 		*bits = info.bps;
+		if (samples) {
+			*samples = info.totalsamples;
+		}
 	}
 	return ok;
 }

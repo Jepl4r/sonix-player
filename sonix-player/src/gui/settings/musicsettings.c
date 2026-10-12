@@ -1474,6 +1474,9 @@ static void build_scan_page(gui_config_t *cfg) {
 	settingsrow_title_corner_slots(settingsrow_page_title(scan_screen), cfg, 0);
 
 	settingsrow_action(container, "musicsettings_scan_music_library", scan_row_cb, NULL);
+	// Detect changes reads again only what changed, so an index from before the
+	// scan timed tracks keeps no lengths until the scan is run.
+	option_note(container, "musicsettings_scan_lengths_note");
 
 	settingsrow_toggle(container, "musicsettings_do_not_ignore_articles", &keep_articles_switch, keep_articles_cb);
 	if (!library_skip_articles()) {

@@ -35,9 +35,10 @@ uint64_t apedec_read_s32(apedec_t *a, uint64_t frames, int32_t *out);
 // what comes before it is decoded and dropped.
 bool apedec_seek(apedec_t *a, uint64_t frame);
 
-// Rate and depth from the header alone, for the library scan. False when the
-// file is not an .ape this decoder would play.
-bool apedec_probe(const char *filepath, int *rate, int *bits);
+// Rate, depth and length in samples (per channel) from the header alone, for
+// the library scan. `samples` may be NULL. False when the file is not an .ape
+// this decoder would play.
+bool apedec_probe(const char *filepath, int *rate, int *bits, uint64_t *samples);
 
 // APEv2 (or APEv1) tags at the end of the file, an .ape's or a .wv's: every
 // text item named in the list inside apedec.c is handed to the callback with

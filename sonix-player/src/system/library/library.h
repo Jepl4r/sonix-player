@@ -411,6 +411,9 @@ typedef struct {
 	char artist[256];
 	char genre[128];
 	int year;
+	int tracks;			// how many tracks the album has
+	uint64_t length_ms; // their lengths added up; 0 when none of them is known
+	bool length_partial; // some track has no length on record: the sum is short
 } library_album_info_t;
 bool library_album_info(const char *album, library_album_info_t *out);
 
@@ -438,6 +441,12 @@ typedef enum {
 // them). A lossless file whose numbers are unknown answers NONE rather than a
 // guess: no badge is better than a wrong one.
 library_quality_t library_track_quality(const char *path, int *rate_out, int *bits_out);
+
+// The same lookup, and the track's length in milliseconds into `length_ms`
+// (end_time, as the scan read it from the header; 0 when it could not, and on
+// an index written before the scan timed anything). For the track rows, which
+// want both and would otherwise ask twice.
+library_quality_t library_track_quality_length(const char *path, uint32_t *length_ms);
 
 // --- Favourites ---
 //

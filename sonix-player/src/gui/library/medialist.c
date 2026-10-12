@@ -190,6 +190,7 @@ typedef struct {
 	lv_obj_t *detail;	// the line under the title: the badge and the artist
 	lv_obj_t *quality;	// ...the badge, on track rows; NULL elsewhere
 	lv_obj_t *artist;	// ...and the artist, where "Show artist" asks for it
+	lv_obj_t *length;	// ...and how long the track runs, on track rows; NULL elsewhere
 	lv_obj_t *menu_btn; // the ellipsis on track rows; NULL on name lists
 	lv_obj_t *chevron;	// the chevron on name rows; NULL on track rows
 	lv_obj_t *check;	// the tick on a chosen row in selection mode
@@ -299,6 +300,7 @@ typedef struct {
 	lv_obj_t *head_title;
 	lv_obj_t *head_artist;
 	lv_obj_t *head_meta;
+	lv_obj_t *head_length; // "12 tracks · 47 min"
 	lv_obj_t *head_buttons[3]; // shuffle, play, a track into the queue
 	// Behind the heading row while the head is scrolled under it. With the head
 	// up, the list runs to the top of the page so the cover can stand level
@@ -1070,17 +1072,40 @@ void medialist_notify_now_playing(void) {
 
 // The badge a track wears, or nothing at all when the setting is off, the row
 // is not a track, or the index never learned what the file holds.
+// The badge and the length of a track row, from one lookup by path. A track
+// the index has no length for -- a format the scan does not time, an index
+// from before it timed anything, a playlist entry the library does not have --
+// shows none.
 static void row_update_quality(panel_t *p, row_t *row, const char *path) {
+	(void)p;
 	if (!row->quality) {
 		return;
 	}
-	if (!quality_badges || !path || !path[0]) {
-		lv_obj_set_hidden(row->quality, true);
-		return;
+	uint32_t length_ms = 0;
+	library_quality_t quality = LIBRARY_QUALITY_NONE;
+	if (path && path[0]) {
+		quality = library_track_quality_length(path, &length_ms);
+	}
+
+	if (row->length) {
+		if (length_ms > 0) {
+			// m:ss, and h:mm:ss for the hour-long track a live set or a mix is.
+			unsigned seconds = (unsigned)((length_ms + 500) / 1000);
+			char text[16];
+			if (seconds >= 3600) {
+				snprintf(text, sizeof(text), "%u:%02u:%02u", seconds / 3600, seconds / 60 % 60, seconds % 60);
+			} else {
+				snprintf(text, sizeof(text), "%u:%02u", seconds / 60, seconds % 60);
+			}
+			lv_label_set_text(row->length, text);
+			lv_obj_set_hidden(row->length, false);
+		} else {
+			lv_obj_set_hidden(row->length, true);
+		}
 	}
 
 	const lv_image_dsc_t *icon = NULL;
-	switch (library_track_quality(path, NULL, NULL)) {
+	switch (quality_badges ? quality : LIBRARY_QUALITY_NONE) {
 	case LIBRARY_QUALITY_LOSSY:
 		icon = &icon_quality_lossy;
 		break;
@@ -1096,7 +1121,6 @@ static void row_update_quality(panel_t *p, row_t *row, const char *path) {
 	default:
 		break;
 	}
-	(void)p;
 
 	if (!icon) {
 		lv_obj_set_hidden(row->quality, true);
@@ -1154,7 +1178,13 @@ static void row_update_detail(panel_t *p, row_t *row, int index, const char *pat
 	}
 
 	bool badge = row->quality && !lv_obj_is_hidden(row->quality);
-	if (badge || artist) {
+	bool length = row->length && !lv_obj_is_hidden(row->length);
+	// The length keeps to the right edge: beside the artist, which takes the
+	// width between, or alone, when it takes that width itself.
+	if (row->length) {
+		lv_obj_set_flex_grow(row->length, artist ? 0 : 1);
+	}
+	if (badge || artist || length) {
 		lv_obj_set_hidden(row->detail, false);
 	} else {
 		lv_obj_set_hidden(row->detail, true);
@@ -3932,6 +3962,18 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_style_text_font(row->artist, &font_ui_20, 0);
 		lv_obj_set_hidden(row->artist, true);
 
+		// The length, at the end of the same line, in the same voice.
+		row->length = NULL;
+		if (is_tracks) {
+			row->length = lv_label_create(row->detail);
+			lv_label_set_text(row->length, "");
+			lv_obj_set_style_text_align(row->length, LV_TEXT_ALIGN_RIGHT, 0);
+			lv_obj_add_style(row->length, &theme_style_text_dim, 0);
+			lv_obj_set_style_text_font(row->length, &font_ui_20, 0);
+			lv_obj_set_clickable(row->length, false);
+			lv_obj_set_hidden(row->length, true);
+		}
+
 		// Out of the flex layout on purpose: it sits in the row's own left
 		// padding, so adding it moves nothing. Hidden until a row it belongs
 		// to is bound.
@@ -4214,6 +4256,7 @@ static void head_paint(panel_t *p) {
 		lv_obj_set_style_text_color(p->head_artist, t ? p->tint_ink : theme()->accent, 0);
 	}
 	local_color(p->head_meta, LV_STYLE_TEXT_COLOR, 0, t, p->tint_dim);
+	local_color(p->head_length, LV_STYLE_TEXT_COLOR, 0, t, p->tint_dim);
 
 	for (int i = 0; i < 3; i++) {
 		lv_obj_t *button = p->head_buttons[i];
@@ -4247,6 +4290,7 @@ static void page_paint(panel_t *p) {
 		local_color(row->button, LV_STYLE_BG_COLOR, LV_STATE_PRESSED, t, p->tint_pressed);
 		local_color(row->label, LV_STYLE_TEXT_COLOR, 0, t, p->tint_ink);
 		local_color(row->artist, LV_STYLE_TEXT_COLOR, 0, t, p->tint_dim);
+		local_color(row->length, LV_STYLE_TEXT_COLOR, 0, t, p->tint_dim);
 		local_color(row->playmark, LV_STYLE_BG_COLOR, 0, t, p->tint_ink);
 		if (row->menu_btn) {
 			local_color(lv_obj_get_child(row->menu_btn, 0), LV_STYLE_IMAGE_RECOLOR, 0, t, p->tint_ink);
@@ -4307,6 +4351,7 @@ static void head_clear(panel_t *p) {
 		p->head_title = NULL;
 		p->head_artist = NULL;
 		p->head_meta = NULL;
+		p->head_length = NULL;
 		for (int i = 0; i < 3; i++) {
 			p->head_buttons[i] = NULL;
 		}
@@ -4506,6 +4551,24 @@ static void head_build(panel_t *p) {
 	if (meta[0]) {
 		p->head_meta = head_line(p->head, width, meta, &font_ui_20, 1);
 		lv_obj_add_style(p->head_meta, &theme_style_text_dim, 0);
+	}
+
+	// How much there is of it. The minutes only when every track has a length
+	// on record: an index from before the scan timed tracks has none, and a
+	// sum over some of them would be a wrong number rather than a missing one.
+	if (info.tracks > 0) {
+		char length[96];
+		int at = snprintf(length, sizeof(length), info.tracks == 1 ? tr("medialist_album_tracks_one")
+																   : tr("medialist_album_tracks"),
+						  info.tracks);
+		if (!info.length_partial && info.length_ms > 0 && at > 0 && (size_t)at < sizeof(length)) {
+			char minutes[48];
+			snprintf(minutes, sizeof(minutes), tr("medialist_album_minutes"),
+					 (int)((info.length_ms + 30000) / 60000));
+			snprintf(length + at, sizeof(length) - (size_t)at, " \xC2\xB7 %s", minutes);
+		}
+		p->head_length = head_line(p->head, width, length, &font_ui_20, 1);
+		lv_obj_add_style(p->head_length, &theme_style_text_dim, 0);
 	}
 
 	lv_obj_t *buttons = lv_obj_create(p->head);
