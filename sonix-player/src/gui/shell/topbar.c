@@ -138,6 +138,8 @@ static lv_style_t tint_icon_style;
 // Up over the player's artwork (topbar_set_over_artwork): white on the
 // picture, whatever the theme or the page underneath says.
 static bool over_art;
+static bool over_art_blur;	   // asked for a blur behind the bar
+static bool over_art_blur_held; // ...and topbar_hold_backdrop_blur() holds it off
 
 static lv_color_t shell_color(bool known) {
 	if (over_art) {
@@ -1130,11 +1132,19 @@ static void tint_apply(void) {
 	last_battery_percent = -2;
 }
 
-// The blur and the dimming behind the bar, or neither.
+// The blur and the dimming behind the bar, or neither. While the blur is held
+// off (topbar_hold_backdrop_blur) the dimming stays and only the blur goes.
 static void over_art_backdrop(bool blur) {
+	over_art_blur = blur;
 	if (blur) {
 		lv_obj_set_style_bg_color(top_bar, lv_color_black(), 0);
 		lv_obj_set_style_bg_opa(top_bar, OVER_ART_DIM_OPA, 0);
+		if (over_art_blur_held) {
+			lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BLUR_RADIUS, 0);
+			lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BLUR_BACKDROP, 0);
+			lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BLUR_QUALITY, 0);
+			return;
+		}
 		lv_obj_set_style_blur_radius(top_bar, OVER_ART_BLUR_RADIUS, 0);
 		lv_obj_set_style_blur_backdrop(top_bar, true, 0);
 		lv_obj_set_style_blur_quality(top_bar, LV_BLUR_QUALITY_SPEED, 0);
@@ -1143,6 +1153,16 @@ static void over_art_backdrop(bool blur) {
 		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BLUR_RADIUS, 0);
 		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BLUR_BACKDROP, 0);
 		lv_obj_remove_local_style_prop(top_bar, LV_STYLE_BLUR_QUALITY, 0);
+	}
+}
+
+void topbar_hold_backdrop_blur(bool hold) {
+	if (hold == over_art_blur_held) {
+		return;
+	}
+	over_art_blur_held = hold;
+	if (top_bar && over_art && over_art_blur) {
+		over_art_backdrop(true);
 	}
 }
 

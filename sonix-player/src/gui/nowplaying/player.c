@@ -4359,6 +4359,10 @@ static bool drag_committed;
 
 static void sheet_anim_x_cb(void *obj, int32_t value) {
 	lv_obj_set_x((lv_obj_t *)obj, (int)value);
+	// No live blur under the status bar while the artwork slides beneath it:
+	// see topbar_hold_backdrop_blur(). Back on the frame the sheet comes to
+	// rest open.
+	topbar_hold_backdrop_blur(value != 0);
 	// The chevron belongs to the sheet while it moves: ride its edge, and
 	// snap back into the page's corner once the sheet is fully away.
 	back_btn_translate(value >= sheet_width ? 0 : value);
@@ -4382,6 +4386,7 @@ static void sheet_move_to(int x, bool animate) {
 	if (!animate) {
 		lv_obj_set_x(player_screen, x);
 		back_btn_translate(x >= sheet_width ? 0 : x);
+		topbar_hold_backdrop_blur(x != 0); // a drag: as in sheet_anim_x_cb
 		return;
 	}
 
