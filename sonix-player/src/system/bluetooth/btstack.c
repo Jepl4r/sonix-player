@@ -24,6 +24,7 @@
 #define BALSA_PCM_IFACE "org.bluealsa.PCM1"
 #define BALSA_MANAGER_PATH "/org/bluealsa"
 #define BALSA_MANAGER_IFACE "org.bluealsa.Manager1"
+#define BALSA_RFCOMM_IFACE "org.bluealsa.RFCOMM1"
 
 #define PROPS_IFACE "org.freedesktop.DBus.Properties"
 #define OBJMAN_IFACE "org.freedesktop.DBus.ObjectManager"
@@ -69,6 +70,24 @@ typedef struct {
 static transport_t transports[MAX_TRANSPORTS];
 static int transport_count;
 static unsigned transport_serial;
+
+// The headsets' own battery levels, as bluealsa's RFCOMM objects carry them:
+//
+//     /org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/rfcomm   org.bluealsa.RFCOMM1
+//
+// Such an object exists only with bluealsa started as a hands-free audio
+// gateway (-p hfp-ag, the opt-in "headphone battery" setting), and its Battery
+// property only means something once the headset has said: through Apple's
+// +IPHONEACCEV after an AT+XAPL, which most headsets send whatever phone they
+// are paired with. Until then bluealsa holds -1 there, which arrives as the
+// byte 255. Filled from signals and from one Get at connection; -1 = unknown.
+typedef struct {
+	char address[BT_ADDR_MAX];
+	int percent;
+} headset_battery_t;
+static headset_battery_t headset_batteries[MAX_PCMS];
+static int headset_battery_count;
+static unsigned headset_battery_serial;
 
 // What the remote player last said it was doing: "playing", "paused",
 // "stopped", or empty when nothing has said. Written both by the signal and by
@@ -325,6 +344,141 @@ static bool path_is_a2dp_source(const char *path) {
 	return strncmp(path, "/org/bluealsa/", 14) == 0 && strstr(path, "/a2dpsnk/source") != NULL;
 }
 
+// ---------------------------------------------------------------------------
+// the headsets' battery (see headset_batteries above)
+// ---------------------------------------------------------------------------
+
+static bool path_is_rfcomm(const char *path) {
+	if (strncmp(path, "/org/bluealsa/", 14) != 0) {
+		return false;
+	}
+	size_t length = strlen(path);
+	return length > 7 && strcmp(path + length - 7, "/rfcomm") == 0;
+}
+
+// Under `lock`. -1 forgets the address. Bumps the serial only on a change, so
+// a page polling it redraws when there is something new to draw.
+static void headset_battery_note(const char *address, int percent) {
+	int at = -1;
+	for (int i = 0; i < headset_battery_count && i < MAX_PCMS && at < 0; i++) {
+		if (strcasecmp(headset_batteries[i].address, address) == 0) {
+			at = i;
+		}
+	}
+	if (percent < 0) {
+		if (at >= 0) {
+			headset_batteries[at] = headset_batteries[--headset_battery_count];
+			headset_battery_serial++;
+		}
+		return;
+	}
+	if (at < 0) {
+		if (headset_battery_count >= MAX_PCMS) {
+			at = 0; // four headsets at once is not a case; the oldest makes room
+		} else {
+			at = headset_battery_count++;
+		}
+		snprintf(headset_batteries[at].address, BT_ADDR_MAX, "%s", address);
+		headset_batteries[at].percent = -1;
+	}
+	if (headset_batteries[at].percent != percent) {
+		headset_batteries[at].percent = percent;
+		headset_battery_serial++;
+	}
+}
+
+// One Battery value of signature `sig`. bluealsa 4.3 sends a byte; the wider
+// integer types are taken as well rather than trusted never to appear. Anything
+// outside 0..100 is "not said yet" -- the -1 bluealsa starts from arrives as 255.
+static bool read_battery_value(dbus_reader_t *r, const char *sig, int *percent) {
+	long value = -1;
+	if (strcmp(sig, "y") == 0) {
+		uint8_t b;
+		if (!dbus_r_byte(r, &b)) {
+			return false;
+		}
+		value = b;
+	} else if (strcmp(sig, "n") == 0 || strcmp(sig, "q") == 0) {
+		uint16_t v;
+		if (!dbus_r_u16(r, &v)) {
+			return false;
+		}
+		value = sig[0] == 'n' ? (int16_t)v : v;
+	} else if (strcmp(sig, "i") == 0 || strcmp(sig, "u") == 0) {
+		uint32_t v;
+		if (!dbus_r_u32(r, &v)) {
+			return false;
+		}
+		value = sig[0] == 'i' ? (int32_t)v : (long)v;
+	} else {
+		dbus_r_skip(r, sig);
+		return false;
+	}
+	*percent = value >= 0 && value <= 100 ? (int)value : -1;
+	return true;
+}
+
+// The Battery inside one a{sv} of RFCOMM1 properties. False when it is not
+// there, which is not the same as there and unknown (true, -1).
+static bool read_rfcomm_props(dbus_reader_t *r, int *percent) {
+	bool found = false;
+	dbus_array_iter_t props;
+	if (!dbus_r_array_begin(r, "{sv}", &props)) {
+		return false;
+	}
+	while (dbus_r_array_more(r, &props)) {
+		char key[64], sig[16];
+		if (!dbus_r_string(r, key, sizeof(key)) || !dbus_r_signature(r, sig, sizeof(sig))) {
+			return found;
+		}
+		if (strcmp(key, "Battery") == 0) {
+			found = read_battery_value(r, sig, percent);
+		} else if (!dbus_r_skip(r, sig)) {
+			return found;
+		}
+	}
+	return found;
+}
+
+// The same out of an interfaces dictionary, a{sa{sv}}, as InterfacesAdded and
+// GetManagedObjects carry it.
+static bool read_rfcomm_added(dbus_reader_t *r, int *percent) {
+	bool found = false;
+	dbus_array_iter_t interfaces;
+	if (!dbus_r_array_begin(r, "{sa{sv}}", &interfaces)) {
+		return false;
+	}
+	while (dbus_r_array_more(r, &interfaces)) {
+		char iface[96];
+		if (!dbus_r_string(r, iface, sizeof(iface))) {
+			return found;
+		}
+		if (strcmp(iface, BALSA_RFCOMM_IFACE) == 0) {
+			found = read_rfcomm_props(r, percent) || found;
+		} else if (!dbus_r_skip(r, "a{sv}")) {
+			return found;
+		}
+	}
+	return found;
+}
+
+int btstack_headset_battery(const char *address, unsigned *serial_out) {
+	int percent = -1;
+	pthread_mutex_lock(&lock);
+	// Bounded by the array as well as the count: the compiler cannot see that
+	// the count never passes it, and warns about a read beyond the end.
+	for (int i = 0; address && i < headset_battery_count && i < MAX_PCMS; i++) {
+		if (strcasecmp(headset_batteries[i].address, address) == 0) {
+			percent = headset_batteries[i].percent;
+		}
+	}
+	if (serial_out) {
+		*serial_out = headset_battery_serial;
+	}
+	pthread_mutex_unlock(&lock);
+	return percent;
+}
+
 // Under `lock`.
 static void pcm_add(char list[][BT_ADDR_MAX], int *count, const char *address) {
 	for (int i = 0; i < *count; i++) {
@@ -476,7 +630,15 @@ static void on_signal(dbus_conn_t *c, const dbus_msg_t *m, void *user) {
 			return;
 		}
 		char address[BT_ADDR_MAX];
-		if (path_is_a2dp_sink(path) && address_from_path(path, address, sizeof(address))) {
+		if (path_is_rfcomm(path) && address_from_path(path, address, sizeof(address))) {
+			int percent = -1;
+			if (read_rfcomm_added(&r, &percent)) {
+				pthread_mutex_lock(&lock);
+				headset_battery_note(address, percent);
+				pthread_mutex_unlock(&lock);
+			}
+			fprintf(stderr, "btstack: hands-free link to %s is up (battery %d%%)\n", address, percent);
+		} else if (path_is_a2dp_sink(path) && address_from_path(path, address, sizeof(address))) {
 			pthread_mutex_lock(&lock);
 			pcm_add(pcm_addr, &pcm_count, address);
 			pthread_mutex_unlock(&lock);
@@ -506,7 +668,11 @@ static void on_signal(dbus_conn_t *c, const dbus_msg_t *m, void *user) {
 			return;
 		}
 		char address[BT_ADDR_MAX];
-		if (path_is_a2dp_sink(path) && address_from_path(path, address, sizeof(address))) {
+		if (path_is_rfcomm(path) && address_from_path(path, address, sizeof(address))) {
+			pthread_mutex_lock(&lock);
+			headset_battery_note(address, -1);
+			pthread_mutex_unlock(&lock);
+		} else if (path_is_a2dp_sink(path) && address_from_path(path, address, sizeof(address))) {
 			pthread_mutex_lock(&lock);
 			pcm_remove(pcm_addr, &pcm_count, address);
 			pthread_mutex_unlock(&lock);
@@ -558,6 +724,21 @@ static void on_signal(dbus_conn_t *c, const dbus_msg_t *m, void *user) {
 						break;
 					}
 				}
+			}
+		}
+
+		// A headset's battery, from bluealsa's hands-free side: the level
+		// moves a step at a time while the music plays, and each step is one
+		// of these.
+		char address[BT_ADDR_MAX];
+		if (strcmp(iface, BALSA_RFCOMM_IFACE) == 0 && path_is_rfcomm(m->path) &&
+			address_from_path(m->path, address, sizeof(address))) {
+			int percent = -1;
+			if (read_rfcomm_props(&r, &percent)) {
+				pthread_mutex_lock(&lock);
+				headset_battery_note(address, percent);
+				pthread_mutex_unlock(&lock);
+				fprintf(stderr, "btstack: %s battery %d%%\n", address, percent);
 			}
 		}
 
@@ -801,6 +982,10 @@ void btstack_close(void) {
 	dbus_conn_t *c = conn;
 	conn = NULL;
 	pcm_count = 0;
+	if (headset_battery_count) {
+		headset_battery_count = 0;
+		headset_battery_serial++;
+	}
 	pthread_mutex_unlock(&lock);
 	if (c) {
 		dbus_disconnect(c);
@@ -1759,6 +1944,43 @@ bool btstack_bluealsa_version(char *out, size_t size) {
 	// how to print it.
 	snprintf(out, size, "%s", raw[0] == 'v' ? raw + 1 : raw);
 	return out[0] != '\0';
+}
+
+void btstack_read_headset_battery(const char *address) {
+	pthread_mutex_lock(&lock);
+	dbus_conn_t *c = conn;
+	pthread_mutex_unlock(&lock);
+	char path[OBJECT_PATH_MAX];
+	if (!c || !address || !pcm_path_dir(address, false, path, sizeof(path))) {
+		return;
+	}
+	// pcm_path_dir() gives ".../dev_X/a2dpsrc/sink"; the RFCOMM object is the
+	// device's own "/rfcomm" next to it.
+	char *tail = strstr(path, "/a2dpsrc/");
+	if (!tail) {
+		return;
+	}
+	snprintf(tail, sizeof(path) - (size_t)(tail - path), "/rfcomm");
+
+	dbus_writer_t *w = dbus_call_begin(c, BALSA_SERVICE, path, PROPS_IFACE, "Get", "ss");
+	dbus_w_string(w, BALSA_RFCOMM_IFACE);
+	dbus_w_string(w, "Battery");
+	char err[DBUS_NAME_MAX];
+	if (!dbus_call_send(c, CALL_MS, err, sizeof(err))) {
+		// No hands-free link to this headset (yet, or at all: a speaker
+		// without HFP). The signals fill the level in if one comes up.
+		return;
+	}
+	dbus_reader_t r;
+	dbus_reply_reader(c, &r);
+	char sig[16];
+	int percent = -1;
+	if (dbus_r_signature(&r, sig, sizeof(sig)) && read_battery_value(&r, sig, &percent)) {
+		pthread_mutex_lock(&lock);
+		headset_battery_note(address, percent);
+		pthread_mutex_unlock(&lock);
+		fprintf(stderr, "btstack: %s battery %d%% (read)\n", address, percent);
+	}
 }
 
 bool btstack_select_codec_dir(const char *address, bool receiving, const char *codec) {

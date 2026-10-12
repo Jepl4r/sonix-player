@@ -247,6 +247,16 @@ void btstack_refresh_media_status(const char *address);
 // last track is not what is playing.
 void btstack_forget_media(void);
 
+// A headset's own battery, 0..100, or -1 when it has not said -- which is
+// always the case unless bluealsa runs as a hands-free audio gateway (see
+// bluetooth_headset_battery_enabled()). From the signal cache: any thread.
+// `serial_out`, when given, moves on every change to any headset's level.
+int btstack_headset_battery(const char *address, unsigned *serial_out);
+
+// Asks bluealsa for that level outright, for the moment a headset connects and
+// before any signal: one Properties.Get on its RFCOMM object. Worker only.
+void btstack_read_headset_battery(const char *address);
+
 // Records a status without asking anyone. For the instant after a command is
 // sent: the signal that confirms it is a round trip away, and a second press
 // arriving in the meantime must not send the same command twice.

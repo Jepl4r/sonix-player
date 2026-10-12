@@ -33,6 +33,7 @@
 #include "src/system/device/power.h"
 #include "src/system/device/sysserver.h" // only for the notification socket now
 #include "src/system/remote/sonixlink_bt.h"
+#include "src/system/streaming/radio.h"
 #include "src/system/core/utils.h"
 
 // The pieces of the firmware this player uses, and nothing else. The bluez-tools
@@ -114,12 +115,12 @@ typedef enum {
 	JOB_CONNECT,
 	JOB_DISCONNECT,
 	JOB_FORGET,
-	JOB_CODECS,		  // re-read what the connected sink offers
-	JOB_LDAC_QUALITY, // restart bluealsa so it reads the new --ldac-quality
-	JOB_LDAC_COEXIST, // the Wi-Fi side changed: see ldac_coexist_check()
-	JOB_DAEMON_OPTION, // text: why; restart bluealsa for another start-up option
+	JOB_CODECS,			  // re-read what the connected sink offers
+	JOB_LDAC_QUALITY,	  // restart bluealsa so it reads the new --ldac-quality
+	JOB_DAEMON_CHECK,	  // something the daemon's options follow changed: see daemon_options_check()
+	JOB_DAEMON_OPTION,	  // text: why; restart bluealsa for another start-up option
 	JOB_RECEIVER_PROFILE, // restart bluealsa with or without the A2DP sink
-	JOB_DISCOVERABLE, // arg_int: 1 visible to everyone, 0 not
+	JOB_DISCOVERABLE,	  // arg_int: 1 visible to everyone, 0 not
 	// The name the adapter answers with. Carried in g_local_name rather than in
 	// the job: a name is longer than `text` holds.
 	JOB_SET_NAME,
@@ -1259,7 +1260,15 @@ static bool receiver_profile_wanted(void) {
 	return wanted;
 }
 
-static void sink_in_cmdline(pid_t pid, void *user) {
+// One argument looked for in a process's command line: `found` is set when
+// any running instance has it.
+typedef struct {
+	const char *arg;
+	bool found;
+} cmdline_probe_t;
+
+static void arg_in_cmdline(pid_t pid, void *user) {
+	cmdline_probe_t *probe = user;
 	char path[64];
 	snprintf(path, sizeof(path), "/proc/%d/cmdline", (int)pid);
 	char args[1024];
@@ -1272,20 +1281,22 @@ static void sink_in_cmdline(pid_t pid, void *user) {
 	args[got] = '\0';
 	// The arguments are separated by NULs.
 	for (size_t at = 0; at < got; at += strlen(args + at) + 1) {
-		if (strcmp(args + at, "a2dp-sink") == 0) {
-			*(bool *)user = true;
+		if (strcmp(args + at, probe->arg) == 0) {
+			probe->found = true;
 			return;
 		}
 	}
 }
 
-// Whether the running bluealsa was started with the A2DP sink, read from its
-// command line.
-static bool bluealsa_has_sink(void) {
-	bool sink = false;
-	for_each_process("bluealsa", sink_in_cmdline, &sink);
-	return sink;
+// Whether the running bluealsa was started with a profile, read from its
+// command line: "a2dp-sink" for the receiver, "hfp-ag" for the headset battery.
+static bool bluealsa_has_profile(const char *profile) {
+	cmdline_probe_t probe = {.arg = profile, .found = false};
+	for_each_process("bluealsa", arg_in_cmdline, &probe);
+	return probe.found;
 }
+
+static bool bluealsa_has_sink(void) { return bluealsa_has_profile("a2dp-sink"); }
 
 // ---------------------------------------------------------------------------
 // LDAC and a busy Wi-Fi radio
@@ -1302,9 +1313,10 @@ static bool bluealsa_has_sink(void) {
 // for seconds -- worse than the stutter it would fix. So:
 //   * with the Wi-Fi transfer server switched on (the one long, heavy use the
 //     user starts on purpose) and LDAC set to 990, 660 is used instead -- but
-//     only from the next connection: bluealsa is restarted at once when nothing
-//     is connected, and otherwise when the headphones next disconnect. The same
-//     in reverse once the server is off. The setting itself stays 990.
+//     never under music that is playing: bluealsa is restarted at once when
+//     nothing plays, and otherwise when the headphones next disconnect or the
+//     player has been quiet for a while (daemon_options_check()). The same in
+//     reverse once the server is off. The setting itself stays 990.
 //   * short downloads only show a hint on the Bluetooth audio page.
 //   * ABR stays the default quality, which is the real answer.
 //
@@ -1316,7 +1328,12 @@ static bool bluealsa_has_sink(void) {
 
 static bool g_wifi_heavy;		  // under `lock`: the Wi-Fi transfer server is on
 static char g_ldac_started[16];	  // under `lock`: what the running bluealsa was given, "" if unknown
-static bool g_ldac_pending;		  // worker: a change waits for the headphones to go
+static bool g_hfp_started;		  // under `lock`: the running bluealsa is a hands-free gateway too
+
+// A change of the daemon's options that waits for the music to stop (see
+// daemon_options_check()), and since when nothing has been playing. Worker only.
+static bool g_daemon_pending;
+static uint32_t g_daemon_idle_since;
 
 static const char *ldac_quality_effective(void) {
 	const char *quality = bluetooth_ldac_quality();
@@ -1344,6 +1361,19 @@ static bool ensure_bluealsa(void) {
 		stop_process("bluealsa");
 		sleep_ms(300);
 	}
+	// The same for the hands-free gateway behind the headset battery: a
+	// daemon left from a run with the other setting is replaced here, before
+	// anything connects to it, rather than later under music.
+	bool want_hfp = bluetooth_headset_battery_enabled() && bluealsa_knows_option("hfp-ag");
+	if (process_running("bluealsa") && bluealsa_has_profile("hfp-ag") != want_hfp) {
+		fprintf(stderr, "bluetooth: bluealsa is running %s the hands-free gateway; starting it again\n",
+				want_hfp ? "without" : "with");
+		stop_process("bluealsa");
+		sleep_ms(300);
+	}
+	pthread_mutex_lock(&lock);
+	g_hfp_started = want_hfp;
+	pthread_mutex_unlock(&lock);
 
 	if (!process_running("bluealsa")) {
 		// The source half of A2DP always, the sink half only while the receiver
@@ -1466,7 +1496,7 @@ static bool ensure_bluealsa(void) {
 		char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
 		int codec_count = codecs_to_ask_for(codecs, BT_MAX_CODECS);
 
-		char *argv[13 + BT_MAX_CODECS * 2];
+		char *argv[15 + BT_MAX_CODECS * 2];
 		int at = 0;
 		argv[at++] = (char *)"bluealsa";
 		argv[at++] = (char *)"-p";
@@ -1475,7 +1505,32 @@ static bool ensure_bluealsa(void) {
 			argv[at++] = (char *)"-p";
 			argv[at++] = (char *)"a2dp-sink";
 		}
-		fprintf(stderr, "bluetooth: bluealsa with the A2DP source%s\n", want_sink ? " and sink" : " only");
+		// The hands-free audio gateway, only for the headset battery and only
+		// when asked for (bluetooth_headset_battery_enabled()). What it costs,
+		// and why it is not the default:
+		//
+		//   * bluez then publishes an HFP Audio Gateway record in this device's
+		//     SDP, so every headset sees a "phone" here and opens the hands-free
+		//     control channel next to A2DP. That channel is what carries the
+		//     battery (AT+XAPL, then +IPHONEACCEV), and it is all this player
+		//     wants from it.
+		//   * The SCO voice channel the profile also brings is never opened or
+		//     routed from here, and no call state is ever reported, so nothing
+		//     should ask for it. A headset can still try -- a long press for a
+		//     voice assistant (AT+BVRA) on some models -- and would then get a
+		//     silent voice link while it lasts.
+		//   * A few headsets put hands-free first: they connect HFP before A2DP,
+		//     or drop to the hands-free profile on a weak link, and some cheap
+		//     ones open SCO on their own. With one of those the setting is better
+		//     left off, which is why it is a setting.
+		//   * One RFCOMM link per headset more on the shared radio; a few kB in
+		//     bluealsa.
+		if (want_hfp) {
+			argv[at++] = (char *)"-p";
+			argv[at++] = (char *)"hfp-ag";
+		}
+		fprintf(stderr, "bluetooth: bluealsa with the A2DP source%s%s\n", want_sink ? " and sink" : " only",
+				want_hfp ? ", and the hands-free gateway for the headset battery" : "");
 		argv[at++] = (char *)"--a2dp-volume";
 		argv[at++] = keepalive;
 		if (rt) {
@@ -1761,10 +1816,10 @@ static void refresh_audio_state(void) {
 		return;
 	}
 	fprintf(stderr, "bluetooth: audio %s%s\n", sink ? "on " : "back on the jack", sink ? mac : "");
-	if (!sink && g_ldac_pending) {
-		// The stream that held a Wi-Fi coexistence change back has gone: the
-		// next connection gets the new quality.
-		job_t job = {.type = JOB_LDAC_COEXIST};
+	if (!sink && g_daemon_pending) {
+		// The stream that held a change of the daemon's options back has
+		// gone: the next connection gets the new options.
+		job_t job = {.type = JOB_DAEMON_CHECK};
 		post_job(&job);
 	}
 	if (sink) {
@@ -1791,6 +1846,12 @@ static void refresh_audio_state(void) {
 		// another rate makes bluealsa try to reconfigure the transport -- which
 		// some headphones answer by taking bluetoothd down.
 		read_sink_rate(mac);
+
+		// The headset's battery, if the hands-free side is on and the headset
+		// already said: the signals bring every change after this.
+		if (bluetooth_headset_battery_enabled()) {
+			btstack_read_headset_battery(mac);
+		}
 	} else {
 		codec_auto_done[0] = '\0'; // the next connection chooses again
 		read_sink_rate(NULL);
@@ -3309,37 +3370,65 @@ static void restart_bluealsa(const char *why) {
 	}
 }
 
-// Worker. Brings the running bluealsa in line with ldac_quality_effective(),
-// never under live audio: with a stream up it only notes that the change is
-// due, and refresh_audio_state() asks again when that stream goes.
-static void ldac_coexist_check(void) {
+// Whether music is going out to the headphones right now: the one moment a
+// restart of bluealsa would be heard as the music stopping.
+static bool music_playing_out(void) {
+	pthread_mutex_lock(&lock);
+	bool sink = g_a2dp_connected;
+	pthread_mutex_unlock(&lock);
+	// The radio has its own pipeline and its own idea of playing, and a phone
+	// streaming in (receiver mode) runs through bluealsa too: either counts.
+	return (sink && (audio_get_status() == AUDIO_STATUS_PLAYING || radio_is_playing())) ||
+		   btreceiver_is_streaming();
+}
+
+// Worker. Brings the running bluealsa in line with the options it should have
+// now -- LDAC's quality as ldac_quality_effective() gives it, and the
+// hands-free gateway for the headset battery -- but never under music that is
+// playing: then it only notes that the change is due, and it is made when the
+// headphones go (refresh_audio_state()) or once nothing has played for
+// DAEMON_IDLE_MS (the worker's loop). With headphones connected and nothing
+// playing it is made at once: restart_bluealsa() asks them for their stream
+// again.
+//
+// This is the Wi-Fi coexistence change's path and the one for the headset
+// battery switch; the LDAC choice made by hand on the codec page restarts at
+// once instead, because the user is there waiting for it.
+#define DAEMON_IDLE_MS 30000
+
+static void daemon_options_check(void) {
 	if (!process_running("bluealsa")) {
-		g_ldac_pending = false;
-		return; // the next start reads the right quality by itself
+		g_daemon_pending = false;
+		return; // the next start reads the right options by itself
 	}
 	const char *wanted = ldac_quality_effective();
+	bool want_hfp = bluetooth_headset_battery_enabled() && bluealsa_knows_option("hfp-ag");
 	pthread_mutex_lock(&lock);
 	char started[sizeof(g_ldac_started)];
 	snprintf(started, sizeof(started), "%s", g_ldac_started);
-	bool streaming = g_a2dp_connected;
+	bool hfp_started = g_hfp_started;
 	pthread_mutex_unlock(&lock);
 
-	if (!started[0] || strcmp(started, wanted) == 0) {
-		g_ldac_pending = false;
+	bool ldac_due = started[0] && strcmp(started, wanted) != 0;
+	bool hfp_due = hfp_started != want_hfp;
+	if (!ldac_due && !hfp_due) {
+		g_daemon_pending = false;
 		return;
 	}
-	if (streaming) {
-		if (!g_ldac_pending) {
-			fprintf(stderr, "bluetooth: LDAC %s is due (Wi-Fi transfer %s); kept at %s until the headphones "
-							"reconnect, so the music does not stop\n",
-					wanted, strcmp(wanted, "standard") == 0 ? "on" : "off", started);
+	char why[96];
+	snprintf(why, sizeof(why), "%s%s%s%s", ldac_due ? "LDAC " : "", ldac_due ? wanted : "",
+			 ldac_due && hfp_due ? ", " : "",
+			 hfp_due ? (want_hfp ? "hands-free gateway on" : "hands-free gateway off") : "");
+	if (music_playing_out()) {
+		if (!g_daemon_pending) {
+			fprintf(stderr, "bluetooth: %s is due; kept back until the music stops, so it does not stop now\n",
+					why);
 		}
-		g_ldac_pending = true;
+		g_daemon_pending = true;
+		g_daemon_idle_since = 0;
 		return;
 	}
-	g_ldac_pending = false;
-	char why[64];
-	snprintf(why, sizeof(why), "LDAC %s with nothing connected (Wi-Fi coexistence)", wanted);
+	g_daemon_pending = false;
 	restart_bluealsa(why);
 }
 
@@ -3435,6 +3524,20 @@ static void *bluetooth_worker(void *arg) {
 		// not fit in a full queue still goes out on the next round.
 		apply_renames();
 
+		// A change of the daemon's options held back by music that has since
+		// stopped without the headphones going: made once the player has been
+		// quiet for a while, so a pause to answer someone is not cut into.
+		if (g_daemon_pending && enabled) {
+			if (music_playing_out()) {
+				g_daemon_idle_since = 0;
+			} else if (g_daemon_idle_since == 0) {
+				g_daemon_idle_since = now_ms() | 1;
+			} else if ((uint32_t)(now_ms() - g_daemon_idle_since) >= DAEMON_IDLE_MS) {
+				g_daemon_idle_since = 0;
+				daemon_options_check();
+			}
+		}
+
 		if (have_job) {
 			char name[BT_NAME_MAX];
 
@@ -3497,8 +3600,8 @@ static void *bluetooth_worker(void *arg) {
 				do_read_codecs();
 				break;
 
-			case JOB_LDAC_COEXIST:
-				ldac_coexist_check();
+			case JOB_DAEMON_CHECK:
+				daemon_options_check();
 				break;
 
 			case JOB_LDAC_QUALITY:
@@ -4070,7 +4173,7 @@ void bluetooth_set_wifi_busy(bool transfer_server_on) {
 	fprintf(stderr, "bluetooth: Wi-Fi transfer server %s%s\n", transfer_server_on ? "on" : "off",
 			strcmp(bluetooth_ldac_quality(), "high") == 0 ? "; LDAC 990 follows it at the next connection" : "");
 	if (running) {
-		job_t job = {.type = JOB_LDAC_COEXIST};
+		job_t job = {.type = JOB_DAEMON_CHECK};
 		post_job(&job);
 	}
 }
@@ -4110,6 +4213,41 @@ void bluetooth_set_force_44k(bool on) {
 	config_set("wireless", "bt_sample_rate", on ? "44100" : "auto");
 	config_save();
 	restart_for_option(on ? "44.1 kHz link" : "automatic link rate");
+}
+
+bool bluetooth_headset_battery_enabled(void) { return config_get_int("wireless", "bt_headset_battery", 0) != 0; }
+
+void bluetooth_set_headset_battery_enabled(bool on) {
+	if (on == bluetooth_headset_battery_enabled()) {
+		return;
+	}
+	config_set_int("wireless", "bt_headset_battery", on ? 1 : 0);
+	config_save();
+	fprintf(stderr, "bluetooth: headset battery %s\n", on ? "on (hands-free gateway)" : "off");
+	pthread_mutex_lock(&lock);
+	bool running = worker_running && g_enabled;
+	pthread_mutex_unlock(&lock);
+	if (running) {
+		job_t job = {.type = JOB_DAEMON_CHECK};
+		post_job(&job);
+	}
+}
+
+int bluetooth_headset_battery(unsigned *serial_out) {
+#ifdef HOST_BUILD
+	// The desktop build has no headset to ask: SONIX_HEADSET_BATTERY_FAKE=80
+	// stands in for one, the way SONIX_AIRPODS_FAKE does for AirPods.
+	const char *fake = getenv("SONIX_HEADSET_BATTERY_FAKE");
+	if (fake && fake[0]) {
+		return bluetooth_headset_battery_enabled() ? atoi(fake) : -1;
+	}
+#endif
+	pthread_mutex_lock(&lock);
+	char mac[BT_MAC_MAX];
+	copy_field(mac, sizeof(mac), g_enabled && g_a2dp_connected ? g_a2dp_mac : "", sizeof(g_a2dp_mac));
+	pthread_mutex_unlock(&lock);
+	int percent = btstack_headset_battery(mac[0] ? mac : NULL, serial_out);
+	return bluetooth_headset_battery_enabled() ? percent : -1;
 }
 
 void bluetooth_set_receiver_profile(bool on) {
@@ -4186,7 +4324,7 @@ bool bluetooth_codec_summary(const char *mac, char *out, int size) {
 			const char *label;
 		} LDAC_LABELS[] = {{"high", "LDAC 990"}, {"standard", "LDAC 660"}, {"mobile", "LDAC 330"}, {"abr", "LDAC ABR"}};
 		// What the running daemon was given, which is not the setting while a
-		// Wi-Fi coexistence change is in force (ldac_coexist_check).
+		// Wi-Fi coexistence change is in force (daemon_options_check).
 		char quality[sizeof(g_ldac_started)];
 		pthread_mutex_lock(&lock);
 		snprintf(quality, sizeof(quality), "%s", g_ldac_started[0] ? g_ldac_started : bluetooth_ldac_quality());
