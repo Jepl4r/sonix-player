@@ -81,8 +81,9 @@ static void restart_playback_if_running(void) {
 // it by itself, so a list shown with nothing on the other end would be a list
 // of things to choose that nothing would come of.
 //
-// Touching a row still moves the link onto that codec, for as long as that link
-// lasts. It is a way to hear the difference, not a setting.
+// Touching a row moves the link onto that codec, and the choice is remembered
+// for those headphones: their next connection asks for it again (falling back
+// to the automatic choice if they refuse). "Auto", at the top, forgets it.
 //
 // LDAC appears three times because its bit rate is a separate setting from the
 // codec itself -- 990 and 660 fixed, and adaptive, which lets the rate follow
@@ -109,6 +110,12 @@ static void codec_chosen_cb(lv_event_t *e) {
 		bluetooth_set_ldac_quality(row->ldac);
 	}
 	bluetooth_set_codec(row->codec);
+	switch_screen(btaudio_screen);
+}
+
+static void codec_auto_cb(lv_event_t *e) {
+	(void)e;
+	bluetooth_set_codec_auto();
 	switch_screen(btaudio_screen);
 }
 
@@ -206,9 +213,16 @@ static void rebuild_codec_list(void) {
 
 	build_codec_rows(offered, offered_count);
 
-	// One mark, for the one thing there is to say: which codec the link is
-	// actually on. There is no second state to show -- nothing is remembered,
-	// so nothing can be set and not yet in force.
+	// "Auto" first, marked while nothing is remembered for these headphones:
+	// then the automatic choice is the one in force.
+	char chosen[BT_CODEC_MAX];
+	bool by_hand = bluetooth_codec_chosen(chosen, sizeof(chosen));
+	lv_obj_t *auto_value = NULL;
+	settingsrow_add(codec_list, "btaudio_codec_auto", &auto_value, codec_auto_cb, NULL);
+	lv_label_set_text(auto_value, by_hand ? "" : tr("in_use"));
+	lv_obj_set_style_text_color(auto_value, theme()->accent, 0);
+
+	// Then one mark per codec, for which one the link is actually on.
 	const char *quality = bluetooth_ldac_quality();
 
 	for (int i = 0; i < codec_row_count; i++) {

@@ -178,16 +178,21 @@ bool bluetooth_a2dp_streams(char *out, int size, int *age_ms);
 // The codecs the connected sink offers and the one in use. The list is read
 // on the worker; this only copies what it last found.
 //
-// The player picks the best of them by itself at every connection and there is
-// no setting in front of that. bluetooth_set_codec() moves the link that is up
-// onto something else and is not remembered: the next connection starts from the
-// top again.
+// The player picks the best of them by itself at every connection.
+// bluetooth_set_codec() moves the link that is up onto something else and,
+// once the headphones accept it, remembers it for that device: the next
+// connection of the same headphones asks for it first and falls back to the
+// automatic choice only if it is refused. bluetooth_set_codec_auto() forgets
+// it and makes the automatic choice again now. bluetooth_codec_chosen() says
+// what is remembered for the connected device ("" and false for nothing).
 //
 // Only the headphone direction. As a receiver the phone is the source and the
 // choice is the phone's; nothing here can move it.
 int bluetooth_get_codecs(char out[][BT_CODEC_MAX], int max, char *selected, int selected_size);
 void bluetooth_refresh_codecs(void);
 void bluetooth_set_codec(const char *codec);
+void bluetooth_set_codec_auto(void);
+bool bluetooth_codec_chosen(char *out, int size);
 
 // What THIS player can encode and decode, which is a property of the bluealsa
 // binary the firmware ships and is known as soon as the stack comes up --

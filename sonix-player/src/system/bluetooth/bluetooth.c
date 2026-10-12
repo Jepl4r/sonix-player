@@ -2524,10 +2524,93 @@ static int codec_rank(const char *name) {
 	return 0; // unknown: left alone
 }
 
-// The best the two ends have in common, once per connection, with no setting in
-// front of it: choosing the codec is the player's job and not a question to ask.
-// A choice made by hand on the codec page changes the link that is up and is not
-// written down, so the next connection starts from the top again.
+// ---------------------------------------------------------------------------
+// The codec chosen by hand, per pair of headphones
+//
+// A choice made on the codec page is written down against the device's
+// address and asked for again at every later connection of that device: AAC
+// picked for a pair whose LDAC drops out in a pocket stays AAC tomorrow, and a
+// second pair is not affected. "Auto" on the same page rubs it out.
+//
+//   [wireless]
+//   bt_codec_A0B1C2D3E4F5 = AAC
+//
+// Written on the worker, like the last device's address above; read on it
+// too, copied out at once rather than held as a pointer into the store.
+// ---------------------------------------------------------------------------
+
+static void codec_choice_key(const char *mac, char *out, size_t size) {
+	size_t used = (size_t)snprintf(out, size, "bt_codec_");
+	for (const char *p = mac; *p && used + 1 < size; p++) {
+		if (isxdigit((unsigned char)*p)) {
+			out[used++] = (char)toupper((unsigned char)*p);
+		}
+	}
+	out[used] = '\0';
+}
+
+static void codec_choice_get(const char *mac, char *out, size_t size) {
+	char key[40];
+	codec_choice_key(mac, key, sizeof(key));
+	snprintf(out, size, "%s", config_get("wireless", key, ""));
+}
+
+// "" forgets the choice.
+static void codec_choice_set(const char *mac, const char *codec) {
+	char key[40];
+	codec_choice_key(mac, key, sizeof(key));
+	if (strcmp(config_get("wireless", key, ""), codec) == 0) {
+		return; // already what it says: no write, no wear
+	}
+	config_set("wireless", key, codec);
+	config_save();
+}
+
+static bool codec_same(const char *a, const char *b) {
+	char ka[BT_CODEC_MAX];
+	char kb[BT_CODEC_MAX];
+	codec_normalise(a, ka, sizeof(ka));
+	codec_normalise(b, kb, sizeof(kb));
+	return ka[0] && strcmp(ka, kb) == 0;
+}
+
+// The codec chosen by hand for this device, if it is on offer and is accepted.
+// False sends the caller on to the automatic choice: nothing was chosen, the
+// headphones no longer offer it (a firmware update, a different mode), or they
+// refused it now.
+static bool apply_codec_choice(const char *mac, char codecs[][BT_CODEC_MAX], int count, const char *selected) {
+	char wanted[BT_CODEC_MAX];
+	codec_choice_get(mac, wanted, sizeof(wanted));
+	if (!wanted[0]) {
+		return false;
+	}
+	int at = -1;
+	for (int i = 0; i < count && at < 0; i++) {
+		if (codec_same(codecs[i], wanted)) {
+			at = i;
+		}
+	}
+	if (at < 0) {
+		fprintf(stderr, "bluetooth: %s no longer offers %s, chosen by hand; choosing automatically\n", mac, wanted);
+		return false;
+	}
+	if (codec_same(selected, wanted)) {
+		fprintf(stderr, "bluetooth: %s is already on %s, as chosen by hand\n", mac, wanted);
+		return true;
+	}
+	fprintf(stderr, "bluetooth: %s: asking for %s, chosen by hand\n", mac, codecs[at]);
+	if (btstack_select_codec(mac, codecs[at])) {
+		do_read_codecs();
+		return true;
+	}
+	fprintf(stderr, "bluetooth: %s refused %s; choosing automatically\n", mac, codecs[at]);
+	return false;
+}
+
+// The best the two ends have in common, once per connection: choosing the
+// codec is the player's job and not a question to ask. The exception is a
+// codec chosen by hand for this device on the codec page (see above), which is
+// asked for first; only if that fails does the ranking below decide.
 static void do_auto_codec(const char *mac) {
 	if (!mac || !mac[0]) {
 		return;
@@ -2541,6 +2624,9 @@ static void do_auto_codec(const char *mac) {
 	char selected[BT_CODEC_MAX] = "";
 	int count = btstack_codecs(mac, codecs, BT_MAX_CODECS, selected, sizeof(selected));
 	if (count <= 0) {
+		return;
+	}
+	if (apply_codec_choice(mac, codecs, count, selected)) {
 		return;
 	}
 
@@ -2606,14 +2692,31 @@ static void do_read_codecs(void) {
 	pthread_mutex_unlock(&lock);
 }
 
+// An empty codec is "Auto": the choice for this device is forgotten and the
+// automatic one made again at once, from what is in force upwards.
 static void do_set_codec(const char *codec) {
 	char mac[BT_MAC_MAX];
-	if (!codec || !codec[0] || !connected_mac(mac, sizeof(mac))) {
+	if (!codec || !connected_mac(mac, sizeof(mac))) {
 		set_op(BT_OP_FAILED, NULL);
 		return;
 	}
 
+	if (!codec[0]) {
+		codec_choice_set(mac, "");
+		codec_auto_done[0] = '\0';
+		do_auto_codec(mac);
+		sleep_ms(600);
+		do_read_codecs();
+		set_op(BT_OP_OK, "auto");
+		return;
+	}
+
 	bool done = btstack_select_codec(mac, codec);
+	// Written down only once the headphones have taken it: a codec they
+	// refuse would otherwise be asked for, and refused, at every connection.
+	if (done) {
+		codec_choice_set(mac, codec);
+	}
 	// Renegotiating tears the stream down and builds it again; the PCM comes
 	// back a moment later and the codec with it.
 	sleep_ms(600);
@@ -3723,14 +3826,38 @@ void bluetooth_set_codec(const char *codec) {
 	if (!codec || !codec[0]) {
 		return;
 	}
-	// Sent, not written down. The player picks the best one on its own at every
-	// connection; this is the one link that is up being told to use something
-	// else, and it lasts as long as that link does.
+	// Sent, and written down against the device once it is accepted (see
+	// do_set_codec), so the same headphones come back on it next time.
 	set_op(BT_OP_BUSY, NULL);
 
 	job_t job = {.type = JOB_SET_CODEC};
 	snprintf(job.text, sizeof(job.text), "%s", codec);
 	post_job(&job);
+}
+
+void bluetooth_set_codec_auto(void) {
+	set_op(BT_OP_BUSY, NULL);
+	job_t job = {.type = JOB_SET_CODEC}; // empty text: forget the choice
+	post_job(&job);
+}
+
+bool bluetooth_codec_chosen(char *out, int size) {
+	if (out && size > 0) {
+		out[0] = '\0';
+	}
+	pthread_mutex_lock(&lock);
+	char mac[BT_MAC_MAX];
+	copy_field(mac, sizeof(mac), g_a2dp_connected ? g_a2dp_mac : "", sizeof(g_a2dp_mac));
+	pthread_mutex_unlock(&lock);
+	if (!mac[0]) {
+		return false;
+	}
+	char codec[BT_CODEC_MAX];
+	codec_choice_get(mac, codec, sizeof(codec));
+	if (out && size > 0) {
+		snprintf(out, (size_t)size, "%s", codec);
+	}
+	return codec[0] != '\0';
 }
 
 void bluetooth_set_discoverable(bool on) {
