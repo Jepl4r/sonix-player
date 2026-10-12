@@ -41,9 +41,20 @@ void switcher_set_back_guard_peek(lv_obj_t *screen, bool (*peek)(void));
 // artwork's corner, instead of on the (hidden) title row.
 void back_btn_player_mode(bool in_player);
 
+// True while the status bar stays up over the player as well: the chevron
+// there goes under the bar, as on every other page, and back_btn_centre_y()
+// says so to whatever lines up with it.
+void back_btn_player_below_bar(bool below);
+
 // True while the open player shows a loaded cover: the chevron sits on the
 // always-dark artwork backdrop, so it goes white regardless of the theme.
 void back_btn_over_cover(bool over_cover);
+
+// The chevron in `color` while `screen` is the page on screen, for a page that
+// paints itself in a colour of its own and needs the arrow to stay readable on
+// it. Pass false with the same screen to give the chevron back its theme
+// colour; a call naming another screen than the one recorded changes nothing.
+void back_btn_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t color);
 
 // Horizontal offset for the chevron, so it can ride whatever is being
 // dragged (the player sheet's slide uses it; the page swipe-back does its

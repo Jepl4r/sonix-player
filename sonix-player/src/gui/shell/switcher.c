@@ -29,6 +29,14 @@ static lv_obj_t *back_btn_icon;
 static bool chevron_in_player;
 static bool chevron_over_cover;
 
+// A page painted in a colour of its own -- an album in the colours of its
+// sleeve -- and the colour the chevron takes on it so it stays readable.
+// `chevron_page` is the page being shown, set as it is loaded: the active
+// screen is still the previous one at that moment.
+static lv_obj_t *chevron_tint_screen;
+static lv_color_t chevron_tint;
+static lv_obj_t *chevron_page;
+
 // Where the back button sits depends on whether the page below it shows the
 // status bar: normally it tucks in underneath, on the player (status bar
 // hidden, artwork at the top) it moves up to the top edge.
@@ -40,12 +48,19 @@ static int8_t back_btn_top_bar_height;
 // air it keeps instead, and what the player's own header row is aligned to.
 #define BACK_BTN_PLAYER_TOP 14
 
+// Whether the status bar stays up over the player too (back_btn_player_below_bar).
+static bool player_bar_shown;
+
+// How far down the chevron sits on the player.
+static int player_top(void) { return player_bar_shown ? back_btn_top_bar_height : BACK_BTN_PLAYER_TOP; }
+
 static void place_back_btn(bool below_top_bar) {
 	// Same offsets as the corner buttons on the right (playlists, settings,
 	// options): the whole header row of round buttons sits on one line. On
 	// the player (below_top_bar false) the status bar is not there to sit
-	// under, so the chevron takes the offset above.
-	int y = back_btn_padding + (below_top_bar ? back_btn_top_bar_height : BACK_BTN_PLAYER_TOP);
+	// under, so the chevron takes the offset above -- unless the bar has been
+	// asked to stay up there too, and then it goes under it as anywhere else.
+	int y = back_btn_padding + (below_top_bar ? back_btn_top_bar_height : player_top());
 	lv_obj_align(back_btn, LV_ALIGN_TOP_LEFT, back_btn_padding, y);
 }
 
@@ -82,6 +97,7 @@ static lv_obj_t *history_pop(void) {
 }
 
 static void load_screen(lv_obj_t *target_screen);
+static void chevron_apply_color(void);
 
 // Forgets the whole back-stack: the next chevron press lands on the main
 // menu. For pages that end a one-way flow (a finished scan) where walking
@@ -161,9 +177,16 @@ void back_btn_translate(int32_t x) { back_btn_set_drag_offset(x); }
 
 int back_btn_centre_y(void) {
 	if (!back_btn) {
-		return back_btn_padding + BACK_BTN_PLAYER_TOP;
+		return back_btn_padding + player_top();
 	}
-	return back_btn_padding + BACK_BTN_PLAYER_TOP + lv_obj_get_height(back_btn) / 2;
+	return back_btn_padding + player_top() + lv_obj_get_height(back_btn) / 2;
+}
+
+void back_btn_player_below_bar(bool below) {
+	player_bar_shown = below;
+	if (back_btn && chevron_in_player) {
+		place_back_btn(false);
+	}
 }
 
 static void back_underlay_destroy(void) {
@@ -479,6 +502,9 @@ static void load_screen(lv_obj_t *target_screen) {
 
 		place_back_btn(true);
 	}
+	chevron_page = target_screen;
+	chevron_apply_color();
+	topbar_page_shown(target_screen);
 
 	// Re-read the folder on the way in: the card may have finished mounting
 	// (or changed) since the browser last looked at it.
@@ -648,6 +674,9 @@ static void chevron_apply_color(void) {
 	if (chevron_in_player && chevron_over_cover) {
 		lv_obj_set_style_image_recolor(back_btn_icon, lv_color_white(), 0);
 		lv_obj_set_style_image_recolor_opa(back_btn_icon, LV_OPA_COVER, 0);
+	} else if (!chevron_in_player && chevron_tint_screen && chevron_page == chevron_tint_screen) {
+		lv_obj_set_style_image_recolor(back_btn_icon, chevron_tint, 0);
+		lv_obj_set_style_image_recolor_opa(back_btn_icon, LV_OPA_COVER, 0);
 	} else {
 		lv_obj_remove_local_style_prop(back_btn_icon, LV_STYLE_IMAGE_RECOLOR, 0);
 		lv_obj_remove_local_style_prop(back_btn_icon, LV_STYLE_IMAGE_RECOLOR_OPA, 0);
@@ -656,6 +685,19 @@ static void chevron_apply_color(void) {
 
 void back_btn_over_cover(bool over_cover) {
 	chevron_over_cover = over_cover;
+	chevron_apply_color();
+}
+
+void back_btn_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t color) {
+	if (on) {
+		chevron_tint_screen = screen;
+		chevron_tint = color;
+	} else if (chevron_tint_screen == screen) {
+		chevron_tint_screen = NULL;
+	}
+	if (!chevron_page) {
+		chevron_page = lv_screen_active();
+	}
 	chevron_apply_color();
 }
 

@@ -28,6 +28,7 @@
 #include "src/system/gearboy/gearboy.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/audio/audio.h"
+#include "src/system/audio/readahead.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/remote/airplay.h"
@@ -96,6 +97,16 @@ static lv_timer_t *sleep_timer;
 // lv_tick_get()'s, which is the same clock the timer is driven by.
 static lv_timer_t *smooth_timer;
 static bool sheet_open; // the player panel is the page on show
+
+// "Always show the status bar" (Settings > Appearance): the bar stays up over
+// the player too. Over the picture that runs to the top edge -- Standard and
+// Waveform -- it blurs and dims what lies under it as it is drawn, like the
+// block behind the controls; Studio, whose whole background is that blurred
+// picture already, moves down under it instead, the chevron and the heading
+// with it (back_btn_player_below_bar).
+static bool bar_always;
+static int bar_height; // the status bar's, from the config
+static void bar_over_player_update(void);
 static double progress_anchor_secs;
 static uint32_t progress_anchor_tick;
 static bool progress_running;
@@ -178,6 +189,10 @@ static lv_obj_t *below_slider_obj; // the two clocks under the bar
 // difference between them would read as the mark jumping.
 #define BADGE_INSET 14
 
+// Where the marks sit over the artwork: in its corner, under the status bar
+// when the bar stays up.
+static int badge_top(void) { return BADGE_INSET + (bar_always ? bar_height : 0); }
+
 static lv_obj_t *live_badge;	   // live indicator, top right over the artwork
 static lv_obj_t *qobuz_badge;	   // the Qobuz mark, in the same corner
 static lv_obj_t *tidal_badge;	   // and the Tidal one, over it: only one ever shows
@@ -252,9 +267,9 @@ static int cover_box_w, cover_box_h;   // the artwork spans the full screen widt
 // What the sleeve's colour becomes once it has to be painted rather than
 // thrown.
 //
-// cover_dominant_tone() answers with a colour stretched to full strength,
-// because in Cover Flow it is a light behind the record and a light that is not
-// strong is not seen. Poured into a solid pill the same number is a poster
+// album_tone is stretched to full strength (cover_tone_stretched), the way
+// cover_dominant_tone() answers for Cover Flow, where it is a light behind the
+// record and a light that is not strong is not seen. Poured into a solid pill the same number is a poster
 // colour -- which is the complaint. So the hue is kept and everything else is
 // pinned: the surface keeps a third of its distance from grey and sits at a
 // fixed low brightness, the ink on it is always the same white, and the mark
@@ -283,6 +298,9 @@ static bool layout_studio_now;	// likewise for the third arrangement
 static bool layout_wave_now;
 
 static uint32_t album_tone; // the sleeve's colour, 0 when there is no sleeve
+// The setting that has the Standard and Studio arrangements wear the sleeve's
+// colour as their accent too, as Waveform always does.
+static bool cover_accent;
 
 static lv_obj_t *song_text_obj; // the title and artist, wherever they live now
 static lv_obj_t *song_side_obj; // the star and the format, likewise
@@ -296,7 +314,10 @@ static lv_obj_t *wave_canvas;
 static uint8_t *wave_buf;
 static int wave_w; // the buffer's width, which is what the painting must use
 static uint8_t wave_bars[WAVEFORM_BARS];
-static bool wave_have;		// the shape of this track is known
+// How many columns of this track's shape are known, from the left: all of them
+// once it has been worked out, fewer while the worker is still reading the
+// file, and the rest are drawn flat until they arrive.
+static int wave_ready;
 static int wave_drawn = -1; // where the playhead was, in pixels, when it was drawn
 static uint32_t wave_drawn_tone = 1;
 static int backdrop_w, backdrop_h;	   // size of the controls block it sits behind
@@ -961,6 +982,30 @@ static void (*cover_release_cb)(void);
 
 void player_set_cover_release_cb(void (*cb)(void)) { cover_release_cb = cb; }
 
+void player_cover_box(int *w, int *h) {
+	if (w) {
+		*w = cover_box_w;
+	}
+	if (h) {
+		*h = cover_box_h;
+	}
+}
+
+bool player_cover_copy(int size, cover_image_t *out, uint64_t *id) {
+	*id = 0;
+	// Only a settled cover: while one is coming, or a track change is still
+	// asking whether its picture is the same, what is up may be the last
+	// track's.
+	if (!current_cover.pixels || cover_request_outstanding || cover_id_state != COVER_ID_IDLE) {
+		return false;
+	}
+	if (!cover_scaled_copy(&current_cover, size, out)) {
+		return false;
+	}
+	*id = cover_shown_id;
+	return true;
+}
+
 // The path whose artwork is currently up. A live stream refreshes its text
 // several times a minute (every new on-air title), and re-decoding the same
 // station icon each time would be pointless work on the UI thread.
@@ -1015,7 +1060,17 @@ static lv_color_t tone_shaped(int sat, int want) {
 static lv_color_t alt_surface(void) { return tone_shaped(ALT_SURFACE_SAT, ALT_SURFACE_LUMA); }
 static lv_color_t alt_mark(void) { return tone_shaped(ALT_MARK_SAT, ALT_MARK_LUMA); }
 
-static lv_color_t chrome_accent(void) { return layout_wave_now ? alt_mark() : theme()->accent; }
+// The accent the transport, the progress bar and the sung line wear: the
+// sleeve's colour in the Waveform arrangement, and in the other two as well
+// when the setting asks for it and there is a sleeve to take it from. The same
+// shade in all three, light enough to read over the dark backdrop every
+// arrangement puts behind a sleeve.
+static lv_color_t chrome_accent(void) {
+	if (layout_wave_now || (cover_accent && album_tone)) {
+		return alt_mark();
+	}
+	return theme()->accent;
+}
 
 // The type on that surface. Worked out rather than fixed so that a change to
 // ALT_SURFACE_LUMA cannot quietly leave the title unreadable.
@@ -1035,6 +1090,12 @@ static void paint_transport_tint(void) {
 	}
 	if (repeat_btn_icon) {
 		update_repeat_button();
+	}
+	update_speed_button();
+	// The progress bar, which Waveform hides under the shape of the track.
+	if (progress_slider) {
+		lv_obj_set_style_bg_color(progress_slider, chrome_accent(), LV_PART_INDICATOR);
+		lv_obj_set_style_bg_color(progress_slider, chrome_accent(), LV_PART_KNOB);
 	}
 	lyrics_repaint_lit(); // the sung line wears it too
 }
@@ -2358,7 +2419,7 @@ static void studio_take_back(void) {
 		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
 			if (marks[i]) {
 				lv_obj_set_parent(marks[i], cover_panel);
-				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 			}
 		}
 		set_over_cover(current_cover.pixels != NULL);
@@ -2562,6 +2623,7 @@ static void apply_layout(void) {
 	align_title_with_star(); // the title may have just left its row, or come back to it
 
 	paint_alt_tint();
+	bar_over_player_update(); // Studio's bar blurs nothing of its own
 }
 
 // Decides which arrangement the thing now playing gets, and moves the pieces
@@ -2696,7 +2758,7 @@ static void wave_paint(int played_px) {
 	}
 
 	for (int i = 0; i < WAVEFORM_BARS; i++) {
-		int value = wave_have ? wave_bars[i] : 0;
+		int value = i < wave_ready ? wave_bars[i] : 0;
 		int half = value * reach / 255;
 		if (half < WAVE_MIN_BAR) {
 			half = WAVE_MIN_BAR;
@@ -2754,16 +2816,22 @@ static void wave_refresh(const char *path, double position) {
 		return;
 	}
 
-	bool had = wave_have;
+	// Compared with what is on screen as well as counted: while the shape is
+	// being worked out the columns already shown are scaled again whenever a
+	// louder one arrives.
+	int had = wave_ready;
+	uint8_t before[WAVEFORM_BARS];
+	memcpy(before, wave_bars, sizeof(before));
 	if (path && path[0]) {
-		wave_have = waveform_get(path, wave_bars);
+		wave_ready = waveform_get(path, wave_bars);
 	} else {
-		wave_have = false;
+		wave_ready = 0;
 	}
+	bool same_shape = wave_ready == had && memcmp(before, wave_bars, (size_t)wave_ready) == 0;
 
 	int px = wave_played_px(position);
 	uint32_t tone = album_tone;
-	if (px == wave_drawn && wave_have == had && tone == wave_drawn_tone) {
+	if (px == wave_drawn && same_shape && tone == wave_drawn_tone) {
 		return;
 	}
 	wave_drawn = px;
@@ -2792,6 +2860,7 @@ static void reload_cover(const char *filepath) {
 	}
 	cover_free(&current_cover);
 	cover_free(&current_backdrop);
+	bar_over_player_update();
 
 	cover_show(false);
 	// Studio holds pointers to both of those, so it is told in the same breath:
@@ -2943,8 +3012,19 @@ static void apply_cover_result(void) {
 		set_over_cover(true);
 
 		// And the sleeve's own colour, which is what the alternative layout is
-		// drawn in.
-		album_tone = cover_dominant_tone(&current_cover);
+		// drawn in: the one an album's page is painted in (cover_page_tone),
+		// so the record looks the same colour on both. Kept with the picture by
+		// the loader, so a cover seen before is not worked out again, and taken
+		// to full strength here for marks drawn over a dark backdrop.
+		uint32_t tone = 0;
+		int luma = 0;
+		bool light = false;
+		if (current_cover.has_tone) {
+			tone = current_cover.tone;
+		} else if (!cover_page_tone(&current_cover, COVER_PAGE_LIGHT_FROM, &tone, &luma, &light)) {
+			tone = 0;
+		}
+		album_tone = tone ? cover_tone_stretched(tone) : 0;
 		paint_alt_tint();
 
 		// The words' background, ready before they are pulled in.
@@ -2957,6 +3037,7 @@ static void apply_cover_result(void) {
 		cover_shown_id = 0; // nothing to compare the next track against
 		lyrics_bg_forget(); // no picture, nothing to blur
 	}
+	bar_over_player_update();
 	if (lyrics_progress > 0) {
 		lyrics_look(true); // Studio's backdrop has arrived, or there is none
 	}
@@ -2999,8 +3080,8 @@ static void player_refresh_theme(void) {
 	// The backdrop over a loaded cover is always the dark treatment -- same
 	// look in both themes; only the no-cover panel follows the theme.
 	cover_set_backdrop_light(false);
-	lv_obj_set_style_bg_color(progress_slider, theme()->accent, LV_PART_INDICATOR);
-	lv_obj_set_style_bg_color(progress_slider, theme()->accent, LV_PART_KNOB);
+	lv_obj_set_style_bg_color(progress_slider, chrome_accent(), LV_PART_INDICATOR);
+	lv_obj_set_style_bg_color(progress_slider, chrome_accent(), LV_PART_KNOB);
 	set_over_cover(chrome_over_cover); // repaints the play disc for the new palette
 	update_repeat_button();
 	update_speed_button();
@@ -3494,7 +3575,7 @@ static void update_speed_button(void) {
 		return;
 	}
 	bool normal = speed_current_permille() == AUDIOBOOK_SPEED_NORMAL;
-	lv_obj_set_style_image_recolor(speed_btn_icon, normal ? lv_color_make(100, 100, 100) : theme()->accent, 0);
+	lv_obj_set_style_image_recolor(speed_btn_icon, normal ? lv_color_make(100, 100, 100) : chrome_accent(), 0);
 	lv_obj_set_style_image_recolor_opa(speed_btn_icon, LV_OPA_COVER, 0);
 }
 
@@ -3687,6 +3768,9 @@ static void update_progress(void) {
 
 	set_progress_label(state.progress_current_secs, current_total_length);
 	wave_refresh(cover_shown_path, state.progress_current_secs);
+	if (state.status == AUDIO_STATUS_PLAYING && !state.live) {
+		device_state_read_ahead(state.progress_current_secs, state.progress_total_secs);
+	}
 	lyrics_request(&state);
 	lyrics_follow(state.progress_current_secs);
 	apply_playback_status(state.status);
@@ -4089,6 +4173,18 @@ void player_play_file(const char *filepath) {
 // control that did not take.
 player_layout_t player_layout_get(void) { return layout_choice; }
 
+bool player_cover_accent(void) { return cover_accent; }
+
+void player_cover_accent_set(bool on) {
+	if (on == cover_accent) {
+		return;
+	}
+	cover_accent = on;
+	config_set_bool("screen", "cover_accent", on);
+	config_save();
+	paint_transport_tint();
+}
+
 void player_layout_set(player_layout_t layout) {
 	if (layout == layout_choice) {
 		return;
@@ -4247,6 +4343,56 @@ bool player_sheet_is_open(void) { return sheet_open; }
 
 bool player_sheet_drag_active(void) { return drag_committed; }
 
+// The status bar over the open player, when it stays up there: blurring the
+// cover under it, on nothing in Studio -- the blurred picture behind
+// everything is already there -- and in the page's own colours while there is
+// no picture at all, where white would be lost on a light theme.
+static void bar_over_player_update(void) {
+	if (!sheet_open || !bar_always) {
+		return;
+	}
+	topbar_set_hidden(false);
+	if (!current_cover.pixels) {
+		topbar_set_over_artwork(false, false);
+		return;
+	}
+	topbar_set_over_artwork(true, !layout_studio_now);
+}
+
+bool player_statusbar_always(void) { return bar_always; }
+
+void player_set_statusbar_always(bool on) {
+	if (on == bar_always) {
+		return;
+	}
+	bar_always = on;
+	back_btn_player_below_bar(on);
+
+	// The marks in the artwork's corner, and everything lined up with the
+	// chevron, follow it down or back up.
+	if (!studio_up) {
+		lv_obj_t *const marks[] = {live_badge, qobuz_badge, tidal_badge, podcast_badge};
+		for (size_t i = 0; i < sizeof(marks) / sizeof(marks[0]); i++) {
+			if (marks[i]) {
+				lv_obj_align(marks[i], LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
+			}
+		}
+	}
+	if (layout_studio_now) {
+		studio_place();
+	}
+	lyrics_layout();
+
+	if (!on) {
+		if (sheet_open) {
+			topbar_set_over_artwork(false, false);
+			topbar_set_hidden(true);
+		}
+		return;
+	}
+	bar_over_player_update();
+}
+
 void player_sheet_open(bool animate) {
 	// Nothing to show while another mode owns the sound: the sheet is about a
 	// track this player is playing, and in Bluetooth receiver mode the track is
@@ -4274,8 +4420,13 @@ void player_sheet_open(bool animate) {
 	lv_obj_move_background(player_screen);
 
 	// Artwork runs to the top edge here, so the bar steps aside. It is hidden
-	// rather than moved, which is why nothing slides during the drag.
-	topbar_set_hidden(true);
+	// rather than moved, which is why nothing slides during the drag. Unless
+	// it is to stay up: then it goes over the artwork.
+	if (bar_always) {
+		bar_over_player_update();
+	} else {
+		topbar_set_hidden(true);
+	}
 
 	sheet_move_to(0, animate);
 }
@@ -4296,6 +4447,7 @@ void player_sheet_close(bool animate) {
 	sheet_open = false;
 	back_btn_player_mode(false);
 	lyrics_screen_hold_update();
+	topbar_set_over_artwork(false, false);
 	topbar_set_hidden(false);
 	// The tab does not travel with the page: coming back to a player with a
 	// panel hanging open is not what leaving it looked like.
@@ -4498,6 +4650,9 @@ void player_init(gui_config_t *cfg) {
 	// The artwork decodes on the shared worker; make sure it exists before
 	// the first track can be started. Safe to call more than once.
 	coverloader_start();
+	// The next track's picture is not read ahead once the cover side has no
+	// use for it.
+	readahead_set_picture_known(cover_picture_known);
 
 	lv_obj_add_style(player_screen, &theme_style_screen, 0);
 
@@ -4886,7 +5041,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(live_badge, 6, 0);
 	lv_obj_set_style_pad_hor(live_badge, 10, 0);
 	lv_obj_set_style_pad_ver(live_badge, 5, 0);
-	lv_obj_align(live_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+	lv_obj_align(live_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(live_badge, true);
 
 	// The Qobuz mark, in the same corner and for the same reason: say where
@@ -4895,20 +5050,20 @@ void player_init(gui_config_t *cfg) {
 	// it into a solid square).
 	qobuz_badge = lv_image_create(cover_panel);
 	lv_image_set_src(qobuz_badge, &icon_qobuz_badge);
-	lv_obj_align(qobuz_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+	lv_obj_align(qobuz_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(qobuz_badge, true);
 
 	// Same corner, same size: the marks replace each other instead of sitting
 	// side by side, and update_qobuz_badge() decides which.
 	tidal_badge = lv_image_create(cover_panel);
 	lv_image_set_src(tidal_badge, &icon_tidal_badge);
-	lv_obj_align(tidal_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+	lv_obj_align(tidal_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(tidal_badge, true);
 
 	// And the third, same corner and same size as the other two.
 	podcast_badge = lv_image_create(cover_panel);
 	lv_image_set_src(podcast_badge, &icon_podcast_badge);
-	lv_obj_align(podcast_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, BADGE_INSET);
+	lv_obj_align(podcast_badge, LV_ALIGN_TOP_RIGHT, -BADGE_INSET, badge_top());
 	lv_obj_set_hidden(podcast_badge, true);
 
 	// Shown while there is no artwork for the current track.
@@ -5095,12 +5250,17 @@ void player_init(gui_config_t *cfg) {
 	// look in both themes; only the no-cover panel follows the theme.
 	cover_set_backdrop_light(false);
 
+	// The status bar over the player, as it was left.
+	bar_height = (int)cfg->top_bar_height;
+	player_set_statusbar_always(config_get_int("screen", "statusbar_always", 0) != 0);
+
 	// Whichever arrangement was left selected, now that every widget it moves
 	// exists.
 	int saved = (int)config_get_int("screen", "player_layout_alt", 0);
 	layout_choice = (saved == (int)PLAYER_LAYOUT_ALTERNATIVE)	? PLAYER_LAYOUT_ALTERNATIVE
 					: (saved == (int)PLAYER_LAYOUT_STUDIO)		? PLAYER_LAYOUT_STUDIO
 																: PLAYER_LAYOUT_STANDARD;
+	cover_accent = config_get_bool("screen", "cover_accent", false);
 	layout_alt_now = false; // apply_layout() below puts the standard one up first
 	layout_studio_now = false;
 	apply_layout();

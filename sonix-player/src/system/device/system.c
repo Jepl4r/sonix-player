@@ -1204,11 +1204,10 @@ static void log_key_event(const char *node, const struct input_event *ev) {
 // ---------------------------------------------------------------------------
 
 // How long a volume key waits before it starts repeating, and how fast it goes
-// once it does. One step is small enough that a quick tap is a fine adjustment
-// and a hold sweeps the whole range in a few seconds.
+// once it does. One step of the smallest size is small enough that a quick tap
+// is a fine adjustment and a hold sweeps the whole range in a few seconds.
 #define VOLUME_REPEAT_DELAY_MS 400
 #define VOLUME_REPEAT_PERIOD_MS 70
-#define VOLUME_STEP_PERCENT 1
 
 // Hold the power key this long and the shutdown menu comes up instead of the
 // screen simply toggling.
@@ -1220,11 +1219,31 @@ static uint32_t now_ms(void) {
 	return (uint32_t)(ts.tv_sec * 1000) + (uint32_t)(ts.tv_nsec / 1000000);
 }
 
+// How far one press of a volume key moves the volume, in percent (Settings >
+// More > Volume steps). Read by the key threads, written by the interface.
+static volatile int volume_step_percent = VOLUME_STEP_MIN;
+
+void input_set_volume_step(int percent) {
+	if (percent < VOLUME_STEP_MIN) {
+		percent = VOLUME_STEP_MIN;
+	}
+	if (percent > VOLUME_STEP_MAX) {
+		percent = VOLUME_STEP_MAX;
+	}
+	volume_step_percent = percent;
+}
+
+// One step up or down, as a signed change of the volume.
+static int volume_step_delta(int code) {
+	int step = volume_step_percent;
+	return code == KEY_VOLUMEUP ? step : -step;
+}
+
 // The keys always move the volume, over Bluetooth as over the jack: the step
 // reaches the stream itself, so synchronised, bluealsa passes it on to the
 // headphones, and separate, bluealsa attenuates on this side.
 static void apply_volume_step(int code) {
-	device_state_change_volume_percent(code == KEY_VOLUMEUP ? VOLUME_STEP_PERCENT : -VOLUME_STEP_PERCENT);
+	device_state_change_volume_percent(volume_step_delta(code));
 	gui_notify_volume(device_state_get_volume_percent());
 }
 
@@ -2286,7 +2305,7 @@ static void handle_bt_remote_key(const char *node, int code, bool usb) {
 	// here the headphones themselves are asking, so it is carried out.
 	case KEY_VOLUMEUP:
 	case KEY_VOLUMEDOWN:
-		device_state_change_volume_percent(code == KEY_VOLUMEUP ? VOLUME_STEP_PERCENT : -VOLUME_STEP_PERCENT);
+		device_state_change_volume_percent(volume_step_delta(code));
 		gui_notify_volume(device_state_get_volume_percent());
 		break;
 

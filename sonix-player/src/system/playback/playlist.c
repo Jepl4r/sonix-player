@@ -1041,6 +1041,40 @@ bool playlist_advance_auto(char *out, size_t out_size) {
 	return playlist_current_path(out, out_size);
 }
 
+bool playlist_peek_auto(char *out, size_t out_size) {
+	if (entry_count == 0 || !out) {
+		return false;
+	}
+	size_t next;
+	if (ordered_queue) {
+		if (pos + 1 >= entry_count) {
+			return false;
+		}
+		next = pos + 1;
+	} else {
+		switch (mode) {
+		case PLAYBACK_MODE_REPEAT_ONE:
+			next = pos;
+			break;
+		case PLAYBACK_MODE_REPEAT_ALL:
+			next = (pos + 1) % entry_count;
+			break;
+		case PLAYBACK_MODE_SHUFFLE:
+		case PLAYBACK_MODE_SHUFFLE_REPEAT:
+		case PLAYBACK_MODE_NORMAL:
+		default:
+			// Past the end of a shuffle-repeat deal comes a new deal, which
+			// is not dealt yet: nothing to say about it.
+			if (pos + 1 >= entry_count) {
+				return false;
+			}
+			next = pos + 1;
+			break;
+		}
+	}
+	return playlist_path_at((int)next, out, out_size);
+}
+
 bool playlist_next(char *out, size_t out_size) {
 	if (entry_count == 0)
 		return false;
