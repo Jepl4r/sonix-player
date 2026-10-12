@@ -1366,11 +1366,7 @@ static void build_search_page(gui_config_t *cfg) {
 	switcher_attach_back_gesture(radiosearch_screen);
 }
 
-void radiopage_init(gui_config_t *cfg) {
-	g_cfg = cfg;
-
-	radio_init();
-
+static void build_pages(gui_config_t *cfg) {
 	hub_container = settingsrow_page(radiopage_screen, cfg, "radio");
 	settingsrow_title_corner_slots(settingsrow_page_title(radiopage_screen), cfg, 3);
 
@@ -1424,4 +1420,20 @@ void radiopage_init(gui_config_t *cfg) {
 	// The Wi-Fi can come and go while the page is open; the rows follow it.
 	hub_timer = lv_timer_create(hub_poll_cb, 1000, NULL);
 	(void)hub_timer;
+}
+
+// The radio engine comes up at boot -- a station can be playing, or resumed,
+// without this page ever having been opened -- but the three pages are built on
+// the first visit to the hub (see gui_page_defer). They are some three hundred
+// objects and a keyboard, and the hub's once-a-second Wi-Fi poll and the
+// list's timer only start then too. Nothing outside reaches into them: the
+// streaming tile holds the hub's screen pointer, gui.c only attaches the back
+// gesture to the three screens, and the list and search pages are reached only
+// from buttons on the hub, which do not exist before it is built.
+void radiopage_init(gui_config_t *cfg) {
+	g_cfg = cfg;
+
+	radio_init();
+
+	gui_page_defer(radiopage_screen, build_pages);
 }
