@@ -194,6 +194,14 @@ void bluetooth_set_codec(const char *codec);
 void bluetooth_set_codec_auto(void);
 bool bluetooth_codec_chosen(char *out, int size);
 
+// What the headphones' link is carrying, for a person to read: the codec, with
+// LDAC's bit rate from the setting the daemon was started with, and the rate
+// the link runs at -- "LDAC 990 · 48 kHz", "AAC · 44.1 kHz". False and "" with
+// no headphones, or when `mac` (NULL for whichever is connected) is not the
+// device the sound is going to. Cache reads plus one config read, so for the
+// GUI thread.
+bool bluetooth_codec_summary(const char *mac, char *out, int size);
+
 // What THIS player can encode and decode, which is a property of the bluealsa
 // binary the firmware ships and is known as soon as the stack comes up --
 // before anything connects, and whether or not anything ever does. Read out of

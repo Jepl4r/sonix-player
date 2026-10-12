@@ -85,12 +85,13 @@ static void restart_playback_if_running(void) {
 // for those headphones: their next connection asks for it again (falling back
 // to the automatic choice if they refuse). "Auto", at the top, forgets it.
 //
-// LDAC appears three times because its bit rate is a separate setting from the
-// codec itself -- 990 and 660 fixed, and adaptive, which lets the rate follow
-// the link. The stock player lays them out the same way.
+// LDAC appears four times because its bit rate is a separate setting from the
+// codec itself -- 990, 660 and 330 fixed, and adaptive, which lets the rate
+// follow the link. The stock player lays them out the same way; 330 is the one
+// for a crowded place, where 660 already drops out.
 // ---------------------------------------------------------------------------
 
-#define CODEC_ROWS (BT_MAX_CODECS + 3)
+#define CODEC_ROWS (BT_MAX_CODECS + 4)
 
 typedef struct {
 	char label[BT_CODEC_MAX + 8]; // the row's name: "LDAC 990"
@@ -161,7 +162,7 @@ static void build_codec_rows(char mine[][BT_CODEC_MAX], int count) {
 			static const struct {
 				const char *suffix;
 				const char *quality;
-			} LDAC_MODES[] = {{" 990", "high"}, {" 660", "standard"}, {"", "abr"}};
+			} LDAC_MODES[] = {{" 990", "high"}, {" 660", "standard"}, {" 330", "mobile"}, {"", "abr"}};
 			for (size_t m = 0; m < sizeof(LDAC_MODES) / sizeof(LDAC_MODES[0]) && codec_row_count < CODEC_ROWS; m++) {
 				codec_row_t *row = &codec_rows[codec_row_count++];
 				snprintf(row->label, sizeof(row->label), "LDAC%s", LDAC_MODES[m].suffix);
@@ -233,7 +234,20 @@ static void rebuild_codec_list(void) {
 		lv_obj_t *value = NULL;
 		settingsrow_add(codec_list, row->label, &value, codec_chosen_cb, row);
 
-		lv_label_set_text(value, in_force ? tr("in_use") : "");
+		// The rate goes with the mark: it is what was negotiated for the codec
+		// in force, and the 44.1 kHz setting makes it worth a look.
+		unsigned rate = bluetooth_sink_rate();
+		if (in_force && rate) {
+			char text[48];
+			if (rate % 1000 == 0) {
+				snprintf(text, sizeof(text), "%s \xC2\xB7 %u kHz", tr("in_use"), rate / 1000);
+			} else {
+				snprintf(text, sizeof(text), "%s \xC2\xB7 %.1f kHz", tr("in_use"), rate / 1000.0);
+			}
+			lv_label_set_text(value, text);
+		} else {
+			lv_label_set_text(value, in_force ? tr("in_use") : "");
+		}
 		lv_obj_set_style_text_color(value, theme()->accent, 0);
 	}
 }
@@ -374,7 +388,14 @@ static void refresh_page(void) {
 	char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
 	int count = bluetooth_get_codecs(codecs, BT_MAX_CODECS, selected, sizeof(selected));
 
-	lv_label_set_text(codec_value, connected && selected[0] ? selected : "--");
+	// "LDAC 990 · 48 kHz" rather than the bare name: the bit rate and the
+	// link's rate are the two things the name alone does not say.
+	char summary[64];
+	if (connected && bluetooth_codec_summary(NULL, summary, sizeof(summary))) {
+		lv_label_set_text(codec_value, summary);
+	} else {
+		lv_label_set_text(codec_value, connected && selected[0] ? selected : "--");
+	}
 
 	// Only while something is connected: the list is what the other end offers,
 	// so with nothing on the other end there is nothing behind the row.

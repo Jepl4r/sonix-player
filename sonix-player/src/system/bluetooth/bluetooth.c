@@ -3860,6 +3860,53 @@ bool bluetooth_codec_chosen(char *out, int size) {
 	return codec[0] != '\0';
 }
 
+bool bluetooth_codec_summary(const char *mac, char *out, int size) {
+	if (!out || size <= 0) {
+		return false;
+	}
+	out[0] = '\0';
+
+	pthread_mutex_lock(&lock);
+	bool ours = g_enabled && g_a2dp_connected && g_codec_selected[0] && (!mac || strcasecmp(mac, g_a2dp_mac) == 0);
+	char codec[BT_CODEC_MAX];
+	copy_field(codec, sizeof(codec), g_codec_selected, sizeof(g_codec_selected));
+	unsigned rate = g_sink_rate;
+	pthread_mutex_unlock(&lock);
+	if (!ours) {
+		return false;
+	}
+
+	// LDAC's bit rate is not on the bus; it is the daemon option this player
+	// started bluealsa with, so it is read back from the same setting.
+	char name[BT_CODEC_MAX + 8];
+	if (strcasecmp(codec, "LDAC") == 0) {
+		static const struct {
+			const char *mode;
+			const char *label;
+		} LDAC_LABELS[] = {{"high", "LDAC 990"}, {"standard", "LDAC 660"}, {"mobile", "LDAC 330"}, {"abr", "LDAC ABR"}};
+		const char *quality = bluetooth_ldac_quality();
+		snprintf(name, sizeof(name), "%s", codec);
+		for (size_t i = 0; i < sizeof(LDAC_LABELS) / sizeof(LDAC_LABELS[0]); i++) {
+			if (strcmp(quality, LDAC_LABELS[i].mode) == 0) {
+				snprintf(name, sizeof(name), "%s", LDAC_LABELS[i].label);
+			}
+		}
+	} else {
+		snprintf(name, sizeof(name), "%s", codec);
+	}
+
+	// "48 kHz" rather than "48.0 kHz": the rates everyone knows by heart are
+	// written the way they are known.
+	if (rate == 0) {
+		snprintf(out, (size_t)size, "%s", name);
+	} else if (rate % 1000 == 0) {
+		snprintf(out, (size_t)size, "%s \xC2\xB7 %u kHz", name, rate / 1000);
+	} else {
+		snprintf(out, (size_t)size, "%s \xC2\xB7 %.1f kHz", name, rate / 1000.0);
+	}
+	return true;
+}
+
 void bluetooth_set_discoverable(bool on) {
 	pthread_mutex_lock(&lock);
 	bool enabled = g_enabled;
