@@ -14,6 +14,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/touch.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/lang.h"
 
@@ -158,6 +159,8 @@ static bool add_preset_row(const char *name, void *user) {
 
 	lv_obj_t *menu_btn = lv_btn_create(row);
 	lv_obj_set_size(menu_btn, 44, 44);
+	// A fingertip's worth (touch.h), kept within the row's own padding.
+	touch_grow(menu_btn, 44, 44, 14);
 	lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(menu_btn, 0, 0);
 	lv_obj_set_style_shadow_width(menu_btn, 0, 0);

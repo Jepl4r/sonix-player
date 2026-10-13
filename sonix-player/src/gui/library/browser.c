@@ -30,6 +30,7 @@
 #include "src/system/library/folderorder.h"
 #include "src/system/playback/device_state.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/touch.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
@@ -53,10 +54,12 @@
 #define THUMB_SIZE 72
 
 // Row geometry. The pitch is what the windowing maths is built on, so it has
-// to be exact: the row height plus the gap underneath it.
-#define ROW_HEIGHT 100
+// to be exact: the row height plus the gap underneath it. The height is the
+// one "Large rows" decides (touch.h), taken each time a folder's listing is
+// put on screen, so one listing is one shape however long it stays up.
 #define LIST_ROW_GAP 8
-#define ROW_PITCH (ROW_HEIGHT + LIST_ROW_GAP)
+static int row_height = TOUCH_ROW_HEIGHT;
+#define ROW_PITCH (row_height + LIST_ROW_GAP)
 #define LIST_ROW_RADIUS 12 // Adwaita boxed-list corner radius
 #define LIST_ROW_PAD 14
 
@@ -396,6 +399,9 @@ static void row_bind(row_t *row, int index) {
 
 	lv_obj_set_hidden(row->button, false);
 	lv_obj_set_y(row->button, index * ROW_PITCH);
+	if (lv_obj_get_style_height(row->button, LV_PART_MAIN) != row_height) {
+		lv_obj_set_height(row->button, row_height); // "Large rows" changed since it was last bound
+	}
 	lv_label_set_text(row->label, entry_name((size_t)index));
 	row_show_glyph(row, shown.entries[index].is_dir != 0);
 	row_update_playmark(row);
@@ -1471,6 +1477,7 @@ static void adopt_listing(void) {
 
 	// The body is as tall as the whole list would be: that is what the scroll
 	// position and the scrollbar come from, while only ROW_POOL widgets exist.
+	row_height = touch_row_height();
 	lv_obj_set_height(list_body, shown.count ? (int)(shown.count * ROW_PITCH) : ROW_PITCH);
 
 	// Fresh folders start at the top; a walk back up resumes where the level
@@ -1520,7 +1527,7 @@ static void build_rows(int width) {
 		row_t *row = &rows[i];
 
 		row->button = lv_btn_create(list_body);
-		lv_obj_set_size(row->button, width, ROW_HEIGHT);
+		lv_obj_set_size(row->button, width, row_height);
 		lv_obj_set_x(row->button, 0);
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &style_list_btn, 0);

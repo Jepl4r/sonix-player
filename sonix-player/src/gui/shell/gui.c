@@ -19,6 +19,7 @@
 #include "src/gui/bluetooth/btsettings.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/corners.h"
+#include "src/gui/shell/touch.h"
 #include "src/gui/settings/kblayoutpage.h"
 #include "src/gui/settings/screensaver.h"
 #include "src/gui/library/audiobookextras.h"
@@ -689,6 +690,7 @@ bool gui_init(gui_config_t *cfg, bool split) {
 	topbar_init(cfg);
 
 	// Persistent back button that hides when on the main page
+	touch_init(cfg);
 	back_btn_init(cfg);
 
 	// Before the settings pages: the display page draws its screensaver switch

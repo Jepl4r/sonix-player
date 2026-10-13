@@ -31,15 +31,16 @@
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/touch.h"
 
 lv_obj_t *medialist_screen;
 lv_obj_t *medialist_tracks_screen;
 lv_obj_t *medialist_albums_screen;
 
 // The exact geometry of the file browser's rows, so the two lists are twins.
-#define ROW_HEIGHT 100
+// The height is the one "Large rows" decides (touch.h), taken by each list as
+// it is opened and kept in its panel: row_pitch().
 #define ROW_GAP 8
-#define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
 #define ROW_RADIUS 12
 #define ROW_PAD 14
 #define THUMB_SIZE 72
@@ -80,6 +81,9 @@ lv_obj_t *medialist_albums_screen;
 // list shows -- see build_panel() for what happens when it is not.
 #define CORNER_BUTTON_SIZE 56
 #define CORNER_GAP 4
+// How far above and below the shelf its buttons still take a press (touch.h):
+// up to the status bar's margin and down to the list's.
+#define CORNER_REACH 8
 #define CORNER_MAX_BUTTONS 4
 
 // How often finished artwork is collected while any is pending.
@@ -238,6 +242,7 @@ typedef struct {
 	bool reordering;	   // and whether it is in it now
 	bool reorder_moved;	   // whether anything actually moved while it was
 	gui_config_t *cfg;	 // kept for the heading, which is re-measured per list
+	int row_h;			 // the rows' height for the list now open (touch_row_height())
 	row_t rows[ROW_POOL];
 
 	// A list is either a query -- which is held as a handle over its row ids,
@@ -820,7 +825,7 @@ static int row_slot(panel_t *p, const row_t *row) { return p->slot_base + (int)(
 // ---------------------------------------------------------------------------
 // Where a row sits
 //
-// A row is ROW_PITCH below the one before it, and that is the whole of it on
+// A row is row_pitch() below the one before it, and that is the whole of it on
 // every list but one album's tracks, which may have the album head above the
 // first row and a disc heading above the first track of each disc. Everything
 // that turns a row into a height on the page, or a height back into a row,
@@ -836,10 +841,15 @@ static int disc_heads_through(const panel_t *p, int index) {
 	return n;
 }
 
+// One row and the gap under it. The height is the panel's own, taken when its
+// list was opened (album_extras_clear()), so a list stays one shape while it is
+// open even if "Large rows" is switched in the meantime.
+static int row_pitch(const panel_t *p) { return (p->row_h > 0 ? p->row_h : TOUCH_ROW_HEIGHT) + ROW_GAP; }
+
 // The top of row `index` on the page. `index` may be p->count: the end of the
 // last row, gap included.
 static int row_y(const panel_t *p, int index) {
-	return p->head_height + index * ROW_PITCH + disc_heads_through(p, index) * DISC_HEAD_PITCH;
+	return p->head_height + index * row_pitch(p) + disc_heads_through(p, index) * DISC_HEAD_PITCH;
 }
 
 // The row whose top is at or above `y`: the one a viewport starting at `y`
@@ -850,7 +860,7 @@ static int row_at_y(const panel_t *p, int y) {
 	}
 	int index;
 	if (p->disc_count == 0) {
-		index = y < p->head_height ? 0 : (y - p->head_height) / ROW_PITCH;
+		index = y < p->head_height ? 0 : (y - p->head_height) / row_pitch(p);
 	} else {
 		int lo = 0;
 		int hi = p->count - 1;
@@ -868,7 +878,7 @@ static int row_at_y(const panel_t *p, int y) {
 }
 
 // The height of everything the list scrolls over.
-static int body_height(const panel_t *p) { return p->count > 0 ? row_y(p, p->count) : p->head_height + ROW_PITCH; }
+static int body_height(const panel_t *p) { return p->count > 0 ? row_y(p, p->count) : p->head_height + row_pitch(p); }
 
 // One album's tracks, read from the index: the one list that can have a head
 // and disc headings.
@@ -1826,6 +1836,9 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 
 	lv_obj_set_hidden(row->button, false);
 	lv_obj_set_y(row->button, row_y(p, index));
+	if (lv_obj_get_style_height(row->button, LV_PART_MAIN) != p->row_h) {
+		lv_obj_set_height(row->button, p->row_h); // "Large rows" changed since it was last bound
+	}
 	// An album row is named by its value -- name and key, see library.h -- and
 	// only the name is for reading.
 	char shown[sizeof(((winrow_t *)0)->name)];
@@ -2708,6 +2721,9 @@ static lv_obj_t *corner_button(lv_obj_t *parent, const lv_image_dsc_t *glyph, lv
 	lv_obj_set_style_pad_all(btn, 0, 0);
 	lv_obj_set_hidden(btn, true);
 	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, p);
+	// Meeting its neighbours half way and reaching the margins above and below
+	// the row (touch.h); the shelf is built tall enough to hold that.
+	touch_pad(btn, CORNER_GAP / 2, CORNER_GAP / 2, CORNER_REACH, CORNER_REACH);
 
 	lv_obj_t *image = lv_image_create(btn);
 	lv_image_set_src(image, glyph);
@@ -3702,6 +3718,7 @@ static void sel_blur_round_cb(lv_event_t *e) {
 
 static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_base) {
 	p->cfg = cfg;
+	p->row_h = touch_row_height();
 	p->is_tracks = is_tracks;
 	p->slot_base = slot_base;
 	p->window_first = -1;
@@ -3772,7 +3789,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 
 	p->body = lv_obj_create(p->list);
 	lv_obj_set_width(p->body, width);
-	lv_obj_set_height(p->body, ROW_PITCH);
+	lv_obj_set_height(p->body, row_pitch(p));
 	lv_obj_set_pos(p->body, 0, 0);
 	lv_obj_set_style_bg_opa(p->body, 0, 0);
 	lv_obj_set_style_border_width(p->body, 0, 0);
@@ -3794,9 +3811,16 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	// is one button wide and the second button of a pair lands outside its own
 	// parent, at x = -60, and is never drawn. Sizing for the most buttons that
 	// can coexist costs a strip of empty space on the pages that show fewer.
-	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - 1) * CORNER_GAP, 56);
+	//
+	// Taller than its buttons by CORNER_REACH above and below, with the buttons
+	// centred in it where they always were: a press is only looked for among a
+	// shelf's buttons when it lands on the shelf, so their larger areas
+	// (corner_button()) need the room. The shelf takes no presses itself, so
+	// the margin it adds is not a dead strip.
+	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - 1) * CORNER_GAP,
+					CORNER_BUTTON_SIZE + 2 * CORNER_REACH);
 	lv_obj_set_clickable(p->corner, false); // it is a shelf, not a control
-	lv_obj_align(p->corner, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	lv_obj_align(p->corner, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height - CORNER_REACH);
 	lv_obj_set_scrollable(p->corner, false);
 	lv_obj_set_flex_flow(p->corner, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(p->corner, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -3882,7 +3906,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		row_t *row = &p->rows[i];
 
 		row->button = lv_btn_create(p->body);
-		lv_obj_set_size(row->button, width, ROW_HEIGHT);
+		lv_obj_set_size(row->button, width, p->row_h);
 		lv_obj_set_x(row->button, 0);
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &style_row, 0);
@@ -4009,6 +4033,11 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 			// The per-track menu, riding the right edge of the row.
 			row->menu_btn = lv_btn_create(row->button);
 			lv_obj_set_size(row->menu_btn, 44, 44);
+			// A fingertip's worth (touch.h), out to the row's own edge: the
+			// row's padding is ROW_PAD on every side and the button is centred
+			// in it, so the area stays on the row and a tap beside the dots is
+			// still the row's.
+			touch_grow(row->menu_btn, 44, 44, ROW_PAD);
 			lv_obj_set_style_bg_opa(row->menu_btn, LV_OPA_TRANSP, 0);
 			lv_obj_set_style_border_width(row->menu_btn, 0, 0);
 			lv_obj_set_style_shadow_width(row->menu_btn, 0, 0);
@@ -4735,10 +4764,13 @@ static void head_bar_update(panel_t *p) {
 	}
 }
 
-// Takes away whatever the last list put above and between its rows.
+// Takes away whatever the last list put above and between its rows -- and
+// takes the rows' height for the list about to be shown, which every way of
+// opening one passes through here first.
 static void album_extras_clear(panel_t *p) {
 	head_clear(p);
 	disc_heads_clear(p);
+	p->row_h = touch_row_height();
 }
 
 // Builds them for the list now loaded: disc headings on a record of more than
@@ -5167,7 +5199,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	if (current >= 0) {
 		// In the middle of the screen rather than at the top, so the rows
 		// around it show where in the list it is.
-		target_scroll = row_y(p, current) - (view_height - ROW_HEIGHT) / 2;
+		target_scroll = row_y(p, current) - (view_height - p->row_h) / 2;
 		if (target_scroll < 0) {
 			target_scroll = 0;
 		}

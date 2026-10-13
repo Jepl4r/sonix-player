@@ -23,6 +23,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/touch.h"
 #include "src/system/device/power.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/gearboy/gearboy.h"
@@ -246,6 +247,7 @@ static int cover_box_w, cover_box_h;   // the artwork spans the full screen widt
 // follows the knob on its own.
 #define PROGRESS_TRACK_HEIGHT 10 // as thick as every other slider
 #define PROGRESS_KNOB_GROW 9	 // how far the knob grows past the track
+#define PROGRESS_TOUCH_REACH 18	 // how far past the track a press still seeks
 #define PROGRESS_KNOB_RING 5
 
 // How the shape of the track is drawn, and how much room it gets. The bars are
@@ -4826,6 +4828,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *fav_btn = lv_btn_create(song_side);
 	fav_btn_obj = fav_btn;
 	lv_obj_set_size(fav_btn, 48, 44);
+	touch_grow(fav_btn, 48, 44, 14); // a fingertip's worth (touch.h)
 	lv_obj_set_style_bg_opa(fav_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(fav_btn, 0, 0);
 	lv_obj_set_style_shadow_width(fav_btn, 0, 0);
@@ -4874,6 +4877,9 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_width(progress_slider, lv_pct(100));
 	lv_obj_set_height(progress_slider, PROGRESS_TRACK_HEIGHT);
 	lv_slider_set_range(progress_slider, 0, 1000);
+	// More than the 10 px track takes a press (touch.h), but only as far as
+	// the artist line above, which opens the artist, and the times below.
+	lv_obj_set_ext_click_area(progress_slider, PROGRESS_TOUCH_REACH);
 
 	lv_obj_set_style_radius(progress_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
 	lv_obj_set_style_bg_color(progress_slider, lv_color_make(255, 255, 255), LV_PART_MAIN);
