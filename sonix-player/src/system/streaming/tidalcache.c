@@ -1051,6 +1051,9 @@ static bool start_file(download_t *d, bool *consumed, int duration_secs, char *o
 		return false;
 	}
 	d->http_open = true;
+	// Reads from here on time out sooner than the open: see
+	// STREAM_READ_TIMEOUT_SECS.
+	http_stream_set_read_timeout(&d->http, STREAM_READ_TIMEOUT_SECS);
 	d->total = d->http.content_length;
 	prune(d->total > 0 ? d->total : 0);
 

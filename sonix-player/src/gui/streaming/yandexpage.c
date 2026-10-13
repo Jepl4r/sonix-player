@@ -18,9 +18,11 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/streaming/streamerror.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/growfile.h"
 #include "src/system/playback/device_state.h"
+#include "src/system/net/http.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/provider.h"
 #include "src/system/streaming/streamturn.h"
@@ -89,6 +91,7 @@ typedef struct {
 	int index; // JOB_PLAY: the queue entry, -1 when it failed
 	char path[512];
 	char error[256];
+	stream_err_t error_class; // what kind of failure `error` is (streamerr.h)
 	yandex_login_state_t login_state;
 	yandex_login_t login; // a copy: the worker keeps polling with its own
 	int count;
@@ -128,6 +131,7 @@ static unsigned list_generation;
 static row_t *result;
 static int result_count;
 static char result_error[256];
+static stream_err_t result_class;
 
 // The queue: what was played from a list, with the track behind each path.
 static yandex_track_t *queued;
@@ -201,11 +205,11 @@ static bool fetch_queued(int index, char *path, size_t size) {
 	}
 	yandex_file_t file;
 	if (!yandex_file_info(t->id, &file)) {
-		snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
+		result_class = streamerr_describe("yandex", yandex_last_error(), result_error, sizeof(result_error));
 		return false;
 	}
 	if (!yandexcache_start(t, &file, path, size)) {
-		snprintf(result_error, sizeof(result_error), "%s", yandexcache_last_error());
+		result_class = streamerr_describe("yandex", yandexcache_last_error(), result_error, sizeof(result_error));
 		return false;
 	}
 	yandexcache_write_sidecars(t, path);
@@ -279,7 +283,7 @@ static void run_list_job(const job_t *job) {
 		break;
 	}
 	if (got < 0) {
-		snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
+		result_class = streamerr_describe("yandex", yandex_last_error(), result_error, sizeof(result_error));
 	}
 	free(tmp);
 }
@@ -320,6 +324,7 @@ static job_result_t *job_result_new(const job_t *job, int count) {
 	r->generation = job->generation;
 	r->index = -1;
 	snprintf(r->error, sizeof(r->error), "%s", result_error);
+	r->error_class = result_class;
 	r->count = count;
 	if (count > 0) {
 		memcpy(r->rows, result, (size_t)count * sizeof(row_t));
@@ -330,6 +335,8 @@ static job_result_t *job_result_new(const job_t *job, int count) {
 static void *worker_main(void *arg) {
 	(void)arg;
 	yandex_login_state_t login_state = YANDEX_LOGIN_PENDING;
+	// The page waits on these requests: a dead network is said in seconds.
+	http_set_thread_timeout_cap(STREAM_UI_TIMEOUT_SECS);
 	for (;;) {
 		pthread_mutex_lock(&job_lock);
 		running_kind = JOB_NONE;
@@ -348,6 +355,8 @@ static void *worker_main(void *arg) {
 		pthread_mutex_unlock(&job_lock);
 
 		result_error[0] = '\0';
+		result_class = STREAM_ERR_NONE;
+		streamerr_begin();
 		result_count = 0;
 		switch (job.kind) {
 		case JOB_LOGIN_BEGIN:
@@ -746,14 +755,19 @@ static void make_row(int index) {
 	}
 }
 
+static void retry_list(void);
+
 static void fill_list(void) {
 	lv_obj_clean(list_box);
 	for (int i = 0; i < row_count; i++) {
 		make_row(i);
 	}
-	if (row_count == 0) {
+	if (row_count == 0 && shown && shown->error[0]) {
+		// What went wrong and "Retry", as on the other services' pages.
+		streamerror_show(streamerror_create(list_box), shown->error_class, shown->error, retry_list, NULL);
+	} else if (row_count == 0) {
 		lv_obj_t *empty = lv_label_create(list_box);
-		lv_label_set_text(empty, shown && shown->error[0] ? shown->error : tr("yandex_empty"));
+		lv_label_set_text(empty, tr("yandex_empty"));
 		lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
 		lv_obj_set_width(empty, lv_pct(100));
 		lv_obj_add_style(empty, &theme_style_text_dim, 0);
@@ -762,7 +776,20 @@ static void fill_list(void) {
 	lv_obj_scroll_to_y(list_box, 0, LV_ANIM_OFF);
 }
 
+// The list last asked for, for the error panel's "Retry".
+static struct {
+	char title[YANDEX_TITLE_MAX];
+	job_kind_t kind;
+	char a[256], b[256];
+} last_list;
+
 static void open_list(const char *title, job_kind_t kind, const char *a, const char *b) {
+	if (title != last_list.title) {
+		snprintf(last_list.title, sizeof(last_list.title), "%s", title ? title : "");
+		last_list.kind = kind;
+		snprintf(last_list.a, sizeof(last_list.a), "%s", a ? a : "");
+		snprintf(last_list.b, sizeof(last_list.b), "%s", b ? b : "");
+	}
 	lv_label_set_text(list_title, title);
 	list_is_wave = kind == JOB_WAVE;
 	bool is_album = kind == JOB_ALBUM && a && a[0];
@@ -784,6 +811,10 @@ static void open_list(const char *title, job_kind_t kind, const char *a, const c
 	switch_screen(list_screen);
 	list_generation++;
 	run(kind, a, b, 0);
+}
+
+static void retry_list(void) {
+	open_list(last_list.title, last_list.kind, last_list.a[0] ? last_list.a : NULL, last_list.b[0] ? last_list.b : NULL);
 }
 
 // Queues every playable track of the list and plays the tapped one. Paths

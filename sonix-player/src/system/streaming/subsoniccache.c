@@ -907,6 +907,9 @@ bool subsoniccache_start(const char *key, const char *url, const char *suffix, i
 		return false;
 	}
 
+	// Reads from here on time out sooner than the open: see
+	// STREAM_READ_TIMEOUT_SECS.
+	http_stream_set_read_timeout(&d->stream, STREAM_READ_TIMEOUT_SECS);
 	d->total = d->stream.content_length;
 	prune(d->total > 0 ? d->total : 0);
 

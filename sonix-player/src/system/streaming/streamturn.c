@@ -5,6 +5,8 @@
 #include <stdio.h>
 #include <unistd.h>
 
+#include "src/system/streaming/streamerr.h"
+
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t changed = PTHREAD_COND_INITIALIZER;
 static bool busy;
@@ -128,6 +130,34 @@ bool streamturn_resume(const streamturn_resume_t *r, int *attempts) {
 			usleep(100 * 1000);
 		}
 
+		// With the Wi-Fi down every attempt fails at once -- no route, no name
+		// -- and the four of them were spent in fifteen seconds while the
+		// radio was still reassociating (a roam between two access points, a
+		// microwave, the player walking out of range and back). So the
+		// attempt waits for the network instead, without counting, for as
+		// long as STREAM_RESUME_WIFI_WAIT_SECS; the music meanwhile plays what
+		// is already on the card.
+		if (!streamerr_online()) {
+			fprintf(stderr, "%s: no Wi-Fi, waiting up to %d s for it before resuming\n", r->who, STREAM_RESUME_WIFI_WAIT_SECS);
+			int waited = 0;
+			while (!streamerr_online() && waited < STREAM_RESUME_WIFI_WAIT_SECS * 10) {
+				if (r->generation() != r->started_generation) {
+					return false;
+				}
+				usleep(100 * 1000);
+				waited++;
+			}
+			if (!streamerr_online()) {
+				fprintf(stderr, "%s: the Wi-Fi did not come back, giving up\n", r->who);
+				return false;
+			}
+			// Associated is not yet routed: a breath for DHCP and the
+			// resolver before the request.
+			for (int i = 0; i < 10 && r->generation() == r->started_generation; i++) {
+				usleep(100 * 1000);
+			}
+		}
+
 		fprintf(stderr, "%s: connection lost at %ld bytes, resuming (attempt %d)\n", r->who, r->have, *attempts);
 		if (!http_stream_open_range(r->stream, r->url, r->have, r->timeout_secs)) {
 			continue;
@@ -142,6 +172,7 @@ bool streamturn_resume(const streamturn_resume_t *r, int *attempts) {
 			return false;
 		}
 
+		http_stream_set_read_timeout(r->stream, STREAM_READ_TIMEOUT_SECS);
 		set_active(r, r->stream);
 		if (r->generation() != r->started_generation) {
 			set_active(r, NULL);

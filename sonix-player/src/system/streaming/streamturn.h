@@ -109,6 +109,18 @@ void streamturn_abandon_all(void);
 // back.
 #define STREAM_RESUME_ATTEMPTS 4
 
+// How long a resume waits for the Wi-Fi to come back before it tries at all
+// (see streamturn_resume). Not counted as an attempt.
+#define STREAM_RESUME_WIFI_WAIT_SECS 60
+
+// The receive timeout of a download once it is flowing. The open keeps the
+// cache's longer one -- a CDN may take its time to start on a big file -- but
+// after that a socket silent for this long is dead (the Wi-Fi went, a NAT
+// forgot the connection), and the sooner that is known, the sooner the resume
+// above picks up the rest. Twenty seconds used to pass before anything
+// happened, longer than most tracks' prebuffer lasts.
+#define STREAM_READ_TIMEOUT_SECS 10
+
 // This much downloaded since the last resume earns the attempts back: a long
 // download on a flaky network may drop many times, each recovered from.
 #define STREAM_RESUME_GOOD_BYTES (1024 * 1024)
@@ -127,12 +139,13 @@ typedef struct {
 } streamturn_resume_t;
 
 // Called by a download loop whose read failed (or ended short of `total`).
-// Reconnects and leaves r->stream positioned at byte r->have and published as
-// the active stream again. `attempts` is the download's own counter, bumped
-// here. False when the download was abandoned meanwhile, the attempts are
-// used up, or the server now describes a file of a different size; the
-// stream is closed then and the caller ends the download as before. Blocks:
-// worker threads only.
+// Waits for the Wi-Fi when it is down, then reconnects and leaves r->stream
+// positioned at byte r->have, reading with STREAM_READ_TIMEOUT_SECS, and
+// published as the active stream again. `attempts` is the download's own
+// counter, bumped here. False when the download was abandoned meanwhile, the
+// attempts are used up, the Wi-Fi did not return, or the server now describes
+// a file of a different size; the stream is closed then and the caller ends
+// the download as before. Blocks: worker threads only.
 bool streamturn_resume(const streamturn_resume_t *r, int *attempts);
 
 #endif /* STREAMTURN_H */

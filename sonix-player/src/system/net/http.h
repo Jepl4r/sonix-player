@@ -229,6 +229,51 @@ void http_stream_wake(http_stream_t *st);
 // both use this file and must not overwrite each other's answer.
 const char *http_last_error(void);
 
+// What became of the last request made by THIS thread (http_request and its
+// wrappers, or a stream open): whether it got an answer, with what status, and
+// where it failed when it did not. Unlike http_last_error() this is always
+// filled in, sentence or not -- it is what a caller classifies to tell the
+// user "no Wi-Fi" or "the server is not responding" instead of a number (see
+// streamerr.h), and what the log names the request by.
+typedef enum {
+	HTTP_FAIL_NONE = 0, // an answer came; `status` says which
+	HTTP_FAIL_ADDRESS,	// the URL could not be used
+	HTTP_FAIL_DNS,		// the name did not resolve
+	HTTP_FAIL_CONNECT,	// refused, unreachable, or no answer within the timeout
+	HTTP_FAIL_TLS,		// the handshake failed (http_last_error() says why)
+	HTTP_FAIL_TIMEOUT,	// connected, then silence past the timeout
+	HTTP_FAIL_BROKEN,	// the connection dropped, or the answer was cut short
+} http_fail_t;
+
+typedef struct {
+	http_fail_t fail;
+	int status;	   // the last status received, 0 when none was
+	char host[64]; // which server
+	char path[160]; // which request, WITHOUT the query: tokens travel there
+} http_outcome_t;
+
+void http_last_outcome(http_outcome_t *out);
+
+// Clears it, for a caller about to start something that may fail before any
+// request is made (no account, no keys): the facts of an older request must
+// not be read as this one's.
+void http_forget_outcome(void);
+
+// A ceiling on the timeout of every http_request() made by the calling thread
+// from now on (0 removes it). For a thread whose requests the interface waits
+// on -- a streaming page's worker, behind its spinner -- so that a server that
+// does not answer is reported in seconds, while the same API calls made by a
+// background sync thread keep their longer patience. Streams (downloads, radio)
+// are not affected.
+void http_set_thread_timeout_cap(int secs);
+
+// Changes the receive timeout of an open stream. A download opens with a
+// generous timeout -- a CDN can take a while to start sending a big file --
+// and then reads with a shorter one, so that a connection that has died
+// silently (Wi-Fi gone, a NAT that forgot it) is noticed and resumed in
+// seconds rather than sat out.
+void http_stream_set_read_timeout(http_stream_t *st, int secs);
+
 // Percent-encodes `in` into `out` for use inside a URL path segment or query
 // value. Returns out.
 char *http_url_encode(const char *in, char *out, size_t out_size);

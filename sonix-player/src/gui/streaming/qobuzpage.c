@@ -12,6 +12,7 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/streaming/qobuzart.h"
+#include "src/gui/streaming/streamerror.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
@@ -25,6 +26,8 @@
 #include "src/system/streaming/qobuz.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/provider.h"
+#include "src/system/streaming/streamerr.h"
+#include "src/system/net/http.h"
 #include "src/system/streaming/streamturn.h"
 #include "src/system/streaming/qobuzsync.h"
 #include "src/system/device/system.h"
@@ -112,6 +115,7 @@ static int result_from; // where the last page received starts (0 = new list)
 static job_kind_t result_kind;
 static char result_error[256];
 static char result_title[160];
+static stream_err_t result_class; // what kind of failure result_error is
 
 // What the list is showing right now, so a row tap knows what to do.
 static job_kind_t list_kind;
@@ -189,6 +193,8 @@ static void build_busy_layer(void) {
 static lv_obj_t *list_container;
 static lv_obj_t *list_title;
 static lv_obj_t *list_empty;
+// A list that could not be loaded: what went wrong, and "Retry" (streamerror.h).
+static lv_obj_t *list_error;
 
 static void rebuild_home(void);
 static void row_clicked_cb(lv_event_t *e);
@@ -854,14 +860,42 @@ static void fill_list(int from) {
 // what comes back from the worker, on the GUI thread
 // ---------------------------------------------------------------------------
 
+static bool job_is_list(job_kind_t kind);
+static void retry_list(void);
+static void error_sign_in(void);
+
 static void job_done_cb(void *user) {
 	(void)user;
 	busy_hide();
 
 	if (result_error[0]) {
-		gui_notify_popup(result_error);
 		page_loading = false;
+		if (job_is_list(result_kind) && result_from == 0) {
+			// Said where the list would have been, with a way to ask again,
+			// rather than in a popup over whatever page was open: the list
+			// page opens under the list's own title, and back leads where it
+			// would have.
+			fill_list(0);
+			lv_obj_set_hidden(list_empty, true);
+			page_more = false;
+			streamerror_show(list_error, result_class, result_error, retry_list, error_sign_in);
+			if (lv_screen_active() != list_screen) {
+				switch_screen(list_screen);
+			}
+			return;
+		}
+		if (job_is_list(result_kind)) {
+			// A further page: the rows already there stay, and scrolling does
+			// not ask again by itself.
+			page_more = false;
+			toast_error(result_error);
+			return;
+		}
+		gui_notify_popup(result_error);
 		return;
+	}
+	if (job_is_list(result_kind) && result_from == 0) {
+		streamerror_hide(list_error);
 	}
 
 	switch (result_kind) {
@@ -1218,7 +1252,8 @@ static void do_play(int index) {
 	char mime[64];
 	if (!qobuz_track_url(track->id, url, sizeof(url), mime, sizeof(mime), NULL)) {
 		const char *why = qobuz_last_error();
-		snprintf(result_error, sizeof(result_error), "%s", why && why[0] ? why : tr("download_failed"));
+		result_class = streamerr_describe("qobuz", why && why[0] ? why : tr("download_failed"), result_error,
+										  sizeof(result_error));
 		return;
 	}
 
@@ -1228,7 +1263,8 @@ static void do_play(int index) {
 		// full. The generic "download failed" is left only for the case where
 		// even it does not know.
 		const char *why = qobuzcache_last_error();
-		snprintf(result_error, sizeof(result_error), "%s", why && why[0] ? why : tr("download_failed"));
+		result_class = streamerr_describe("qobuz", why && why[0] ? why : tr("download_failed"), result_error,
+										  sizeof(result_error));
 		return;
 	}
 
@@ -1505,6 +1541,9 @@ static void *prefetch_main(void *arg) {
 
 static void *worker_main(void *arg) {
 	(void)arg;
+	// The page waits on these requests behind its spinner: a service that
+	// does not answer is said in seconds (streamerr.h).
+	http_set_thread_timeout_cap(STREAM_UI_TIMEOUT_SECS);
 
 	for (;;) {
 		pthread_mutex_lock(&job_lock);
@@ -1516,7 +1555,9 @@ static void *worker_main(void *arg) {
 		pthread_mutex_unlock(&job_lock);
 
 		result_error[0] = '\0';
+		result_class = STREAM_ERR_NONE;
 		result_kind = job.kind;
+		streamerr_begin();
 
 		// Where this page starts. 0 is a new list; anything higher continues the
 		// one already held, and the tail of the array is the only part written.
@@ -1543,7 +1584,12 @@ static void *worker_main(void *arg) {
 		switch (job.kind) {
 		case JOB_LOGIN:
 			if (!qobuz_login(job.text, job.text2)) {
-				snprintf(result_error, sizeof(result_error), "%s", qobuz_last_error());
+				// A wrong password is best said in Qobuz's words; only a
+				// network or service fault takes the common sentence.
+				result_class = streamerr_describe("qobuz", qobuz_last_error(), result_error, sizeof(result_error));
+				if (!streamerr_is_transport(result_class)) {
+					snprintf(result_error, sizeof(result_error), "%s", qobuz_last_error());
+				}
 			}
 			break;
 
@@ -1599,7 +1645,7 @@ static void *worker_main(void *arg) {
 		}
 
 		if (n < 0) {
-			snprintf(result_error, sizeof(result_error), "%s", qobuz_last_error());
+			result_class = streamerr_describe("qobuz", qobuz_last_error(), result_error, sizeof(result_error));
 			n = 0;
 		}
 		if (job.kind != JOB_PLAY) {
@@ -1700,6 +1746,18 @@ static void run(const job_t *job, const char *waiting_text) {
 	}
 	submit(job);
 }
+
+// The error panel's button: the failed list again, from the start.
+static void retry_list(void) {
+	if (have_current_list) {
+		run(&current_list_job, "loading");
+	}
+}
+
+static void open_login_cb(lv_event_t *e);
+
+// Or, when the session was refused, the sign-in page.
+static void error_sign_in(void) { open_login_cb(NULL); }
 
 // Another page when scrolling nears the bottom, as for radio. No veil and no
 // history entry -- it is the SAME list continuing, not a new one, and the rows
@@ -2354,6 +2412,10 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
 	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
 	lv_obj_set_hidden(list_empty, true);
+
+	list_error = streamerror_create(list_screen);
+	lv_obj_set_width(list_error, cfg->screen_width - 2 * cfg->padding);
+	lv_obj_align(list_error, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 20);
 
 	lv_obj_add_event_cb(list_container, list_scrolled_cb, LV_EVENT_SCROLL, NULL);
 	switcher_attach_back_gesture(list_screen);

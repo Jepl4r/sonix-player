@@ -15,6 +15,7 @@
 #include "src/system/core/sha256.h"
 #include "src/system/net/crypto.h"
 #include "src/system/net/http.h"
+#include "src/system/streaming/streamerr.h"
 #include "src/system/streaming/streamkeys.h"
 #include "src/system/streaming/yandexsync.h"
 
@@ -1374,6 +1375,14 @@ bool yandex_file_info(const char *track_id, yandex_file_t *out) {
 	}
 	if (!ok) {
 		fprintf(stderr, "yandex: no file for track %s: %s\n", track_id, last_error);
+		// For the page's message (streamerr.h): a refused signature is the
+		// firmware's keys; a refusal on an account known to lack Plus is the
+		// subscription.
+		if (last_status == 403 && strstr(last_body, "sign")) {
+			streamerr_hint(STREAM_ERR_KEYS);
+		} else if (plus_state == 0 && last_status >= 400 && last_status != 401 && last_status != 429) {
+			streamerr_hint(STREAM_ERR_NO_SUBSCRIPTION);
+		}
 		return false;
 	}
 	note_format(out);
