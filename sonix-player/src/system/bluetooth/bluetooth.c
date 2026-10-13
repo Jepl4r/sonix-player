@@ -4738,8 +4738,17 @@ void bluetooth_set_aac_vbr(bool on) {
 
 static const char *const RATE_MODE_KEYS[] = {"auto", "44100", "follow", "96000"};
 
+// "Follow the music" for a player that never picked one: a 44.1 kHz album then
+// reaches the encoder at its own rate instead of through alsa's linear
+// resampler to 48 kHz, and the link only ever moves between tracks, never
+// under an open stream. Only a missing key gets it -- a player that chose Auto
+// keeps bt_sample_rate = auto, which the page writes on a tap and never on
+// its own -- and a value this build does not know still means Auto, the
+// daemon's own pick, as before.
+#define RATE_MODE_DEFAULT "follow"
+
 bt_rate_mode_t bluetooth_rate_mode(void) {
-	const char *value = config_get("wireless", "bt_sample_rate", "auto");
+	const char *value = config_get("wireless", "bt_sample_rate", RATE_MODE_DEFAULT);
 	for (int i = 0; i < (int)(sizeof(RATE_MODE_KEYS) / sizeof(RATE_MODE_KEYS[0])); i++) {
 		if (strcmp(value, RATE_MODE_KEYS[i]) == 0) {
 			return (bt_rate_mode_t)i;
