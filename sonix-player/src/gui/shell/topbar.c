@@ -13,6 +13,7 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/quickpanel.h"
+#include "src/system/playback/sleeptimer.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/remote/airplay.h"
 #include "src/system/audio/alsa-controls.h"
@@ -103,6 +104,7 @@ static lv_obj_t *sonixlink_icon; // shown while a phone is driving the player
 static void refresh_play_icon(const device_state_t *state);
 static void refresh_sonixlink_icon(void);
 static lv_obj_t *clock_label;
+static lv_obj_t *moon_icon; // 2.0: a sleep timer is set (refresh_moon)
 static lv_obj_t *bt_icon;   // bluetooth, leftmost of the right-hand group
 static lv_obj_t *wifi_icon; // wifi, between bluetooth and the charge percentage
 static lv_obj_t *container_left;  // volume group (and the clock, when "left")
@@ -549,7 +551,23 @@ void topbar_refresh_playback(void) {
 	refresh_play_icon(&state);
 }
 
+// 2.0: the moon at the right of the bar while a sleep timer is set -- for
+// any of music, books and podcasts, counting or waiting for its kind to play.
+static void refresh_moon(void) {
+	if (!moon_icon) {
+		return;
+	}
+	bool armed = false;
+	for (int k = 0; k < SLEEPTIMER_COUNT && !armed; k++) {
+		armed = sleeptimer_enabled((sleeptimer_kind_t)k) && sleeptimer_minutes((sleeptimer_kind_t)k) > 0;
+	}
+	if (lv_obj_is_hidden(moon_icon) == armed) {
+		lv_obj_set_hidden(moon_icon, !armed);
+	}
+}
+
 static void refresh_play_icon(const device_state_t *state) {
+	refresh_moon();
 	if (!play_icon) {
 		return;
 	}
@@ -768,6 +786,9 @@ static void topbar_refresh_theme(void) {
 	}
 }
 
+// How far a tap on the bar may wander and still be a tap.
+#define TAP_SLOP_PX 12
+
 // A downward drag starting on the status bar pulls the control panel in, and the
 // panel follows the finger the whole way instead of snapping open the moment the
 // gesture is recognised. A short drag released early falls back out.
@@ -827,6 +848,15 @@ static void topbar_drag_cb(lv_event_t *e) {
 		// gesture did happen: the finger went down on the bar and came up this
 		// far below where it landed.
 		if (dy >= FLICK_OPEN_PX) {
+			quickpanel_open();
+			return;
+		}
+
+		// 2.0: a tap on the bar opens it too (the handoff's frame: "status bar,
+		// tap -> control centre"). A tap is a release near where the finger
+		// landed; a sideways drag along the bar is neither.
+		int dx = p.x - start.x;
+		if (LV_ABS(dx) < TAP_SLOP_PX && LV_ABS(dy) < TAP_SLOP_PX) {
 			quickpanel_open();
 		}
 	}
@@ -904,7 +934,7 @@ void topbar_init(gui_config_t *cfg) {
 	vol_label = lv_label_create(container_left);
 	lv_label_set_text(vol_label, "--");
 	lv_obj_add_style(vol_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(vol_label, &font_ui_24, 0);
+	lv_obj_set_style_text_font(vol_label, &font_ui_22, 0); // SX_STATUSBAR_FONT
 
 	// The jack indicator: appears when headphones are plugged in, theme-coloured
 	// for the 3.5 mm jack and gold for the 4.4 mm balanced one.
@@ -956,6 +986,11 @@ void topbar_init(gui_config_t *cfg) {
 	// The radios come first in the group and so sit leftmost: bluetooth, then
 	// wifi, then the charge percentage and the battery. Both start hidden;
 	// topbar_refresh_radios() decides what is shown.
+	moon_icon = lv_image_create(container_right);
+	lv_image_set_src(moon_icon, &icon_moon_status);
+	lv_obj_add_style(moon_icon, &theme_style_icon, 0);
+	lv_obj_set_hidden(moon_icon, true);
+
 	bt_icon = lv_image_create(container_right);
 	lv_image_set_src(bt_icon, &icon_bluetooth_status);
 	lv_obj_add_style(bt_icon, &theme_style_icon, 0);
@@ -971,7 +1006,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_label_set_text(bat_label, "--%");
 	topbar_set_battery_percent(config_get_int("screen", "battery_percent", 1) != 0);
 	lv_obj_add_style(bat_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(bat_label, &font_ui_24, 0);
+	lv_obj_set_style_text_font(bat_label, &font_ui_22, 0);
 
 	// The battery indicator is stacked fill first, shell over it, charging bolt
 	// above both. The cavity is sized by scaling both edges and taking the
@@ -1015,7 +1050,7 @@ void topbar_init(gui_config_t *cfg) {
 	// Clock, centred on the bar and independent of everything around it.
 	clock_label = lv_label_create(top_bar);
 	lv_obj_add_style(clock_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(clock_label, &font_ui_24, 0);
+	lv_obj_set_style_text_font(clock_label, &font_ui_22, 0);
 	lv_obj_align(clock_label, LV_ALIGN_CENTER, 0, 0);
 	topbar_refresh_clock();
 	topbar_set_clock_position((int)config_get_int("screen", "clock_pos", TOPBAR_CLOCK_CENTER));

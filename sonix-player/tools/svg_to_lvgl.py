@@ -372,6 +372,18 @@ ICONS = [
     # The heart that jumps out when the coffee QR code is closed. 160 px
     # because the animation grows it to 1:1 and no further.
     ("heart.svg", "heart", 160),
+    # Sonix UI 2.0. The player's way out, now that it is put away downwards;
+    # the moon in the status bar while a sleep timer runs; and the "play next"
+    # glyph on the underlay of a row pulled to the right (its partner, "add to
+    # the end", is list_plus).
+    ("chevron-down.svg", "chevron_down", 36),
+    ("moon.svg", "moon_status", 24),
+    ("list-start.svg", "list_start", 30),
+    ("list-plus.svg", "list_plus_small", 30),
+    ("x.svg", "x_small", 30),
+    # The glyph at the start of a toast, which is a 56 px line now.
+    ("circle-check.svg", "circle_check_small", 28),
+    ("circle-alert.svg", "circle_alert_small", 28),
 ]
 
 # Main menu and section tiles, which keep their own colours and are therefore

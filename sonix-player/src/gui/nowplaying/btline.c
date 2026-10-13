@@ -75,13 +75,13 @@ static bool link_summary(char *out, int size, unsigned *rate) {
 	return true;
 }
 
-void btline_refresh(void) {
-	if (!line) {
-		return;
+bool btline_compose(char *text, size_t size) {
+	if (!text || size == 0) {
+		return false;
 	}
-	char text[sizeof(shown)] = "";
+	text[0] = '\0';
 	unsigned link = 0;
-	if (btline_enabled() && link_summary(text, sizeof(text), &link)) {
+	if (link_summary(text, (int)size, &link)) {
 		// Where the track does not go out at its own rate: from what to what,
 		// whoever does it -- the player's own converter (decimation, the
 		// polyphase 44.1 -> 48 kHz one) or, past that, alsa's. With the link's
@@ -110,8 +110,20 @@ void btline_refresh(void) {
 				*last = '\0';
 			}
 			size_t used = strlen(text);
-			snprintf(text + used, sizeof(text) - used, " \xC2\xB7 %s \xE2\x86\x92 %s kHz", from, to);
+			snprintf(text + used, size - used, " \xC2\xB7 %s \xE2\x86\x92 %s kHz", from, to);
 		}
+	}
+
+	return text[0] != '\0';
+}
+
+void btline_refresh(void) {
+	if (!line) {
+		return;
+	}
+	char text[sizeof(shown)] = "";
+	if (btline_enabled()) {
+		btline_compose(text, sizeof(text));
 	}
 
 	// Last in its column, under the artist. The player's arrangements take the

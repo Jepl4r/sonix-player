@@ -1,5 +1,7 @@
 #include "coverflow.h"
 
+#include "src/gui/shell/sx_frame.h"
+
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1841,7 +1843,8 @@ static void edge_drag_cb(lv_event_t *e) {
 		return;
 	}
 	lv_event_code_t code = lv_event_get_code(e);
-	int band = (int)(uintptr_t)lv_event_get_user_data(e);
+	// Above the 2.0 mini player when it is up: the bottom of the screen is its.
+	int band = (int)(uintptr_t)lv_event_get_user_data(e) - sx_frame_body_bottom();
 
 	if (code == LV_EVENT_PRESSED) {
 		page_release();

@@ -9,13 +9,18 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/usb.h"
 
-#define GRID_GAP 14
-#define TILE_RADIUS 12 // Adwaita card radius
+// 2.0 tiles (sx_tokens.h): 12 px apart, 20 px corners, and a height worked
+// out from the room there is, the mini player's slot included, kept between
+// SX_TILE_H_MIN and the page's maximum.
+#define GRID_GAP SX_TILE_GAP
+#define TILE_RADIUS SX_TILE_R
 
 static void unavailable_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active()) {
@@ -65,6 +70,7 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 	lv_obj_set_size(tile, width, height);
 	lv_obj_add_style(tile, &theme_style_card, 0);
 	lv_obj_add_style(tile, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_add_style(tile, &sx_style_press, LV_STATE_PRESSED);
 	lv_obj_set_style_radius(tile, TILE_RADIUS, 0);
 	lv_obj_set_style_shadow_width(tile, 0, 0);
 	lv_obj_set_style_pad_all(tile, 8, 0);
@@ -113,10 +119,19 @@ void gridpage_set_entries(lv_obj_t *grid, gui_config_t *cfg, const grid_entry_t 
 
 	int top = clear_corner_buttons ? settingsrow_content_top(cfg) : cfg->top_bar_height;
 	int usable_w = cfg->screen_width - (2 * cfg->padding);
-	int usable_h = (cfg->screen_height - top) - (2 * cfg->padding);
 
+	// The handoff's (H - top - 88 - 15 - 2 x 12) / 3, for any number of rows:
+	// the body's own top (SX_BODY_TOP under a header, the status bar and a
+	// margin on the home page), the bottom slot whether or not the mini player
+	// is in it -- the home and Music pages put the idle card there -- and the
+	// margin under the tiles.
+	int body_top = clear_corner_buttons ? top : top + cfg->padding;
+	int tile_h_max = clear_corner_buttons ? SX_TILE_H_MAX : SX_TILE_H_MAX_HOME;
+	int rows_shown = rows > 0 ? rows : 1;
 	int tile_w = (usable_w - (columns - 1) * GRID_GAP) / columns;
-	int tile_h = (usable_h - (rows - 1) * GRID_GAP) / rows;
+	int tile_h = ((int)cfg->screen_height - body_top - SX_MINI_SLOT_H - cfg->padding - (rows_shown - 1) * GRID_GAP) /
+				 rows_shown;
+	tile_h = tile_h < SX_TILE_H_MIN ? SX_TILE_H_MIN : (tile_h > tile_h_max ? tile_h_max : tile_h);
 
 	for (int i = 0; i < count; i++) {
 		add_tile(grid, &entries[i], tile_w, tile_h);
@@ -136,6 +151,11 @@ lv_obj_t *gridpage_build(lv_obj_t *screen, gui_config_t *cfg, const grid_entry_t
 	lv_obj_set_style_border_width(grid, 0, 0);
 	lv_obj_set_style_radius(grid, 0, 0);
 	lv_obj_set_style_pad_all(grid, cfg->padding, 0);
+	// Under a 2.0 header the body starts at SX_BODY_TOP itself, with no margin
+	// of its own above the first row.
+	if (clear_corner_buttons) {
+		lv_obj_set_style_pad_top(grid, 0, 0);
+	}
 	lv_obj_set_style_pad_gap(grid, GRID_GAP, 0);
 	lv_obj_set_scrollable(grid, false);
 

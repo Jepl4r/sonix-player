@@ -1,5 +1,5 @@
-#ifndef SX_PALETTE_H
-#define SX_PALETTE_H
+#ifndef GUI_SX_PALETTE_H
+#define GUI_SX_PALETTE_H
 
 #include <stdbool.h>
 #include <stdint.h>
@@ -169,4 +169,4 @@ void sx_palette_configure(bool dark, int accent, lv_color_t preset, bool tint);
 // album page): theme.c pushes it into the shared styles and repaints.
 void sx_palette_set_change_hook(void (*hook)(void));
 
-#endif /* SX_PALETTE_H */
+#endif /* GUI_SX_PALETTE_H */

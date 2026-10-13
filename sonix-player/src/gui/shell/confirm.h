@@ -5,11 +5,15 @@
 
 #include "lvgl/lvgl.h"
 
-// A modal yes/no card over a dimmed page: the shape every "are you sure?"
-// in the interface uses. One exists at a time; asking again replaces it.
+// The yes/no question every "are you sure?" in the interface uses. Since 2.0
+// it is the bottom sheet (sx_sheet.h): title, message, and "Cancel" beside the
+// action -- red when the action cannot be undone (deleting, removing,
+// resetting, clearing). One exists at a time; asking again replaces it. A tap
+// off the sheet or a pull down is a "no".
 //
-// The action runs after the card has closed, so it can switch screens or
-// start a long job without pulling the dialog out from under itself.
+// The action runs after the sheet has started closing, so it can switch
+// screens or start a long job without pulling the question out from under
+// itself.
 
 void confirm_init(gui_config_t *cfg);
 

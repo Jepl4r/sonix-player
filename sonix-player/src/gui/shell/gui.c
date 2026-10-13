@@ -57,6 +57,12 @@
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/shell/powermenu.h"
 #include "src/gui/shell/quickpanel.h"
+#include "src/gui/shell/sx_frame.h"
+#include "src/gui/shell/sx_mini.h"
+#include "src/gui/shell/sx_palette.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_toast.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/bluetooth/btreceiverpage.h"
 #include "src/gui/audio/dacpage.h"
 #include "src/system/bluetooth/btreceiver.h"
@@ -97,11 +103,6 @@ typedef struct {
 	lv_color_t icon_color;
 } popup_event_t;
 
-static lv_obj_t *popup_veil; // the dimmed screen behind the card
-static lv_obj_t *popup;		 // the card itself, inside the veil
-static lv_obj_t *popup_icon;
-static lv_obj_t *popup_label;
-static lv_timer_t *popup_timer;
 
 // ---------------------------------------------------------------------------
 // gui_post: the bridge from any thread onto the GUI thread.
@@ -224,13 +225,11 @@ static void post_drain_cb(lv_timer_t *timer) {
 	}
 }
 
-// The dimmed screen every notice card sits on: black at 60%, no drop shadow
-// anywhere. Dimming the page separates the card from it without drawing a dark
-// smear around the corners that reads as a border.
-//
-// `dismissable` decides whether it eats taps and stops there (the pairing
-// notice, which has to stay until the headphones are up) or whether the caller
-// hangs a click handler on it.
+// The screen-sized layer the modal card sits on. Since 2.0 it is not dimmed --
+// a translucent layer the size of the screen is what the platform cannot
+// afford to blend (handoff, platform limits) -- but it still catches every
+// tap: while the modal is up there is nothing to press. The card stands out
+// by its own surface and a hairline instead.
 static lv_obj_t *veil_create(bool dismissable) {
 	(void)dismissable; // both kinds swallow taps; only the handler differs
 
@@ -238,8 +237,7 @@ static lv_obj_t *veil_create(bool dismissable) {
 	lv_obj_set_hidden(veil, true);
 	lv_obj_set_size(veil, lv_pct(100), lv_pct(100));
 	lv_obj_set_pos(veil, 0, 0);
-	lv_obj_set_style_bg_color(veil, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(veil, LV_OPA_60, 0);
+	lv_obj_set_style_bg_opa(veil, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(veil, 0, 0);
 	lv_obj_set_style_radius(veil, 0, 0);
 	lv_obj_set_style_shadow_width(veil, 0, 0);
@@ -249,60 +247,19 @@ static lv_obj_t *veil_create(bool dismissable) {
 	return veil;
 }
 
-static void popup_dismiss(void) {
-	if (popup_veil) {
-		lv_obj_set_hidden(popup_veil, true);
-	}
-
-	lv_timer_reset(popup_timer);
-	lv_timer_pause(popup_timer);
-}
-
-static void popup_hide_cb(lv_timer_t *timer) {
-	(void)timer;
-	popup_dismiss();
-}
-
-// A tap anywhere off the card takes the notice away without waiting out the
-// three seconds. Taps on the card itself do not get here: it is clickable, so
-// it swallows them.
-static void popup_veil_cb(lv_event_t *e) {
-	(void)e;
-	popup_dismiss();
-}
-
 static void popup_show_icon(const char *text, const lv_image_dsc_t *icon, lv_color_t color);
 
 void popup_show(const char *text) { popup_show_icon(text, NULL, lv_color_black()); }
 
+// Since 2.0 a notice is the toast at the bottom of the screen (sx_toast.h),
+// not a card in the middle over a dimmed page: the same three-second sentence,
+// the glyph at the start of the line, the page left alone around it.
 static void popup_show_icon(const char *text, const lv_image_dsc_t *icon, lv_color_t color) {
-	if (!popup) {
-		fprintf(stderr, "popup_show() was called, but popup is not initialized. this is unexpected...");
-		return;
+	if (icon) {
+		sx_toast_glyph(icon, color, tr(text));
+	} else {
+		sx_toast(tr(text));
 	}
-
-	// A glyph over the sentence, for the notices that are about a thing rather
-	// than about a failure: the headphones for "the volume lives over there".
-	if (popup_icon) {
-		if (icon) {
-			lv_image_set_src(popup_icon, icon);
-			lv_obj_set_style_image_recolor(popup_icon, color, 0);
-			lv_obj_set_style_image_recolor_opa(popup_icon, LV_OPA_COVER, 0);
-			lv_obj_set_hidden(popup_icon, false);
-		} else {
-			lv_obj_set_hidden(popup_icon, true);
-		}
-	}
-
-	lv_label_set_text(popup_label, tr(text));
-	// The card grows to whatever it has to say, rather than being a fixed box
-	// a longer message spills out of.
-	lv_obj_update_layout(popup);
-	lv_obj_center(popup);
-	lv_obj_move_foreground(popup_veil);
-	lv_obj_set_hidden(popup_veil, false);
-	lv_timer_reset(popup_timer);
-	lv_timer_resume(popup_timer);
 }
 
 static void popup_async_cb(void *user_data) {
@@ -455,8 +412,11 @@ static void modal_init(gui_config_t *cfg) {
 	lv_obj_set_width(card, cfg->screen_width - 4 * cfg->padding);
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 16, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
+	lv_obj_set_style_radius(card, SX_CARD_R, 0);
+	// No veil to set it off the page any more: a hairline does (sx_tokens.h).
+	lv_obj_set_style_border_width(card, 1, 0);
+	lv_obj_set_style_border_color(card, sx_pal()->hairline, 0);
+	lv_obj_set_style_border_opa(card, sx_pal()->hairline_opa, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 26, 0);
 	lv_obj_set_style_pad_row(card, 14, 0);
@@ -649,7 +609,7 @@ bool gui_init(gui_config_t *cfg, bool split) {
 	// Colours first: every screen below styles itself from the active palette.
 	theme_init();
 
-	// The player sheet is parked off the right edge of the top layer, which
+	// The player sheet is parked below the bottom edge of the top layer, which
 	// makes that layer scrollable unless told otherwise -- and then a sideways
 	// drag scrolls the whole layer, taking the status bar and the floating back
 	// button along with it.
@@ -708,6 +668,10 @@ bool gui_init(gui_config_t *cfg, bool split) {
 	// Persistent back button that hides when on the main page
 	touch_init(cfg);
 	back_btn_init(cfg);
+
+	// The 2.0 frame: the bottom slot and the mini player in it, above the
+	// pages and under everything that comes up over them.
+	sx_frame_init(cfg);
 
 	// Before the settings pages: the display page draws its screensaver switch
 	// from screensaver_get_enabled(), which is only true once this has read the
@@ -874,47 +838,8 @@ static void build_rest(gui_config_t *cfg, bool final) {
 	power_set_wake_hook(screensaver_prepare);
 	player_set_cover_release_cb(screensaver_release_artwork);
 
-	// The notice card: the interface's card style, wrapping, and only as tall
-	// as what it has to say.
-	//
-	// It sits on a veil rather than floating over the page on a drop shadow:
-	// black at 60%, the same one the confirmation dialog uses, so a notice reads
-	// as a notice across the whole interface. The veil is also what makes "tap
-	// anywhere else to dismiss" possible.
-	popup_veil = veil_create(true);
-	lv_obj_add_event_cb(popup_veil, popup_veil_cb, LV_EVENT_CLICKED, NULL);
-
-	popup = lv_obj_create(popup_veil);
-	lv_obj_set_width(popup, cfg->screen_width - 4 * cfg->padding);
-	lv_obj_set_height(popup, LV_SIZE_CONTENT);
-	lv_obj_add_style(popup, &theme_style_card, 0);
-	lv_obj_set_style_radius(popup, 16, 0);
-	lv_obj_set_style_border_width(popup, 0, 0);
-	lv_obj_set_style_shadow_width(popup, 0, 0);
-	lv_obj_set_style_pad_all(popup, 22, 0);
-	lv_obj_set_scrollable(popup, false);
-	lv_obj_set_clickable(popup, true); // so a tap on the card is not a tap outside
-	lv_obj_set_flex_flow(popup, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(popup, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(popup, 12, 0);
-	lv_obj_center(popup);
-
-	popup_icon = lv_image_create(popup);
-	lv_image_set_src(popup_icon, &icon_headphones_big);
-	lv_obj_add_style(popup_icon, &theme_style_icon, 0);
-	lv_obj_set_hidden(popup_icon, true);
-
-	popup_label = lv_label_create(popup);
-	lv_obj_set_width(popup_label, lv_pct(100));
-	lv_label_set_long_mode(popup_label, LV_LABEL_LONG_WRAP);
-	lv_obj_add_style(popup_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(popup_label, &font_ui_22, 0);
-	lv_obj_set_style_text_align(popup_label, LV_TEXT_ALIGN_CENTER, 0);
-
-	// Three seconds: long enough to read a whole sentence, not just a two-word
-	// notice.
-	popup_timer = lv_timer_create(popup_hide_cb, 3000, NULL);
-	lv_timer_pause(popup_timer); // nothing to hide until a notice is shown
+	// The notices (gui_notify_popup) are the 2.0 toast: see popup_show_icon().
+	sx_toast_init();
 
 	// The gui_post doorbell and the timer that drains it, created here, once, on
 	// the GUI thread, because the timer is the only piece of LVGL in the whole
@@ -949,6 +874,15 @@ static void build_rest(gui_config_t *cfg, bool final) {
 	// language brings the clock up itself, so the two only chain here on the
 	// path where the language has already been answered before.
 	welcome_init(cfg);
+
+	// The pages that own the whole panel: no mini player over a game, the book
+	// being read, or a scan that exits through its own buttons.
+	lv_obj_t *const full_screens[] = {
+		gearboyplay_screen, flappybird_screen, ebookreader_screen, libraryscan_screen, audiobookscan_screen,
+	};
+	for (size_t i = 0; i < sizeof(full_screens) / sizeof(full_screens[0]); i++) {
+		sx_mini_hide_on_screen(full_screens[i]);
+	}
 
 	if (!final) {
 		return;

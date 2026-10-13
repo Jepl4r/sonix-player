@@ -51,9 +51,9 @@ void touch_grow(lv_obj_t *obj, int w, int h, int limit);
 // page builds them with its own helper, so rather than each of them being
 // told, the switcher calls this with each page it loads and the buttons are
 // found by where they sit and how big they are: 56 x 56 at the header's
-// height, straight on the screen. Each one gets the room above and below the
-// row, half the gap to its neighbours, and the rightmost the margin out to the
-// edge of the screen. A button already done is passed over.
+// height, straight on the screen. Since 2.0 each is made a SX_HEADER_BTN round
+// target in the 2.0 header (flush right, one 72 px slot each, a pressed fill)
+// -- a fingertip by itself. A button already done is passed over.
 void touch_header(lv_obj_t *screen);
 
 // ---------------------------------------------------------------------------

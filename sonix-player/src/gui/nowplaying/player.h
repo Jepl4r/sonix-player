@@ -77,11 +77,12 @@ void player_output_unplugged(const char *what);
 // ---------------------------------------------------------------------------
 // The player as a sheet
 //
-// The player is not a page you navigate to but a panel that lives just off the
-// right edge of the screen and is pulled across with a finger: drag left on
-// the Music page and it slides in, drag right and it goes back. That only
-// works if it can be drawn on top of whatever is behind it, so it is an object
-// on the top layer rather than an LVGL screen.
+// The player is not a page you navigate to but a panel over whatever page is
+// on screen. Since 2.0 it comes up from the bottom -- the mini player's tap or
+// upward swipe (sx_mini.h), or anything that switches to player_screen -- and
+// goes back down: the chevron (pointing down now) or a pull down past
+// SX_NP_COLLAPSE_PX, which it follows. It is an object on the top layer
+// rather than an LVGL screen, so it can be drawn over the page it came up on.
 // ---------------------------------------------------------------------------
 
 // The hardware transport keys, dispatched here from the button threads.
@@ -106,16 +107,16 @@ bool player_current_podcast_feed(long long *id_out, podcast_feed_t *feed_out);
 
 bool player_sheet_is_open(void);
 
-// True while the gesture in progress has been claimed as a sideways drag. The
-// tap handlers on the pages behind check this so that swiping the player in
-// across a button does not also press it.
+// True while the gesture in progress has been claimed as the pull down. Tap
+// handlers check this so that the end of a drag does not also press a button.
 bool player_sheet_drag_active(void);
 void player_sheet_open(bool animate);
 void player_sheet_close(bool animate);
 
-// Makes `obj` a place the sheet can be dragged from. `opening` picks the
-// direction: true for a surface behind the sheet (drag left to bring it in),
-// false for the sheet itself (drag right to push it away).
+// Makes `obj` a place the sheet can be dragged from. `opening` false: a
+// surface of the sheet itself, which pulls it down. `opening` true was a page
+// surface that pulled the player in with a leftward drag before 2.0; that is
+// the mini player's job now, and the call only makes `obj` clickable.
 void player_sheet_attach_drag(lv_obj_t *obj, bool opening);
 
 // Boot-time "Remember track": loads the remembered track, paused at position.

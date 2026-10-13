@@ -5,10 +5,11 @@
 
 #include "lvgl/lvgl.h"
 
-// A small modal menu that opens next to the control that asked for it --
-// iOS-style: the page stays visible, a dim veil catches taps, and a compact
-// card with a few actions appears by the anchor. One popover exists at a
-// time; showing a new one replaces the old.
+// A menu of a few actions for the control that asked for it. Since 2.0 it is
+// the bottom sheet (sx_sheet.h): it comes up from the bottom of the screen
+// over the undimmed page, a tap off it or a pull down closes it. One exists at
+// a time; showing a new one replaces the old. New code uses sx_sheet directly,
+// which has titles, glyphs and destructive entries.
 
 typedef struct {
 	const char *label;
@@ -23,7 +24,8 @@ typedef struct {
 // Builds the (hidden) veil and card once. Call from gui_init.
 void popover_init(void);
 
-// Opens the menu near `anchor` with `count` items (at most 7 are shown).
+// Opens the menu with `count` items; it scrolls when they do not fit. `anchor`
+// is no longer used (the sheet always comes from the bottom) and may be NULL.
 void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count);
 
 // Closes it (the veil tap and every item do this on their own).

@@ -9,9 +9,17 @@ void screen_history_reset(void); // forget the back-stack (back goes to the menu
 void switch_screen_no_history(lv_obj_t *target_screen); // load without recording
 void switch_screen_return_to(lv_obj_t *target_screen); // discard newer history and load
 
-// Attach the iOS-style interactive swipe-back to a page surface (a screen or
-// a scrollable list/container that swallows presses): the page follows the
-// finger rightward, showing the previous page underneath.
+// The swipe back (2.0): a rightward drag that starts in the SX_EDGE_BACK_W
+// strip along the left edge of any page follows the finger over a snapshot of
+// the page below and goes back when let go past SX_EDGE_BACK_PX. Read from
+// the touch panel itself: main.c hands the pointer device over once, and no
+// page has to do anything. A tap in the strip is still a tap on what is there.
+void switcher_edge_back_attach(lv_indev_t *indev);
+
+// Before 2.0 this gave a page surface the swipe back, which started anywhere
+// on it; the edge strip now covers every page, and the content's own sideways
+// drags (a list row's queue actions) are left to the content. Kept, and still
+// makes `obj` clickable, so that no page has to change.
 void switcher_attach_back_gesture(lv_obj_t *screen);
 
 // True during (and for the tap at the end of) a swipe-back drag. Click
@@ -19,6 +27,13 @@ void switcher_attach_back_gesture(lv_obj_t *screen);
 // or button it happens to land on -- the same contract as
 // player_sheet_drag_active().
 bool switcher_back_drag_active(void);
+
+// True while a page slides in (SX_ANIM_NAV_MS after switch_screen() or a step
+// back): both pages are drawn and no touch is read. Page changes slide
+// forward from the right and back from the left; lv_screen_active() is the
+// new page from the moment the call returns, and the old page hears
+// LV_EVENT_SCREEN_UNLOADED only once it is off screen.
+bool switcher_nav_anim_running(void);
 void back_btn_cb(lv_event_t *e);
 void switch_screen_cb(lv_event_t *e);
 void back_btn_init(gui_config_t *cfg);
@@ -57,9 +72,12 @@ void back_btn_over_cover(bool over_cover);
 void back_btn_tint_on_screen(lv_obj_t *screen, bool on, lv_color_t color);
 
 // Horizontal offset for the chevron, so it can ride whatever is being
-// dragged (the player sheet's slide uses it; the page swipe-back does its
-// own). 0 puts it back in place.
+// dragged (the page swipe-back does its own). 0 puts it back in place.
 void back_btn_translate(int32_t x);
+
+// The same downwards: the player sheet's chevron rides the sheet as it is
+// pulled down and put away.
+void back_btn_translate_y(int32_t y);
 
 // Where the chevron's middle sits while the player is open, from the top of the
 // screen. For a page that wants to put something of its own on the same line as

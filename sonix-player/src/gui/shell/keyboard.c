@@ -1,5 +1,7 @@
 #include "keyboard.h"
 
+#include "src/gui/shell/sx_mini.h"
+
 #include "src/gui/shell/popover.h"
 #include "src/system/input/kblayout.h"
 
@@ -1190,9 +1192,22 @@ void keyboard_set_visible(keyboard_t *kb, bool visible) {
 		kb_preview_hide(kb);
 		kb_variants_close(kb);
 	}
+	sx_mini_update_visibility();
 }
 
 bool keyboard_is_visible(keyboard_t *kb) { return kb && kb->tray && !lv_obj_is_hidden(kb->tray); }
+
+bool keyboard_shown_on(lv_obj_t *screen) {
+	if (!screen) {
+		return false;
+	}
+	for (keyboard_t *kb = kb_list; kb; kb = kb->next) {
+		if (keyboard_is_visible(kb) && lv_obj_get_screen(kb->tray) == screen) {
+			return true;
+		}
+	}
+	return false;
+}
 
 void keyboard_set_field(keyboard_t *kb, lv_obj_t *field) {
 	if (kb) {

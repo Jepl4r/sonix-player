@@ -1,5 +1,5 @@
-#ifndef SX_TOKENS_H
-#define SX_TOKENS_H
+#ifndef GUI_SX_TOKENS_H
+#define GUI_SX_TOKENS_H
 
 #include <stdint.h>
 
@@ -223,4 +223,4 @@ typedef struct {
 #define SX_T_AL_GRAD_2 ((sx_lc_t){0.22f, 0.035f})	//            at 900 px
 #define SX_T_COVER_TONE ((sx_lc_t){0.50f, 0.090f})	// the plaque shown until a thumbnail exists
 
-#endif /* SX_TOKENS_H */
+#endif /* GUI_SX_TOKENS_H */

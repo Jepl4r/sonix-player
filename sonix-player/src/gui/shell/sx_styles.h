@@ -1,5 +1,5 @@
-#ifndef SX_STYLES_H
-#define SX_STYLES_H
+#ifndef GUI_SX_STYLES_H
+#define GUI_SX_STYLES_H
 
 #include "lvgl/lvgl.h"
 
@@ -50,4 +50,4 @@ lv_obj_t *sx_box(lv_obj_t *parent);
 // ellipsis when it does not fit its width.
 lv_obj_t *sx_label(lv_obj_t *parent, const lv_font_t *font, lv_style_t *colour_style);
 
-#endif /* SX_STYLES_H */
+#endif /* GUI_SX_STYLES_H */

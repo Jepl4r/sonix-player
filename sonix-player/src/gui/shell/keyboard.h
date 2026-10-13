@@ -30,6 +30,10 @@ lv_obj_t *keyboard_obj(keyboard_t *kb);
 void keyboard_set_visible(keyboard_t *kb, bool visible);
 bool keyboard_is_visible(keyboard_t *kb);
 
+// Whether a keyboard built on `screen` is up: the 2.0 mini player gives the
+// bottom of the screen to it (sx_mini.h).
+bool keyboard_shown_on(lv_obj_t *screen);
+
 // Points the keys at another textarea.
 void keyboard_set_field(keyboard_t *kb, lv_obj_t *field);
 

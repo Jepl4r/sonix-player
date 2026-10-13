@@ -20,6 +20,7 @@
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/switcher.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/settings.h"
@@ -1048,6 +1049,9 @@ static void tune_pointer(lv_indev_t *indev) {
 	}
 	tune_kinetic_scroll(indev);
 	lv_indev_add_event_cb(indev, tap_guard_cb, LV_EVENT_ALL, NULL);
+	// 2.0: the swipe back starts in a strip along the left edge, read off the
+	// pointer itself (switcher.h).
+	switcher_edge_back_attach(indev);
 }
 
 // The panel of the player this binary was first written for, and what an

@@ -2,6 +2,7 @@
 #define BTLINE_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "lvgl/lvgl.h"
 
@@ -32,6 +33,13 @@ void btline_create(lv_obj_t *parent);
 // Shows, hides or rewrites the line from the output and the track as they are
 // now. Cheap: a few cached numbers when Bluetooth is not the output.
 void btline_refresh(void);
+
+// The line's text as it would be shown now -- "LDAC 990 · 96 kHz", "LDAC 990
+// · 44.1 → 48 kHz" -- into `out`, or "" and false when the sound is not going
+// to Bluetooth headphones. Whether the line is switched on does not matter
+// here: this is for the 2.0 mini
+// player's signal chain (sx_chain.h), which says the same thing.
+bool btline_compose(char *out, size_t size);
 
 bool btline_enabled(void);
 void btline_set_enabled(bool on);

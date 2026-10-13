@@ -23,7 +23,10 @@
 #include "src/gui/shell/scrolltext.h"
 #include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/nowplaying/coverflow.h"
+#include "src/gui/shell/sx_mini.h"
 #include "src/gui/shell/sx_palette.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
 #include "src/gui/shell/touch.h"
@@ -716,8 +719,9 @@ static void apply_playback_status(audio_status_t status) {
 	lv_timer_resume(progress_slider_timer);
 
 	// The status bar shows the same state, and told here rather than left to
-	// wait for its own five-second poll.
+	// wait for its own five-second poll; so does the mini player.
 	topbar_refresh_playback();
+	sx_mini_set_playing(playing);
 
 	// Every route into and out of playing comes through here -- the button, the
 	// side keys, the end of a track, a remote, the poll putting the screen back
@@ -3180,10 +3184,17 @@ static void refresh_now_playing(void) {
 	// album recolours the interface here, before anything below paints.
 	if (state.live) {
 		sx_palette_track_changed(NULL, state.metadata.title);
+		sx_mini_set_track(state.metadata.title, NULL, true);
 	} else {
 		sx_palette_track_changed(state.current_file[0] ? state.current_file : NULL,
 								 state.metadata.album[0] ? state.metadata.album : NULL);
+		// The mini player on every page says the same as this one.
+		const char *base = strrchr(state.current_file, '/');
+		const char *shown = state.metadata.title[0] ? state.metadata.title : (base ? base + 1 : state.current_file);
+		sx_mini_set_track(state.current_file[0] ? shown : NULL, state.current_file[0] ? state.current_file : NULL,
+						  false);
 	}
+	sx_mini_set_playing(state.status == AUDIO_STATUS_PLAYING);
 
 	apply_live_mode(state.live);
 	apply_connecting();
@@ -3822,6 +3833,7 @@ static void update_progress(void) {
 	}
 
 	set_progress_label(state.progress_current_secs, current_total_length);
+	sx_mini_set_progress(state.progress_current_secs, state.live ? 0 : current_total_length);
 	wave_refresh(cover_shown_path, state.progress_current_secs);
 	if (state.status == AUDIO_STATUS_PLAYING && !state.live) {
 		device_state_read_ahead(state.progress_current_secs, state.progress_total_secs);
@@ -4403,70 +4415,69 @@ void player_refresh_now_playing(void) {
 
 
 // ---------------------------------------------------------------------------
-// the sheet: dragging the player in and out
+// the sheet: the player comes up from the bottom and goes back down
+//
+// 2.0 (principle 7, "down puts the top layer away"): the player opens from
+// the bottom -- the mini player's tap or upward swipe, or anything that
+// switches to it -- and is put away downwards, by the chevron (pointing down
+// now) or by pulling it down: it follows the finger and goes once let go past
+// SX_NP_COLLAPSE_PX, otherwise it springs back. Sideways drags on the cover
+// are the cover's own (coverflow: previous and next).
 // ---------------------------------------------------------------------------
 
-// How far across the screen the drag has to get before letting go opens (or
-// closes) it rather than snapping back. A third is enough to feel deliberate
-// without demanding the whole width.
-#define SHEET_COMMIT_FRACTION 3
+#define SHEET_ANIM_MS SX_ANIM_NAV_MS
 
-#define SHEET_ANIM_MS 220
-
-// Sideways movement past this is a drag, not a tap.
-#define DRAG_COMMIT_PX 10
-
-static int sheet_width;
+static int sheet_height;
 static lv_obj_t *sheet_under; // the page the sheet first slid over
 
-// Where the sheet was when the finger went down, and where the finger was.
-static int drag_origin_x;
+// Where the finger went down, and whether the gesture has been taken as a
+// pull down.
 static lv_point_t drag_start_point;
 static bool dragging;
 
-// True once a gesture has moved far enough sideways to count as a drag. Read
-// by the tap handlers on the pages behind, so that swiping across a menu tile
-// does not also select it.
+// True once a gesture has moved far enough to count as a drag. Read by the
+// tap handlers, so that pulling the player down across a button does not also
+// press it.
 static bool drag_committed;
 
-static void sheet_anim_x_cb(void *obj, int32_t value) {
-	lv_obj_set_x((lv_obj_t *)obj, (int)value);
+static void sheet_anim_y_cb(void *obj, int32_t value) {
+	lv_obj_set_y((lv_obj_t *)obj, (int)value);
 	// No live blur under the status bar while the artwork slides beneath it:
 	// see topbar_hold_backdrop_blur(). Back on the frame the sheet comes to
 	// rest open.
 	topbar_hold_backdrop_blur(value != 0);
-	// The chevron belongs to the sheet while it moves: ride its edge, and
-	// snap back into the page's corner once the sheet is fully away.
-	back_btn_translate(value >= sheet_width ? 0 : value);
+	// The chevron belongs to the sheet while it moves: ride it down, and snap
+	// back into the page's corner once the sheet is fully away.
+	back_btn_translate_y(value >= sheet_height ? 0 : value);
 }
 
-// Moves the sheet to `x` (0 = fully open, sheet_width = fully out of the way).
-static void sheet_move_to(int x, bool animate) {
-	if (x < 0) {
-		x = 0;
+// Moves the sheet to `y` (0 = fully open, sheet_height = fully out of the way).
+static void sheet_move_to(int y, bool animate) {
+	if (y < 0) {
+		y = 0;
 	}
-	if (x > sheet_width) {
-		x = sheet_width;
+	if (y > sheet_height) {
+		y = sheet_height;
 	}
 
 	// Never race a slide that is still running. A slide left to finish after a
 	// new one has started parks the sheet off screen while everything else
 	// believes it is open -- the page underneath showing, no status bar, and no
 	// way back to the player.
-	lv_anim_delete(player_screen, sheet_anim_x_cb);
+	lv_anim_delete(player_screen, sheet_anim_y_cb);
 
 	if (!animate) {
-		lv_obj_set_x(player_screen, x);
-		back_btn_translate(x >= sheet_width ? 0 : x);
-		topbar_hold_backdrop_blur(x != 0); // a drag: as in sheet_anim_x_cb
+		lv_obj_set_y(player_screen, y);
+		back_btn_translate_y(y >= sheet_height ? 0 : y);
+		topbar_hold_backdrop_blur(y != 0); // a drag: as in sheet_anim_y_cb
 		return;
 	}
 
 	lv_anim_t a;
 	lv_anim_init(&a);
 	lv_anim_set_var(&a, player_screen);
-	lv_anim_set_exec_cb(&a, sheet_anim_x_cb);
-	lv_anim_set_values(&a, lv_obj_get_x(player_screen), x);
+	lv_anim_set_exec_cb(&a, sheet_anim_y_cb);
+	lv_anim_set_values(&a, lv_obj_get_y(player_screen), y);
 	lv_anim_set_duration(&a, SHEET_ANIM_MS);
 	lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
 	lv_anim_start(&a);
@@ -4543,6 +4554,7 @@ void player_sheet_open(bool animate) {
 	}
 	sheet_open = true;
 	back_btn_player_mode(true);
+	sx_mini_player_shown(true);
 	lyrics_screen_hold_update();
 
 	// Explicitly the bottom-most thing on the top layer: it covers the page it
@@ -4579,6 +4591,7 @@ void player_sheet_close(bool animate) {
 	bool was_open = sheet_open;
 	sheet_open = false;
 	back_btn_player_mode(false);
+	sx_mini_player_shown(false);
 	lyrics_screen_hold_update();
 	topbar_set_over_artwork(false, false);
 	topbar_set_hidden(false);
@@ -4595,8 +4608,8 @@ void player_sheet_close(bool animate) {
 	medialist_refresh_visible();
 
 	if (!animate) {
-		lv_obj_set_x(player_screen, sheet_width);
-		back_btn_translate(0);
+		lv_obj_set_y(player_screen, sheet_height);
+		back_btn_translate_y(0);
 		lv_obj_set_hidden(player_screen, true);
 		back_btn_sync_visibility();
 		return;
@@ -4605,8 +4618,8 @@ void player_sheet_close(bool animate) {
 	lv_anim_t a;
 	lv_anim_init(&a);
 	lv_anim_set_var(&a, player_screen);
-	lv_anim_set_exec_cb(&a, sheet_anim_x_cb);
-	lv_anim_set_values(&a, lv_obj_get_x(player_screen), sheet_width);
+	lv_anim_set_exec_cb(&a, sheet_anim_y_cb);
+	lv_anim_set_values(&a, lv_obj_get_y(player_screen), sheet_height);
 	lv_anim_set_duration(&a, SHEET_ANIM_MS);
 	lv_anim_set_path_cb(&a, lv_anim_path_ease_out);
 	lv_anim_set_completed_cb(&a, sheet_hidden_anim_ready_cb);
@@ -4621,11 +4634,10 @@ static void drag_committed_clear_cb(void *unused) {
 	drag_committed = false;
 }
 
-// One handler for both directions. `opening` is passed as the user data: true
-// when the drag starts on something behind the sheet, false when it starts on
-// the sheet itself.
+// The pull down, on the open player. Only once the movement is clearly
+// downwards (SX_DRAG_LOCK_PX, and more down than across) is it taken: a
+// sideways drag on the cover belongs to the cover.
 static void sheet_drag_cb(lv_event_t *e) {
-	bool opening = (bool)(uintptr_t)lv_event_get_user_data(e);
 	lv_event_code_t code = lv_event_get_code(e);
 
 	lv_indev_t *indev = lv_indev_active();
@@ -4634,22 +4646,12 @@ static void sheet_drag_cb(lv_event_t *e) {
 	}
 
 	if (code == LV_EVENT_PRESSED) {
-		if (opening == sheet_open) {
-			return; // dragging the wrong way for the current state
+		if (!sheet_open) {
+			return;
 		}
-
 		lv_indev_get_point(indev, &drag_start_point);
-		drag_origin_x = opening ? sheet_width : 0;
 		dragging = true;
-
 		drag_committed = false;
-
-		if (opening) {
-			// It has to be on screen to be dragged, even if only by a pixel.
-			lv_obj_set_hidden(player_screen, false);
-			lv_obj_move_background(player_screen);
-			lv_obj_set_x(player_screen, sheet_width);
-		}
 		return;
 	}
 
@@ -4660,49 +4662,41 @@ static void sheet_drag_cb(lv_event_t *e) {
 	lv_point_t point;
 	lv_indev_get_point(indev, &point);
 	int dx = point.x - drag_start_point.x;
+	int dy = point.y - drag_start_point.y;
 
 	if (code == LV_EVENT_PRESSING) {
-		// Vertical scrolling must still work: the moment LVGL is scrolling
-		// something this press is a scroll, and once the movement reads as
-		// vertical it stays a scroll -- no more sideways shimmy of the page
-		// during a fast flick.
 		if (!drag_committed) {
-			if (lv_indev_get_scroll_obj(indev)) {
+			if (lv_indev_get_scroll_obj(indev) || coverflow_drag_active()) {
 				dragging = false;
 				return;
 			}
-			int dy = point.y - drag_start_point.y;
-			if (LV_ABS(dy) >= DRAG_COMMIT_PX && LV_ABS(dy) > LV_ABS(dx)) {
-				dragging = false;
+			if (LV_ABS(dx) >= SX_DRAG_LOCK_PX && LV_ABS(dx) > dy) {
+				dragging = false; // sideways: the cover's own swipe
 				return;
 			}
-			if (LV_ABS(dx) < DRAG_COMMIT_PX || LV_ABS(dx) < 2 * LV_ABS(dy)) {
+			if (dy < SX_DRAG_LOCK_PX || dy <= LV_ABS(dx)) {
 				return;
 			}
 			drag_committed = true;
 		}
 
-		sheet_move_to(drag_origin_x + dx, false);
+		sheet_move_to(dy, false);
 		return;
 	}
 
 	if (code == LV_EVENT_RELEASED || code == LV_EVENT_PRESS_LOST) {
 		dragging = false;
-
-		int travelled = opening ? -dx : dx;
-		bool commit = travelled > (sheet_width / SHEET_COMMIT_FRACTION);
-
-		if (opening) {
-			commit ? player_sheet_open(true) : player_sheet_close(true);
-		} else {
-			commit ? player_sheet_close(true) : player_sheet_open(true);
+		if (drag_committed) {
+			if (dy > SX_NP_COLLAPSE_PX) {
+				player_sheet_close(true);
+			} else {
+				player_sheet_open(true);
+			}
 		}
 
-		// The flag must not outlive the gesture. Waiting for the next PRESSED on
-		// an attached object is not enough -- the browser list is not one, so
-		// every tap on a row after a swipe would be discarded as part of a drag.
-		// Deferred rather than cleared here, because the CLICKED event of this
-		// same gesture still has to see it.
+		// The flag must not outlive the gesture. Deferred rather than cleared
+		// here, because the CLICKED event of this same gesture still has to
+		// see it.
 		lv_async_call(drag_committed_clear_cb, NULL);
 	}
 }
@@ -4780,10 +4774,17 @@ void player_sheet_attach_drag(lv_obj_t *obj, bool opening) {
 	}
 
 	lv_obj_set_clickable(obj, true);
-	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_PRESSED, (void *)(uintptr_t)opening);
-	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_PRESSING, (void *)(uintptr_t)opening);
-	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_RELEASED, (void *)(uintptr_t)opening);
-	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_PRESS_LOST, (void *)(uintptr_t)opening);
+	// The leftward drag on a page that pulled the player in before 2.0 is the
+	// mini player's job now (tap, or swipe up); a sideways drag on a list row
+	// is the row's own (next in the queue / the end of it). The pages that
+	// still ask for it get nothing but the clickable surface they had.
+	if (opening) {
+		return;
+	}
+	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_PRESSED, NULL);
+	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_PRESSING, NULL);
+	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_RELEASED, NULL);
+	lv_obj_add_event_cb(obj, sheet_drag_cb, LV_EVENT_PRESS_LOST, NULL);
 }
 
 // Builds the player sheet: artwork, controls and the poll that drives them.
@@ -4797,14 +4798,14 @@ void player_init(gui_config_t *cfg) {
 
 	lv_obj_add_style(player_screen, &theme_style_screen, 0);
 
-	// The player is a panel parked just off the right edge (see player.h).
-	sheet_width = (int)cfg->screen_width;
+	// The player is a panel parked just below the bottom edge (see player.h).
+	sheet_height = (int)cfg->screen_height;
 	lv_obj_set_size(player_screen, cfg->screen_width, cfg->screen_height);
 	lv_obj_set_style_pad_all(player_screen, 0, 0);
 	lv_obj_set_style_border_width(player_screen, 0, 0);
 	lv_obj_set_style_radius(player_screen, 0, 0);
 	lv_obj_set_scrollable(player_screen, false);
-	lv_obj_set_pos(player_screen, sheet_width, 0);
+	lv_obj_set_pos(player_screen, 0, sheet_height);
 	lv_obj_set_hidden(player_screen, true);
 
 

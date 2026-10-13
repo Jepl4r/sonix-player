@@ -15,18 +15,23 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/touch.h"
 #include "src/system/core/lang.h"
 
-// Matches the floating back button, which the heading sits beside.
-#define CORNER_BTN_SIZE 56
-// Gap pages leave between two corner buttons: 6 px where they are placed by
-// slot, 4 px in the flex shelf medialist uses. The larger value is the one to
-// reserve, since underestimating it lets a heading run under a button.
-#define CORNER_SLOT_GAP 6
+// The 2.0 header (sx_tokens.h): the title starts where the 72 px back target
+// ends and is centred in the 76 px row under the status bar; each button at
+// the right takes a 72 px slot (touch_header puts them there).
+#define TITLE_LEFT SX_HEADER_BTN
+#define TITLE_RIGHT_MARGIN SX_BODY_PAD_R
+#define HEADER_SLOT SX_HEADER_BTN
+#define HEADER_MID_Y (SX_STATUSBAR_H + SX_HEADER_H / 2)
 
-#define ROW_HEIGHT 100
+// A one-line card: 60 px of content between 12 px margins (SX_CARD_*).
+#define ROW_HEIGHT (SX_CARD_MIN_H + 2 * SX_CARD_PAD_V)
 
 // A toggle card that also carries a slider, at its open height.
 #define TOGGLE_SLIDER_OPEN_H 180
@@ -48,11 +53,10 @@
 // more than a fingertip.
 #define SLIDER_TOUCH_REACH 31
 #define SLIDER_TOUCH_WIDTH 400
-#define ROW_RADIUS 12 // Adwaita boxed-list corner radius
-#define ROW_GAP 8
-// Between two pills, across and down. With pills 56 px tall, a row of them
-// is one a fingertip can tell apart.
-#define PILL_GAP 12
+#define ROW_RADIUS SX_CARD_R
+#define ROW_GAP SX_CARD_GAP
+// Between two pills, across and down (2.0: 52 px pills, 10 px apart).
+#define PILL_GAP SX_PILL_GAP
 
 // Every page heading, row name and card name goes through this file, so the
 // tr() calls live here rather than in thirty call sites. A name that is not a
@@ -82,23 +86,36 @@ static void refit_titles(void) {
 	}
 }
 
+// The heading's width with `buttons` header buttons at the right.
+static int title_width(gui_config_t *cfg, int buttons) {
+	int reserved = buttons > 0 ? buttons * HEADER_SLOT : TITLE_RIGHT_MARGIN;
+	return (int)cfg->screen_width - TITLE_LEFT - reserved;
+}
+
+// Keeps the heading's middle on the header's, whatever size it settled on.
+static void title_place(lv_obj_t *label) {
+	const lv_font_t *font = lv_obj_get_style_text_font(label, LV_PART_MAIN);
+	lv_obj_align(label, LV_ALIGN_TOP_LEFT, TITLE_LEFT, HEADER_MID_Y - lv_font_get_line_height(font) / 2);
+}
+
 lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *text) {
 	lv_obj_t *label = lv_label_create(screen);
 	lv_label_set_text(label, tr(text));
 	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_32, 0);
+	lv_obj_set_style_text_font(label, &font_ui_34_bold, 0);
 	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 
-	// Beside the back button, not above it: the two read as one header row.
-	int left = cfg->padding + CORNER_BTN_SIZE + 14;
-	lv_obj_set_width(label, cfg->screen_width - left - cfg->padding - CORNER_BTN_SIZE - 14);
+	// Beside the back target, not above it: the two read as one header row.
+	// One header button is reserved by default; a page with another number
+	// says so (settingsrow_title_corner_slots).
+	int width = title_width(cfg, 1);
+	lv_obj_set_width(label, width);
 	// Always one line. LV_LABEL_LONG_DOT wraps first and puts the ellipsis at
 	// the end of the last line that fits, so a long album name would grow the
 	// header to two lines; pinning the height to one line makes it truncate
 	// instead.
-	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_32));
-	fit_title(label, cfg->screen_width - left - cfg->padding - CORNER_BTN_SIZE - 14);
-	lv_obj_align(label, LV_ALIGN_TOP_LEFT, left, cfg->top_bar_height + cfg->padding + 10);
+	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_34_bold));
+	fit_title(label, width);
 
 	if (title_count == 0) {
 		fonts_register_change(refit_titles);
@@ -112,7 +129,8 @@ lv_obj_t *settingsrow_title(lv_obj_t *screen, gui_config_t *cfg, const char *tex
 }
 
 int settingsrow_content_top(gui_config_t *cfg) {
-	return cfg->top_bar_height + cfg->padding + CORNER_BTN_SIZE + cfg->padding;
+	(void)cfg;
+	return SX_BODY_TOP;
 }
 
 // Every page built by settingsrow_page() reopens scrolled to the top; a long
@@ -168,10 +186,10 @@ lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *titl
 // words fit; only a name too long even at the smallest step (an album title out
 // of a tag, say) still gets the ellipsis.
 static void fit_title(lv_obj_t *label, int width) {
-	// Down to 24, because headings such as "Opzioni di visualizzazione" do not
-	// fit at 26 either, and an ellipsis in a page title tells the reader
-	// nothing.
-	static lv_font_t *const STEPS[] = {&font_ui_32, &font_ui_28, &font_ui_26, &font_ui_24};
+	// 2.0: 34 bold, 30 bold for a title of more than 12 letters; past that it
+	// steps down further rather than ending in an ellipsis -- headings such as
+	// "Opzioni di visualizzazione" do not fit at 30 either.
+	static lv_font_t *const STEPS[] = {&font_ui_34_bold, &font_ui_30_bold, &font_ui_28_bold, &font_ui_26_bold};
 
 	// The text must be sized with the ellipsis out of the way: a
 	// LV_LABEL_LONG_DOT label does not keep the original string, so once LVGL
@@ -187,7 +205,12 @@ static void fit_title(lv_obj_t *label, int width) {
 		return;
 	}
 
-	for (size_t i = 0; i < sizeof(STEPS) / sizeof(STEPS[0]); i++) {
+	size_t letters = 0;
+	for (const unsigned char *c = (const unsigned char *)text; *c; c++) {
+		letters += (*c & 0xC0) != 0x80; // UTF-8: count the first byte of each
+	}
+	size_t first = letters > SX_TITLE_LONG_CHARS ? 1 : 0;
+	for (size_t i = first; i < sizeof(STEPS) / sizeof(STEPS[0]); i++) {
 		lv_point_t size;
 		lv_text_get_size(&size, text, STEPS[i], 0, 0, LV_COORD_MAX, LV_TEXT_FLAG_NONE);
 		if (size.x <= width || i + 1 == sizeof(STEPS) / sizeof(STEPS[0])) {
@@ -196,6 +219,7 @@ static void fit_title(lv_obj_t *label, int width) {
 			break;
 		}
 	}
+	title_place(label);
 }
 
 // The same treatment as fit_title(), for a row name.
@@ -274,12 +298,10 @@ void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int butt
 	if (!title || buttons < 0) {
 		return;
 	}
-	int left = cfg->padding + CORNER_BTN_SIZE + 14;
 	// Zero is a real answer and not "leave it alone": a page with no corner
 	// buttons gets the whole width, which is the difference between a heading
 	// that reads and one that ends in an ellipsis.
-	int reserved = buttons > 0 ? buttons * CORNER_BTN_SIZE + (buttons - 1) * CORNER_SLOT_GAP : 0;
-	int width = cfg->screen_width - left - cfg->padding - reserved - 14;
+	int width = title_width(cfg, buttons);
 	lv_obj_set_width(title, width);
 	fit_title(title, width);
 }
@@ -305,11 +327,10 @@ static lv_obj_t *make_card(lv_obj_t *parent, const char *name, lv_obj_t **value_
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, height);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, ROW_RADIUS, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_hor(card, 20, 0);
-	lv_obj_set_style_pad_ver(card, 14, 0);
+	// The 2.0 card (sx_card.h), the pressed fill aside: these cards are not
+	// buttons, their switch or slider is.
+	sx_card_style(card);
+	lv_obj_remove_style(card, &sx_style_press, LV_STATE_PRESSED);
 	lv_obj_set_scrollable(card, false);
 	// As on the plain rows, presses on the card body reach the page container
 	// so the swipe-back drag can start on a toggle or slider card too; the
@@ -325,7 +346,7 @@ static lv_obj_t *make_card(lv_obj_t *parent, const char *name, lv_obj_t **value_
 	if (value_out) {
 		*value_out = lv_label_create(card);
 		lv_obj_add_style(*value_out, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(*value_out, &font_ui_24, 0);
+		lv_obj_set_style_text_font(*value_out, &font_ui_22, 0);
 		lv_obj_align(*value_out, LV_ALIGN_TOP_RIGHT, 0, 0);
 	}
 
@@ -467,7 +488,7 @@ static void switch_tap_cb(lv_event_t *e) {
 
 lv_obj_t *settingsrow_switch(lv_obj_t *parent, lv_event_cb_t cb) {
 	lv_obj_t *sw = lv_switch_create(parent);
-	lv_obj_set_size(sw, 68, 36);
+	lv_obj_set_size(sw, SX_SWITCH_W, SX_SWITCH_H);
 	// Not checkable: the state changes in switch_tap_cb instead of on RELEASED.
 	lv_obj_set_checkable(sw, false);
 	lv_obj_set_ext_click_area(sw, SWITCH_TOUCH_MARGIN);
@@ -476,6 +497,8 @@ lv_obj_t *settingsrow_switch(lv_obj_t *parent, lv_event_cb_t cb) {
 	// white after a switch to the dark theme.
 	lv_obj_add_style(sw, &theme_style_switch, LV_PART_MAIN);
 	lv_obj_add_style(sw, &theme_style_switch_checked, LV_PART_INDICATOR | LV_STATE_CHECKED);
+	// The 2.0 switch: 28 px white knob, the accent when on (sx_card.h).
+	sx_switch_style(sw);
 	lv_obj_add_event_cb(sw, switch_tap_cb, LV_EVENT_CLICKED, sw);
 	if (cb) {
 		lv_obj_add_event_cb(sw, cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -698,9 +721,8 @@ lv_obj_t *settingsrow_add(lv_obj_t *parent, const char *name, lv_obj_t **value_o
 	lv_obj_set_height(row, ROW_HEIGHT);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 20, 0);
+	// The 2.0 card: one line of 60 px between 12 px margins (sx_card.h).
+	sx_card_style(row);
 	// Presses bubble up to the page container, so the swipe-back drag can start
 	// on a row and not only in the gaps between rows.
 	lv_obj_set_event_bubble(row, true);
@@ -729,7 +751,7 @@ lv_obj_t *settingsrow_add(lv_obj_t *parent, const char *name, lv_obj_t **value_o
 	if (value_out) {
 		*value_out = lv_label_create(row);
 		lv_obj_add_style(*value_out, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(*value_out, &font_ui_24, 0);
+		lv_obj_set_style_text_font(*value_out, &font_ui_22, 0);
 		lv_obj_align(*value_out, LV_ALIGN_RIGHT_MID, 0, 0);
 		lv_obj_add_event_cb(*value_out, row_value_resized_cb, LV_EVENT_SIZE_CHANGED, row);
 	} else {
@@ -798,11 +820,13 @@ lv_obj_t *settingsrow_toggle_pills(lv_obj_t *parent, const char *title, lv_event
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 18, 0);
+	sx_card_style(card);
+	lv_obj_remove_style(card, &sx_style_press, LV_STATE_PRESSED);
+	// The name sits in the middle of the card's 60 px head line, the pills
+	// 10 px under that line (the prototype's card()).
+	lv_obj_set_style_pad_top(card, SX_CARD_PAD_V + 14, 0);
+	lv_obj_set_style_pad_bottom(card, SX_CARD_PAD_V + 2, 0);
+	lv_obj_set_style_pad_row(card, 10 + 14, 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -855,11 +879,13 @@ lv_obj_t *settingsrow_pills(lv_obj_t *parent, const char *title, lv_obj_t **pill
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 18, 0);
+	sx_card_style(card);
+	lv_obj_remove_style(card, &sx_style_press, LV_STATE_PRESSED);
+	// The name sits in the middle of the card's 60 px head line, the pills
+	// 10 px under that line (the prototype's card()).
+	lv_obj_set_style_pad_top(card, SX_CARD_PAD_V + 14, 0);
+	lv_obj_set_style_pad_bottom(card, SX_CARD_PAD_V + 2, 0);
+	lv_obj_set_style_pad_row(card, 10 + 14, 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -887,15 +913,12 @@ lv_obj_t *settingsrow_pills(lv_obj_t *parent, const char *title, lv_obj_t **pill
 
 static lv_obj_t *pill_make(lv_obj_t *parent, const char *label_text, int value, lv_event_cb_t cb) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-	lv_obj_set_style_pad_hor(btn, 26, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
+	lv_obj_set_width(btn, LV_SIZE_CONTENT);
+	// The 2.0 pill (sx_card.h): 52 px, round, neutral until chosen. Half the
+	// gap each way answers a tap: the gaps between pills belong to the pill
+	// beside them, and no two areas overlap.
+	sx_pill_style(btn);
 	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)(intptr_t)value);
-	// Half the gap each way: the gaps between pills answer the pill beside
-	// them instead of nothing, and no two areas overlap.
-	lv_obj_set_ext_click_area(btn, PILL_GAP / 2);
 
 	lv_obj_t *label = lv_label_create(btn);
 	lv_label_set_text(label, label_text);
@@ -913,13 +936,10 @@ lv_obj_t *settingsrow_pill_text(lv_obj_t *parent, const char *text, int value, l
 	return pill_make(parent, text, value, cb);
 }
 
-void settingsrow_pill_active(lv_obj_t *pill, bool active) {
-	if (!pill) {
-		return;
-	}
-	lv_obj_set_style_bg_color(pill, active ? theme()->accent : theme()->surface_pressed, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(pill, 0), active ? theme()->on_accent : theme()->text_primary, 0);
-}
+// Shared styles since 2.0 (sx_pill_set_active): the colours follow every later
+// change of theme, accent or hue by themselves, and calling this again after
+// one is harmless.
+void settingsrow_pill_active(lv_obj_t *pill, bool active) { sx_pill_set_active(pill, active); }
 
 // ---------------------------------------------------------------------------
 // The duration wheels

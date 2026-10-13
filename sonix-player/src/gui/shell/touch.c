@@ -7,6 +7,8 @@
 #include "lvgl/src/core/lv_obj_event_private.h"
 #include "lvgl/src/misc/lv_area_private.h"
 
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/core/config.h"
 
 // The header row's buttons: 56 px glyph buttons, 6 px apart, their top edge a
@@ -15,7 +17,6 @@
 #define HEADER_GAP 6
 // Above and below them: the status bar ends 15 px over the row and the page's
 // content starts 15 px under it, so 8 px each way stays clear of both.
-#define HEADER_REACH 8
 
 static int8_t page_padding;
 static int8_t top_bar_height;
@@ -96,6 +97,25 @@ void touch_grow(lv_obj_t *obj, int w, int h, int limit) {
 	}
 }
 
+// The 2.0 header row (sx_tokens.h): its buttons are SX_HEADER_BTN round
+// targets, flush with the right edge and with each other, centred in the 76 px
+// header under the status bar. Every page still builds them as it always did
+// -- 56 px, 6 px apart, inside the page margin -- and they are moved into the
+// 2.0 places here, slot by slot from the right, on the page's first showing.
+static void header_button_to_2_0(lv_obj_t *btn) {
+	int32_t x = lv_obj_get_style_x(btn, LV_PART_MAIN);
+	int slot = (int)((-x - page_padding + (HEADER_BUTTON + HEADER_GAP) / 2) / (HEADER_BUTTON + HEADER_GAP));
+	if (slot < 0) {
+		slot = 0;
+	}
+	lv_obj_set_size(btn, SX_HEADER_BTN, SX_HEADER_BTN);
+	lv_obj_align(btn, LV_ALIGN_TOP_RIGHT, -slot * SX_HEADER_BTN, SX_STATUSBAR_H + (SX_HEADER_H - SX_HEADER_BTN) / 2);
+	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
+	lv_obj_add_style(btn, &sx_style_press, LV_STATE_PRESSED);
+	// Already a fingertip: only the couple of pixels to the header's edges.
+	touch_pad(btn, 0, 0, 2, 2);
+}
+
 void touch_header(lv_obj_t *screen) {
 	if (!screen) {
 		return;
@@ -118,10 +138,7 @@ void touch_header(lv_obj_t *screen) {
 			lv_obj_get_style_align(child, LV_PART_MAIN) != LV_ALIGN_TOP_RIGHT) {
 			continue;
 		}
-		// The button against the right margin reaches the edge of the screen;
-		// the others meet their neighbours half way across the gap.
-		bool outermost = lv_obj_get_style_x(child, LV_PART_MAIN) == -page_padding;
-		touch_pad(child, HEADER_GAP / 2, outermost ? page_padding : HEADER_GAP / 2, HEADER_REACH, HEADER_REACH);
+		header_button_to_2_0(child);
 	}
 }
 
