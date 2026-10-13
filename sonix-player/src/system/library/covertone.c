@@ -175,6 +175,12 @@ static bool worker_started;
 static int64_t fill_after;
 static int fill_phase; // 0: stale tones, 1: missing thumbnails
 static int fill_sweep_made;
+// Walks of the stale albums that made something, in a row. Each makes its
+// albums current, so the next finds nothing; one that keeps finding the same
+// ones means a row the query will never call current, and the walk stops
+// rather than decoding them for ever.
+static int fill_sweeps;
+#define FILL_SWEEPS_MAX 3
 
 // Pausing.
 static int pause_count;
@@ -986,6 +992,7 @@ static void wake_worker(void) {
 	fill_after = 0;
 	fill_phase = 0;
 	fill_sweep_made = 0;
+	fill_sweeps = 0;
 	pthread_cond_signal(&wakeup);
 	pthread_mutex_unlock(&state_lock);
 }
@@ -1574,9 +1581,14 @@ static void run_fill(stats_t *stats) {
 		// nothing at all means every album has its colour.
 		if (phase == 0) {
 			complete = fill_sweep_made == 0;
-			if (!complete) {
+			if (!complete && ++fill_sweeps < FILL_SWEEPS_MAX) {
 				fill_after = 0; // once more from the top: the rows just made are not stale
 			} else {
+				if (!complete) {
+					fprintf(stderr, "covertone: some albums stay stale after %d walks; left for the next scan\n",
+							fill_sweeps);
+				}
+				fill_sweeps = 0;
 				fill_phase = 1;
 				fill_after = 0;
 			}
@@ -1730,6 +1742,7 @@ void covertone_attach(const char *db_path) {
 	fill_after = 0;
 	fill_phase = 0;
 	fill_sweep_made = 0;
+	fill_sweeps = 0;
 	bool start = !worker_started;
 	worker_started = true;
 	pthread_cond_signal(&wakeup);
@@ -1788,6 +1801,7 @@ void covertone_library_changed(void) {
 		fill_after = 0;
 		fill_phase = 0;
 		fill_sweep_made = 0;
+		fill_sweeps = 0;
 		memset(memo, 0, sizeof(memo));
 		pthread_cond_signal(&wakeup);
 	}

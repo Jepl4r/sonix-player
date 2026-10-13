@@ -1749,10 +1749,10 @@ int library_covers_albums(library_covers_select_t which, int version, int64_t af
 		// No row, a row from another analysis or another first track, or
 		// one a scan left for the worker.
 		only = " AND (c.id IS NULL OR c.version <> ?3 OR c.kind = 4 OR c.track <> f.path"
-			   " OR c.track_mtime IS NOT f.mtime)";
+			   " OR c.track_mtime IS NOT IFNULL(f.mtime, 0))";
 	} else if (which == LIBRARY_COVERS_THUMBS) {
 		only = " AND c.id IS NOT NULL AND c.kind IN (1, 2) AND c.version = ?3 AND c.track = f.path"
-			   " AND c.track_mtime IS f.mtime AND (IFNULL(c.thumbs, 0) & 3) <> 3";
+			   " AND c.track_mtime IS IFNULL(f.mtime, 0) AND (IFNULL(c.thumbs, 0) & 3) <> 3";
 	}
 	snprintf(sql, sizeof(sql),
 			 COVER_ALBUM_COLUMNS " WHERE g.rowid > ?1 AND g.album <> ''%s%s ORDER BY g.rowid LIMIT ?2", only,
