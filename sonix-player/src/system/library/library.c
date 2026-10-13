@@ -5429,6 +5429,52 @@ static bool scan_folder_chosen(const char *name) {
 	return false;
 }
 
+// The audiobook folder as it stood when this walk began (audiobookdb.h), and
+// how many folders deep it sits (0 for one at the root of the card). The
+// audiobooks have an index of their own, so the music walk passes over that
+// folder wherever the user put it. A copy taken at launch, so that one walk
+// keeps to one answer; changing the setting starts a new scan anyway.
+static char audiobook_folder[AUDIOBOOKDB_FOLDER_MAX];
+static int audiobook_folder_depth;
+
+static void audiobook_folder_load(void) {
+	audiobookdb_folder(audiobook_folder, sizeof(audiobook_folder));
+	audiobook_folder_depth = 0;
+	for (const char *c = audiobook_folder; *c; c++) {
+		audiobook_folder_depth += *c == '/';
+	}
+}
+
+// Whether the subfolder `name` of `path`, met by a walk at `depth`, is one the
+// music leaves alone: the audiobook folder, or the downloaded podcasts at the
+// root of the card (podcastdl.h), which have a page of their own. Only a
+// folder at the audiobook folder's own depth costs a comparison; the rest of
+// the card is answered by one integer test.
+static bool walk_skips_folder(const char *path, const char *name, int depth) {
+	if (depth == 0 && strcasecmp(name, PODCASTDL_FOLDER) == 0) {
+		return true;
+	}
+	if (depth != audiobook_folder_depth || !audiobook_folder[0]) {
+		return false;
+	}
+	if (depth == 0) {
+		return strcasecmp(name, audiobook_folder) == 0;
+	}
+	size_t root_len = strlen(scan_root);
+	if (strncmp(path, scan_root, root_len) != 0) {
+		return false;
+	}
+	const char *rel = path + root_len;
+	while (*rel == '/') {
+		rel++;
+	}
+	char child[512];
+	if (snprintf(child, sizeof(child), "%s/%s", rel, name) >= (int)sizeof(child)) {
+		return false;
+	}
+	return audiobookdb_folder_matches(audiobook_folder, child);
+}
+
 // Whether a directory entry is a subfolder the walk goes into, by the same
 // rules as in scan_directory() -- or, with `by_type`, as in update_folder(),
 // which believes the entry's d_type and asks the card only when it has none.
@@ -5449,7 +5495,7 @@ static bool walked_subdir(const char *path, const struct dirent *de, int depth, 
 	if (!is_dir) {
 		return false;
 	}
-	if (depth == 0 && (strcasecmp(name, AUDIOBOOKDB_FOLDER) == 0 || strcasecmp(name, PODCASTDL_FOLDER) == 0)) {
+	if (walk_skips_folder(path, name, depth)) {
 		return false;
 	}
 	return !(depth == 0 && scan_folder_count > 0 && !scan_folder_chosen(name));
@@ -5542,8 +5588,7 @@ static void scan_directory(const char *path, int depth) {
 			folder_sig_add(&sig, de->d_name, true);
 			// The audiobooks have an index of their own (audiobookdb.h), and the
 			// downloaded podcasts a page of their own (podcastdl.h).
-			if (depth == 0 && (strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 ||
-							   strcasecmp(de->d_name, PODCASTDL_FOLDER) == 0)) {
+			if (walk_skips_folder(path, de->d_name, depth)) {
 				continue;
 			}
 			if (depth == 0 && scan_folder_count > 0 && !scan_folder_chosen(de->d_name)) {
@@ -6209,8 +6254,7 @@ static void update_folder(const char *path, int depth, walk_t *w) {
 			if (dirs_listed && !namelist_add(&dirs, de->d_name)) {
 				dirs_listed = false;
 			}
-			if (depth == 0 && (strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 ||
-							   strcasecmp(de->d_name, PODCASTDL_FOLDER) == 0)) {
+			if (walk_skips_folder(path, de->d_name, depth)) {
 				continue;
 			}
 			if (depth == 0 && scan_folder_count > 0 && !scan_folder_chosen(de->d_name)) {
@@ -7154,6 +7198,7 @@ static bool scan_launch(const char *root, scan_mode_t mode) {
 		snprintf(scan_root, sizeof(scan_root), "%s", root);
 	}
 	scan_folders_load();
+	audiobook_folder_load();
 	rules_load(&rules);
 	scan_mode = mode;
 	scan_id_base = 0;

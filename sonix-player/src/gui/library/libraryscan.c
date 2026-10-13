@@ -170,17 +170,22 @@ static bool pick_add(const char *name) {
 }
 
 // The folders at the root of the card, alphabetically: not the hidden ones,
-// not the ones a desktop leaves behind, and not Audiobooks or Podcast, which
-// the music scan never reads.
+// not the ones a desktop leaves behind, and not the audiobook folder or
+// Podcast, which the music scan never reads. An audiobook folder deeper down
+// ("Books/Audio") leaves its parent on the list: the parent may hold music too,
+// and the scan passes over the audiobooks inside it by itself.
 static void pick_read_folders(void) {
 	pick_clear();
 	DIR *dir = sd_root ? opendir(sd_root) : NULL;
 	if (!dir) {
 		return;
 	}
+	char audiobooks[AUDIOBOOKDB_FOLDER_MAX];
+	audiobookdb_folder(audiobooks, sizeof(audiobooks));
 	struct dirent *de;
 	while ((de = readdir(dir)) != NULL) {
-		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name) || strcasecmp(de->d_name, AUDIOBOOKDB_FOLDER) == 0 || strcasecmp(de->d_name, PODCASTDL_FOLDER) == 0) {
+		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name) ||
+			audiobookdb_folder_matches(audiobooks, de->d_name) || strcasecmp(de->d_name, PODCASTDL_FOLDER) == 0) {
 			continue;
 		}
 		char path[768];
