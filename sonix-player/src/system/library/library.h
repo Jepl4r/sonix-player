@@ -43,7 +43,12 @@ int library_track_count(void);
 // with no index open.
 #define LIBRARY_INDEX_COMPILATIONS (1u << 0) // compilations without an album artist kept together
 #define LIBRARY_INDEX_DURATIONS (1u << 1)	  // track lengths
-#define LIBRARY_INDEX_FEATURES (LIBRARY_INDEX_COMPILATIONS | LIBRARY_INDEX_DURATIONS)
+// Every album's colour and thumbnails (covertone.h). Unlike the two above it
+// does not wait for a scan: the background job makes them on an index that
+// lacks them, and the bit is written when it has been through every album,
+// so the notice goes by itself. A scan is just the faster way.
+#define LIBRARY_INDEX_COVERS (1u << 2)
+#define LIBRARY_INDEX_FEATURES (LIBRARY_INDEX_COMPILATIONS | LIBRARY_INDEX_DURATIONS | LIBRARY_INDEX_COVERS)
 unsigned library_index_missing(void);
 
 // ---------------------------------------------------------------------------

@@ -316,6 +316,12 @@ static void show_tiles_or_panel(void) {
 // index_notice_seen, a bit each), so the card comes back only for something
 // a later firmware adds. Built the first time it has something to say; on an
 // index that is up to date it costs one comparison per visit.
+//
+// The albums' colours and thumbnails (UI 2.0) are on the list too, but they
+// do not wait for the scan: the background job makes them on an index that
+// lacks them, and when it has been through every album the bit is written and
+// the card has nothing more to say about them. The scan is only the quicker
+// way, done while the card is being read anyway.
 // ---------------------------------------------------------------------------
 
 static lv_obj_t *upgrade_card;
@@ -406,6 +412,7 @@ static void upgrade_show(bool tiles_shown) {
 	} FEATURES[] = {
 		{LIBRARY_INDEX_DURATIONS, "music_index_durations"},
 		{LIBRARY_INDEX_COMPILATIONS, "music_index_compilations"},
+		{LIBRARY_INDEX_COVERS, "music_index_covers"},
 	};
 	char text[512];
 	int used = snprintf(text, sizeof(text), "%s", tr("music_index_notice"));

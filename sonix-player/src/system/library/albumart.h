@@ -60,6 +60,12 @@ bool albumart_load_for_dir(const char *dirpath, albumart_t *out);
 bool albumart_load_candidate(const char *filepath, int index, albumart_t *out);
 bool albumart_load_dir_candidate(const char *dirpath, int index, albumart_t *out);
 
+// The cover file candidate 1 of `filepath` would read (cover.jpg, folder.png,
+// the track's own name ... in the track's folder), by path: what a caller that
+// keeps something made from the picture stats to know when it changed. False
+// when the folder has none.
+bool albumart_cover_file(const char *filepath, char *out, size_t out_size);
+
 // True when the card went away while a mapped picture was being read: the
 // bytes read since are zeros, and anything made from them is to be thrown
 // away. Asked after the picture has been used, before albumart_free().
