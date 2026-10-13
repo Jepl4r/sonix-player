@@ -1893,8 +1893,10 @@ static void read_sidecar_tags(const char *filepath, song_metadata_t *out) {
 		// show, or of the most recent episode, or none at all.
 		//
 		// Music on the card is unaffected: no .tags file is there -- except
-		// beside an AAC track saved from Yandex Music (yandexdl.h), whose MP4
-		// is not retagged and whose sidecar is the tags it should have.
+		// beside an AAC track saved from Yandex Music by 1.2.4, whose MP4 was
+		// not retagged and whose sidecar is the tags it should have. Since
+		// 1.2.5 the tags go inside the MP4 (yandexdl.h), and a sidecar is
+		// written only for one that could not be rewritten.
 		if (strcmp(key, "title") == 0) {
 			snprintf(out->title, sizeof(out->title), "%s", value);
 		} else if (strcmp(key, "artist") == 0) {

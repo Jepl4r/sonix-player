@@ -20,10 +20,13 @@
 // where there is FLAC. A track the cache already holds complete is copied
 // from there instead of downloaded again, unless the setting is Lossless and
 // the cached copy is not FLAC. Tags are written into the file: Vorbis
-// comments in a FLAC, an ID3v2.4 tag in an MP3. An MP4 (AAC) file keeps the
-// service's own and gets a "<file>.tags" sidecar, which the player's tag
-// reader -- and so the library -- applies over them (metadata.c); other
-// players will not see those.
+// comments in a FLAC, an ID3v2.4 tag in an MP3, iTunes-style atoms in an MP4
+// (AAC) -- its moov rewritten on the way past, the offsets after it moved
+// (see "MP4" in yandexdl.c). An MP4 that cannot be rewritten so is kept as it
+// came with a "<file>.tags" sidecar instead, which the player's tag reader --
+// and so the library -- applies over its own (metadata.c); 1.2.4 wrote one
+// for every MP4, and those are still read. Every saved track goes into the
+// index of saved tracks (yandexsaved.h), which the Yandex pages play from.
 //
 // One file at a time, on a thread of its own at low priority, started on the
 // first request: nothing runs, and nothing is allocated, until something is
@@ -56,6 +59,7 @@ bool yandexdl_busy(void);
 
 typedef enum {
 	YANDEXDL_QUEUED,   // `count` more to save
+	YANDEXDL_SAVED,	   // one track is on the card (or already was): `text` its id
 	YANDEXDL_FAILED,   // `text`: "<title>: <reason>"
 	YANDEXDL_FINISHED, // the queue emptied: `count` saved, `text` the folder
 	YANDEXDL_STOPPED,  // dropped (no card, signed out): `text` why

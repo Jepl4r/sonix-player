@@ -199,15 +199,15 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"result": result})
 
         if p.startswith("/artists/") and p.endswith("/direct-albums"):
-            return self.send_json({"result": {"albums": [{"id": 11, "title": "Mock Album", "year": 2024, "artists": [{"name": "Mock Artist"}]},
-                                                         {"id": 12, "title": "Second Album", "year": 2025, "artists": [{"name": "Mock Artist"}]}]}})
+            return self.send_json({"result": {"albums": [{"id": 11, "title": "Mock Album", "year": 2024, "trackCount": 2, "artists": [{"name": "Mock Artist"}]},
+                                                         {"id": 12, "title": "Second Album", "year": 2025, "trackCount": 3, "artists": [{"name": "Mock Artist"}]}]}})
         if p == "/search":
             text = q.get("text", "").lower()
             hits = [t for t in TRACKS.values() if text in t["title"].lower() or text in t["artists"][0]["name"].lower()]
             return self.send_json({"result": {
                 "tracks": {"results": hits},
-                "albums": {"results": [{"id": 11, "title": "Mock Album", "year": 2024, "artists": [{"name": "Mock Artist"}]},
-                                       {"id": 12, "title": "Second Album", "year": 2025, "artists": [{"name": "Mock Artist"}]}]},
+                "albums": {"results": [{"id": 11, "title": "Mock Album", "year": 2024, "trackCount": 2, "artists": [{"name": "Mock Artist"}]},
+                                       {"id": 12, "title": "Second Album", "year": 2025, "trackCount": 3, "artists": [{"name": "Mock Artist"}]}]},
                 "artists": {"results": [{"id": 7, "name": "Mock Artist"}]},
             }})
         if p == "/get-file-info":

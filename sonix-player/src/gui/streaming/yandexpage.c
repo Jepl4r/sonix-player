@@ -10,6 +10,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/shell/confirm.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/popover.h"
@@ -20,6 +21,8 @@
 #include "src/gui/shell/toast.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/growfile.h"
+#include "src/system/device/system.h"
+#include "src/system/library/library.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/provider.h"
@@ -27,6 +30,7 @@
 #include "src/system/streaming/yandex.h"
 #include "src/system/streaming/yandexcache.h"
 #include "src/system/streaming/yandexdl.h"
+#include "src/system/streaming/yandexsaved.h"
 #include "src/system/streaming/yandexsync.h"
 
 // See yandexpage.h. Deliberately smaller than the Tidal page: no artwork in
@@ -64,6 +68,11 @@ typedef enum {
 	JOB_FETCH,
 	JOB_FEEDBACK,
 	JOB_DISLIKE,
+	// Built on the GUI thread from the index of saved tracks, never sent to
+	// the worker: they must open with the network down, and the worker may be
+	// waiting out a request that will not be answered.
+	JOB_SAVED,
+	JOB_SAVED_ALBUM,
 } job_kind_t;
 
 typedef struct {
@@ -107,6 +116,12 @@ static yandex_login_t login;
 static time_t login_deadline;
 // list
 static lv_obj_t *list_title, *list_box, *list_spin, *wave_bar, *album_bar;
+// The album bar: what of the record is on the card, and Save or Delete.
+static lv_obj_t *album_state, *album_state_label, *album_btn_label, *album_tick;
+// Each row's "saved on the card" mark (NULL for a row that has none).
+static lv_obj_t *row_marks[MAX_ROWS];
+// What the list on screen is (JOB_LIKED, JOB_ALBUM, JOB_SAVED...).
+static job_kind_t list_kind;
 // The album a JOB_ALBUM list shows, for its "Save album" button.
 static char list_album_id[YANDEX_ID_MAX];
 static char list_album_title[YANDEX_TITLE_MAX];
@@ -451,15 +466,100 @@ static void run(job_kind_t kind, const char *a, const char *b, int n) {
 // playback
 // ---------------------------------------------------------------------------
 
+// The track behind a path: a cache file is named after it, a saved file is
+// looked up in the index.
+static void path_track_id(const char *path, char *id, size_t size) {
+	yandexcache_track_id(path, id, size);
+	if (!id[0]) {
+		yandexsaved_track_for_path(path, id, size, NULL, 0);
+	}
+}
+
 static int queue_index_of(const char *path) {
+	// The queue's own path first: a saved file whose entry has just been
+	// dropped (deleted on a computer) is still found.
+	for (int i = 0; path && path[0] && i < queued_count; i++) {
+		if (strcmp(queued_paths[i], path) == 0) {
+			return i;
+		}
+	}
 	char id[YANDEX_ID_MAX];
-	yandexcache_track_id(path, id, sizeof(id));
+	path_track_id(path, id, sizeof(id));
 	for (int i = 0; id[0] && i < queued_count; i++) {
 		if (strcmp(queued[i].id, id) == 0) {
 			return i;
 		}
 	}
 	return -1;
+}
+
+// ---------------------------------------------------------------------------
+// saved tracks in the queue
+//
+// A track saved to the card plays from there: no network, no second copy in
+// the cache. Each queue entry gets its path here -- the saved file when the
+// index has one that can be read, else the cache's (the real one when it is
+// complete, a guess at ".flac" until it is fetched). The saved files in the
+// queue are claimed (yandexsaved_claim), so that while this queue plays them
+// they are Yandex tracks to the rest of the player: the like goes to the
+// account, the badge shows. Claimed only while the queue is ours: the watch
+// below lets go as soon as something else is playing.
+// ---------------------------------------------------------------------------
+
+static bool claims_live;
+
+static uint32_t text_hash(const char *s) {
+	uint32_t h = 2166136261u;
+	for (; *s; s++) {
+		h = (h ^ (uint8_t)*s) * 16777619u;
+	}
+	return h;
+}
+
+static bool resolve_path(int index) {
+	char *path = queued_paths[index];
+	if (yandexsaved_local(queued[index].id, path, sizeof(queued_paths[0]))) {
+		return true;
+	}
+	if (!yandexcache_find(queued[index].id, path, sizeof(queued_paths[0]))) {
+		yandexcache_path(queued[index].id, "flac", path, sizeof(queued_paths[0]));
+	}
+	return false;
+}
+
+// Whether the queue playing is the one this page queued. Something else
+// playing -- the Library, another service -- means the saved files go back to
+// being the library's. Ours when it holds the very paths this page queued:
+// the Library playing the same album shares files with it, so one entry is
+// not enough; in any order, for shuffle deals its own -- the sums of the
+// paths' hashes are compared. A few hundred short hashes.
+static bool queue_is_ours(void) {
+	int count = playlist_count();
+	if (playlist_is_library_backed() || count != queued_count) {
+		return false;
+	}
+	uint32_t theirs = 0, mine = 0;
+	char path[512];
+	for (int i = 0; i < count; i++) {
+		if (!playlist_path_at(i, path, sizeof(path))) {
+			return false;
+		}
+		theirs += text_hash(path);
+		mine += text_hash(queued_paths[i]);
+	}
+	return theirs == mine;
+}
+
+static void claim_saved(void) {
+	static const char *saved[MAX_ROWS];
+	int n = 0;
+	for (int i = 0; i < queued_count && n < MAX_ROWS; i++) {
+		if (!yandexcache_owns(queued_paths[i])) {
+			saved[n++] = queued_paths[i];
+		}
+	}
+	yandexsaved_claim(saved, n);
+	claims_live = n > 0;
 }
 
 // True while the worker has a track to ask for, or is asking: pending, or
@@ -483,6 +583,9 @@ static bool worker_fetching(void) {
 static void fetch_ahead(int index) {
 	if (index < 0 || index >= queued_count || yandexcache_busy() || worker_fetching()) {
 		return;
+	}
+	if (!yandexcache_owns(queued_paths[index])) {
+		return; // saved on the card: nothing to fetch
 	}
 	if (yandexcache_find(queued[index].id, NULL, 0)) {
 		return;
@@ -546,8 +649,43 @@ static void downloading_note_async(void *user) {
 	gui_notify_popup("downloading");
 }
 
+// A queue entry whose file is not what the queue thought: a saved file that
+// has gone (the track streams again), or a track saved since the queue was
+// made (it plays from the card instead of being fetched). The entry gets its
+// path anew and playback restarts there; for a track that must be fetched,
+// starting it lands in yandexpage_prepare_track again, which fetches it.
+static void requeue_async(void *user) {
+	char *path = user;
+	int index = queue_index_of(path);
+	free(path);
+	if (index < 0) {
+		return;
+	}
+	resolve_path(index);
+	claim_saved();
+	play_from(index);
+	player_refresh_now_playing();
+}
+
 bool yandexpage_prepare_track(const char *path) {
 	if (!yandexcache_owns(path)) {
+		// A saved file starting from another queue (the Library's album) is
+		// the library's from its first frame: the claim goes before the
+		// player draws the badge and the star. The watch tidies up after.
+		if (yandexsaved_claimed(path) && !queue_is_ours()) {
+			yandexsaved_claim(NULL, 0);
+			return true;
+		}
+		// One of the queue's saved files, gone since: the track streams.
+		if (yandexsaved_claimed(path) && access(path, R_OK) != 0) {
+			char *copy = strdup(path);
+			if (copy) {
+				yandexcache_set_network_wanted(true);
+				device_state_stop();
+				gui_post(requeue_async, copy);
+				return false;
+			}
+		}
 		return true;
 	}
 	// Downloaded (an MP4 only appears under its name once complete), or
@@ -558,6 +696,15 @@ bool yandexpage_prepare_track(const char *path) {
 	int index = queue_index_of(path);
 	if (index < 0) {
 		return true; // not ours to fetch: let the decoder say what it thinks
+	}
+	// Saved on the card since the queue was made: played from there.
+	if (yandexsaved_local(queued[index].id, NULL, 0)) {
+		char *copy = strdup(path);
+		if (copy) {
+			device_state_stop();
+			gui_post(requeue_async, copy);
+			return false;
+		}
 	}
 	// The network is needed now, before the stop: see
 	// yandexcache_network_wanted().
@@ -617,6 +764,13 @@ static void queue_watch_cb(lv_timer_t *timer) {
 	int count = playlist_count();
 	int current = playlist_current_index();
 
+	// Something else plays now: the saved files go back to the library (see
+	// queue_is_ours). Only while a saved file is claimed.
+	if (claims_live && !queue_is_ours()) {
+		yandexsaved_claim(NULL, 0);
+		claims_live = false;
+	}
+
 	static char keep[YANDEXCACHE_PROTECTED_MAX][512];
 	static const char *keep_ptr[YANDEXCACHE_PROTECTED_MAX];
 	int protect = 0;
@@ -640,7 +794,7 @@ static void queue_watch_cb(lv_timer_t *timer) {
 		return;
 	}
 	char id[YANDEX_ID_MAX];
-	yandexcache_track_id(state.current_file, id, sizeof(id));
+	path_track_id(state.current_file, id, sizeof(id));
 	if (id[0] && strcmp(id, wave_current) != 0) {
 		wave_track_changed(id, index);
 	}
@@ -729,6 +883,20 @@ static void make_row(int index) {
 	lv_obj_add_style(sub, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(sub, &font_ui_18, 0);
 
+	// The mark: a small tick for a track on the card, or an album all of
+	// whose tracks are. Hidden until refresh_marks() says otherwise, so a
+	// save finishing while the list is open needs no new rows.
+	row_marks[index] = NULL;
+	if (rows[index].kind == ROW_TRACK || rows[index].kind == ROW_ALBUM) {
+		lv_obj_t *mark = lv_image_create(row);
+		lv_image_set_src(mark, &icon_check_small);
+		lv_obj_add_style(mark, &theme_style_icon, 0);
+		lv_obj_set_style_image_recolor(mark, theme()->accent, 0);
+		lv_obj_set_style_image_recolor_opa(mark, LV_OPA_COVER, 0);
+		lv_obj_set_hidden(mark, true);
+		row_marks[index] = mark;
+	}
+
 	if (row_has_menu(&rows[index])) {
 		lv_obj_t *menu_btn = lv_btn_create(row);
 		lv_obj_set_size(menu_btn, 48, 48);
@@ -746,11 +914,83 @@ static void make_row(int index) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// what is on the card: the marks and the album bar
+// ---------------------------------------------------------------------------
+
+// A track is saved when the index has it; an album when the index holds as
+// many of its tracks as the service says it has (an album row that does not
+// say is not marked: a part saved must not look like the whole). In the Saved
+// list the album rows count only what is saved, so they are always marked
+// there -- they are on the card.
+static bool row_saved(const row_t *r) {
+	if (r->kind == ROW_TRACK) {
+		return yandexsaved_has(r->u.track.id);
+	}
+	if (r->kind == ROW_ALBUM && r->u.album.id[0] && r->u.album.track_count > 0) {
+		return yandexsaved_album_count(r->u.album.id) >= r->u.album.track_count;
+	}
+	return false;
+}
+
+// The ticks are the accent colour, set by hand on an image: a new accent
+// reaches them through the theme's refresh.
+static void marks_recolor(void) {
+	lv_color_t accent = theme()->accent;
+	if (album_tick) {
+		lv_obj_set_style_image_recolor(album_tick, accent, 0);
+	}
+	for (int i = 0; i < row_count && i < MAX_ROWS; i++) {
+		if (row_marks[i]) {
+			lv_obj_set_style_image_recolor(row_marks[i], accent, 0);
+		}
+	}
+}
+
+static void refresh_marks(void) {
+	for (int i = 0; i < row_count && i < MAX_ROWS; i++) {
+		if (row_marks[i]) {
+			lv_obj_set_hidden(row_marks[i], !row_saved(&rows[i]));
+		}
+	}
+}
+
+// The album page's own tracks are the measure: how many of the playable ones
+// are on the card.
+static void album_saved_counts(int *saved, int *playable) {
+	*saved = *playable = 0;
+	for (int i = 0; i < row_count; i++) {
+		if (rows[i].kind == ROW_TRACK && rows[i].u.track.available) {
+			(*playable)++;
+			*saved += yandexsaved_has(rows[i].u.track.id);
+		}
+	}
+}
+
+static void update_album_bar(void) {
+	if (lv_obj_is_hidden(album_bar)) {
+		return;
+	}
+	int saved, playable;
+	album_saved_counts(&saved, &playable);
+	bool complete = playable > 0 && saved == playable;
+	lv_obj_set_hidden(album_state, saved == 0);
+	if (complete) {
+		lv_label_set_text(album_state_label, tr("yandex_saved_on_card"));
+	} else if (saved > 0) {
+		lv_label_set_text_fmt(album_state_label, tr("yandex_saved_some"), saved, playable);
+	}
+	lv_label_set_text(album_btn_label, tr(complete ? "delete" : "yandex_save_album"));
+}
+
 static void fill_list(void) {
+	memset(row_marks, 0, sizeof(row_marks));
 	lv_obj_clean(list_box);
 	for (int i = 0; i < row_count; i++) {
 		make_row(i);
 	}
+	refresh_marks();
+	update_album_bar();
 	if (row_count == 0) {
 		lv_obj_t *empty = lv_label_create(list_box);
 		lv_label_set_text(empty, shown && shown->error[0] ? shown->error : tr("yandex_empty"));
@@ -762,12 +1002,124 @@ static void fill_list(void) {
 	lv_obj_scroll_to_y(list_box, 0, LV_ANIM_OFF);
 }
 
+// ---------------------------------------------------------------------------
+// going back inside the list page
+//
+// Every Yandex list -- search results, an artist's albums, an album, a
+// playlist, the saved ones -- lives on ONE reused page, as on the Qobuz page.
+// The screen manager sees the same screen whichever list is up, so it has
+// nothing to stack: from an album opened off the search results, back used to
+// land on the search page, skipping the results (and, opened off an artist off
+// the results, skipping both). The page keeps its own history of the lists it
+// showed; the chevron and the swipe go through list_back_guard() first and
+// only leave the page once it is empty.
+//
+// My Wave is never stacked: going back to it would start a new session and
+// throw away what is playing. A list opened from outside the page (the home
+// rows, "Show album" from the player over another page) starts the history
+// afresh.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	job_kind_t kind;
+	char title[YANDEX_TITLE_MAX];
+	char a[YANDEX_TITLE_MAX];
+	char b[YANDEX_ID_MAX];
+} list_step_t;
+
+#define LIST_HISTORY_DEPTH 8
+static list_step_t list_history[LIST_HISTORY_DEPTH];
+static int list_history_len;
+static list_step_t list_current;
+static bool list_has_current;
+
+static void show_list(const list_step_t *step);
+
+static bool list_back_has_step(void) { return list_history_len > 0; }
+
+static bool list_back_guard(void) {
+	if (list_history_len == 0) {
+		list_has_current = false;
+		return false; // nothing underneath: leave the page
+	}
+	list_current = list_history[--list_history_len];
+	show_list(&list_current);
+	return true;
+}
+
 static void open_list(const char *title, job_kind_t kind, const char *a, const char *b) {
+	list_step_t step;
+	memset(&step, 0, sizeof(step));
+	step.kind = kind;
+	snprintf(step.title, sizeof(step.title), "%s", title ? title : "");
+	snprintf(step.a, sizeof(step.a), "%s", a ? a : "");
+	snprintf(step.b, sizeof(step.b), "%s", b ? b : "");
+	if (lv_screen_active() != list_screen) {
+		list_history_len = 0; // entering from outside: the history restarts
+	} else if (list_has_current && list_current.kind != JOB_WAVE && memcmp(&list_current, &step, sizeof(step)) != 0) {
+		if (list_history_len == LIST_HISTORY_DEPTH) {
+			memmove(list_history, list_history + 1, (LIST_HISTORY_DEPTH - 1) * sizeof(list_history[0]));
+			list_history_len--;
+		}
+		list_history[list_history_len++] = list_current;
+	}
+	list_current = step;
+	list_has_current = true;
+	show_list(&step);
+}
+
+// The rows of a list built from the index of saved tracks: the albums, then
+// tracks saved without one; or an album's tracks. A block like a worker's
+// answer, so job_done_async shows it the same way -- built here, on the GUI
+// thread, never in the worker's buffers.
+static job_result_t *saved_result(job_kind_t kind, const char *album_id) {
+	job_result_t *r = calloc(1, sizeof(*r) + MAX_ROWS * sizeof(row_t));
+	yandex_track_t *tracks = calloc(MAX_ROWS, sizeof(*tracks));
+	if (!r || !tracks) {
+		free(r);
+		free(tracks);
+		return NULL;
+	}
+	r->kind = kind;
+	r->generation = list_generation;
+	r->index = -1;
+	int count = 0;
+	if (kind == JOB_SAVED) {
+		yandex_album_t *albums = (yandex_album_t *)tracks; // smaller than a track
+		int n = yandexsaved_albums(albums, MAX_ROWS);
+		for (int i = 0; i < n; i++) {
+			r->rows[count].kind = ROW_ALBUM;
+			r->rows[count++].u.album = albums[i];
+		}
+		n = yandexsaved_tracks(NULL, tracks, MAX_ROWS - count);
+		for (int i = 0; i < n; i++) {
+			r->rows[count].kind = ROW_TRACK;
+			r->rows[count++].u.track = tracks[i];
+		}
+	} else {
+		int n = yandexsaved_tracks(album_id, tracks, MAX_ROWS);
+		for (int i = 0; i < n; i++) {
+			r->rows[count].kind = ROW_TRACK;
+			r->rows[count++].u.track = tracks[i];
+		}
+	}
+	free(tracks);
+	r->count = count;
+	if (count == 0) {
+		snprintf(r->error, sizeof(r->error), "%s", tr("yandex_saved_none"));
+	}
+	return r;
+}
+
+static void show_list(const list_step_t *step) {
+	job_kind_t kind = step->kind;
+	const char *title = step->title, *a = step->a, *b = step->b;
+	list_kind = kind;
 	lv_label_set_text(list_title, title);
 	list_is_wave = kind == JOB_WAVE;
-	bool is_album = kind == JOB_ALBUM && a && a[0];
+	bool is_album = (kind == JOB_ALBUM || kind == JOB_SAVED_ALBUM) && a[0];
 	if (is_album) {
-		snprintf(list_album_id, sizeof(list_album_id), "%s", a);
+		snprintf(list_album_id, sizeof(list_album_id), "%.*s", (int)sizeof(list_album_id) - 1, a); // an id: digits
 		snprintf(list_album_title, sizeof(list_album_title), "%s", title);
 	}
 	lv_obj_set_hidden(wave_bar, !list_is_wave);
@@ -778,11 +1130,19 @@ static void open_list(const char *title, job_kind_t kind, const char *a, const c
 	int y = top + (list_is_wave || is_album ? 66 : 0);
 	lv_obj_set_pos(list_box, list_cfg->padding, y);
 	lv_obj_set_height(list_box, list_cfg->screen_height - y - 4);
+	memset(row_marks, 0, sizeof(row_marks));
 	lv_obj_clean(list_box);
 	row_count = 0;
-	lv_obj_set_hidden(list_spin, false);
 	switch_screen(list_screen);
 	list_generation++;
+	if (kind == JOB_SAVED || kind == JOB_SAVED_ALBUM) {
+		job_result_t *r = saved_result(kind, a);
+		if (r) {
+			job_done_async(r);
+		}
+		return;
+	}
+	lv_obj_set_hidden(list_spin, false);
 	run(kind, a, b, 0);
 }
 
@@ -790,6 +1150,13 @@ static void open_list(const char *title, job_kind_t kind, const char *a, const c
 // for the rest are guesses (".flac") until they are fetched; the real name
 // replaces the guess when it arrives.
 static void play_rows(int tapped) {
+	// A list from the card may be the first thing played: the worker, which
+	// allocates the queue with its own buffers, may never have started.
+	ensure_buffers();
+	if (!queued || !queued_paths) {
+		toast_error(tr("out_of_memory"));
+		return;
+	}
 	queued_count = 0;
 	int start = 0;
 	for (int i = 0; i < row_count && queued_count < MAX_ROWS; i++) {
@@ -800,17 +1167,24 @@ static void play_rows(int tapped) {
 			start = queued_count;
 		}
 		queued[queued_count] = rows[i].u.track;
-		if (!yandexcache_find(queued[queued_count].id, queued_paths[queued_count], sizeof(queued_paths[0]))) {
-			yandexcache_path(queued[queued_count].id, "flac", queued_paths[queued_count], sizeof(queued_paths[0]));
-		}
+		resolve_path(queued_count);
 		queued_count++;
 	}
 	if (queued_count == 0) {
 		return;
 	}
+	claim_saved();
 	queue_is_wave = list_is_wave;
 	wave_current[0] = '\0';
 	wave_asked_more = false;
+	if (!yandexcache_owns(queued_paths[start])) {
+		// Saved on the card: it plays now, with or without a network.
+		play_from(start);
+		player_refresh_now_playing();
+		switch_screen(player_screen);
+		fetch_ahead(start + 1);
+		return;
+	}
 	lv_obj_set_hidden(list_spin, false);
 	yandexcache_set_network_wanted(true);
 	run(JOB_PLAY, NULL, NULL, start);
@@ -827,7 +1201,8 @@ static void row_clicked_cb(lv_event_t *e) {
 		play_rows(index);
 		break;
 	case ROW_ALBUM:
-		open_list(r->u.album.title, JOB_ALBUM, r->u.album.id, NULL);
+		// In the Saved list an album opens from the card, network or not.
+		open_list(r->u.album.title, list_kind == JOB_SAVED ? JOB_SAVED_ALBUM : JOB_ALBUM, r->u.album.id, NULL);
 		break;
 	case ROW_ARTIST:
 		open_list(r->u.artist.name, JOB_ARTIST, r->u.artist.id, NULL);
@@ -897,6 +1272,53 @@ static void do_row_save(void *user) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// deleting from the card
+//
+// Asked first: it removes files. The files, any 1.2.4 sidecar beside them, the
+// index entries and the folders left empty go (yandexsaved_delete); the
+// library then looks for what changed, as after a save.
+// ---------------------------------------------------------------------------
+
+static void library_look_after_delete(void) {
+	if (storage_sd_root() && storage_sd_root()[0]) {
+		library_card_returned(storage_sd_root());
+	}
+}
+
+// The lists that come from the index show what is left.
+static void after_delete(void) {
+	library_look_after_delete();
+	if (lv_screen_active() == list_screen && (list_kind == JOB_SAVED || list_kind == JOB_SAVED_ALBUM)) {
+		show_list(&list_current);
+	} else {
+		refresh_marks();
+		update_album_bar();
+	}
+}
+
+static void delete_confirmed(void *user) {
+	(void)user;
+	bool ok;
+	if (menu_row.kind == ROW_ALBUM) {
+		ok = yandexsaved_delete_album(menu_row.u.album.id) > 0 || yandexsaved_album_count(menu_row.u.album.id) == 0;
+	} else {
+		ok = yandexsaved_delete(menu_row.u.track.id);
+	}
+	if (ok) {
+		toast_success(tr("yandex_deleted_from_card"));
+	} else {
+		toast_error(tr("yandex_delete_failed"));
+	}
+	after_delete();
+}
+
+static void do_row_delete(void *user) {
+	(void)user;
+	const char *name = menu_row.kind == ROW_ALBUM ? menu_row.u.album.title : menu_row.u.track.title;
+	confirm_show(menu_row.kind == ROW_ALBUM ? "yandex_delete_album_question" : "yandex_delete_track_question", name, "delete", delete_confirmed, NULL);
+}
+
 static void row_menu_cb(lv_event_t *e) {
 	lv_event_stop_bubbling(e); // the tap belongs to the menu, not the row
 	if (switcher_back_drag_active() || player_sheet_drag_active()) {
@@ -907,9 +1329,13 @@ static void row_menu_cb(lv_event_t *e) {
 		return;
 	}
 	menu_row = rows[index];
-	popover_item_t items[2];
+	popover_item_t items[3];
 	memset(items, 0, sizeof(items));
 	int n = 0;
+	// On the card: the save is done, said with a tick, and the way to undo it
+	// is offered instead. Part of an album on the card: both.
+	bool saved = row_saved(&menu_row);
+	bool some = saved || (menu_row.kind == ROW_ALBUM && yandexsaved_album_count(menu_row.u.album.id) > 0);
 	if (menu_row.kind == ROW_TRACK) {
 		// Until the account's list has arrived nothing is known to be
 		// liked, and "Like" on a liked track is harmless: adding twice
@@ -919,14 +1345,28 @@ static void row_menu_cb(lv_event_t *e) {
 		items[n].action = do_row_like;
 		items[n].user = liked ? NULL : (void *)1;
 		n++;
-		if (menu_row.u.track.available) {
+		if (saved) {
+			items[n].label = "yandex_saved_on_card";
+			items[n].checked = true;
+			n++;
+		} else if (menu_row.u.track.available) {
 			items[n].label = "yandex_save";
 			items[n].action = do_row_save;
 			n++;
 		}
 	} else if (menu_row.kind == ROW_ALBUM) {
-		items[n].label = "yandex_save_album";
-		items[n].action = do_row_save;
+		if (saved) {
+			items[n].label = "yandex_saved_on_card";
+			items[n].checked = true;
+		} else {
+			items[n].label = "yandex_save_album";
+			items[n].action = do_row_save;
+		}
+		n++;
+	}
+	if (some) {
+		items[n].label = "yandex_delete_from_card";
+		items[n].action = do_row_delete;
 		n++;
 	}
 	if (n > 0) {
@@ -975,10 +1415,27 @@ static void album_save_cb(lv_event_t *e) {
 	if (switcher_back_drag_active()) {
 		return;
 	}
+	int saved, playable;
+	album_saved_counts(&saved, &playable);
+	if (playable > 0 && saved == playable) {
+		// All of it on the card already: the button is Delete.
+		memset(&menu_row, 0, sizeof(menu_row));
+		menu_row.kind = ROW_ALBUM;
+		snprintf(menu_row.u.album.id, sizeof(menu_row.u.album.id), "%s", list_album_id);
+		snprintf(menu_row.u.album.title, sizeof(menu_row.u.album.title), "%s", list_album_title);
+		do_row_delete(NULL);
+		return;
+	}
 	if (!list_album_id[0] || !yandexdl_album(list_album_id, list_album_title)) {
 		save_refused();
 	}
 }
+
+// A swipe back that starts on the page's bare margin and crosses into the
+// list was lost: a screen, having no parent, is the one object LVGL creates
+// without PRESS_LOCK, so the press passed to whatever the finger moved onto
+// and the screen heard "press lost". Locked, the margin keeps the press.
+static void hold_press(lv_obj_t *screen) { lv_obj_set_press_lock(screen, true); }
 
 static void build_list_page(gui_config_t *cfg) {
 	list_cfg = cfg;
@@ -1014,10 +1471,33 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_radius(save, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(save, 0, 0);
 	lv_obj_add_event_cb(save, album_save_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_t *save_label = lv_label_create(save);
-	lv_label_set_text(save_label, tr("yandex_save_album"));
-	lv_obj_set_style_text_font(save_label, &font_ui_20, 0);
-	lv_obj_center(save_label);
+	album_btn_label = lv_label_create(save);
+	lv_label_set_text(album_btn_label, tr("yandex_save_album"));
+	lv_obj_set_style_text_font(album_btn_label, &font_ui_20, 0);
+	lv_obj_center(album_btn_label);
+	// Left of the button: a tick and how much of the record is on the card.
+	album_state = lv_obj_create(album_bar);
+	lv_obj_move_to_index(album_state, 0);
+	lv_obj_set_size(album_state, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+	lv_obj_set_style_bg_opa(album_state, 0, 0);
+	lv_obj_set_style_border_width(album_state, 0, 0);
+	lv_obj_set_style_pad_all(album_state, 0, 0);
+	lv_obj_set_style_pad_column(album_state, 6, 0);
+	lv_obj_set_style_margin_right(album_state, 14, 0);
+	lv_obj_set_scrollable(album_state, false);
+	lv_obj_set_clickable(album_state, false);
+	lv_obj_set_flex_flow(album_state, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(album_state, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	album_tick = lv_image_create(album_state);
+	lv_image_set_src(album_tick, &icon_check_small);
+	lv_obj_add_style(album_tick, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor(album_tick, theme()->accent, 0);
+	lv_obj_set_style_image_recolor_opa(album_tick, LV_OPA_COVER, 0);
+	theme_register_refresh(marks_recolor);
+	album_state_label = lv_label_create(album_state);
+	lv_obj_add_style(album_state_label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(album_state_label, &font_ui_20, 0);
+	lv_obj_set_hidden(album_state, true);
 	lv_obj_set_hidden(album_bar, true);
 
 	list_box = lv_obj_create(list_screen);
@@ -1033,6 +1513,15 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_center(list_spin);
 	lv_obj_set_hidden(list_spin, true);
 	switcher_attach_back_gesture(list_screen);
+	hold_press(list_screen);
+	// The swipe back has to start somewhere: the list and the bars cover
+	// most of the page, and a press on them never reached the screen (the
+	// rows pass theirs up to the list).
+	switcher_attach_back_gesture(list_box);
+	switcher_attach_back_gesture(wave_bar);
+	switcher_attach_back_gesture(album_bar);
+	switcher_set_back_guard(list_screen, list_back_guard);
+	switcher_set_back_guard_peek(list_screen, list_back_has_step);
 }
 
 // ---------------------------------------------------------------------------
@@ -1206,10 +1695,11 @@ static void job_done_async(void *user) {
 		// playback nears them.
 		for (int i = 0; i < r->count && queued_count < MAX_ROWS; i++) {
 			queued[queued_count] = r->rows[i].u.track;
-			yandexcache_path(queued[queued_count].id, "flac", queued_paths[queued_count], sizeof(queued_paths[0]));
+			resolve_path(queued_count);
 			playlist_insert_at(queued_paths[queued_count], playlist_count());
 			queued_count++;
 		}
+		claim_saved();
 		device_state_queue_changed();
 		wave_asked_more = false;
 		free(r);
@@ -1253,6 +1743,13 @@ static void open_search_cb(lv_event_t *e) {
 	(void)e;
 	switch_screen(search_screen);
 }
+// What is saved on the card, from the index: opens with Wi-Fi off, and even
+// signed out -- the files are the user's.
+static void open_saved_cb(lv_event_t *e) {
+	(void)e;
+	open_list(tr("yandex_saved_on_card"), JOB_SAVED, NULL, NULL);
+}
+static lv_obj_t *saved_signed_out;
 static void logout_cb(lv_event_t *e) {
 	(void)e;
 	yandexdl_cancel_all(); // the account's files are not to be fetched any more
@@ -1349,6 +1846,11 @@ static void save_note_async(void *user) {
 			save_timer = lv_timer_create(save_timer_cb, 1000, NULL);
 		}
 		break;
+	case YANDEXDL_SAVED:
+		// The list on screen may show it: its tick, the album's bar.
+		refresh_marks();
+		update_album_bar();
+		break;
 	case YANDEXDL_FAILED:
 		toast_error(note->text);
 		break;
@@ -1383,6 +1885,9 @@ static void paint_home(void) {
 	bool in = yandex_logged_in();
 	lv_obj_set_hidden(home_signed_in, !in);
 	lv_obj_set_hidden(home_signed_out, in);
+	if (!in) {
+		lv_obj_set_hidden(saved_signed_out, yandexsaved_count() == 0);
+	}
 	lv_label_set_text(home_user, yandex_display_name());
 	quality_refresh();
 }
@@ -1434,6 +1939,7 @@ void yandexpage_init(gui_config_t *cfg) {
 	settingsrow_action(home_signed_in, "yandex_liked", open_liked_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_playlists", open_playlists_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_search", open_search_cb, NULL);
+	settingsrow_action(home_signed_in, "yandex_saved_on_card", open_saved_cb, NULL);
 	// What is being saved to the library, while something is: under the
 	// rows, where it is seen without scrolling.
 	save_status = lv_label_create(home_signed_in);
@@ -1461,9 +1967,14 @@ void yandexpage_init(gui_config_t *cfg) {
 
 	home_signed_out = column(yandex_screen, cfg, top);
 	settingsrow_action(home_signed_out, "yandex_sign_in", open_login_cb, NULL);
+	saved_signed_out = settingsrow_action(home_signed_out, "yandex_saved_on_card", open_saved_cb, NULL);
+	// As on the list page: the columns cover the page, the swipe starts there.
+	switcher_attach_back_gesture(home_signed_in);
+	switcher_attach_back_gesture(home_signed_out);
 
 	lv_obj_add_event_cb(yandex_screen, home_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(yandex_screen);
+	hold_press(yandex_screen);
 	paint_home();
 
 	build_login_page(cfg);
