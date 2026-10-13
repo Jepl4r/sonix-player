@@ -432,7 +432,9 @@ static int artist_lists = MEDIALIST_ARTIST_ALL;
 
 // "Alternative album view": an album's tracks open under a head with its cover,
 // title, artist, genre and year, and the rows carry track numbers instead of
-// covers. Off by default.
+// covers. On by default since 1.2.4 -- inside an album every row's cover is
+// the same picture, so the head says it once and the rows get the numbers
+// back. A player whose config says album_head = 0 keeps the old page.
 static bool album_head;
 
 // Both are read on first use rather than in medialist_init(): the music
@@ -450,7 +452,7 @@ static void load_view_settings(void) {
 	quality_badges = config_get_int("library", "quality_badges", 0) != 0;
 	show_artist = config_get_int("library", "show_artist", 1) != 0;
 	go_to_current = config_get_int("library", "go_to_current", 0) != 0;
-	album_head = config_get_int("library", "album_head", 0) != 0;
+	album_head = config_get_int("library", "album_head", 1) != 0;
 	allow_delete = config_get_int("library", "allow_delete", 0) != 0;
 	artist_lists = (int)config_get_int("library", "artist_lists", artist_lists);
 }
