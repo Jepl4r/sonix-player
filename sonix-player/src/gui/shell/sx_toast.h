@@ -17,7 +17,8 @@
 //
 // One instance on lv_layer_top(), built once; a new toast replaces the one up
 // (an undo not taken is simply dropped). A pull down of SX_TOAST_DISMISS_PX
-// puts it away early. It never blocks the page: a tap off it goes to the page.
+// puts it away early. It does not block the page -- a tap off it goes to the
+// page -- except the busy toast that may not be put away (sx_toast_busy).
 //
 // The older toasts (toast.h: success, error, plain, busy) and the notices
 // (gui_notify_popup) are this toast now, with a glyph at the start where they
@@ -42,7 +43,9 @@ void sx_toast_undo(const char *text, void (*undo)(void *user), void *user);
 void sx_toast_glyph(const lv_image_dsc_t *glyph, lv_color_t colour, const char *text);
 
 // A toast that stays, with a spinner, until sx_toast_busy_end() or the next
-// toast. `dismissable`: a pull down may put it away (the work goes on).
+// toast. `dismissable`: a pull down may put it away (the work goes on), and
+// the page stays usable; otherwise the page takes no taps until it ends, as
+// the busy card before 2.0 held it.
 void sx_toast_busy(const char *text, bool dismissable);
 void sx_toast_busy_end(void);
 bool sx_toast_busy_showing(void);

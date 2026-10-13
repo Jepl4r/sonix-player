@@ -30,6 +30,7 @@
 #define MAX_MS 6000
 
 static lv_obj_t *toast;
+static lv_obj_t *blocker; // under a busy toast that may not be put away
 static lv_obj_t *glyph_img;
 static lv_obj_t *spinner;
 static lv_obj_t *label;
@@ -59,6 +60,7 @@ void sx_toast_dismiss(void) {
 		return;
 	}
 	lv_obj_set_hidden(toast, true);
+	lv_obj_set_hidden(blocker, true);
 	lv_timer_pause(end_timer);
 	lv_anim_delete(bar_fill, bar_exec_cb);
 	undo_cb = NULL;
@@ -126,6 +128,18 @@ void sx_toast_init(void) {
 	}
 	lv_display_t *d = lv_display_get_default();
 	int32_t w = lv_display_get_horizontal_resolution(d);
+
+	// The busy toast that may not be put away holds the page while its work
+	// runs, as the card it replaces did (several of those jobs have no guard
+	// against being started twice): an invisible layer takes the taps. Not
+	// dimmed -- a translucent layer the size of the screen is what the
+	// platform cannot blend.
+	blocker = lv_obj_create(lv_layer_top());
+	lv_obj_remove_style_all(blocker);
+	lv_obj_set_size(blocker, lv_pct(100), lv_pct(100));
+	lv_obj_set_scrollable(blocker, false);
+	lv_obj_set_clickable(blocker, true);
+	lv_obj_set_hidden(blocker, true);
 
 	toast = sx_box(lv_layer_top());
 	lv_obj_set_width(toast, w - 2 * SX_TOAST_MARGIN);
@@ -275,6 +289,11 @@ static void show(const lv_image_dsc_t *glyph, lv_color_t colour, const char *tex
 	}
 
 	place();
+	bool hold = is_busy && !dismissable;
+	lv_obj_set_hidden(blocker, !hold);
+	if (hold) {
+		lv_obj_move_foreground(blocker);
+	}
 	lv_obj_set_hidden(toast, false);
 	lv_obj_move_foreground(toast);
 
