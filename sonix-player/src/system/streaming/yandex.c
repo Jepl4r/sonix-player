@@ -83,7 +83,11 @@ static __thread char last_error[256];
 static __thread int last_status;
 static __thread char last_body[160];
 
-// The rotor session: one at a time, and only the worker touches it.
+// The rotor session: one at a time. Three threads reach it -- the page's
+// worker starts it, yandexwave's asks for more and reports what was played,
+// yandexsync's like tells it about a like -- hence the lock, held for the
+// copies only, never across a request.
+static pthread_mutex_t wave_lock = PTHREAD_MUTEX_INITIALIZER;
 static char wave_session[96];
 static char wave_batch[96];
 
@@ -204,9 +208,11 @@ void yandex_logout(void) {
 	pthread_mutex_lock(&session_lock);
 	access_token[0] = refresh_token[0] = user_uid[0] = display_name[0] = '\0';
 	token_expires_at = 0;
-	wave_session[0] = wave_batch[0] = '\0';
 	save_session();
 	pthread_mutex_unlock(&session_lock);
+	pthread_mutex_lock(&wave_lock);
+	wave_session[0] = wave_batch[0] = '\0';
+	pthread_mutex_unlock(&wave_lock);
 	pthread_mutex_lock(&liked_lock);
 	free(liked_ids);
 	liked_ids = NULL;
@@ -1033,108 +1039,256 @@ bool yandex_like_track(const char *track_id, const char *album_id, bool like) {
 	// My Wave hears of a like; an unlike has no event of its own, and the
 	// "skip" with no seconds 1.2.3 sent instead told the station the track
 	// had been skipped at once -- which it had not.
-	if (ok && like && wave_session[0]) {
+	if (ok && like && yandex_wave_active()) {
 		yandex_wave_feedback(YANDEX_WAVE_LIKE, track_id, album_id, 0);
 	}
 	return ok;
 }
 
-bool yandex_dislike_track(const char *track_id, const char *album_id) {
+bool yandex_dislike_track(const char *track_id, const char *album_id, int played_secs) {
 	bool ok = likes_write("dislikes", "add-multiple", track_id, album_id);
-	if (ok && wave_session[0]) {
-		yandex_wave_feedback(YANDEX_WAVE_DISLIKE, track_id, album_id, 0);
+	if (ok && yandex_wave_active()) {
+		yandex_wave_feedback(YANDEX_WAVE_DISLIKE, track_id, album_id, played_secs);
 	}
 	return ok;
 }
 
 // ---------------------------------------------------------------------------
 // My Wave
+//
+// The rotor session API, as the service's own apps and the open clients
+// (MarshalX's yandex-music-api, the Music Assistant provider) use it:
+//
+//   POST /rotor/session/new            {"seeds":["user:onyourwave"],
+//                                       "includeTracksInResponse":true, ...}
+//        -> radioSessionId, batchId, sequence[] (the first batch)
+//   POST /rotor/session/{id}/tracks    {"queue":["id:album", ...]}
+//        -> batchId, sequence[] (the next batch); or unknownSession / terminated
+//   POST /rotor/session/{id}/feedback  {"event":{type,timestamp,trackId,
+//                                       totalPlayedSeconds},"batchId":...}
+//
+// "queue" is the tracks the session already handed out, so that it does not
+// hand them out again and knows where the listener is. Each feedback event
+// carries the batch its track came in -- not the newest one: by the time the
+// last tracks of a batch play, the next batch has long been fetched, and
+// tagging them with its id tells the station about tracks it never sent in
+// it. A session the service has forgotten (a long pause, a restart on its
+// side) is not an error: /tracks answers 200 with unknownSession and no
+// tracks. 1.2.5 read that as "no tracks", which is a wave that stops for good;
+// here a new session takes over, told what was already played.
+//
+// Every request and answer is logged, "yandex: wave: ...", without the token.
 // ---------------------------------------------------------------------------
 
-static int wave_take(const json_doc_t *doc, yandex_track_t *out, int max) {
+// Which batch each track came in: the last few dozen are enough, the queue
+// never holds more than a couple of batches ahead of what plays.
+#define WAVE_BATCH_MEMORY 48
+static struct {
+	char track[YANDEX_ID_MAX];
+	char batch[96];
+} wave_batches[WAVE_BATCH_MEMORY];
+static int wave_batches_next;
+
+// Call with wave_lock held.
+static void wave_remember_batch(const char *track_id, const char *batch) {
+	snprintf(wave_batches[wave_batches_next].track, sizeof(wave_batches[0].track), "%s", track_id);
+	snprintf(wave_batches[wave_batches_next].batch, sizeof(wave_batches[0].batch), "%s", batch);
+	wave_batches_next = (wave_batches_next + 1) % WAVE_BATCH_MEMORY;
+}
+
+// The batch `track_id` came in, else the newest. Call with wave_lock held.
+static void wave_batch_of(const char *track_id, char *out, size_t size) {
+	for (int i = 0; track_id && track_id[0] && i < WAVE_BATCH_MEMORY; i++) {
+		if (strcmp(wave_batches[i].track, track_id) == 0) {
+			snprintf(out, size, "%s", wave_batches[i].batch);
+			return;
+		}
+	}
+	snprintf(out, size, "%s", wave_batch);
+}
+
+// "3001, 3002, 3003" for the log, at most a handful.
+static void wave_ids_for_log(const yandex_track_t *tracks, int count, char *out, size_t size) {
+	size_t used = 0;
+	out[0] = '\0';
+	for (int i = 0; i < count && used + 1 < size; i++) {
+		if (i == 6) {
+			snprintf(out + used, size - used, ", ...");
+			break;
+		}
+		used += (size_t)snprintf(out + used, size - used, "%s%s", i ? ", " : "", tracks[i].id);
+	}
+}
+
+// Reads one rotor answer: the session and batch it names, its tracks, and
+// whether the service has forgotten (unknownSession) or ended (terminated)
+// the session. `session_out` gets the radioSessionId when there is one.
+static int wave_take(const json_doc_t *doc, yandex_track_t *out, int max, char *session_out, size_t session_size, bool *unknown, bool *terminated) {
 	int result = json_get(doc, json_root(doc), "result");
-	char id[96] = "", batch[96] = "";
-	json_obj_str(doc, result, "radioSessionId", id, sizeof(id));
+	char batch[96] = "";
+	if (session_out) {
+		session_out[0] = '\0';
+		json_obj_str(doc, result, "radioSessionId", session_out, session_size);
+	}
 	json_obj_str(doc, result, "batchId", batch, sizeof(batch));
-	if (id[0]) {
-		snprintf(wave_session, sizeof(wave_session), "%s", id);
+	*unknown = json_obj_bool(doc, result, "unknownSession", false);
+	*terminated = json_obj_bool(doc, result, "terminated", false);
+	int got = tracks_from_array(doc, json_get(doc, result, "sequence"), out, max);
+	pthread_mutex_lock(&wave_lock);
+	if (session_out && session_out[0]) {
+		snprintf(wave_session, sizeof(wave_session), "%s", session_out);
 	}
 	if (batch[0]) {
 		snprintf(wave_batch, sizeof(wave_batch), "%s", batch);
 	}
-	return tracks_from_array(doc, json_get(doc, result, "sequence"), out, max);
+	for (int i = 0; i < got; i++) {
+		wave_remember_batch(out[i].id, wave_batch);
+	}
+	pthread_mutex_unlock(&wave_lock);
+	return got;
 }
 
-int yandex_wave_start(yandex_track_t *out, int max) {
+// {"queue":["3001:900","3002:901"]}: the ids are digits (or a user upload's
+// own), nothing to escape; one that does not fit is left out.
+static void wave_queue_json(const char *const *queue, int count, char *json, size_t size) {
+	size_t used = (size_t)snprintf(json, size, "\"queue\":[");
+	for (int i = 0; i < count && queue && used + strlen(queue[i]) + 8 < size; i++) {
+		used += (size_t)snprintf(json + used, size - used, "%s\"%s\"", i ? "," : "", queue[i]);
+	}
+	snprintf(json + used, size - used, "]");
+}
+
+int yandex_wave_start(const char *const *queue, int queue_count, yandex_track_t *out, int max) {
 	char url[400];
 	snprintf(url, sizeof(url), "%s/rotor/session/new", api_url);
+	pthread_mutex_lock(&wave_lock);
+	wave_session[0] = wave_batch[0] = '\0';
+	pthread_mutex_unlock(&wave_lock);
+	// includeWaveModel and interactive as the apps send them: a session the
+	// listener is in front of, with the station's own model applied.
+	char queue_json[1024], json[1200];
+	wave_queue_json(queue, queue_count, queue_json, sizeof(queue_json));
+	snprintf(json, sizeof(json), "{\"seeds\":[\"user:onyourwave\"],\"includeTracksInResponse\":true,\"includeWaveModel\":true,\"interactive\":true,%s}", queue_json);
+	printf("yandex: wave: new session (%d tracks already played)\n", queue_count);
 	char *body;
 	json_doc_t doc;
-	wave_session[0] = wave_batch[0] = '\0';
-	if (!api("POST", url, NULL, "{\"seeds\":[\"user:onyourwave\"],\"includeTracksInResponse\":true}", &body, &doc)) {
+	if (!api("POST", url, NULL, json, &body, &doc)) {
+		fprintf(stderr, "yandex: wave: new session failed -> %d %s (%s)\n", last_status, last_body, last_error);
 		return -1;
 	}
-	int got = wave_take(&doc, out, max);
+	char session[96];
+	bool unknown, terminated;
+	int got = wave_take(&doc, out, max, session, sizeof(session), &unknown, &terminated);
 	api_done(body, &doc);
-	if (!wave_session[0]) {
+	char ids[200], batch[96];
+	wave_ids_for_log(out, got, ids, sizeof(ids));
+	pthread_mutex_lock(&wave_lock);
+	snprintf(batch, sizeof(batch), "%s", wave_batch);
+	pthread_mutex_unlock(&wave_lock);
+	if (!session[0]) {
+		fprintf(stderr, "yandex: wave: new session answered without a session id: %s\n", last_body);
 		set_error("%s", tr("yandex_unreadable_reply"));
 		return -1;
 	}
+	printf("yandex: wave: session %s, batch %s: %d tracks (%s)\n", session, batch, got, ids);
 	yandex_wave_feedback(YANDEX_WAVE_STARTED, NULL, NULL, 0);
 	return got;
 }
 
-int yandex_wave_more(const char *const *played, int played_count, yandex_track_t *out, int max) {
-	if (!wave_session[0]) {
-		return yandex_wave_start(out, max);
+int yandex_wave_more(const char *const *queue, int queue_count, yandex_track_t *out, int max, bool *restarted) {
+	*restarted = false;
+	char session[96];
+	pthread_mutex_lock(&wave_lock);
+	snprintf(session, sizeof(session), "%s", wave_session);
+	pthread_mutex_unlock(&wave_lock);
+	if (!session[0]) {
+		*restarted = true;
+		return yandex_wave_start(queue, queue_count, out, max);
 	}
 	char url[400];
-	snprintf(url, sizeof(url), "%s/rotor/session/%s/tracks", api_url, wave_session);
-	char json[2048];
-	size_t used = (size_t)snprintf(json, sizeof(json), "{\"queue\":[");
-	for (int i = 0; i < played_count && used + 64 < sizeof(json); i++) {
-		used += (size_t)snprintf(json + used, sizeof(json) - used, "%s\"%s\"", i ? "," : "", played[i]);
-	}
-	snprintf(json + used, sizeof(json) - used, "]}");
+	snprintf(url, sizeof(url), "%s/rotor/session/%s/tracks", api_url, session);
+	char queue_json[1024], json[1100];
+	wave_queue_json(queue, queue_count, queue_json, sizeof(queue_json));
+	snprintf(json, sizeof(json), "{%s}", queue_json);
+	printf("yandex: wave: more for session %s, after %s (%d in the queue)\n", session, queue_count > 0 ? queue[queue_count - 1] : "nothing", queue_count);
 	char *body;
 	json_doc_t doc;
 	if (!api("POST", url, NULL, json, &body, &doc)) {
+		fprintf(stderr, "yandex: wave: more failed -> %d %s (%s)\n", last_status, last_body, last_error);
 		return -1;
 	}
-	int got = wave_take(&doc, out, max);
+	bool unknown, terminated;
+	int got = wave_take(&doc, out, max, NULL, 0, &unknown, &terminated);
 	api_done(body, &doc);
+	if (unknown || (terminated && got == 0)) {
+		// Forgotten or finished: a new session, told what was played so it
+		// does not start over with the same tracks.
+		printf("yandex: wave: session %s %s, starting a new one\n", session, unknown ? "is unknown to the service (expired)" : "has ended");
+		*restarted = true;
+		return yandex_wave_start(queue, queue_count, out, max);
+	}
+	char ids[200], batch[96];
+	wave_ids_for_log(out, got, ids, sizeof(ids));
+	pthread_mutex_lock(&wave_lock);
+	snprintf(batch, sizeof(batch), "%s", wave_batch);
+	pthread_mutex_unlock(&wave_lock);
+	printf("yandex: wave: batch %s: %d tracks (%s)%s\n", batch, got, ids, terminated ? ", the session's last" : "");
 	return got;
 }
 
-bool yandex_wave_active(void) { return wave_session[0] != '\0'; }
+bool yandex_wave_active(void) {
+	pthread_mutex_lock(&wave_lock);
+	bool active = wave_session[0] != '\0';
+	pthread_mutex_unlock(&wave_lock);
+	return active;
+}
 
 bool yandex_wave_feedback(yandex_wave_event_t event, const char *track_id, const char *album_id, int played_secs) {
-	if (!wave_session[0]) {
+	static const char *const NAMES[] = {"radioStarted", "trackStarted", "trackFinished", "skip", "like", "dislike"};
+	char session[96], batch[96];
+	pthread_mutex_lock(&wave_lock);
+	snprintf(session, sizeof(session), "%s", wave_session);
+	wave_batch_of(track_id, batch, sizeof(batch));
+	pthread_mutex_unlock(&wave_lock);
+	if (!session[0]) {
 		return false;
 	}
-	static const char *const NAMES[] = {"radioStarted", "trackStarted", "trackFinished", "skip", "like", "dislike"};
-	char stamp[40];
-	time_t now = time(NULL);
-	strftime(stamp, sizeof(stamp), "%Y-%m-%dT%H:%M:%SZ", gmtime(&now));
+	// ISO 8601 with milliseconds, as the apps write it.
+	struct timespec now;
+	clock_gettime(CLOCK_REALTIME, &now);
+	char stamp[48], whole[24];
+	strftime(whole, sizeof(whole), "%Y-%m-%dT%H:%M:%S", gmtime(&now.tv_sec));
+	snprintf(stamp, sizeof(stamp), "%.20s.%03dZ", whole, (int)(now.tv_nsec / 1000000) % 1000);
 	char track[96] = "";
 	if (track_id && track_id[0]) {
 		snprintf(track, sizeof(track), ",\"trackId\":\"%s%s%s\"", track_id, album_id && album_id[0] ? ":" : "", album_id ? album_id : "");
 	}
+	// The events that end a track say how much of it was heard; the service
+	// wants it on a dislike too.
 	char played[48] = "";
-	if (event == YANDEX_WAVE_SKIP || event == YANDEX_WAVE_TRACK_FINISHED) {
-		snprintf(played, sizeof(played), ",\"totalPlayedSeconds\":%d", played_secs);
+	if (event == YANDEX_WAVE_SKIP || event == YANDEX_WAVE_TRACK_FINISHED || event == YANDEX_WAVE_DISLIKE) {
+		snprintf(played, sizeof(played), ",\"totalPlayedSeconds\":%d", played_secs > 0 ? played_secs : 0);
 	}
+	// "from" says where the station was started; it belongs to the whole
+	// feedback, beside the event, and only radioStarted carries it.
 	char json[512];
-	snprintf(json, sizeof(json), "{\"event\":{\"type\":\"%s\",\"timestamp\":\"%s\"%s%s%s},\"batchId\":\"%s\"}", NAMES[event], stamp, track, played, event == YANDEX_WAVE_STARTED ? ",\"from\":\"sonix\"" : "", wave_batch);
+	snprintf(json, sizeof(json), "{\"event\":{\"type\":\"%s\",\"timestamp\":\"%s\"%s%s},\"batchId\":\"%s\"%s}", NAMES[event], stamp, track, played, batch, event == YANDEX_WAVE_STARTED ? ",\"from\":\"radio-mobile-user-onyourwave-default\"" : "");
 	char url[400];
-	snprintf(url, sizeof(url), "%s/rotor/session/%s/feedback", api_url, wave_session);
+	snprintf(url, sizeof(url), "%s/rotor/session/%s/feedback", api_url, session);
 	char *body;
 	json_doc_t doc;
-	if (!api("POST", url, NULL, json, &body, &doc)) {
-		return false;
+	bool ok = api("POST", url, NULL, json, &body, &doc);
+	if (ok) {
+		api_done(body, &doc);
+		if (played[0]) {
+			printf("yandex: wave: %s %s after %d s (batch %s) -> %d\n", NAMES[event], track_id ? track_id : "", played_secs, batch, last_status);
+		} else {
+			printf("yandex: wave: %s%s%s (batch %s) -> %d\n", NAMES[event], track_id ? " " : "", track_id ? track_id : "", batch, last_status);
+		}
+	} else {
+		fprintf(stderr, "yandex: wave: %s %s (batch %s) failed -> %d %s (%s)\n", NAMES[event], track_id ? track_id : "", batch, last_status, last_body, last_error);
 	}
-	api_done(body, &doc);
-	return true;
+	return ok;
 }
 
 // ---------------------------------------------------------------------------

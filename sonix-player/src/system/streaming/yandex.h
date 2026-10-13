@@ -134,8 +134,10 @@ int yandex_artist_albums(const char *artist_id, yandex_album_t *out, int max);
 bool yandex_search(const char *text, yandex_artist_t *artists, int *n_artists, yandex_album_t *albums, int *n_albums, yandex_track_t *tracks, int *n_tracks);
 
 // Likes. `like` false removes it. A like written updates the mirror below.
+// A dislike also tells a running My Wave, with how long the track was heard
+// (`played_secs`, the service wants it).
 bool yandex_like_track(const char *track_id, const char *album_id, bool like);
-bool yandex_dislike_track(const char *track_id, const char *album_id);
+bool yandex_dislike_track(const char *track_id, const char *album_id, int played_secs);
 
 // The mirror of the liked ids the player's star reads: filled by
 // yandex_liked_tracks() or yandex_liked_refresh() (ids only, one request),
@@ -153,11 +155,15 @@ void yandex_liked_mark(const char *track_id, bool liked);
 // My Wave (rotor). One session at a time.
 // ---------------------------------------------------------------------------
 
-// Starts a new session and returns its first batch.
-int yandex_wave_start(yandex_track_t *out, int max);
-// The next batch of the running session. `played` are the tracks the session
-// already gave (the API wants them back in `queue`), newest last.
-int yandex_wave_more(const char *const *played, int played_count, yandex_track_t *out, int max);
+// Starts a new session and returns its first batch. `queue` (may be NULL):
+// tracks already received, "id" or "id:album", oldest first -- what a
+// session started again must not hand out again.
+int yandex_wave_start(const char *const *queue, int queue_count, yandex_track_t *out, int max);
+// The next batch of the running session. `queue` as above: the tracks the
+// session already gave, the newest last. A session the service has forgotten
+// or ended is replaced by a new one, told the queue; `restarted` says so.
+// Logged, request and answer. -1 with yandex_last_error() on failure.
+int yandex_wave_more(const char *const *queue, int queue_count, yandex_track_t *out, int max, bool *restarted);
 
 typedef enum {
 	YANDEX_WAVE_STARTED = 0, // radioStarted, sent by yandex_wave_start itself
@@ -168,8 +174,9 @@ typedef enum {
 	YANDEX_WAVE_DISLIKE,
 } yandex_wave_event_t;
 
-// Tells the session what happened to a track. `played_secs` matters for
-// finished and skip; ignored otherwise.
+// Tells the session what happened to a track, tagged with the batch the
+// track came in. `played_secs` matters for finished, skip and dislike;
+// ignored otherwise. Logged.
 bool yandex_wave_feedback(yandex_wave_event_t event, const char *track_id, const char *album_id, int played_secs);
 bool yandex_wave_active(void);
 

@@ -34,6 +34,7 @@
 #include "src/system/streaming/yandexdl.h"
 #include "src/system/streaming/yandexsaved.h"
 #include "src/system/streaming/yandexsync.h"
+#include "src/system/streaming/yandexwave.h"
 
 // See yandexpage.h. Deliberately smaller than the Tidal page: no artwork in
 // the lists (the cover still arrives with each track, beside the file), no
@@ -65,10 +66,8 @@ typedef enum {
 	JOB_ARTIST,
 	JOB_SEARCH,
 	JOB_WAVE,
-	JOB_WAVE_MORE,
 	JOB_PLAY,
 	JOB_FETCH,
-	JOB_FEEDBACK,
 	JOB_DISLIKE,
 	// Built on the GUI thread from the index of saved tracks, never sent to
 	// the worker: they must open with the network down, and the worker may be
@@ -81,8 +80,7 @@ typedef struct {
 	job_kind_t kind;
 	char a[YANDEX_TITLE_MAX]; // id, owner, search text...
 	char b[YANDEX_ID_MAX];	  // kind, album id
-	int n;					  // index, or the feedback event
-	int secs;				  // feedback: seconds played
+	int n;					  // index; for a dislike the seconds heard
 	unsigned generation;	  // list jobs: list_generation when asked
 } job_t;
 
@@ -149,23 +147,34 @@ static char result_error[256];
 static stream_err_t result_class;
 
 // The queue: what was played from a list, with the track behind each path.
+// It grows as My Wave adds batches, up to QUEUE_MAX (days of music).
+#define QUEUE_MAX 1000
 static yandex_track_t *queued;
 static char (*queued_paths)[512];
 static int queued_count;
+static int queued_room;
 static bool queue_is_wave;
 
-// Worker: one job pending at a time, a newer request replaces an older one
-// still waiting (the user changed their mind), except feedback which is
-// fire-and-forget and must not be lost to a list request.
+// Worker. Three kinds of work, each with its own place, so that none can
+// push another out:
+//   * `pending`: what the user just asked for -- a list, a sign-in step, the
+//     track tapped. One at a time: a newer request replaces an older one
+//     still waiting (the user changed their mind).
+//   * `fetch_pending`: the track playback has reached, or the next one. A
+//     newer one replaces an older one: playback has moved on.
+//   * `events`: dislikes, each one sent.
+// In 1.2.5 the fetches and My Wave's "more" shared the one `pending` slot
+// with the lists: a fetch asked for while the wave's request waited replaced
+// it (and the other way round), and the request, or the track playback was
+// stopped for, was lost without a word. My Wave's requests now live in
+// yandexwave.c.
 static pthread_mutex_t job_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t job_cond = PTHREAD_COND_INITIALIZER;
 static job_t pending;
-// Feedback and dislikes queue up instead: each one is an event the service
-// should hear about, and a skip lost behind the next trackStarted would teach
-// My Wave the wrong thing.
-#define FEEDBACK_MAX 8
-static job_t feedback[FEEDBACK_MAX];
-static int feedback_count;
+static job_t fetch_pending;
+#define EVENTS_MAX 8
+static job_t events[EVENTS_MAX];
+static int events_count;
 static bool worker_started;
 // What the worker is doing right now (JOB_NONE when waiting), for the watch:
 // a track being asked for is a reason to keep Wi-Fi up, and a second fetch is
@@ -178,10 +187,12 @@ static void play_done_async(void *user);
 
 static void submit(const job_t *job) {
 	pthread_mutex_lock(&job_lock);
-	if (job->kind == JOB_FEEDBACK || job->kind == JOB_DISLIKE) {
-		if (feedback_count < FEEDBACK_MAX) {
-			feedback[feedback_count++] = *job;
+	if (job->kind == JOB_DISLIKE) {
+		if (events_count < EVENTS_MAX) {
+			events[events_count++] = *job;
 		}
+	} else if (job->kind == JOB_FETCH) {
+		fetch_pending = *job;
 	} else {
 		pending = *job;
 	}
@@ -194,7 +205,43 @@ static void ensure_buffers(void) {
 		result = calloc(MAX_ROWS, sizeof(*result));
 		queued = calloc(MAX_ROWS, sizeof(*queued));
 		queued_paths = calloc(MAX_ROWS, sizeof(*queued_paths));
+		queued_room = queued && queued_paths ? MAX_ROWS : 0;
 	}
+}
+
+// Room for `count` queue entries (GUI thread, which owns the queue; the
+// worker only reads entries the GUI has finished writing). False when the
+// queue is at QUEUE_MAX or memory is short: the entries already there stay.
+static bool queue_reserve(int count) {
+	if (count <= queued_room) {
+		return true;
+	}
+	if (count > QUEUE_MAX) {
+		return false;
+	}
+	int room = queued_room * 2 > count ? queued_room * 2 : count;
+	room = room < QUEUE_MAX ? room : QUEUE_MAX;
+	// The worker may be reading an entry this very moment (a fetch): the old
+	// blocks are swapped under the lock it takes to start one.
+	yandex_track_t *t = malloc((size_t)room * sizeof(*t));
+	char(*p)[512] = malloc((size_t)room * sizeof(*p));
+	if (!t || !p) {
+		free(t);
+		free(p);
+		return false;
+	}
+	pthread_mutex_lock(&job_lock);
+	memcpy(t, queued, (size_t)queued_count * sizeof(*t));
+	memcpy(p, queued_paths, (size_t)queued_count * sizeof(*p));
+	yandex_track_t *old_t = queued;
+	char(*old_p)[512] = queued_paths;
+	queued = t;
+	queued_paths = p;
+	queued_room = room;
+	pthread_mutex_unlock(&job_lock);
+	free(old_t);
+	free(old_p);
+	return true;
 }
 
 // ---------------------------------------------------------------------------
@@ -211,10 +258,23 @@ static int fill_tracks(int got, yandex_track_t *tmp) {
 	return got;
 }
 
-// Starts the download of queue entry `index` and returns its real path. The
-// codec, and so the extension, is only known now.
-static bool fetch_queued(int index, char *path, size_t size) {
-	yandex_track_t *t = &queued[index];
+// A copy of queue entry `index`, taken under the lock the queue's growth
+// takes (queue_reserve): the worker never reads the queue itself, which the
+// GUI thread may move while a download runs. False when there is no such
+// entry (the queue was replaced since the job was asked for).
+static bool queued_copy(int index, yandex_track_t *out) {
+	pthread_mutex_lock(&job_lock);
+	bool ok = index >= 0 && index < queued_count && queued;
+	if (ok) {
+		*out = queued[index];
+	}
+	pthread_mutex_unlock(&job_lock);
+	return ok;
+}
+
+// Starts the download of track `t` and returns its real path. The codec, and
+// so the extension, is only known now.
+static bool fetch_track(const yandex_track_t *t, char *path, size_t size) {
 	if (yandexcache_find(t->id, path, size)) {
 		return true; // prefetched under its real name: no need to ask again
 	}
@@ -251,7 +311,7 @@ static void run_list_job(const job_t *job) {
 		got = fill_tracks(yandex_album_tracks(job->a, tmp, MAX_ROWS), tmp);
 		break;
 	case JOB_WAVE:
-		got = fill_tracks(yandex_wave_start(tmp, MAX_ROWS), tmp);
+		got = fill_tracks(yandex_wave_start(NULL, 0, tmp, MAX_ROWS), tmp);
 		break;
 	case JOB_PLAYLISTS: {
 		yandex_playlist_t *p = (yandex_playlist_t *)tmp; // smaller than a track
@@ -355,16 +415,21 @@ static void *worker_main(void *arg) {
 	for (;;) {
 		pthread_mutex_lock(&job_lock);
 		running_kind = JOB_NONE;
-		while (pending.kind == JOB_NONE && feedback_count == 0) {
+		while (pending.kind == JOB_NONE && fetch_pending.kind == JOB_NONE && events_count == 0) {
 			pthread_cond_wait(&job_cond, &job_lock);
 		}
+		// What the user asked for first, then the track playback needs, then
+		// the dislikes (sent in order, none dropped).
 		job_t job;
-		if (feedback_count > 0) {
-			job = feedback[0];
-			memmove(feedback, feedback + 1, (size_t)(--feedback_count) * sizeof(feedback[0]));
-		} else {
+		if (pending.kind != JOB_NONE) {
 			job = pending;
 			pending.kind = JOB_NONE;
+		} else if (fetch_pending.kind != JOB_NONE) {
+			job = fetch_pending;
+			fetch_pending.kind = JOB_NONE;
+		} else {
+			job = events[0];
+			memmove(events, events + 1, (size_t)(--events_count) * sizeof(events[0]));
 		}
 		running_kind = job.kind;
 		pthread_mutex_unlock(&job_lock);
@@ -386,20 +451,21 @@ static void *worker_main(void *arg) {
 				snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
 			}
 			break;
-		case JOB_FEEDBACK:
-			yandex_wave_feedback((yandex_wave_event_t)job.n, job.a, job.b, job.secs);
-			continue;
 		case JOB_DISLIKE:
-			if (!yandex_dislike_track(job.a, job.b)) {
+			if (!yandex_dislike_track(job.a, job.b, job.n)) {
 				snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
 			}
 			break;
 		case JOB_PLAY: {
 			// The tapped track first; the rest download as playback reaches
 			// them (yandexpage_prepare_track) or ahead of it (JOB_FETCH).
-			abandon_unless(queued[job.n].id);
+			yandex_track_t t;
 			char path[512];
-			bool ok = fetch_queued(job.n, path, sizeof(path));
+			bool ok = queued_copy(job.n, &t);
+			if (ok) {
+				abandon_unless(t.id);
+				ok = fetch_track(&t, path, sizeof(path));
+			}
 			job_result_t *r = job_result_new(&job, 0);
 			if (r) {
 				// The queue's path is set by the GUI thread, which owns the
@@ -411,8 +477,9 @@ static void *worker_main(void *arg) {
 			continue;
 		}
 		case JOB_FETCH: {
+			yandex_track_t t;
 			char path[512];
-			if (job.n >= 0 && job.n < queued_count && fetch_queued(job.n, path, sizeof(path))) {
+			if (queued_copy(job.n, &t) && fetch_track(&t, path, sizeof(path))) {
 				char *owned = strdup(path);
 				if (owned) {
 					gui_post(fetch_done_async, owned);
@@ -421,17 +488,6 @@ static void *worker_main(void *arg) {
 				fprintf(stderr, "yandex: fetching %d failed: %s\n", job.n, result_error);
 			}
 			continue;
-		}
-		case JOB_WAVE_MORE: {
-			yandex_track_t more[5];
-			const char *played[1] = {job.a};
-			int got = yandex_wave_more(played, job.a[0] ? 1 : 0, more, 5);
-			result_count = 0;
-			for (int i = 0; i < got; i++) {
-				result[result_count].kind = ROW_TRACK;
-				result[result_count++].u.track = more[i];
-			}
-			break;
 		}
 		default:
 			run_list_job(&job);
@@ -560,26 +616,30 @@ static bool queue_is_ours(void) {
 }
 
 static void claim_saved(void) {
-	static const char *saved[MAX_ROWS];
+	const char **saved = malloc((size_t)(queued_count > 0 ? queued_count : 1) * sizeof(*saved));
+	if (!saved) {
+		return;
+	}
 	int n = 0;
-	for (int i = 0; i < queued_count && n < MAX_ROWS; i++) {
+	for (int i = 0; i < queued_count; i++) {
 		if (!yandexcache_owns(queued_paths[i])) {
 			saved[n++] = queued_paths[i];
 		}
 	}
 	yandexsaved_claim(saved, n);
 	claims_live = n > 0;
+	free(saved);
 }
 
 // True while the worker has a track to ask for, or is asking: pending, or
 // running. Under job_lock, which is held only for the read.
 static bool worker_fetching(void) {
 	pthread_mutex_lock(&job_lock);
-	job_kind_t kinds[2] = {pending.kind, running_kind};
+	job_kind_t kinds[3] = {pending.kind, fetch_pending.kind, running_kind};
 	pthread_mutex_unlock(&job_lock);
 	bool fetching = false;
-	for (int i = 0; i < 2; i++) {
-		fetching |= kinds[i] == JOB_PLAY || kinds[i] == JOB_FETCH || kinds[i] == JOB_WAVE_MORE;
+	for (int i = 0; i < 3; i++) {
+		fetching |= kinds[i] == JOB_PLAY || kinds[i] == JOB_FETCH;
 	}
 	return fetching;
 }
@@ -604,11 +664,15 @@ static void fetch_ahead(int index) {
 }
 
 static void play_from(int start) {
-	static const char *ptrs[MAX_ROWS];
+	const char **ptrs = malloc((size_t)(queued_count > 0 ? queued_count : 1) * sizeof(*ptrs));
+	if (!ptrs) {
+		return;
+	}
 	for (int i = 0; i < queued_count; i++) {
 		ptrs[i] = queued_paths[i];
 	}
 	device_state_play_list(ptrs, queued_count, start);
+	free(ptrs);
 }
 
 static void play_done_async(void *user) {
@@ -727,33 +791,88 @@ bool yandexpage_prepare_track(const char *path) {
 	return false;
 }
 
-// My Wave bookkeeping: what started, what was skipped, and a new batch when
-// the queue runs low. Called by the watch when the playing track changes.
-static char wave_current[YANDEX_ID_MAX], wave_current_album[YANDEX_ID_MAX];
-static time_t wave_started_at;
-static int wave_duration;
-static bool wave_asked_more;
+// ---------------------------------------------------------------------------
+// My Wave: the station's next batch, appended
+//
+// yandexwave.c asks for it -- when two tracks or fewer are left, whatever
+// page is up -- and hands it over on its worker; it lands here on the GUI
+// thread and goes to the end of the queue, guessed names first, fetched as
+// playback nears them. A queue that had already run out by then (the
+// station could not be reached for a while) carries on with the first new
+// track.
+// ---------------------------------------------------------------------------
 
-static void wave_track_changed(const char *id, int index) {
-	if (wave_current[0]) {
-		int played = (int)(time(NULL) - wave_started_at);
-		bool finished = wave_duration > 0 && played >= wave_duration - 5;
-		job_t job = {.kind = JOB_FEEDBACK, .n = finished ? YANDEX_WAVE_TRACK_FINISHED : YANDEX_WAVE_SKIP, .secs = played};
-		snprintf(job.a, sizeof(job.a), "%s", wave_current);
-		snprintf(job.b, sizeof(job.b), "%s", wave_current_album);
-		start_worker();
-		submit(&job);
+typedef struct {
+	int count;
+	bool restarted;
+	yandex_track_t tracks[];
+} wave_batch_t;
+
+static void wave_batch_async(void *user) {
+	wave_batch_t *b = user;
+	int added = 0;
+	if (queue_is_wave && !playlist_is_library_backed()) {
+		device_state_t state;
+		device_state_get(&state);
+		int count_before = playlist_count();
+		// Run out: stopped on the last entry, which is a file that played --
+		// not one waiting for its download.
+		bool ran_out = state.status == AUDIO_STATUS_STOPPED && count_before > 0 && playlist_current_index() == count_before - 1;
+		ran_out = ran_out && queue_index_of(state.current_file) >= 0 && access(state.current_file, F_OK) == 0 && !worker_fetching();
+		if (queue_reserve(queued_count + b->count)) {
+			for (int i = 0; i < b->count; i++) {
+				queued[queued_count] = b->tracks[i];
+				resolve_path(queued_count);
+				if (!playlist_insert_at(queued_paths[queued_count], playlist_count())) {
+					break;
+				}
+				queued_count++;
+				added++;
+			}
+		} else {
+			fprintf(stderr, "yandex: wave: the queue is full (%d tracks), batch dropped\n", queued_count);
+		}
+		if (added > 0) {
+			claim_saved();
+			device_state_queue_changed();
+			if (ran_out) {
+				printf("yandex: wave: the queue had run out, going on with the new batch\n");
+				device_state_play_queue_index(count_before);
+				player_refresh_now_playing();
+			}
+		}
 	}
-	snprintf(wave_current, sizeof(wave_current), "%s", id);
-	snprintf(wave_current_album, sizeof(wave_current_album), "%s", index >= 0 ? queued[index].album_id : "");
-	wave_duration = index >= 0 ? queued[index].duration : 0;
-	wave_started_at = time(NULL);
-	run(JOB_FEEDBACK, id, wave_current_album, YANDEX_WAVE_TRACK_STARTED);
-	if (index >= 0 && index + 2 >= queued_count && !wave_asked_more) {
-		wave_asked_more = true;
-		yandexcache_set_network_wanted(true);
-		run(JOB_WAVE_MORE, id, NULL, 0);
+	yandexwave_batch_done(added);
+	free(b);
+}
+
+// On the wave's worker: copied and bounced to the GUI thread.
+static void wave_batch_cb(const yandex_track_t *tracks, int count, bool restarted, void *user) {
+	(void)user;
+	wave_batch_t *b = malloc(sizeof(*b) + (size_t)count * sizeof(b->tracks[0]));
+	if (b) {
+		b->count = count;
+		b->restarted = restarted;
+		memcpy(b->tracks, tracks, (size_t)count * sizeof(b->tracks[0]));
+		if (gui_post(wave_batch_async, b)) {
+			return;
+		}
+		free(b);
 	}
+	yandexwave_batch_done(0); // lost: asked for again
+}
+
+// What the wave watch is told every second: the wave track loaded now, and
+// how many are queued after it.
+static void wave_watch(const device_state_t *state, int index, bool library_queue) {
+	if (index < 0 || library_queue) {
+		yandexwave_watch(NULL, false, 0);
+		return;
+	}
+	int count = playlist_count();
+	int current = playlist_current_index();
+	int remaining = current >= 0 ? count - current - 1 : 0;
+	yandexwave_watch(&queued[index], state->status == AUDIO_STATUS_PLAYING, remaining);
 }
 
 // The queue watch, once a second on the GUI thread, the Qobuz page's in small:
@@ -797,15 +916,10 @@ static void queue_watch_cb(lv_timer_t *timer) {
 	if (index >= 0 && !library_queue) {
 		fetch_ahead(index + 1);
 	}
-	yandexcache_set_network_wanted(yandexcache_busy() || worker_fetching());
+	yandexcache_set_network_wanted(yandexcache_busy() || worker_fetching() || yandexwave_requesting());
 
-	if (!queue_is_wave) {
-		return;
-	}
-	char id[YANDEX_ID_MAX];
-	path_track_id(state.current_file, id, sizeof(id));
-	if (id[0] && strcmp(id, wave_current) != 0) {
-		wave_track_changed(id, index);
+	if (queue_is_wave) {
+		wave_watch(&state, index, library_queue);
 	}
 }
 
@@ -1199,8 +1313,11 @@ static void play_rows(int tapped) {
 	}
 	claim_saved();
 	queue_is_wave = list_is_wave;
-	wave_current[0] = '\0';
-	wave_asked_more = false;
+	if (queue_is_wave) {
+		yandexwave_begin(queued, queued_count, wave_batch_cb, NULL);
+	} else {
+		yandexwave_end();
+	}
 	if (!yandexcache_owns(queued_paths[start])) {
 		// Saved on the card: it plays now, with or without a network.
 		play_from(start);
@@ -1411,7 +1528,9 @@ static void wave_rate_cb(lv_event_t *e) {
 	if (like) {
 		yandexsync_like(queued[index].id, queued[index].album_id, true, like_done, NULL);
 	} else {
-		run(JOB_DISLIKE, queued[index].id, queued[index].album_id, 1);
+		// The dislike carries how long the track was heard; the skip that
+		// follows is then not reported on top of it.
+		run(JOB_DISLIKE, queued[index].id, queued[index].album_id, yandexwave_disliked(queued[index].id));
 	}
 	toast_success(tr(like ? "yandex_liked_it" : "yandex_disliked_it"));
 	if (!like) {
@@ -1714,21 +1833,6 @@ static void job_done_async(void *user) {
 		free(r);
 		return;
 	}
-	if (r->kind == JOB_WAVE_MORE) {
-		// New tracks at the end of the queue: guessed names, fetched as
-		// playback nears them.
-		for (int i = 0; i < r->count && queued_count < MAX_ROWS; i++) {
-			queued[queued_count] = r->rows[i].u.track;
-			resolve_path(queued_count);
-			playlist_insert_at(queued_paths[queued_count], playlist_count());
-			queued_count++;
-		}
-		claim_saved();
-		device_state_queue_changed();
-		wave_asked_more = false;
-		free(r);
-		return;
-	}
 	// A list the user has since left (or asked for again): another answer is
 	// on its way, and this one would only flash past -- or, arriving last,
 	// stay up under the wrong title.
@@ -1778,6 +1882,7 @@ static void logout_cb(lv_event_t *e) {
 	(void)e;
 	yandexdl_cancel_all(); // the account's files are not to be fetched any more
 	yandex_logout();
+	yandexwave_end();
 	queue_is_wave = false;
 	paint_home();
 }

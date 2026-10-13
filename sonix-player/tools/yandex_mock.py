@@ -47,6 +47,13 @@ without commas + transports, base64 without '=' -- which it recomputes with
 the public sign key and refuses with 403 when it differs. Feedback events are
 printed, so a test can read what My Wave was told.
 
+My Wave never ends: each session hands out generated tracks (3000 upwards,
+30-second AAC) a batch at a time, every request and the queue it carried
+printed as "mock: WAVE ...". YANDEX_MOCK_WAVE_BATCH, _FAIL and _EXPIRE (see
+wave_batch below) make batches smaller or larger, fail chosen requests with
+a 500, or forget the session after N batches (unknownSession), so the
+player's retries and its new session can be watched.
+
 YANDEX_MOCK_KBPS=N in the environment serves the audio at N KB/s, slow
 enough to watch a download in progress (the Wi-Fi keep-alive, the cache's
 "busy" state).
@@ -109,7 +116,31 @@ ALBUMS = {
 }
 
 
-state = {"polls": 0, "batch": 0, "liked": ["101", "102", "103", "104", "105"]}
+# My Wave hands out generated tracks, 3000 upwards, a batch at a time and
+# without end: each played from t105.m4a (30 s), so a test runs through
+# several batches in a few minutes. Their artists and albums rotate.
+WAVE_ARTISTS = ["Mock Artist", "Другой Артист", "Third Voice"]
+
+
+def gen_track(tid):
+    """The track of a generated id (1000 and up), None for anything else."""
+    try:
+        n = int(tid)
+    except ValueError:
+        return None
+    if n < 1000:
+        return None
+    kind = "Wave" if n >= 3000 and n < 10000 else "Track"
+    album = 900 + n % 7
+    return track(n, f"{kind} {n}", WAVE_ARTISTS[n % 3], album, f"Album {album}", 30, n % 12 + 1)
+
+
+def any_track(tid):
+    return TRACKS.get(str(tid)) or gen_track(tid)
+
+
+state = {"polls": 0, "batch": 0, "liked": ["101", "102", "103", "104", "105"],
+         "session": 0, "wave_next": 3000, "tracks_calls": 0, "feedback": 0}
 lock = threading.Lock()
 
 
@@ -278,6 +309,54 @@ class Handler(BaseHTTPRequestHandler):
         except (BrokenPipeError, ConnectionResetError):
             pass
 
+    # --- My Wave --------------------------------------------------------
+    #
+    # YANDEX_MOCK_WAVE_BATCH  tracks per batch (3)
+    # YANDEX_MOCK_WAVE_FAIL   "2,3": those /tracks calls (counted from 1)
+    #                         answer 500, to see the player retry
+    # YANDEX_MOCK_WAVE_EXPIRE N: after N batches the session is forgotten and
+    #                         /tracks answers unknownSession, as the service
+    #                         does for a session that has expired
+    def wave_batch(self):
+        size = int(os.environ.get("YANDEX_MOCK_WAVE_BATCH") or 3)
+        with lock:
+            first = state["wave_next"]
+            state["wave_next"] += size
+            state["batch"] += 1
+            n = state["batch"]
+        ids = [str(first + i) for i in range(size)]
+        return ids, f"batch-{n}"
+
+    def wave_new(self, body):
+        with lock:
+            state["session"] += 1
+            state["batch"] = 0
+            state["tracks_calls"] = 0
+            sid = f"wave-{state['session']}"
+        ids, batch = self.wave_batch()
+        sys.stderr.write(f"mock: WAVE NEW {sid} seeds={body.get('seeds')} queue={body.get('queue')} -> {batch} {ids}\n")
+        seq = [{"type": "track", "track": any_track(t), "liked": False} for t in ids]
+        return self.send_json({"result": {"radioSessionId": sid, "batchId": batch, "sequence": seq, "pumpkin": False}})
+
+    def wave_tracks(self, sid, body):
+        with lock:
+            state["tracks_calls"] += 1
+            call = state["tracks_calls"]
+            current = f"wave-{state['session']}"
+            batches = state["batch"]
+        fail = [int(x) for x in (os.environ.get("YANDEX_MOCK_WAVE_FAIL") or "").split(",") if x.strip()]
+        if call in fail:
+            sys.stderr.write(f"mock: WAVE TRACKS {sid} call {call}: failing with 500 as asked\n")
+            return self.send_json({"error": {"name": "internal"}}, 500)
+        expire = int(os.environ.get("YANDEX_MOCK_WAVE_EXPIRE") or 0)
+        if sid != current or (expire and batches >= expire):
+            sys.stderr.write(f"mock: WAVE TRACKS {sid}: unknown session (current {current})\n")
+            return self.send_json({"result": {"unknownSession": True, "sequence": []}})
+        ids, batch = self.wave_batch()
+        sys.stderr.write(f"mock: WAVE TRACKS {sid} call {call} queue={body.get('queue')} -> {batch} {ids}\n")
+        seq = [{"type": "track", "track": any_track(t), "liked": False} for t in ids]
+        return self.send_json({"result": {"batchId": batch, "sequence": seq, "pumpkin": False}})
+
     def do_POST(self):
         p = urllib.parse.urlparse(self.path).path
         body = self.form()
@@ -303,21 +382,17 @@ class Handler(BaseHTTPRequestHandler):
             return
         if p == "/tracks":
             ids = body.get("track-ids", "").split(",")
-            return self.send_json({"result": [TRACKS[i.split(":")[0]] for i in ids if i.split(":")[0] in TRACKS]})
+            found = [any_track(i.split(":")[0]) for i in ids]
+            return self.send_json({"result": [t for t in found if t]})
         if p == "/rotor/session/new":
+            return self.wave_new(body)
+        m = re.match(r"^/rotor/session/([^/]+)/(tracks|feedback)$", p)
+        if m and m.group(2) == "tracks":
+            return self.wave_tracks(m.group(1), body)
+        if m:
             with lock:
-                state["batch"] = 1
-            seq = [{"track": TRACKS[t]} for t in ("102", "103", "101")]
-            return self.send_json({"result": {"radioSessionId": "mock-wave", "batchId": "batch-1", "sequence": seq}})
-        if p == "/rotor/session/mock-wave/tracks":
-            with lock:
-                state["batch"] += 1
-                n = state["batch"]
-            seq = [{"track": TRACKS[t]} for t in ("104", "105")]
-            sys.stderr.write(f"mock: wave batch {n}, queue={body.get('queue')}\n")
-            return self.send_json({"result": {"radioSessionId": "mock-wave", "batchId": f"batch-{n}", "sequence": seq}})
-        if p == "/rotor/session/mock-wave/feedback":
-            sys.stderr.write(f"mock: FEEDBACK {json.dumps(body)}\n")
+                state["feedback"] += 1
+            sys.stderr.write(f"mock: FEEDBACK session={m.group(1)} {json.dumps(body, ensure_ascii=False)}\n")
             return self.send_json({"result": "ok"})
         if self.like_refused("POST", p, body):
             return
