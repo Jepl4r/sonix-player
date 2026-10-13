@@ -9,6 +9,7 @@
 #include "src/system/audio/swvolume.h"
 #include "src/system/audio/eq.h"
 #include "src/system/audio/decimate.h"
+#include "src/system/audio/resample.h"
 #include "src/system/core/config.h"
 #include "src/system/device/power.h"
 #include "src/system/core/utils.h"
@@ -27,6 +28,7 @@
 #include <poll.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <dirent.h>
 #include <alloca.h>
 #include <alsa/asoundlib.h>
@@ -1831,20 +1833,181 @@ static long long interface_ticks(void) {
 	return stat_ticks(path);
 }
 
-static void health_sample_system(health_t *h) {
-	if (!system_ticks(&h->sys_total, &h->sys_idle)) {
-		h->sys_total = h->sys_idle = -1;
-	}
-	h->ui_ticks = interface_ticks();
-	h->bluealsa_ticks = output_is_bluetooth() ? bluealsa_ticks() : -1;
-}
-
 // Percent of the whole machine between two readings, -1 when either is missing.
 static int ticks_percent(long long before, long long after, long long total) {
 	if (before < 0 || after < 0 || total <= 0) {
 		return -1;
 	}
 	return (int)((after - before) * 100 / total);
+}
+
+// ---------------------------------------------------------------------------
+// Who has the core
+//
+// "idle 0%" says the core was busy, not with what, and the three figures
+// beside it -- the playback thread, the interface, bluealsa -- added up to a
+// quarter of it in the 1.2.3 device log: the rest had to be guessed from the
+// code. So every process's clock ticks are noted at the start of a span, and
+// every thread's in this process, where most of the work is, and when the
+// span ends with the core under CPU_TOP_IDLE_PCT idle the ones that grew the
+// most are named on a line of their own. The three already reported are left
+// out of it.
+//
+// A few dozen small reads of /proc every ten seconds, on the playback thread
+// like the readings above: a couple of milliseconds against a buffer of
+// several hundred. Kernel threads are processes like any other here, so a
+// card or a radio driver that is working hard shows by its name (mmcqd,
+// kworker, ksoftirqd).
+// ---------------------------------------------------------------------------
+#define CPU_TOP_MAX 320
+#define CPU_TOP_SHOWN 3
+#define CPU_TOP_IDLE_PCT 30
+#define CPU_TOP_MIN_PCT 2
+
+typedef struct {
+	int id;			   // a pid, or a tid of this process
+	bool thread;	   // ... which one
+	long long ticks;
+} cpu_mark_t;
+
+static cpu_mark_t cpu_marks[CPU_TOP_MAX];
+static int cpu_mark_count;
+static cpu_mark_t cpu_fresh[CPU_TOP_MAX];
+
+// Every process but this one, and this one's threads, into `out`.
+static int cpu_marks_read(cpu_mark_t *out) {
+	int count = 0;
+	int self = (int)getpid();
+	char path[64];
+
+	DIR *tasks = opendir("/proc/self/task");
+	if (tasks) {
+		struct dirent *de;
+		while (count < CPU_TOP_MAX && (de = readdir(tasks)) != NULL) {
+			int tid = atoi(de->d_name);
+			if (tid <= 0) {
+				continue;
+			}
+			snprintf(path, sizeof(path), "/proc/self/task/%d/stat", tid);
+			long long ticks = stat_ticks(path);
+			if (ticks >= 0) {
+				out[count++] = (cpu_mark_t){.id = tid, .thread = true, .ticks = ticks};
+			}
+		}
+		closedir(tasks);
+	}
+
+	DIR *proc = opendir("/proc");
+	if (proc) {
+		struct dirent *de;
+		while (count < CPU_TOP_MAX && (de = readdir(proc)) != NULL) {
+			int pid = atoi(de->d_name);
+			if (pid <= 0 || pid == self) {
+				continue;
+			}
+			snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+			long long ticks = stat_ticks(path);
+			if (ticks >= 0) {
+				out[count++] = (cpu_mark_t){.id = pid, .thread = false, .ticks = ticks};
+			}
+		}
+		closedir(proc);
+	}
+	return count;
+}
+
+static void cpu_marks_take(void) { cpu_mark_count = cpu_marks_read(cpu_marks); }
+
+// "btmon 38%, kworker/0:1 5%, player:coverloader 3%" for a span of
+// `total_ticks`, or nothing when nobody took a noticeable share.
+static void cpu_top_report(long now, long long total_ticks) {
+	if (cpu_mark_count <= 0 || total_ticks <= 0) {
+		return;
+	}
+	int fresh = cpu_marks_read(cpu_fresh);
+	int self_tid = (int)syscall(SYS_gettid);
+	int interface = (int)getpid();
+
+	int top[CPU_TOP_SHOWN];
+	long long top_ticks[CPU_TOP_SHOWN];
+	int shown = 0;
+	int before = 0;
+	for (int i = 0; i < fresh; i++) {
+		const cpu_mark_t *now_mark = &cpu_fresh[i];
+		if (now_mark->thread && (now_mark->id == self_tid || now_mark->id == interface)) {
+			continue; // reported on the lines above
+		}
+		if (!now_mark->thread && now_mark->id == bluealsa_pid) {
+			continue;
+		}
+		// Both lists come out of readdir in the same order, so the match is
+		// almost always where the last one was found.
+		int found = -1;
+		for (int k = 0; k < cpu_mark_count; k++) {
+			int at = (before + k) % cpu_mark_count;
+			if (cpu_marks[at].id == now_mark->id && cpu_marks[at].thread == now_mark->thread) {
+				found = at;
+				break;
+			}
+		}
+		long long grew = now_mark->ticks - (found >= 0 ? cpu_marks[found].ticks : 0);
+		if (found >= 0) {
+			before = found + 1;
+		}
+		if (grew * 100 < total_ticks * CPU_TOP_MIN_PCT) {
+			continue;
+		}
+		// The short list, largest first.
+		if (shown == CPU_TOP_SHOWN && grew <= top_ticks[CPU_TOP_SHOWN - 1]) {
+			continue;
+		}
+		int pos = shown < CPU_TOP_SHOWN ? shown++ : CPU_TOP_SHOWN - 1;
+		while (pos > 0 && top_ticks[pos - 1] < grew) {
+			top[pos] = top[pos - 1];
+			top_ticks[pos] = top_ticks[pos - 1];
+			pos--;
+		}
+		top[pos] = i;
+		top_ticks[pos] = grew;
+	}
+	if (shown == 0) {
+		return;
+	}
+
+	char text[256];
+	size_t used = 0;
+	for (int n = 0; n < shown && used < sizeof(text); n++) {
+		const cpu_mark_t *m = &cpu_fresh[top[n]];
+		char path[64], comm[32] = "?";
+		if (m->thread) {
+			snprintf(path, sizeof(path), "/proc/self/task/%d/comm", m->id);
+		} else {
+			snprintf(path, sizeof(path), "/proc/%d/comm", m->id);
+		}
+		FILE *f = fopen(path, "r");
+		if (f) {
+			if (fgets(comm, sizeof(comm), f)) {
+				comm[strcspn(comm, "\n")] = '\0';
+			}
+			fclose(f);
+		}
+		int len = snprintf(text + used, sizeof(text) - used, "%s%s%s %lld%%", n ? ", " : "", m->thread ? "player:" : "",
+						   comm, top_ticks[n] * 100 / total_ticks);
+		if (len < 0) {
+			break;
+		}
+		used += (size_t)len;
+	}
+	fprintf(stderr, "audio[%ld]: the core went to: %s\n", now, text);
+}
+
+static void health_sample_system(health_t *h) {
+	if (!system_ticks(&h->sys_total, &h->sys_idle)) {
+		h->sys_total = h->sys_idle = -1;
+	}
+	h->ui_ticks = interface_ticks();
+	h->bluealsa_ticks = output_is_bluetooth() ? bluealsa_ticks() : -1;
+	cpu_marks_take();
 }
 
 static void health_start(health_t *h) {
@@ -1904,6 +2067,9 @@ static void health_tick(health_t *h, int rate, int out_rate, int bits) {
 			}
 			fprintf(stderr, "audio[%ld]: the core over the same span: idle %d%%, interface %d%%%s\n", now, idle_pct,
 					ui_pct, ba);
+			if (idle_pct < CPU_TOP_IDLE_PCT) {
+				cpu_top_report(now, dt);
+			}
 		}
 	}
 	health_start(h);
@@ -2211,6 +2377,73 @@ static snd_pcm_sframes_t pcm_write_bluetooth(snd_pcm_t *pcm, const void *buf, sn
 
 static bool playback_rt;
 
+// The stream the thread's priority follows, its buffer, and how much has been
+// written to it since it last stopped playing.
+static snd_pcm_t *follow_pcm;
+
+// ---------------------------------------------------------------------------
+// The link between this player and bluealsa
+//
+// A Bluetooth stream crosses three threads on its way out: this playback
+// thread fills the PCM's buffer (SCHED_RR 10 while it plays), bluealsa's
+// encoder empties the daemon's FIFO (SCHED_FIFO 12 with io_rt_priority, see
+// bluetooth.c) -- and between the two, inside this process, the ALSA plugin's
+// own "pcm-io" thread copies the buffer into the FIFO at the pace of the
+// clock.
+//
+// That middle thread is created by snd_pcm_start(), which runs inside the
+// write that fills the buffer -- the one moment this thread is deliberately
+// NOT real-time (see above) -- and a new thread takes the creator's
+// scheduling. So the one link of the chain that has to keep time ran at the
+// interface's level, and anything that keeps the core busy for a while (a
+// download's TLS and card writes, a flood of log lines) starved it: the
+// encoder ran dry, and when the thread got the core back it caught up in one
+// burst, emptied the buffer and reported an underrun. The 1.2.3 device log has
+// both: "write error: Broken pipe" during a Yandex download under LDAC 990,
+// and again in a five-second freeze with the core never idle.
+//
+// So once a Bluetooth stream is running, its pcm-io thread is put between the
+// two others, at SCHED_RR 11. It sleeps between periods and blocks on the
+// FIFO, so this costs no time; it only decides who goes first.
+// ---------------------------------------------------------------------------
+#define BT_IO_RT_PRIORITY (PLAYBACK_RT_PRIORITY + 1)
+
+static void bluetooth_io_thread_rt(void) {
+#ifndef HOST_BUILD
+	DIR *tasks = opendir("/proc/self/task");
+	if (!tasks) {
+		return;
+	}
+	struct dirent *de;
+	while ((de = readdir(tasks)) != NULL) {
+		pid_t tid = (pid_t)atoi(de->d_name);
+		if (tid <= 0) {
+			continue;
+		}
+		char path[64], comm[32] = "";
+		snprintf(path, sizeof(path), "/proc/self/task/%d/comm", (int)tid);
+		FILE *f = fopen(path, "re");
+		if (!f) {
+			continue;
+		}
+		bool io = fgets(comm, sizeof(comm), f) && strcmp(comm, "pcm-io\n") == 0;
+		fclose(f);
+		if (!io || sched_getscheduler(tid) == SCHED_RR) {
+			continue;
+		}
+		struct sched_param param = {.sched_priority = BT_IO_RT_PRIORITY};
+		if (sched_setscheduler(tid, SCHED_RR, &param) == 0) {
+			fprintf(stderr, "audio[%ld]: bluealsa's pcm-io thread %d at SCHED_RR %d\n", log_ms(), (int)tid,
+					BT_IO_RT_PRIORITY);
+		} else {
+			fprintf(stderr, "audio: bluealsa's pcm-io thread %d stays at normal priority: %s\n", (int)tid,
+					strerror(errno));
+		}
+	}
+	closedir(tasks);
+#endif
+}
+
 static void playback_set_rt(bool on) {
 	if (on == playback_rt) {
 		return;
@@ -2219,11 +2452,12 @@ static void playback_set_rt(bool on) {
 	if (pthread_setschedparam(pthread_self(), on ? SCHED_RR : SCHED_OTHER, &param) == 0) {
 		playback_rt = on;
 	}
+	// The stream has just started: on Bluetooth that is when the plugin's
+	// thread exists, freshly made at the level this one had a moment ago.
+	if (on && follow_pcm && pcm_is_bluetooth(follow_pcm)) {
+		bluetooth_io_thread_rt();
+	}
 }
-
-// The stream the thread's priority follows, its buffer, and how much has been
-// written to it since it last stopped playing.
-static snd_pcm_t *follow_pcm;
 static snd_pcm_uframes_t follow_buffer;
 static snd_pcm_uframes_t follow_filled;
 
@@ -3083,6 +3317,159 @@ static int bluetooth_decimation(int sample_rate, int channels, int out_bits, boo
 	return sink_rate ? decimate_factor_for(sample_rate, (int)sink_rate) : 1;
 }
 
+// ---------------------------------------------------------------------------
+// The stream to the link's rate, when alsa would do it linearly
+//
+// The player keeps a Bluetooth link at one rate (see open_bluetooth_at_rate),
+// and a stream at another rate was converted by the plug in front of
+// bluealsa's PCM -- whose only converter on this firmware is alsa-lib's linear
+// interpolator. Measured, 44.1 to 48 kHz: the music loses 1.5 dB at 10 kHz,
+// 3.4 at 15 and 6.3 at 20, and its images come back into the audible band
+// 20 dB under a 10 kHz tone (a cymbal at 10 kHz leaves a ghost at 13.9).
+// Upsampling to 96 kHz droops the same way.
+//
+// Two of those conversions are what most listening over Bluetooth goes
+// through, and both are done here instead, after the effects:
+//
+//   44.1 -> 48 kHz   "Auto", the default: bluealsa runs nearly every pair of
+//                    headphones at 48 kHz, and most music is 44.1. The
+//                    polyphase filter of resample.h.
+//   x2 to 96 kHz     LDAC on "96 kHz": a 48 kHz stream, or a 44.1 kHz one
+//                    after the step above. The half-band of decimate.h, run
+//                    as an interpolator.
+//
+// "The stream" is what reaches the device: a 88.2 or 176.4 kHz track (and DSD)
+// is first halved by the decimator, and 44.1 kHz is what it then is. The
+// device is opened at the link's rate in S32, so the plug has nothing left to
+// convert but the sample format (S32 to S16 for SBC and AAC, which bluealsa
+// takes at 16 bits; LDAC takes S32 as it is). About 3 million multiply-adds a
+// second for the first step in stereo, 1.2 million for the second.
+//
+//   [bluetooth]
+//   resampler = quality   this (the default)
+//             = fast      leave it to alsa's linear converter, as before 1.2.4
+//
+// The position, the fade and every byte count stay in the track's frames, as
+// with the decimator; only what goes into the write is at the link's rate.
+// ---------------------------------------------------------------------------
+#define BT_RESAMPLE_FROM 44100
+#define BT_RESAMPLE_TO 48000
+
+typedef struct {
+	bool on;
+	bool to48;	// 44.1 -> 48 kHz
+	bool twice; // then x2
+	resampler_t filter;
+	interp2_t doubler;
+	int32_t *wide; // a 16-bit block widened to S32
+	int32_t *out;  // the block at 48 kHz
+	int32_t *out2; // ... and at twice that
+	size_t room;   // input frames the buffers are sized for
+} bt_resample_t;
+
+// The link's rate when the `rate` stream should be converted to it here; 0 to
+// leave the stream as it is.
+static int bt_resample_target(int rate, int channels) {
+	if (channels < 1 || channels > RESAMPLE_CHANNELS_MAX || !resample_quality_wanted()) {
+		return 0;
+	}
+	int link = 0;
+#ifdef HOST_BUILD
+	// The emulator has no Bluetooth. SONIX_TEST_RESAMPLE=48000 or 96000 runs
+	// this path into its null device as if the link were at that rate, so the
+	// loop around it can be watched there.
+	const char *test = getenv("SONIX_TEST_RESAMPLE");
+	if (test) {
+		link = atoi(test) == 96000 ? 96000 : BT_RESAMPLE_TO;
+	}
+#endif
+	// "follow_track_rate" lets bluealsa's plugin move the link itself.
+	if (!link && output_is_bluetooth() && !config_get_int("bluetooth", "follow_track_rate", 0)) {
+		link = (int)bluetooth_sink_rate();
+	}
+	if (rate == BT_RESAMPLE_FROM && (link == BT_RESAMPLE_TO || link == 2 * BT_RESAMPLE_TO)) {
+		return link;
+	}
+	if (rate == BT_RESAMPLE_TO && link == 2 * BT_RESAMPLE_TO) {
+		return link;
+	}
+	return 0;
+}
+
+static bool bt_resample_open(bt_resample_t *r, int rate, int link, int channels) {
+	memset(r, 0, sizeof(*r));
+	r->to48 = rate == BT_RESAMPLE_FROM;
+	r->twice = link == 2 * BT_RESAMPLE_TO;
+	if (r->to48 && resample_init(&r->filter, channels) != 0) {
+		return false;
+	}
+	if (r->twice && interp2_init(&r->doubler, channels) != 0) {
+		return false;
+	}
+	r->on = r->to48 || r->twice;
+	return r->on;
+}
+
+static void bt_resample_reset(bt_resample_t *r) {
+	if (r->to48) {
+		resample_reset(&r->filter);
+	}
+	if (r->twice) {
+		interp2_reset(&r->doubler);
+	}
+}
+
+static void bt_resample_close(bt_resample_t *r) {
+	free(r->wide);
+	free(r->out);
+	free(r->out2);
+	memset(r, 0, sizeof(*r));
+}
+
+// Grows `*buffer` to `samples` S32 samples; false when there is no memory.
+static bool grow_s32(int32_t **buffer, size_t samples) {
+	int32_t *bigger = realloc(*buffer, samples * sizeof(int32_t));
+	if (!bigger) {
+		return false;
+	}
+	*buffer = bigger;
+	return true;
+}
+
+// `frames` frames of the chain's output (S16 or S32), converted. The block at
+// the link's rate and its length, or NULL when there was no memory for it.
+static const int32_t *bt_resample_block(bt_resample_t *r, const void *in, int bits, int frames, int channels,
+										int *made) {
+	*made = 0;
+	if ((size_t)frames > r->room) {
+		size_t at48 = (size_t)resample_out_max(frames) * (size_t)channels;
+		if (!grow_s32(&r->wide, (size_t)frames * (size_t)channels) || !grow_s32(&r->out, at48) ||
+			!grow_s32(&r->out2, 2 * at48)) {
+			return NULL;
+		}
+		r->room = (size_t)frames;
+	}
+	const int32_t *from = in;
+	if (bits == 16) {
+		const short *narrow = in;
+		for (int i = 0; i < frames * channels; i++) {
+			r->wide[i] = (int32_t)narrow[i] * 65536;
+		}
+		from = r->wide;
+	}
+	int count = frames;
+	if (r->to48) {
+		count = resample_s32(&r->filter, from, count, r->out);
+		from = r->out;
+	}
+	if (r->twice) {
+		count = interp2_s32(&r->doubler, from, count, r->out2);
+		from = r->out2;
+	}
+	*made = count;
+	return from;
+}
+
 static void play_decoded_file(const char *filepath, decode_format_t format) {
 	decoder_t *dec = decoder_open(filepath, format);
 	if (!dec) {
@@ -3179,6 +3566,12 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		unsigned sink = bluetooth_sink_rate();
 		decim_factor = decimate_factor_for(sample_rate, sink ? (int)sink : 44100);
 	}
+	// On a link held at 96 kHz a 88.2 kHz stream has no clean way up: halved
+	// once more, it takes the 44.1 kHz route below, to 48 and then x2.
+	if (!passthrough && out_bits == 32 && sample_rate / decim_factor == 2 * BT_RESAMPLE_FROM &&
+		decim_factor * 2 <= DECIMATE_MAX && bt_resample_target(BT_RESAMPLE_FROM, channels) == 2 * BT_RESAMPLE_TO) {
+		decim_factor *= 2;
+	}
 	if (decim_factor > 1 && decimate_init(&decim, decim_factor, channels) != 0) {
 		decim_factor = 1;
 	}
@@ -3186,6 +3579,27 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	if (decim_factor > 1) {
 		fprintf(stderr, "audio: the %d Hz track is decimated by %d to %d Hz before the effects, for the headphones\n",
 				sample_rate, decim_factor, out_rate);
+	}
+
+	// What the device is opened with: the chain's rate and width, or the
+	// link's rate in S32 when the stream is converted here (see bt_resample_t).
+	bt_resample_t resampler = {0};
+	int link_rate = passthrough ? 0 : bt_resample_target(out_rate, channels);
+	if (link_rate && !bt_resample_open(&resampler, out_rate, link_rate, channels)) {
+		bt_resample_close(&resampler);
+	}
+	if (!resampler.to48) {
+		resample_free(); // the shared table goes when no stream uses it
+	}
+	int dev_rate = resampler.on ? link_rate : out_rate;
+	int dev_bits = resampler.on ? 32 : out_bits;
+	if (resampler.on) {
+		const char *how = "polyphase";
+		if (resampler.twice) {
+			how = resampler.to48 ? "polyphase to 48 kHz, half-band x2" : "half-band x2";
+		}
+		fprintf(stderr, "audio: the %d Hz stream is resampled to %d Hz here (%s), not by alsa's linear converter\n",
+				out_rate, dev_rate, how);
 	}
 
 	pthread_mutex_lock(&audio_mutex);
@@ -3226,28 +3640,40 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// The previous track's PCM, if it stayed open and suits this one too: that
 	// is the whole of gapless. Never for DoP -- see the comment above
 	// gapless_release().
-	snd_pcm_t *pcm_handle = passthrough ? NULL : gapless_take(channels, out_rate, out_bits, &period_size);
+	snd_pcm_t *pcm_handle = passthrough ? NULL : gapless_take(channels, dev_rate, dev_bits, &period_size);
 	playback_follow(pcm_handle);
 	if (pcm_handle) {
 		pcm_device_open = true;
 	} else {
-		pcm_handle = open_pcm_device(channels, out_rate, out_bits, &period_size);
+		pcm_handle = open_pcm_device(channels, dev_rate, dev_bits, &period_size);
 	}
-	if (!pcm_handle && out_bits == 32 && !passthrough && last_open_err == -ENOMEM) {
+	if (!pcm_handle && resampler.on && last_open_err != -ENOMEM) {
+		// The link refused 48 kHz S32: the stream goes as it did before, and
+		// the plug converts it.
+		fprintf(stderr, "audio: the resampled stream would not open; alsa converts the %d Hz one instead\n", out_rate);
+		bt_resample_close(&resampler);
+		dev_rate = out_rate;
+		dev_bits = out_bits;
+		pcm_handle = open_pcm_device(channels, dev_rate, dev_bits, &period_size);
+	}
+	if (!pcm_handle && dev_bits == 32 && !passthrough && last_open_err == -ENOMEM) {
 		// Not the device refusing S32: the driver found no memory even for the
 		// smallest buffer. Another open straight away, in any format, asks the
 		// same exhausted kernel for more.
 		fprintf(stderr, "audio: not retried at 16 bit -- the driver is out of memory, not the format refused\n");
-	} else if (!pcm_handle && out_bits == 32 && !passthrough) {
+	} else if (!pcm_handle && dev_bits == 32 && !passthrough) {
 		// If this output cannot do S32 for some reason, 16-bit playback still
 		// beats silence. Not for DoP: sixteen bits cannot carry a marker byte
 		// and a twenty-four bit payload, so half a DoP stream is not quieter
 		// DSD, it is noise.
 		fprintf(stderr, "Audio: S32 open failed, falling back to 16-bit\n");
 		out_bits = 16;
-		// The decimator is S32 only.
+		// The decimator is S32 only, and so is the resampler.
 		decim_factor = 1;
 		out_rate = sample_rate;
+		bt_resample_close(&resampler);
+		dev_rate = out_rate;
+		dev_bits = out_bits;
 		pcm_handle = open_pcm_device(channels, sample_rate, out_bits, &period_size);
 	}
 	if (!pcm_handle && passthrough) {
@@ -3399,6 +3825,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			if (decim_factor > 1) {
 				decimate_reset(&decim);
 			}
+			bt_resample_reset(&resampler);
 
 			// And the starvation flag recorded before the seek: it belonged to
 			// the old position (growfile_seek already clears it; this is the
@@ -3429,6 +3856,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 
 			if (entering) {
 				int64_t rewind_bytes = pause_stop_stream(pcm_handle, frame_bytes) * decim_factor;
+				if (resampler.on) {
+					// What is queued is at the link's rate.
+					rewind_bytes = rewind_bytes * out_rate / dev_rate;
+				}
 				if (rewind_bytes > 0) {
 					// The frames still queued were never heard: put the decoder
 					// back over them so resuming carries on from where the
@@ -3440,6 +3871,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 						if (decim_factor > 1) {
 							decimate_reset(&decim);
 						}
+						bt_resample_reset(&resampler);
 						bytes_played = (int64_t)(resume_frame * frame_bytes);
 						pthread_mutex_lock(&audio_mutex);
 						progress_floor_secs = progress_current_secs; // the bar stays put
@@ -3509,7 +3941,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				auto_set_output();
 				{
 					snd_pcm_uframes_t new_period = period_size;
-					pcm_handle = open_pcm_device(channels, out_rate, out_bits, &new_period);
+					pcm_handle = open_pcm_device(channels, dev_rate, dev_bits, &new_period);
 					if (!pcm_handle) {
 						fprintf(stderr, "Audio: cannot reopen the device after a pause\n");
 						audio_command = AUDIO_CMD_STOP;
@@ -3553,7 +3985,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			int now_route = alsa_output_key();
 			if (now_route != track_route) {
 				track_route = now_route;
-				if (!pcm_reroute(&pcm_handle, channels, out_rate, out_bits, &period_size)) {
+				if (!pcm_reroute(&pcm_handle, channels, dev_rate, dev_bits, &period_size)) {
 					fprintf(stderr, "Audio: reroute failed\n");
 					pthread_mutex_lock(&audio_mutex);
 					audio_command = AUDIO_CMD_STOP;
@@ -3762,9 +4194,31 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			}
 		}
 
+		// To the link's rate, last: the effects ran at the track's.
+		const void *out_block = buffer;
+		uint64_t out_frames = frames_read;
+		if (resampler.on) {
+			int made = 0;
+			out_block = bt_resample_block(&resampler, buffer, out_bits, (int)frames_read, channels, &made);
+			if (!out_block) {
+				fprintf(stderr, "Audio: Out of memory for the resampler\n");
+				pthread_mutex_lock(&audio_mutex);
+				audio_command = AUDIO_CMD_STOP;
+				playback_status = AUDIO_STATUS_STOPPED;
+				pthread_mutex_unlock(&audio_mutex);
+				break;
+			}
+			out_frames = (uint64_t)made;
+			if (out_frames == 0) {
+				// The filter holds it until the next block.
+				bytes_played += (int64_t)input_frames * frame_bytes;
+				continue;
+			}
+		}
+
 		health_lap(&health, STAGE_EFFECTS);
 		snd_pcm_sframes_t written =
-			pcm_write_recover(&pcm_handle, buffer, frames_read, channels, out_rate, out_bits, &period_size);
+			pcm_write_recover(&pcm_handle, out_block, out_frames, channels, dev_rate, dev_bits, &period_size);
 		health_lap(&health, STAGE_WRITE);
 
 		if (written == -EINTR) {
@@ -3787,16 +4241,16 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		}
 
 		bt_seek_probe_report(pcm_handle);
-		bt_start_probe_note(pcm_handle, written, out_rate);
+		bt_start_probe_note(pcm_handle, written, dev_rate);
 
 		// The position moves by INPUT frames: at 1.5x, one period written to
 		// the card is a period and a half of the book. Scaled by how much of
 		// the block the card actually took, for the rare partial write.
-		if (frames_read > 0) {
-			bytes_played += (int64_t)((double)written * frame_bytes * (double)input_frames / (double)frames_read);
+		if (out_frames > 0) {
+			bytes_played += (int64_t)((double)written * frame_bytes * (double)input_frames / (double)out_frames);
 		}
-		health_tick(&health, sample_rate, out_rate, source_bits);
-		host_pace(written, out_rate);
+		health_tick(&health, sample_rate, dev_rate, source_bits);
+		host_pace(written, dev_rate);
 		pthread_mutex_lock(&audio_mutex);
 		report_position((double)bytes_played / bytes_per_sec);
 		pthread_mutex_unlock(&audio_mutex);
@@ -3815,7 +4269,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	bool keep_open = pcm_handle && gapless_enabled && played_to_the_end && !is_paused && !passthrough &&
 					 (!pcm_is_bluetooth(pcm_handle) || bt_hold_usable(pcm_handle));
 	if (keep_open) {
-		gapless_hold(pcm_handle, channels, out_rate, out_bits, period_size);
+		gapless_hold(pcm_handle, channels, dev_rate, dev_bits, period_size);
 		pcm_handle = NULL;
 	}
 
@@ -3873,6 +4327,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		set_dac_dop(0);
 	}
 	free(buffer);
+	bt_resample_close(&resampler);
 	speed_close(stretch);
 	decoder_close(dec);
 }
@@ -4528,6 +4983,10 @@ static long external_checked_ms;		// when the two above were last compared
 static unsigned external_underruns;
 static long external_underrun_logged_ms;
 
+// The frames with the software volume applied, when it is in circuit.
+static unsigned char *external_scaled;
+static size_t external_scaled_size;
+
 // How often the check below is worth making. The jack is a sysfs read and the
 // device name a string compare under a mutex, so it is not expensive -- but at
 // 44.1 kHz a receiver hands over a chunk every eleven milliseconds, and doing
@@ -4683,6 +5142,36 @@ int audio_external_write(const void *frames, int count) {
 	if (!external_follow_output()) {
 		pthread_mutex_unlock(&external_lock);
 		return 0;
+	}
+
+	// The software volume, as the decode loop applies it: the one way to set
+	// the level of a USB device with no volume control of its own. Without it
+	// the radio, AirPlay and the Bluetooth receiver played on such a device at
+	// full scale whatever the volume said. On a copy: the caller's frames are
+	// its own.
+	if (swvolume_active()) {
+		size_t bytes = (size_t)count * (size_t)external_frame_bytes;
+		if (bytes > external_scaled_size) {
+			unsigned char *grown = realloc(external_scaled, bytes);
+			if (!grown) {
+				pthread_mutex_unlock(&external_lock);
+				return 0;
+			}
+			external_scaled = grown;
+			external_scaled_size = bytes;
+		}
+		memcpy(external_scaled, frames, bytes);
+		int samples = count * external_channels;
+		if (external_bits == 8) {
+			swvolume_apply_u8(external_scaled, samples);
+		} else if (external_bits == 16) {
+			swvolume_apply_s16((short *)external_scaled, samples);
+		} else if (external_bits == 24) {
+			swvolume_apply_s24_3le(external_scaled, samples);
+		} else {
+			swvolume_apply_s32((int32_t *)external_scaled, samples);
+		}
+		frames = external_scaled;
 	}
 
 	int written = 0;

@@ -14,6 +14,7 @@
 #include <string.h>
 #include <sys/ioctl.h>
 #include <sys/prctl.h>
+#include <sys/resource.h>
 #include <sys/socket.h>
 #include <sys/stat.h>
 #include <sys/types.h>
@@ -27,6 +28,7 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/logging.h"
+#include "src/system/core/utils.h"
 
 #define BTLOG_SUBDIR ".local"
 #define BTLOG_FILE_NAME "bluetooth.log"
@@ -314,6 +316,10 @@ static void *writer_main(void *arg) {
 	(void)arg;
 	static char out[64 * 1024];
 
+	// Below the interface: the ring absorbs a card that is slow to take the
+	// lines, and a log that falls behind loses lines, not the music's turn.
+	thread_be_low_priority("btlog writer");
+
 	pthread_mutex_lock(&ring_lock);
 	for (;;) {
 		if (ring_len == 0 && !ring_lost) {
@@ -367,7 +373,18 @@ static void *writer_main(void *arg) {
 //     decoding comes with the last piece, or data on a channel opened before
 //     btmon started. Kept when the channel line says it is short: signalling
 //     is a few bytes, audio hundreds, and a command on a channel btmon never
-//     saw opened only shows as bytes.
+//     saw opened only shows as bytes;
+//   - the audio again, when btmon takes it for signalling. It tells the two
+//     AVDTP channels apart by the order it saw them open in, so when the
+//     signalling channel predates btmon and the stream is built again under it
+//     -- a codec or link-rate change does exactly that -- the new media channel
+//     is the first one it knows and every packet on it is "decoded": the RTP
+//     header reads as signal 0x20 and up, "AVDTP: Reserved", and the rest of
+//     the packet follows as bytes. Under LDAC 990 that is some 180 packets and
+//     600 kB of text a second, all of it written to the card: the core never
+//     idles and the interface stalls behind it. A long packet whose decoding
+//     is a reserved signal is that audio; real signalling is short and never
+//     uses a reserved identifier.
 //
 // Everything else goes through, with the escape sequences of btmon's colours
 // taken out and the header padding squeezed.
@@ -387,6 +404,7 @@ typedef struct {
 	block_state_t state;
 	char held[2][LINE_MAX_LEN + 1]; // the header and the channel line
 	int held_count;
+	bool held_long; // the packet's channel line said it is longer than signalling ever is
 	unsigned long skipped; // packets left out since the last line that went through
 	char line[LINE_MAX_LEN + 1]; // the line being read, colours already out
 	size_t line_len;
@@ -440,6 +458,15 @@ static bool hexdump_line(const char *line) {
 	return hex0 && hex1 && line[2] == ' ' && (line[3] == ' ' || (line[3] && line[4] && line[5] == ' '));
 }
 
+// "      AVDTP: Reserved (0x20) Command (0x00) type 0x00 label 8 nosp 0" -- an
+// RTP header read as AVDTP signalling. Valid signal identifiers stop at 0x0d.
+static bool media_as_signalling(const char *line) {
+	while (*line == ' ') {
+		line++;
+	}
+	return starts_with(line, "AVDTP: Reserved (0x");
+}
+
 // Runs of three or more spaces down to two, in place.
 static void squeeze_padding(char *line) {
 	char *out = line;
@@ -463,6 +490,7 @@ static void monitor_line(char *line) {
 			monitor.skipped++;
 		}
 		monitor.held_count = 0;
+		monitor.held_long = false;
 
 		squeeze_padding(line);
 		if (starts_with(line, "> HCI Event: Number of Completed Packets")) {
@@ -489,7 +517,15 @@ static void monitor_line(char *line) {
 
 	long payload = channel_payload(line);
 	if (payload > SHORT_PAYLOAD_MAX) {
+		monitor.held_long = true;
 		monitor_hold(line);
+		return;
+	}
+	if (monitor.held_long && media_as_signalling(line)) {
+		// Audio that btmon decoded as signalling: left out, bytes and all.
+		monitor.state = BLOCK_DROP;
+		monitor.held_count = 0;
+		monitor.skipped++;
 		return;
 	}
 	if (payload < 0 && hexdump_line(line)) {
@@ -599,6 +635,11 @@ static void btmon_start(void) {
 			_exit(0);
 		}
 		setsid();
+		// Below the interface and the audio. Every packet on the air is a few
+		// lines of its text, and a btmon that cannot keep up only loses
+		// monitor packets -- the kernel drops what its socket cannot hold --
+		// where one at the interface's level takes the core from the player.
+		setpriority(PRIO_PROCESS, 0, 10);
 		// Away from wherever the player stands, which can be the card.
 		if (chdir("/") != 0) {
 			_exit(126);
@@ -782,6 +823,10 @@ static void player_tap(const char *line, size_t len) {
 static void *reader_main(void *arg) {
 	(void)arg;
 	char buffer[4096];
+
+	// Named for the watchdog's thread dump. Left at the interface's level:
+	// bluetoothd waits in syslog() for as long as this does not read.
+	prctl(PR_SET_NAME, "btlog reader", 0, 0, 0);
 
 	syslog_open();
 

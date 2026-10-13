@@ -33,8 +33,9 @@
 // Samples are interleaved S32 at 24-bit precision, like decimate.h: the low 8
 // bits are dropped on the way in and come back as zero.
 //
-// Not wired into the playback path yet: see audio.c's Bluetooth chain, and the
-// [bluetooth] resampler setting below. Any thread, one resampler per stream.
+// Used by audio.c for a 44.1 kHz stream going to a Bluetooth link at 48 kHz
+// (see bt_resample_t there), under the [bluetooth] resampler setting below.
+// Any thread, one resampler per stream.
 
 #define RESAMPLE_L 160
 #define RESAMPLE_M 147
@@ -68,9 +69,9 @@ int resample_s32(resampler_t *r, const int32_t *in, int in_frames, int32_t *out)
 // Gives back the coefficient table. Only when no resampler is in use.
 void resample_free(void);
 
-// [bluetooth] resampler = fast | quality. "fast" (the default) leaves 44.1 to
-// 48 kHz to alsa-lib's linear converter, as before; "quality" is this filter.
-// Read only -- nothing acts on it until the playback path is wired.
+// [bluetooth] resampler = quality | fast. "quality" (the default, and anything
+// that is not "fast") is this filter; "fast" leaves 44.1 to 48 kHz to
+// alsa-lib's linear converter, as before 1.2.4.
 bool resample_quality_wanted(void);
 
 #endif
