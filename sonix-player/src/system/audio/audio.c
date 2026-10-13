@@ -4983,6 +4983,10 @@ static long external_checked_ms;		// when the two above were last compared
 static unsigned external_underruns;
 static long external_underrun_logged_ms;
 
+// The frames with the software volume applied, when it is in circuit.
+static unsigned char *external_scaled;
+static size_t external_scaled_size;
+
 // How often the check below is worth making. The jack is a sysfs read and the
 // device name a string compare under a mutex, so it is not expensive -- but at
 // 44.1 kHz a receiver hands over a chunk every eleven milliseconds, and doing
@@ -5138,6 +5142,36 @@ int audio_external_write(const void *frames, int count) {
 	if (!external_follow_output()) {
 		pthread_mutex_unlock(&external_lock);
 		return 0;
+	}
+
+	// The software volume, as the decode loop applies it: the one way to set
+	// the level of a USB device with no volume control of its own. Without it
+	// the radio, AirPlay and the Bluetooth receiver played on such a device at
+	// full scale whatever the volume said. On a copy: the caller's frames are
+	// its own.
+	if (swvolume_active()) {
+		size_t bytes = (size_t)count * (size_t)external_frame_bytes;
+		if (bytes > external_scaled_size) {
+			unsigned char *grown = realloc(external_scaled, bytes);
+			if (!grown) {
+				pthread_mutex_unlock(&external_lock);
+				return 0;
+			}
+			external_scaled = grown;
+			external_scaled_size = bytes;
+		}
+		memcpy(external_scaled, frames, bytes);
+		int samples = count * external_channels;
+		if (external_bits == 8) {
+			swvolume_apply_u8(external_scaled, samples);
+		} else if (external_bits == 16) {
+			swvolume_apply_s16((short *)external_scaled, samples);
+		} else if (external_bits == 24) {
+			swvolume_apply_s24_3le(external_scaled, samples);
+		} else {
+			swvolume_apply_s32((int32_t *)external_scaled, samples);
+		}
+		frames = external_scaled;
 	}
 
 	int written = 0;
