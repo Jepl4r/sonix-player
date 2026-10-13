@@ -9,6 +9,7 @@
 
 #include "src/gui/library/browser.h"
 #include "src/gui/library/audiobookextras.h"
+#include "src/gui/nowplaying/btline.h"
 #include "src/gui/nowplaying/chapters.h"
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/nowplaying/coverloader.h"
@@ -3480,6 +3481,10 @@ static void fav_btn_event_cb(lv_event_t *e) {
 
 // The format line, the way the stock player writes it: "16/44.1 FLAC".
 static void update_format_label(const device_state_t *state) {
+	// The Bluetooth line under the artist (btline.h) is the same kind of
+	// question, asked at the same moments.
+	btline_refresh();
+
 	// The mark beside it in Studio, which is the same question asked of the
 	// stream rather than of the library. Here because this is where the format
 	// line is worked out, and the two say one thing between them.
@@ -4772,7 +4777,12 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(song_info, 0, 0);
 	lv_obj_set_style_pad_column(song_info, 10, 0);
 	lv_obj_set_flex_flow(song_info, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	// Both columns from the top: the title is lined up with the star by hand
+	// (align_title_with_star()), and with the columns centred a third line
+	// under the artist (btline.h) would push the star down by half a line and
+	// the title with it, onto the artist. With the star's column the taller,
+	// as it is without that line, the two placements are the same.
+	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(song_info, false);
 	// Every time the row is laid out (a new text size, the star shown or
 	// hidden, the row coming back from another arrangement) the title is lined
@@ -4812,6 +4822,10 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_clickable(song_artist_label, true);
 	lv_obj_set_ext_click_area(song_artist_label, 8);
 	lv_obj_add_event_cb(song_artist_label, artist_label_clicked_cb, LV_EVENT_CLICKED, NULL);
+
+	// Under the artist, while the sound goes to Bluetooth headphones: what the
+	// link carries and any rate conversion on the way (btline.h).
+	btline_create(song_text);
 
 	// Right side: the favourite star over the stream format.
 	lv_obj_t *song_side = lv_obj_create(song_info);

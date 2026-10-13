@@ -148,6 +148,13 @@ void audio_get_progress(double *current_secs, double *total_secs);
 void audio_get_stream_info(int *sample_rate, int *channels);
 int audio_get_stream_bits(void); // source bit depth (16/24/32); 0 while unknown
 
+// The rate the output device was opened at for the track playing: the track's
+// own, or what the player made of it on the way -- halved for a link that
+// does not carry it, or resampled 44.1 -> 48 kHz for the headphones (the
+// "resampled to ... here" line in the log). 0 while nothing is open. A rate
+// that differs from the Bluetooth link's after this is converted by alsa.
+int audio_get_device_rate(void);
+
 // What is inside the file currently playing, for the format line in the player
 // and for the details page. See decode.h: a lossy format has no bit depth of
 // its own and is described by bitrate instead.
