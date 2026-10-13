@@ -13,6 +13,7 @@
 #include <sys/statvfs.h>
 #include <sys/wait.h>
 #include <poll.h>
+#include <sys/inotify.h>
 #include <sys/ioctl.h>
 #include <sys/mount.h>
 #include <sys/socket.h>
@@ -35,6 +36,7 @@
 #include "src/system/gearboy/gbdb.h"
 #include "src/system/input/hookclicks.h"
 #include "src/system/input/keymap.h"
+#include "src/system/core/config.h"
 #include "src/system/core/panel.h"
 #include "src/system/streaming/provider.h"
 #include "src/system/streaming/podcastcache.h"
@@ -1931,6 +1933,11 @@ static void *input_thread_func(void *arg) {
 	return NULL;
 }
 
+// The nodes given a thread at start-up, for the line that says how the
+// buttons are read (log_button_reading). Written before that line, by the
+// thread that starts the services, and read by it.
+static char button_nodes[192];
+
 static void start_input_thread_fd(const char *node, bool headset, int fd) {
 	input_node_t *info = calloc(1, sizeof(*info));
 	if (!info) {
@@ -1943,8 +1950,78 @@ static void start_input_thread_fd(const char *node, bool headset, int fd) {
 	pthread_t thread;
 	if (pthread_create(&thread, NULL, input_thread_func, info) == 0) {
 		pthread_detach(thread);
+		size_t used = strlen(button_nodes);
+		const char *base = strrchr(node, '/');
+		snprintf(button_nodes + used, sizeof(button_nodes) - used, "%s%s", used ? ", " : "", base ? base + 1 : node);
 	} else {
 		free(info);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// How the buttons are read, said once at start-up
+//
+// Nothing in this player polls a button. Each node has a thread asleep in
+// poll() on it (input_thread_func above), woken by the kernel when a key goes
+// down or up, and by a deadline only while a key is held -- the volume repeat,
+// the power key's long press, the seek -- or a double click is being waited
+// for. With nothing held it does not wake at all, screen on or off.
+//
+// Underneath, in the kernel, there are two kinds of button:
+//   - power and next are GPIO keys (keyboard_gpio_add): an interrupt per edge,
+//     and they can wake the device from suspend;
+//   - play, volume up and volume down share a resistor ladder on the ADC
+//     (keyboard_adc_multifunc, "jz adc keyboard", on the R1; keyboard_adc on
+//     the R3 Pro II). The ADC has no interrupt for a key, so the driver reads
+//     it in a loop -- a kernel worker converts the ladder, looks the voltage up
+//     in its key table and sleeps adc_key_detectime ms -- for as long as the
+//     node is open: every 30 ms on the R1 (keyboard_adc_multifunc.sh), some 33
+//     readings a second, screen on or off. Only suspend stops it, through the
+//     driver's own suspend hook.
+//
+// That period is deliberately left alone with the screen off. A press is seen
+// only if a reading falls inside it -- the driver has no debounce to stretch
+// one -- so every millisecond added to the period is a millisecond of quick
+// taps that go unseen: at the stock 100 ms the second click of a double click
+// went missing, which is why it is 30. And the driver takes the period once,
+// when its worker starts, so changing it means closing the node and opening it
+// again: an event nobody read in between is gone, and a release the old worker
+// never reported leaves the kernel believing the key is still down, so its
+// next press is dropped as a repeat. All of that to spare an estimated few
+// hundred microseconds of CPU a second, while music plays -- the only time the
+// screen is off and the device awake for long (paused, it suspends after a
+// minute).
+//
+// The line names the nodes watched and the ladder's period as the kernel has
+// it, so a device log answers "is anything polling the buttons" by itself.
+static int adc_ladder_period_ms(void) {
+	static const char *const PARAMS[] = {
+		"/sys/module/keyboard_adc_multifunc/parameters/adc_key_detectime", // R1
+		"/sys/module/keyboard_adc/parameters/adc_key_detectime",		   // R3 Pro II
+	};
+	for (size_t i = 0; i < sizeof(PARAMS) / sizeof(PARAMS[0]); i++) {
+		FILE *f = fopen(PARAMS[i], "r");
+		if (!f) {
+			continue;
+		}
+		int ms = -1;
+		if (fscanf(f, "%d", &ms) != 1) {
+			ms = -1;
+		}
+		fclose(f);
+		if (ms > 0) {
+			return ms;
+		}
+	}
+	return -1;
+}
+
+static void log_button_reading(void) {
+	printf("input: buttons: a thread waits on each of %s (evdev events, nothing polled here)\n",
+		   button_nodes[0] ? button_nodes : "no node");
+	int ladder = adc_ladder_period_ms();
+	if (ladder > 0) {
+		printf("input: the kernel reads the play/volume key ladder every %d ms, screen on or off\n", ladder);
 	}
 }
 
@@ -2114,9 +2191,8 @@ static void start_headset_input_thread(void) {
 //
 // USB-C headphones and dongles with buttons are the same shape: usbhid builds a
 // BUS_USB node when they are plugged in and removes it when they come out. They
-// are read by the same thread, and with Bluetooth off the scan still runs, at
-// USB_INPUT_SCAN_MS. A kernel without usbhid builds no node and the scan finds
-// nothing.
+// are read by the same thread, and with Bluetooth off the scan still looks for
+// them. A kernel without usbhid builds no node and the scan finds nothing.
 // ---------------------------------------------------------------------------
 
 #define BT_INPUT_SCAN_MS 2000
@@ -2182,8 +2258,8 @@ static int bt_input_is_remote(const char *node, bool usb_only) {
 // do nothing, the log then says whether bluez built a node at all, what it
 // called it and what bus it put it on. Cheaper than a line per node per scan,
 // and it is the one dump that answers the question.
-static int bt_input_node_count(void) {
-	DIR *d = opendir("/dev/input");
+static int bt_input_node_count(const char *dir) {
+	DIR *d = opendir(dir);
 	if (!d) {
 		return -1;
 	}
@@ -2469,55 +2545,170 @@ static void *bt_input_thread_func(void *arg) {
 	return NULL;
 }
 
-static void *bt_input_scan_thread(void *arg) {
-	(void)arg;
-	int last_node_count = bt_input_node_count();
-	for (;;) {
-		// With Bluetooth off only a USB remote can appear.
-		bool usb_only = !bluetooth_get_enabled();
-		usleep((usb_only ? USB_INPUT_SCAN_MS : BT_INPUT_SCAN_MS) * 1000);
+// One look at the event nodes: a remote not yet claimed gets its thread.
+static void bt_input_scan(const char *dir, int *last_node_count) {
+	// With Bluetooth off only a USB remote can appear.
+	bool usb_only = !bluetooth_get_enabled();
 
-		int count = bt_input_node_count();
-		if (count >= 0 && count != last_node_count) {
-			// The one line, not the whole of /proc/bus/input/devices. The dump
-			// was what found the AVRCP node in the first place; now that the
-			// node announces itself below, a headset going in and out of its
-			// case would be fifty lines onto the card every couple of seconds.
-			printf("input: /dev/input changed (%d nodes -> %d)\n", last_node_count, count);
-			last_node_count = count;
-		}
+	int count = bt_input_node_count(dir);
+	if (count >= 0 && count != *last_node_count) {
+		// The one line, not the whole of /proc/bus/input/devices. The dump
+		// was what found the AVRCP node in the first place; now that the
+		// node announces itself below, a headset going in and out of its
+		// case would be fifty lines onto the card every couple of seconds.
+		printf("input: %s changed (%d nodes -> %d)\n", dir, *last_node_count, count);
+		*last_node_count = count;
+	}
 
-		DIR *d = opendir("/dev/input");
-		if (!d) {
+	DIR *d = opendir(dir);
+	if (!d) {
+		return;
+	}
+	struct dirent *e;
+	while ((e = readdir(d)) != NULL) {
+		if (strncmp(e->d_name, "event", 5) != 0) {
 			continue;
 		}
-		struct dirent *e;
-		while ((e = readdir(d)) != NULL) {
-			if (strncmp(e->d_name, "event", 5) != 0) {
-				continue;
-			}
-			char node[32];
-			if ((size_t)snprintf(node, sizeof(node), "/dev/input/%s", e->d_name) >= sizeof(node)) {
-				continue;
-			}
-			int bus = bt_input_is_remote(node, usb_only);
-			if (!bus || !bt_input_claim(node)) {
-				continue;
-			}
-			remote_node_t *info = calloc(1, sizeof(*info));
-			if (info) {
-				snprintf(info->node, sizeof(info->node), "%s", node);
-				info->usb = bus == BUS_USB;
-			}
-			pthread_t thread;
-			if (info && pthread_create(&thread, NULL, bt_input_thread_func, info) == 0) {
-				pthread_detach(thread);
-			} else {
-				bt_input_release(node);
-				free(info);
-			}
+		char node[32];
+		if ((size_t)snprintf(node, sizeof(node), "%s/%s", dir, e->d_name) >= sizeof(node)) {
+			continue;
 		}
-		closedir(d);
+		int bus = bt_input_is_remote(node, usb_only);
+		if (!bus || !bt_input_claim(node)) {
+			continue;
+		}
+		remote_node_t *info = calloc(1, sizeof(*info));
+		if (info) {
+			snprintf(info->node, sizeof(info->node), "%s", node);
+			info->usb = bus == BUS_USB;
+		}
+		pthread_t thread;
+		if (info && pthread_create(&thread, NULL, bt_input_thread_func, info) == 0) {
+			pthread_detach(thread);
+		} else {
+			bt_input_release(node);
+			free(info);
+		}
+	}
+	closedir(d);
+}
+
+// ---------------------------------------------------------------------------
+// Noticing a remote arrive
+//
+// The scan above used to run on a clock for as long as the player ran, every
+// two seconds with Bluetooth on and three with it off: the thread woken, the
+// directory listed and every event node opened, asked two ioctls and closed --
+// screen on or off, remote or none, for something that happens a few times a
+// day.
+//
+// /dev/input is watched instead (inotify). The node a remote brings is made
+// there -- by devtmpfs in the kernel, or by mdev -- and the making wakes this
+// thread, which looks at once and once more two seconds later: mdev may still
+// be setting the node up, and bluez can build it a moment before the
+// Bluetooth switch reads as on. A node going away wakes it too, for the log
+// line. Otherwise it sleeps, a minute at a time; the look then is only a net
+// for a node made in some way that tells nobody.
+//
+// A remote is therefore found as soon as its node exists instead of up to
+// three seconds later, and with no remote coming nothing wakes.
+//
+// [power] input_hotplug_watch = 0 goes back to the clock, and so does a kernel
+// that refuses the watch. The start-up line says which ("input: remotes ...").
+// ---------------------------------------------------------------------------
+#define INPUT_WATCH_FOLLOW_UP_MS 2000
+#define INPUT_WATCH_NET_MS 60000
+
+// Where the event nodes are. An emulator test can point it at a directory of
+// its own (SONIX_TEST_INPUT_DIR) to see the watch work on a host without one.
+static const char *remote_input_dir(void) {
+#ifdef HOST_BUILD
+	const char *dir = getenv("SONIX_TEST_INPUT_DIR");
+	if (dir && dir[0]) {
+		return dir;
+	}
+#endif
+	return "/dev/input";
+}
+
+// The watch descriptor, or -1 when the directory is to be looked at on the
+// clock instead.
+static int remote_watch_open(const char *dir) {
+	if (!config_get_int("power", "input_hotplug_watch", 1)) {
+		return -1;
+	}
+	int fd = inotify_init1(IN_NONBLOCK | IN_CLOEXEC);
+	if (fd < 0) {
+		fprintf(stderr, "input: no inotify (%s)\n", strerror(errno));
+		return -1;
+	}
+	if (inotify_add_watch(fd, dir, IN_CREATE | IN_DELETE | IN_MOVED_TO | IN_ATTRIB) < 0) {
+		fprintf(stderr, "input: cannot watch %s (%s)\n", dir, strerror(errno));
+		close(fd);
+		return -1;
+	}
+	return fd;
+}
+
+// Empties the watch's queue. What the events say does not matter -- any of
+// them is a reason to look -- so they are only read away. False when the
+// descriptor has failed.
+static bool remote_watch_drain(int fd) {
+	char buf[1024] __attribute__((aligned(__alignof__(struct inotify_event))));
+	for (;;) {
+		ssize_t n = read(fd, buf, sizeof(buf));
+		if (n > 0) {
+			continue;
+		}
+		if (n < 0 && errno == EINTR) {
+			continue;
+		}
+		return n < 0 && (errno == EAGAIN || errno == EWOULDBLOCK);
+	}
+}
+
+static void *bt_input_scan_thread(void *arg) {
+	(void)arg;
+	const char *dir = remote_input_dir();
+	int last_node_count = bt_input_node_count(dir);
+
+	int watch = remote_watch_open(dir);
+	if (watch >= 0) {
+		printf("input: remotes: %s is watched for new nodes (inotify)\n", dir);
+	} else {
+		printf("input: remotes: %s is looked at every %d s (%d s with Bluetooth off)\n", dir, BT_INPUT_SCAN_MS / 1000,
+			   USB_INPUT_SCAN_MS / 1000);
+	}
+
+	// The first look a moment after start-up either way, as it always was: a
+	// remote connected before the player started has its node already.
+	uint32_t next_look = now_ms() + BT_INPUT_SCAN_MS;
+	for (;;) {
+		if (watch < 0) {
+			bool usb_only = !bluetooth_get_enabled();
+			usleep((usb_only ? USB_INPUT_SCAN_MS : BT_INPUT_SCAN_MS) * 1000);
+			bt_input_scan(dir, &last_node_count);
+			continue;
+		}
+
+		uint32_t now = now_ms();
+		int timeout = (int32_t)(next_look - now) > 0 ? (int)(next_look - now) : 0;
+		struct pollfd pfd = {.fd = watch, .events = POLLIN};
+		int ready = poll(&pfd, 1, timeout);
+		if (ready < 0 && errno == EINTR) {
+			continue;
+		}
+		if (ready < 0 || (ready > 0 && !((pfd.revents & POLLIN) && remote_watch_drain(watch)))) {
+			// Never seen, but a watch that fails must not leave the remotes
+			// unnoticed for good, nor spin: back to the clock.
+			fprintf(stderr, "input: the watch on %s failed; looking every few seconds instead\n", dir);
+			close(watch);
+			watch = -1;
+			continue;
+		}
+
+		bt_input_scan(dir, &last_node_count);
+		next_look = now_ms() + (ready > 0 ? INPUT_WATCH_FOLLOW_UP_MS : INPUT_WATCH_NET_MS);
 	}
 	return NULL;
 }
@@ -2580,6 +2771,7 @@ void system_start_services(system_config_t *cfg, system_notification_cb_t notifi
 	start_builtin_input_threads();
 	start_headset_input_thread();
 #endif
+	log_button_reading();
 	start_bt_input_scanner();
 
 	// --- Audio ---
