@@ -10,6 +10,7 @@
 #include "src/system/audio/eq.h"
 #include "src/system/audio/decimate.h"
 #include "src/system/audio/resample.h"
+#include "src/system/audio/usbaudio.h"
 #include "src/system/core/config.h"
 #include "src/system/device/power.h"
 #include "src/system/core/utils.h"
@@ -3424,6 +3425,216 @@ static int bt_resample_target(int rate, int channels) {
 	return link && rate_convertible(rate, link) ? link : 0;
 }
 
+// ---------------------------------------------------------------------------
+// A USB DAC that lacks the track's rate
+//
+// A USB DAC is opened through plughw, and the plug answers a rate the DAC
+// does not have by converting to one it does -- linearly, the same converter
+// as above. Plenty of USB-C dongles run at 48 kHz only, so on those every CD
+// rip, every Yandex track, AirPlay and the radio went through it.
+//
+// So the DAC is asked which rates it really has: its hw device is opened for
+// a moment (no stream, no buffer: snd-usb-audio allocates nothing before
+// hw_params) and every common rate is tested against it, together with
+// whether it takes more than 16 bits. The answer is kept per device name and
+// card, and reused when the device is busy -- a held gapless stream, or the
+// open stream of an external source. When the track's rate is missing, the
+// player converts it itself, to:
+//
+//   1. the highest rate of the same family below it, by the decimator alone
+//      (a 192 kHz track on a DAC that stops at 96); else twice it, by the
+//      half-band doubling (44.1 on a DAC that only has 88.2 and up);
+//   2. else the other family's base rate (44.1 <-> 48 kHz) by the polyphase
+//      filter, after the decimator for a hi-res track; else twice that.
+//
+// The lowest rate that carries the track whole is preferred over a higher
+// one: a doubling adds nothing to the music and costs time. A rate none of
+// that reaches (22.05 kHz, 32 kHz ...) is left to the plug, as before, and
+// the log says so. Under [bluetooth] resampler like the rest: "fast" leaves
+// every conversion to the plug.
+// ---------------------------------------------------------------------------
+
+static const int USB_PROBE_RATES[] = {44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000};
+#define USB_PROBE_COUNT ((int)(sizeof(USB_PROBE_RATES) / sizeof(USB_PROBE_RATES[0])))
+
+typedef struct {
+	char device[sizeof(output_pcm)]; // "" when nothing was probed
+	char card[64];					 // the card's name, so a different DAC on the same number is noticed
+	unsigned rates;					 // a bit per USB_PROBE_RATES entry
+	bool wide;						 // takes 24 or 32-bit samples
+} usb_caps_t;
+
+static usb_caps_t usb_caps;
+static pthread_mutex_t usb_caps_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static bool output_is_usb_card(const char *device) {
+	return strncmp(device, "plughw:", 7) == 0 || strncmp(device, "hw:", 3) == 0;
+}
+
+static void usb_rates_text(unsigned rates, char *out, size_t size) {
+	out[0] = '\0';
+	size_t used = 0;
+	for (int i = 0; i < USB_PROBE_COUNT && used < size; i++) {
+		if (rates & (1u << i)) {
+			int n = snprintf(out + used, size - used, "%s%d", used ? ", " : "", USB_PROBE_RATES[i]);
+			used += n > 0 ? (size_t)n : 0;
+		}
+	}
+}
+
+// What the DAC behind `device` takes. False when it cannot be told: not a USB
+// card, or busy and never probed.
+static bool usb_caps_for(const char *device, usb_caps_t *out) {
+#ifdef HOST_BUILD
+	// The emulator has no USB DAC. SONIX_TEST_USB_RATES=48000,96000 makes its
+	// null device answer as a DAC with those rates, SONIX_TEST_USB_BITS=16 as
+	// one that takes 16 bits only.
+	const char *test = getenv("SONIX_TEST_USB_RATES");
+	if (test) {
+		memset(out, 0, sizeof(*out));
+		snprintf(out->device, sizeof(out->device), "%s", device);
+		for (int i = 0; i < USB_PROBE_COUNT; i++) {
+			char key[16];
+			snprintf(key, sizeof(key), "%d", USB_PROBE_RATES[i]);
+			if (strstr(test, key)) {
+				out->rates |= 1u << i;
+			}
+		}
+		const char *bits = getenv("SONIX_TEST_USB_BITS");
+		out->wide = !bits || atoi(bits) > 16;
+		return true;
+	}
+#endif
+	if (!output_is_usb_card(device)) {
+		return false;
+	}
+	char card[64] = "";
+	usbaudio_card_name(card, sizeof(card));
+
+	// The hw device under the plug: "plughw:1,0" is "hw:1,0".
+	char hw[sizeof(output_pcm)];
+	snprintf(hw, sizeof(hw), "%s", strncmp(device, "plug", 4) == 0 ? device + 4 : device);
+
+	snd_pcm_t *pcm = NULL;
+	int err = snd_pcm_open(&pcm, hw, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+	if (err < 0) {
+		pthread_mutex_lock(&usb_caps_lock);
+		bool cached = strcmp(usb_caps.device, device) == 0 && strcmp(usb_caps.card, card) == 0;
+		if (cached) {
+			*out = usb_caps;
+		}
+		pthread_mutex_unlock(&usb_caps_lock);
+		if (!cached) {
+			fprintf(stderr, "audio: the USB DAC's rates cannot be read (%s: %s)\n", hw, snd_strerror(err));
+		}
+		return cached;
+	}
+
+	usb_caps_t caps;
+	memset(&caps, 0, sizeof(caps));
+	snprintf(caps.device, sizeof(caps.device), "%s", device);
+	snprintf(caps.card, sizeof(caps.card), "%s", card);
+	snd_pcm_hw_params_t *hw_params;
+	snd_pcm_hw_params_alloca(&hw_params);
+	if (snd_pcm_hw_params_any(pcm, hw_params) >= 0) {
+		for (int i = 0; i < USB_PROBE_COUNT; i++) {
+			if (snd_pcm_hw_params_test_rate(pcm, hw_params, (unsigned)USB_PROBE_RATES[i], 0) == 0) {
+				caps.rates |= 1u << i;
+			}
+		}
+		caps.wide = snd_pcm_hw_params_test_format(pcm, hw_params, SND_PCM_FORMAT_S32_LE) == 0 ||
+					snd_pcm_hw_params_test_format(pcm, hw_params, SND_PCM_FORMAT_S24_LE) == 0 ||
+					snd_pcm_hw_params_test_format(pcm, hw_params, SND_PCM_FORMAT_S24_3LE) == 0;
+	}
+	snd_pcm_close(pcm);
+
+	pthread_mutex_lock(&usb_caps_lock);
+	bool changed = strcmp(usb_caps.device, caps.device) != 0 || strcmp(usb_caps.card, caps.card) != 0 ||
+				   usb_caps.rates != caps.rates || usb_caps.wide != caps.wide;
+	usb_caps = caps;
+	pthread_mutex_unlock(&usb_caps_lock);
+	if (changed) {
+		char text[160];
+		usb_rates_text(caps.rates, text, sizeof(text));
+		fprintf(stderr, "audio: the USB DAC '%s' (%s) takes %s Hz, %s\n", card, hw, text[0] ? text : "no common rate",
+				caps.wide ? "24/32-bit samples" : "16-bit samples only");
+	}
+	*out = caps;
+	return true;
+}
+
+static bool usb_caps_has(const usb_caps_t *caps, int rate) {
+	for (int i = 0; i < USB_PROBE_COUNT; i++) {
+		if (USB_PROBE_RATES[i] == rate) {
+			return (caps->rates & (1u << i)) != 0;
+		}
+	}
+	return false;
+}
+
+// The rate a stream at `rate` should reach the USB DAC at, when the DAC lacks
+// it and the player can convert to one it has (see above); 0 otherwise.
+// `*halvings` is how many times the decimator halves the stream first.
+static int usb_rate_plan(int rate, int channels, int *halvings) {
+	*halvings = 0;
+	if (channels < 1 || channels > RESAMPLE_CHANNELS_MAX || !resample_quality_wanted()) {
+		return 0;
+	}
+	char device[sizeof(output_pcm)];
+	audio_get_output_device(device, sizeof(device));
+	usb_caps_t caps;
+	if (!usb_caps_for(device, &caps) || caps.rates == 0 || usb_caps_has(&caps, rate)) {
+		return 0;
+	}
+
+	int target = 0;
+	int halve = 0;
+	// 1. The same family: down by the decimator, or x2.
+	for (int k = 1; k <= 3 && !target; k++) {
+		int r = rate >> k;
+		if (rate % (1 << k) != 0 || r < 44100) {
+			break;
+		}
+		if (usb_caps_has(&caps, r)) {
+			target = r;
+			halve = k;
+		}
+	}
+	if (!target && rate_is_base(rate) && usb_caps_has(&caps, 2 * rate)) {
+		target = 2 * rate;
+	}
+	// 2. The other family, from the base rate.
+	if (!target) {
+		int k = 0;
+		while (k < 3 && !rate_is_base(rate >> k) && rate % (2 << k) == 0) {
+			k++;
+		}
+		int base = rate >> k;
+		if (rate_is_base(base)) {
+			int other = base == 44100 ? 48000 : 44100;
+			if (usb_caps_has(&caps, other)) {
+				target = other;
+				halve = k;
+			} else if (usb_caps_has(&caps, 2 * other)) {
+				target = 2 * other;
+				halve = k;
+			}
+		}
+	}
+
+	char text[160];
+	usb_rates_text(caps.rates, text, sizeof(text));
+	if (!target) {
+		fprintf(stderr, "audio: the USB DAC has no %d Hz (it takes %s) and none it has is reached from it here; alsa converts\n",
+				rate, text);
+		return 0;
+	}
+	fprintf(stderr, "audio: the USB DAC has no %d Hz (it takes %s); the stream is converted to %d Hz here\n", rate, text,
+			target);
+	*halvings = halve;
+	return target;
+}
+
 static bool bt_resample_open(bt_resample_t *r, int rate, int link, int channels) {
 	memset(r, 0, sizeof(*r));
 	r->twice = rate_is_double(link);
@@ -3607,19 +3818,36 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			decim_factor *= 2;
 		}
 	}
+	// A USB DAC without the track's rate: the rate it gets instead, and how
+	// often the decimator halves the stream on the way (see usb_rate_plan).
+	// The decimator works on S32 only.
+	int usb_halvings = 0;
+	int usb_target = (passthrough || decim_factor > 1) ? 0 : usb_rate_plan(sample_rate, channels, &usb_halvings);
+	if (usb_target && usb_halvings > 0 && out_bits != 32) {
+		fprintf(stderr, "audio: the 16-bit stream cannot be decimated; alsa converts it\n");
+		usb_target = 0;
+	}
+	if (usb_target) {
+		decim_factor = 1 << usb_halvings;
+	}
 	if (decim_factor > 1 && decimate_init(&decim, decim_factor, channels) != 0) {
 		decim_factor = 1;
+		usb_target = 0;
 	}
 	int out_rate = sample_rate / decim_factor;
 	if (decim_factor > 1) {
-		fprintf(stderr, "audio: the %d Hz track is decimated by %d to %d Hz before the effects, for the headphones\n",
-				sample_rate, decim_factor, out_rate);
+		fprintf(stderr, "audio: the %d Hz track is decimated by %d to %d Hz before the effects, for the %s\n",
+				sample_rate, decim_factor, out_rate, usb_target ? "USB DAC" : "headphones");
 	}
 
 	// What the device is opened with: the chain's rate and width, or the
-	// link's rate in S32 when the stream is converted here (see bt_resample_t).
+	// link's (or the USB DAC's) rate in S32 when the stream is converted here
+	// (see bt_resample_t).
 	bt_resample_t resampler = {0};
 	int link_rate = passthrough ? 0 : bt_resample_target(out_rate, channels);
+	if (!link_rate && usb_target && usb_target != out_rate) {
+		link_rate = usb_target;
+	}
 	if (link_rate && !bt_resample_open(&resampler, out_rate, link_rate, channels)) {
 		bt_resample_close(&resampler);
 	}
@@ -5099,7 +5327,18 @@ static bool external_open_locked(void) {
 	bt_resample_close(&external_conv);
 	external_dev_rate = external_rate;
 	external_dev_bits = external_bits;
-	int target = (external_bits == 16 || external_bits == 32) ? bt_resample_target(external_rate, external_channels) : 0;
+	int target = 0;
+	if (external_bits == 16 || external_bits == 32) {
+		target = bt_resample_target(external_rate, external_channels);
+		int halvings = 0;
+		if (!target) {
+			// No decimator on this path: only what the filters reach directly.
+			target = usb_rate_plan(external_rate, external_channels, &halvings);
+			if (halvings > 0 || !rate_convertible(external_rate, target)) {
+				target = 0;
+			}
+		}
+	}
 	if (target && bt_resample_open(&external_conv, external_rate, target, external_channels)) {
 		external_dev_rate = target;
 		external_dev_bits = 32;
