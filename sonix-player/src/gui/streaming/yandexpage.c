@@ -70,7 +70,28 @@ typedef struct {
 	char b[YANDEX_ID_MAX];	  // kind, album id
 	int n;					  // index, or the feedback event
 	int secs;				  // feedback: seconds played
+	unsigned generation;	  // list jobs: list_generation when asked
 } job_t;
+
+// One job's answer, handed to the GUI thread whole through gui_post's user
+// pointer, which then owns it.
+//
+// The worker used to fill shared buffers and post a bare "done": having posted,
+// it was free to take the next job and start overwriting those buffers while
+// the GUI thread was still reading them -- a list half one answer and half the
+// next, or a count that does not match the rows. A block per answer cannot be
+// overwritten by anyone.
+typedef struct {
+	job_kind_t kind;
+	unsigned generation;
+	int index; // JOB_PLAY: the queue entry, -1 when it failed
+	char path[512];
+	char error[256];
+	yandex_login_state_t login_state;
+	yandex_login_t login; // a copy: the worker keeps polling with its own
+	int count;
+	row_t rows[]; // `count` of them
+} job_result_t;
 
 lv_obj_t *yandex_screen;
 static lv_obj_t *login_screen, *list_screen, *search_screen;
@@ -88,14 +109,20 @@ static gui_config_t *list_cfg;
 // search
 static lv_obj_t *search_field;
 
-// The rows on screen (GUI thread) and the worker's result being built
-// (worker thread); swapped in job_done.
-static row_t *rows, *result;
-static int row_count, result_count;
+// The rows on screen (GUI thread): those of the answer shown, which owns
+// them. NULL before the first list.
+static job_result_t *shown;
+static row_t *rows;
+static int row_count;
 static bool list_is_wave;
+// Raised by each list asked for (GUI thread): an answer carrying an older
+// number belongs to a list the user has since left, and is dropped.
+static unsigned list_generation;
+// The answer being built (worker thread only), copied into a job_result_t
+// when the job is done.
+static row_t *result;
+static int result_count;
 static char result_error[256];
-static job_kind_t result_kind;
-static yandex_login_state_t login_state;
 
 // The queue: what was played from a list, with the track behind each path.
 static yandex_track_t *queued;
@@ -139,8 +166,7 @@ static void submit(const job_t *job) {
 }
 
 static void ensure_buffers(void) {
-	if (!rows) {
-		rows = calloc(MAX_ROWS, sizeof(*rows));
+	if (!result) {
 		result = calloc(MAX_ROWS, sizeof(*result));
 		queued = calloc(MAX_ROWS, sizeof(*queued));
 		queued_paths = calloc(MAX_ROWS, sizeof(*queued_paths));
@@ -253,8 +279,52 @@ static void run_list_job(const job_t *job) {
 	free(tmp);
 }
 
+// Whatever is coming down gives way to what the user just asked for -- unless
+// it is that very track (prefetch got there first): abandoning it would only
+// restart it from zero. The cache itself never abandons (yandexcache_start),
+// this is the page's call, as on the Tidal page.
+static void abandon_unless(const char *id) {
+	char busy[YANDEX_ID_MAX];
+	yandexcache_downloading_id(busy, sizeof(busy));
+	if (strcmp(busy, id) != 0) {
+		streamturn_abandon_all();
+	}
+}
+
+// Packs the job's answer -- the rows built in `result`, the error, whatever
+// else it carries -- into a block of its own, for the GUI thread to take over
+// and free. NULL when there is no memory for even the bare block: nothing is
+// posted then, and the spinner stays up, which is the truth.
+static job_result_t *job_result_new(const job_t *job, int count) {
+	if (count < 0) {
+		count = 0;
+	}
+	job_result_t *r = malloc(sizeof(*r) + (size_t)count * sizeof(row_t));
+	if (!r && count > 0) {
+		count = 0; // the rows do not fit: say what went wrong instead
+		r = malloc(sizeof(*r));
+		if (r) {
+			snprintf(result_error, sizeof(result_error), "%s", tr("out_of_memory"));
+		}
+	}
+	if (!r) {
+		return NULL;
+	}
+	memset(r, 0, sizeof(*r));
+	r->kind = job->kind;
+	r->generation = job->generation;
+	r->index = -1;
+	snprintf(r->error, sizeof(r->error), "%s", result_error);
+	r->count = count;
+	if (count > 0) {
+		memcpy(r->rows, result, (size_t)count * sizeof(row_t));
+	}
+	return r;
+}
+
 static void *worker_main(void *arg) {
 	(void)arg;
+	yandex_login_state_t login_state = YANDEX_LOGIN_PENDING;
 	for (;;) {
 		pthread_mutex_lock(&job_lock);
 		running_kind = JOB_NONE;
@@ -273,6 +343,7 @@ static void *worker_main(void *arg) {
 		pthread_mutex_unlock(&job_lock);
 
 		result_error[0] = '\0';
+		result_count = 0;
 		switch (job.kind) {
 		case JOB_LOGIN_BEGIN:
 			login_state = yandex_login_begin(&login) ? YANDEX_LOGIN_PENDING : YANDEX_LOGIN_ERROR;
@@ -297,13 +368,17 @@ static void *worker_main(void *arg) {
 		case JOB_PLAY: {
 			// The tapped track first; the rest download as playback reaches
 			// them (yandexpage_prepare_track) or ahead of it (JOB_FETCH).
-			streamturn_abandon_all();
+			abandon_unless(queued[job.n].id);
 			char path[512];
 			bool ok = fetch_queued(job.n, path, sizeof(path));
-			if (ok) {
-				snprintf(queued_paths[job.n], sizeof(queued_paths[0]), "%s", path);
+			job_result_t *r = job_result_new(&job, 0);
+			if (r) {
+				// The queue's path is set by the GUI thread, which owns the
+				// queue (play_done_async).
+				r->index = ok ? job.n : -1;
+				snprintf(r->path, sizeof(r->path), "%s", ok ? path : "");
+				gui_post(play_done_async, r);
 			}
-			gui_post(play_done_async, ok ? (void *)(intptr_t)(job.n + 1) : NULL);
 			continue;
 		}
 		case JOB_FETCH: {
@@ -333,8 +408,14 @@ static void *worker_main(void *arg) {
 			run_list_job(&job);
 			break;
 		}
-		result_kind = job.kind;
-		gui_post(job_done_async, NULL);
+		job_result_t *r = job_result_new(&job, result_count);
+		if (r) {
+			r->login_state = login_state;
+			if (job.kind == JOB_LOGIN_BEGIN || job.kind == JOB_LOGIN_POLL) {
+				r->login = login;
+			}
+			gui_post(job_done_async, r);
+		}
 	}
 	return NULL;
 }
@@ -355,7 +436,7 @@ static void start_worker(void) {
 
 static void run(job_kind_t kind, const char *a, const char *b, int n) {
 	start_worker();
-	job_t job = {.kind = kind, .n = n};
+	job_t job = {.kind = kind, .n = n, .generation = list_generation};
 	snprintf(job.a, sizeof(job.a), "%s", a ? a : "");
 	snprintf(job.b, sizeof(job.b), "%s", b ? b : "");
 	submit(&job);
@@ -414,12 +495,16 @@ static void play_from(int start) {
 }
 
 static void play_done_async(void *user) {
+	job_result_t *r = user;
 	lv_obj_set_hidden(list_spin, true);
-	int index = (int)(intptr_t)user - 1;
-	if (index < 0) {
-		toast_error(result_error[0] ? result_error : tr("download_failed"));
+	int index = r->index;
+	if (index < 0 || index >= queued_count) {
+		toast_error(r->error[0] ? r->error : tr("download_failed"));
+		free(r);
 		return;
 	}
+	snprintf(queued_paths[index], sizeof(queued_paths[0]), "%s", r->path);
+	free(r);
 	play_from(index);
 	player_refresh_now_playing();
 	switch_screen(player_screen);
@@ -447,6 +532,15 @@ static void fetch_done_async(void *user) {
 	free(path);
 }
 
+// The "downloading" notice goes through gui_post: device_state calls
+// yandexpage_prepare_track from whatever thread starts the track -- the UI
+// thread for a tap, but also another page's worker starting its queue -- and
+// LVGL may only be touched from the UI thread (see tidalpage.c).
+static void downloading_note_async(void *user) {
+	(void)user;
+	gui_notify_popup("downloading");
+}
+
 bool yandexpage_prepare_track(const char *path) {
 	if (!yandexcache_owns(path)) {
 		return true;
@@ -464,8 +558,11 @@ bool yandexpage_prepare_track(const char *path) {
 	// yandexcache_network_wanted().
 	yandexcache_set_network_wanted(true);
 	device_state_stop();
+	// Playback moved on to a track that is not here yet: the one still coming
+	// down, if any, is no longer what is wanted.
+	abandon_unless(queued[index].id);
 	run(JOB_FETCH, NULL, NULL, index);
-	gui_notify_popup("downloading");
+	gui_post(downloading_note_async, NULL);
 	return false;
 }
 
@@ -616,7 +713,7 @@ static void fill_list(void) {
 	}
 	if (row_count == 0) {
 		lv_obj_t *empty = lv_label_create(list_box);
-		lv_label_set_text(empty, result_error[0] ? result_error : tr("yandex_empty"));
+		lv_label_set_text(empty, shown && shown->error[0] ? shown->error : tr("yandex_empty"));
 		lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
 		lv_obj_set_width(empty, lv_pct(100));
 		lv_obj_add_style(empty, &theme_style_text_dim, 0);
@@ -638,6 +735,7 @@ static void open_list(const char *title, job_kind_t kind, const char *a, const c
 	row_count = 0;
 	lv_obj_set_hidden(list_spin, false);
 	switch_screen(list_screen);
+	list_generation++;
 	run(kind, a, b, 0);
 }
 
@@ -794,23 +892,24 @@ static void login_tick_cb(lv_timer_t *timer) {
 
 static void paint_home(void);
 
-static void login_result(void) {
-	if (result_kind == JOB_LOGIN_BEGIN) {
+static void login_result(const job_result_t *r) {
+	const yandex_login_t *issued = &r->login;
+	if (r->kind == JOB_LOGIN_BEGIN) {
 		lv_obj_set_hidden(login_spin, true);
-		if (login_state == YANDEX_LOGIN_ERROR) {
-			lv_label_set_text(login_message, result_error);
+		if (r->login_state == YANDEX_LOGIN_ERROR) {
+			lv_label_set_text(login_message, r->error);
 			return;
 		}
-		lv_label_set_text(login_code, login.user_code);
-		lv_qrcode_update(login_qr, login.verification_url, (uint32_t)strlen(login.verification_url));
+		lv_label_set_text(login_code, issued->user_code);
+		lv_qrcode_update(login_qr, issued->verification_url, (uint32_t)strlen(issued->verification_url));
 		lv_obj_set_hidden(login_qr, false);
-		lv_label_set_text_fmt(login_message, "%s\n%s", tr("yandex_login_hint"), login.verification_url);
-		login_deadline = time(NULL) + login.expires_secs;
-		lv_timer_set_period(login_timer, (uint32_t)login.interval_secs * 1000);
+		lv_label_set_text_fmt(login_message, "%s\n%s", tr("yandex_login_hint"), issued->verification_url);
+		login_deadline = time(NULL) + issued->expires_secs;
+		lv_timer_set_period(login_timer, (uint32_t)issued->interval_secs * 1000);
 		lv_timer_resume(login_timer);
 		return;
 	}
-	switch (login_state) {
+	switch (r->login_state) {
 	case YANDEX_LOGIN_OK:
 		lv_timer_pause(login_timer);
 		toast_success(tr("yandex_signed_in"));
@@ -823,7 +922,7 @@ static void login_result(void) {
 		break;
 	case YANDEX_LOGIN_ERROR:
 		lv_timer_pause(login_timer);
-		lv_label_set_text(login_message, result_error);
+		lv_label_set_text(login_message, r->error);
 		break;
 	default:
 		break;
@@ -930,38 +1029,48 @@ static void build_search_page(gui_config_t *cfg) {
 // ---------------------------------------------------------------------------
 
 static void job_done_async(void *user) {
-	(void)user;
-	if (result_kind == JOB_LOGIN_BEGIN || result_kind == JOB_LOGIN_POLL) {
-		login_result();
+	job_result_t *r = user;
+	if (r->kind == JOB_LOGIN_BEGIN || r->kind == JOB_LOGIN_POLL) {
+		login_result(r);
+		free(r);
 		return;
 	}
-	if (result_kind == JOB_DISLIKE) {
-		if (result_error[0]) {
-			toast_error(result_error);
+	if (r->kind == JOB_DISLIKE) {
+		if (r->error[0]) {
+			toast_error(r->error);
 		}
+		free(r);
 		return;
 	}
-	if (result_kind == JOB_WAVE_MORE) {
+	if (r->kind == JOB_WAVE_MORE) {
 		// New tracks at the end of the queue: guessed names, fetched as
 		// playback nears them.
-		for (int i = 0; i < result_count && queued_count < MAX_ROWS; i++) {
-			queued[queued_count] = result[i].u.track;
+		for (int i = 0; i < r->count && queued_count < MAX_ROWS; i++) {
+			queued[queued_count] = r->rows[i].u.track;
 			yandexcache_path(queued[queued_count].id, "flac", queued_paths[queued_count], sizeof(queued_paths[0]));
 			playlist_insert_at(queued_paths[queued_count], playlist_count());
 			queued_count++;
 		}
 		device_state_queue_changed();
 		wave_asked_more = false;
+		free(r);
+		return;
+	}
+	// A list the user has since left (or asked for again): another answer is
+	// on its way, and this one would only flash past -- or, arriving last,
+	// stay up under the wrong title.
+	if (r->generation != list_generation) {
+		free(r);
 		return;
 	}
 	lv_obj_set_hidden(list_spin, true);
-	row_t *swap = rows;
-	rows = result;
-	result = swap;
-	row_count = result_count;
+	free(shown);
+	shown = r;
+	rows = r->rows;
+	row_count = r->count;
 	fill_list();
 	// My Wave plays as soon as it has something: that is what the button means.
-	if (result_kind == JOB_WAVE && row_count > 0) {
+	if (r->kind == JOB_WAVE && row_count > 0) {
 		play_rows(0);
 	}
 }

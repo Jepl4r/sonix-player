@@ -512,6 +512,22 @@ bool yandexcache_start(const yandex_track_t *track, const yandex_file_t *file, c
 		}
 		d->encrypted = true;
 	}
+	// Another track still coming down is NOT abandoned from here, tempting as
+	// it is: prefetch calls this too, for the track after the one playing, and
+	// the download in flight is then usually the very file being played.
+	// Abandoning belongs to whoever received a user command -- the page, see
+	// streamturn_abandon_all() -- exactly as in qobuzcache.c.
+	//
+	// What is done instead is wait for it to end. The download thread would
+	// wait for the turn anyway (streamturn_acquire), so this costs no time,
+	// and it keeps `current` the one download in flight: replacing it while
+	// the other still runs would put that one out of reach of every abandon.
+	pthread_mutex_lock(&lock);
+	while (current && !current->finished) {
+		pthread_cond_wait(&changed, &lock);
+	}
+	pthread_mutex_unlock(&lock);
+
 	// Room for this one before it starts. Its size is only known once the
 	// first window answers, so the headroom is a generous hi-res track.
 	prune(YANDEXCACHE_PRUNE_HEADROOM);
@@ -523,7 +539,6 @@ bool yandexcache_start(const yandex_track_t *track, const yandex_file_t *file, c
 		return false;
 	}
 
-	yandexcache_abandon_all();
 	pthread_mutex_lock(&lock);
 	current = d;
 	pthread_mutex_unlock(&lock);
