@@ -1917,7 +1917,9 @@ static void decoder_advise_sequential(decoder_t *dec) {
 		return;
 	}
 	FILE *f = NULL;
-	if (dec->format == DECODE_FORMAT_FLAC && dec->impl.flac) {
+	// Only a native FLAC stream reads the FILE* directly: for Ogg-FLAC
+	// dr_flac's user data is its own Ogg reader, which merely holds the file.
+	if (dec->format == DECODE_FORMAT_FLAC && dec->impl.flac && dec->impl.flac->container == drflac_container_native) {
 		f = (FILE *)dec->impl.flac->bs.pUserData;
 	} else if (dec->format == DECODE_FORMAT_MP3 && dec->impl.mp3) {
 		f = (FILE *)dec->impl.mp3->pUserData;
