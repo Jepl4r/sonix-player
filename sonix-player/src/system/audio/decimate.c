@@ -137,3 +137,59 @@ int decimate_s32(decimator_t *d, int32_t *buf, int frames) {
 	}
 	return frames;
 }
+
+// ---------------------------------------------------------------------------
+// Interpolation by 2
+//
+// Zeros between the input samples, then NARROW at the output rate with a gain
+// of 2. Of the 47 taps only the centre lands on an input sample at an even
+// output position, and it is exactly a half: those outputs are the input
+// itself, twelve frames late. At an odd position only the odd taps land on
+// input samples, as twelve symmetric pairs around the point halfway between
+// two of them.
+// ---------------------------------------------------------------------------
+
+#define INTERP2_PAIRS 12
+#define INTERP2_DELAY (INTERP2_SPAN / 2)
+
+int interp2_init(interp2_t *p, int channels) {
+	memset(p, 0, sizeof(*p));
+	if (channels < 1 || channels > DECIMATE_CHANNELS_MAX) {
+		return -1;
+	}
+	p->channels = channels;
+	return 0;
+}
+
+void interp2_reset(interp2_t *p) {
+	p->pos = 0;
+	memset(p->line, 0, sizeof(p->line));
+}
+
+int interp2_s32(interp2_t *p, const int32_t *in, int frames, int32_t *out) {
+	const int channels = p->channels;
+	for (int i = 0; i < frames; i++) {
+		for (int c = 0; c < channels; c++) {
+			int32_t s = in[i * channels + c] >> SAMPLE_SHIFT;
+			p->line[c][p->pos] = s;
+			p->line[c][p->pos + INTERP2_SPAN] = s;
+		}
+		p->pos = (p->pos + 1 == INTERP2_SPAN) ? 0 : p->pos + 1;
+		for (int c = 0; c < channels; c++) {
+			// The last INTERP2_SPAN samples, oldest first: x[n-23] .. x[n].
+			const int32_t *x = &p->line[c][p->pos];
+			// Halfway between x[n-12] and x[n-11]: coefficient k pairs
+			// x[n-12-k] with x[n-11+k].
+			int64_t acc = 0;
+			for (int k = 0; k < INTERP2_PAIRS; k++) {
+				acc += (int64_t)(x[INTERP2_DELAY - 1 - k] + x[INTERP2_DELAY + k]) * NARROW[k];
+			}
+			// Gain 2: shifted by 29, not 30.
+			int32_t mid = clamp_sample((acc + (1 << 28)) >> 29);
+			int32_t *dst = out + (size_t)(2 * i) * (size_t)channels;
+			dst[c] = (int32_t)((uint32_t)x[INTERP2_DELAY - 1] << SAMPLE_SHIFT);
+			dst[channels + c] = (int32_t)((uint32_t)mid << SAMPLE_SHIFT);
+		}
+	}
+	return 2 * frames;
+}

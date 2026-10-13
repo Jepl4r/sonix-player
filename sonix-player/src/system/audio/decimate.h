@@ -51,4 +51,34 @@ void decimate_reset(decimator_t *d);
 // the result can be 0 for a very short block.
 int decimate_s32(decimator_t *d, int32_t *buf, int frames);
 
+// ---------------------------------------------------------------------------
+// The other way: upsampling by 2, for a Bluetooth link at twice the stream's
+// rate (LDAC on "96 kHz" with a 48 kHz stream). The same NARROW half-band as
+// the decimator's last stage, run as an interpolator: every input frame comes
+// out twice, once as itself and once as the filtered point halfway to the
+// next one. Passband flat to 0.2 of the OUTPUT rate (19.2 kHz at 96 kHz),
+// images of the stream rejected by more than 80 dB from 0.3 of it. Twelve
+// multiply-adds per input sample, and a delay of twelve input frames.
+//
+// Interleaved S32 at 24-bit precision, like the decimator.
+// ---------------------------------------------------------------------------
+
+#define INTERP2_SPAN 24 // input frames the filter looks at
+
+typedef struct {
+	int channels;
+	int pos;
+	int32_t line[DECIMATE_CHANNELS_MAX][2 * INTERP2_SPAN];
+} interp2_t;
+
+// `channels` 1 or 2. Returns 0 on success.
+int interp2_init(interp2_t *p, int channels);
+
+// Clears the delay line: after a seek, or a pause that rewound the decoder.
+void interp2_reset(interp2_t *p);
+
+// `frames` frames of `in` into 2 * `frames` frames of `out`, which must not
+// overlap it. Returns the number of output frames.
+int interp2_s32(interp2_t *p, const int32_t *in, int frames, int32_t *out);
+
 #endif

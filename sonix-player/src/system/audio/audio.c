@@ -3318,23 +3318,32 @@ static int bluetooth_decimation(int sample_rate, int channels, int out_bits, boo
 }
 
 // ---------------------------------------------------------------------------
-// 44.1 kHz into headphones held at 48 kHz
+// The stream to the link's rate, when alsa would do it linearly
 //
-// On "Auto" bluealsa runs nearly every pair of headphones at 48 kHz, and the
-// player keeps the link there (see open_bluetooth_at_rate): a CD-rate track was
-// converted by the plug in front of bluealsa's PCM, and the plug on this
-// firmware has only alsa-lib's linear interpolator. Its images of the music
-// come back into the audible band at -30 to -40 dB -- a 10 kHz cymbal leaves a
-// 13.9 kHz ghost -- on most of what is listened to over Bluetooth with the
-// default settings.
+// The player keeps a Bluetooth link at one rate (see open_bluetooth_at_rate),
+// and a stream at another rate was converted by the plug in front of
+// bluealsa's PCM -- whose only converter on this firmware is alsa-lib's linear
+// interpolator. Measured, 44.1 to 48 kHz: the music loses 1.5 dB at 10 kHz,
+// 3.4 at 15 and 6.3 at 20, and its images come back into the audible band
+// 20 dB under a 10 kHz tone (a cymbal at 10 kHz leaves a ghost at 13.9).
+// Upsampling to 96 kHz droops the same way.
 //
-// So when the stream reaching the device is at 44.1 kHz (a CD-rate track, or
-// 88.2 / 176.4 kHz and DSD after the decimator) and the link is at 48 kHz, the
-// conversion is done here, after the effects, by the polyphase filter of
-// resample.h, and the device is opened at 48 kHz S32: the plug then has
-// nothing to convert but the sample format (S32 to S16 for SBC and AAC, which
-// bluealsa takes at 16 bits; LDAC takes S32 as it is). About 3 million
-// multiply-adds a second for stereo.
+// Two of those conversions are what most listening over Bluetooth goes
+// through, and both are done here instead, after the effects:
+//
+//   44.1 -> 48 kHz   "Auto", the default: bluealsa runs nearly every pair of
+//                    headphones at 48 kHz, and most music is 44.1. The
+//                    polyphase filter of resample.h.
+//   x2 to 96 kHz     LDAC on "96 kHz": a 48 kHz stream, or a 44.1 kHz one
+//                    after the step above. The half-band of decimate.h, run
+//                    as an interpolator.
+//
+// "The stream" is what reaches the device: a 88.2 or 176.4 kHz track (and DSD)
+// is first halved by the decimator, and 44.1 kHz is what it then is. The
+// device is opened at the link's rate in S32, so the plug has nothing left to
+// convert but the sample format (S32 to S16 for SBC and AAC, which bluealsa
+// takes at 16 bits; LDAC takes S32 as it is). About 3 million multiply-adds a
+// second for the first step in stereo, 1.2 million for the second.
 //
 //   [bluetooth]
 //   resampler = quality   this (the default)
@@ -3348,49 +3357,94 @@ static int bluetooth_decimation(int sample_rate, int channels, int out_bits, boo
 
 typedef struct {
 	bool on;
+	bool to48;	// 44.1 -> 48 kHz
+	bool twice; // then x2
 	resampler_t filter;
+	interp2_t doubler;
 	int32_t *wide; // a 16-bit block widened to S32
 	int32_t *out;  // the block at 48 kHz
-	size_t room;   // input frames the two are sized for
+	int32_t *out2; // ... and at twice that
+	size_t room;   // input frames the buffers are sized for
 } bt_resample_t;
 
-static bool bt_resample_wanted(int rate, int channels) {
-	if (rate != BT_RESAMPLE_FROM || channels < 1 || channels > RESAMPLE_CHANNELS_MAX || !resample_quality_wanted()) {
-		return false;
+// The link's rate when the `rate` stream should be converted to it here; 0 to
+// leave the stream as it is.
+static int bt_resample_target(int rate, int channels) {
+	if (channels < 1 || channels > RESAMPLE_CHANNELS_MAX || !resample_quality_wanted()) {
+		return 0;
 	}
+	int link = 0;
 #ifdef HOST_BUILD
-	// The emulator has no Bluetooth: this runs the same path into its null
-	// device, so the loop around it can be watched there.
-	if (getenv("SONIX_TEST_RESAMPLE")) {
-		return true;
+	// The emulator has no Bluetooth. SONIX_TEST_RESAMPLE=48000 or 96000 runs
+	// this path into its null device as if the link were at that rate, so the
+	// loop around it can be watched there.
+	const char *test = getenv("SONIX_TEST_RESAMPLE");
+	if (test) {
+		link = atoi(test) == 96000 ? 96000 : BT_RESAMPLE_TO;
 	}
 #endif
 	// "follow_track_rate" lets bluealsa's plugin move the link itself.
-	return output_is_bluetooth() && !config_get_int("bluetooth", "follow_track_rate", 0) &&
-		   bluetooth_sink_rate() == BT_RESAMPLE_TO;
+	if (!link && output_is_bluetooth() && !config_get_int("bluetooth", "follow_track_rate", 0)) {
+		link = (int)bluetooth_sink_rate();
+	}
+	if (rate == BT_RESAMPLE_FROM && (link == BT_RESAMPLE_TO || link == 2 * BT_RESAMPLE_TO)) {
+		return link;
+	}
+	if (rate == BT_RESAMPLE_TO && link == 2 * BT_RESAMPLE_TO) {
+		return link;
+	}
+	return 0;
+}
+
+static bool bt_resample_open(bt_resample_t *r, int rate, int link, int channels) {
+	memset(r, 0, sizeof(*r));
+	r->to48 = rate == BT_RESAMPLE_FROM;
+	r->twice = link == 2 * BT_RESAMPLE_TO;
+	if (r->to48 && resample_init(&r->filter, channels) != 0) {
+		return false;
+	}
+	if (r->twice && interp2_init(&r->doubler, channels) != 0) {
+		return false;
+	}
+	r->on = r->to48 || r->twice;
+	return r->on;
+}
+
+static void bt_resample_reset(bt_resample_t *r) {
+	if (r->to48) {
+		resample_reset(&r->filter);
+	}
+	if (r->twice) {
+		interp2_reset(&r->doubler);
+	}
 }
 
 static void bt_resample_close(bt_resample_t *r) {
 	free(r->wide);
 	free(r->out);
+	free(r->out2);
 	memset(r, 0, sizeof(*r));
 }
 
-// `frames` frames of the chain's output (S16 or S32) at 44.1 kHz, converted.
-// The block at 48 kHz and its length, or NULL when there was no memory for it.
+// Grows `*buffer` to `samples` S32 samples; false when there is no memory.
+static bool grow_s32(int32_t **buffer, size_t samples) {
+	int32_t *bigger = realloc(*buffer, samples * sizeof(int32_t));
+	if (!bigger) {
+		return false;
+	}
+	*buffer = bigger;
+	return true;
+}
+
+// `frames` frames of the chain's output (S16 or S32), converted. The block at
+// the link's rate and its length, or NULL when there was no memory for it.
 static const int32_t *bt_resample_block(bt_resample_t *r, const void *in, int bits, int frames, int channels,
 										int *made) {
 	*made = 0;
 	if ((size_t)frames > r->room) {
-		int32_t *wide = realloc(r->wide, (size_t)frames * (size_t)channels * sizeof(int32_t));
-		if (wide) {
-			r->wide = wide;
-		}
-		int32_t *out = realloc(r->out, (size_t)resample_out_max(frames) * (size_t)channels * sizeof(int32_t));
-		if (out) {
-			r->out = out;
-		}
-		if (!wide || !out) {
+		size_t at48 = (size_t)resample_out_max(frames) * (size_t)channels;
+		if (!grow_s32(&r->wide, (size_t)frames * (size_t)channels) || !grow_s32(&r->out, at48) ||
+			!grow_s32(&r->out2, 2 * at48)) {
 			return NULL;
 		}
 		r->room = (size_t)frames;
@@ -3403,8 +3457,17 @@ static const int32_t *bt_resample_block(bt_resample_t *r, const void *in, int bi
 		}
 		from = r->wide;
 	}
-	*made = resample_s32(&r->filter, from, frames, r->out);
-	return r->out;
+	int count = frames;
+	if (r->to48) {
+		count = resample_s32(&r->filter, from, count, r->out);
+		from = r->out;
+	}
+	if (r->twice) {
+		count = interp2_s32(&r->doubler, from, count, r->out2);
+		from = r->out2;
+	}
+	*made = count;
+	return from;
 }
 
 static void play_decoded_file(const char *filepath, decode_format_t format) {
@@ -3503,6 +3566,12 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		unsigned sink = bluetooth_sink_rate();
 		decim_factor = decimate_factor_for(sample_rate, sink ? (int)sink : 44100);
 	}
+	// On a link held at 96 kHz a 88.2 kHz stream has no clean way up: halved
+	// once more, it takes the 44.1 kHz route below, to 48 and then x2.
+	if (!passthrough && out_bits == 32 && sample_rate / decim_factor == 2 * BT_RESAMPLE_FROM &&
+		decim_factor * 2 <= DECIMATE_MAX && bt_resample_target(BT_RESAMPLE_FROM, channels) == 2 * BT_RESAMPLE_TO) {
+		decim_factor *= 2;
+	}
 	if (decim_factor > 1 && decimate_init(&decim, decim_factor, channels) != 0) {
 		decim_factor = 1;
 	}
@@ -3512,19 +3581,25 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				sample_rate, decim_factor, out_rate);
 	}
 
-	// What the device is opened with: the chain's rate and width, or 48 kHz
-	// S32 when the 44.1 kHz stream is converted here (see bt_resample_t).
+	// What the device is opened with: the chain's rate and width, or the
+	// link's rate in S32 when the stream is converted here (see bt_resample_t).
 	bt_resample_t resampler = {0};
-	resampler.on =
-		!passthrough && bt_resample_wanted(out_rate, channels) && resample_init(&resampler.filter, channels) == 0;
-	if (!resampler.on) {
+	int link_rate = passthrough ? 0 : bt_resample_target(out_rate, channels);
+	if (link_rate && !bt_resample_open(&resampler, out_rate, link_rate, channels)) {
+		bt_resample_close(&resampler);
+	}
+	if (!resampler.to48) {
 		resample_free(); // the shared table goes when no stream uses it
 	}
-	int dev_rate = resampler.on ? BT_RESAMPLE_TO : out_rate;
+	int dev_rate = resampler.on ? link_rate : out_rate;
 	int dev_bits = resampler.on ? 32 : out_bits;
 	if (resampler.on) {
-		fprintf(stderr, "audio: the %d Hz stream is resampled to %d Hz here (polyphase), not by alsa's linear converter\n",
-				out_rate, dev_rate);
+		const char *how = "polyphase";
+		if (resampler.twice) {
+			how = resampler.to48 ? "polyphase to 48 kHz, half-band x2" : "half-band x2";
+		}
+		fprintf(stderr, "audio: the %d Hz stream is resampled to %d Hz here (%s), not by alsa's linear converter\n",
+				out_rate, dev_rate, how);
 	}
 
 	pthread_mutex_lock(&audio_mutex);
@@ -3750,9 +3825,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			if (decim_factor > 1) {
 				decimate_reset(&decim);
 			}
-			if (resampler.on) {
-				resample_reset(&resampler.filter);
-			}
+			bt_resample_reset(&resampler);
 
 			// And the starvation flag recorded before the seek: it belonged to
 			// the old position (growfile_seek already clears it; this is the
@@ -3785,7 +3858,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				int64_t rewind_bytes = pause_stop_stream(pcm_handle, frame_bytes) * decim_factor;
 				if (resampler.on) {
 					// What is queued is at the link's rate.
-					rewind_bytes = rewind_bytes * RESAMPLE_M / RESAMPLE_L;
+					rewind_bytes = rewind_bytes * out_rate / dev_rate;
 				}
 				if (rewind_bytes > 0) {
 					// The frames still queued were never heard: put the decoder
@@ -3798,9 +3871,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 						if (decim_factor > 1) {
 							decimate_reset(&decim);
 						}
-						if (resampler.on) {
-							resample_reset(&resampler.filter);
-						}
+						bt_resample_reset(&resampler);
 						bytes_played = (int64_t)(resume_frame * frame_bytes);
 						pthread_mutex_lock(&audio_mutex);
 						progress_floor_secs = progress_current_secs; // the bar stays put
