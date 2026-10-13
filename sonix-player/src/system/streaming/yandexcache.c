@@ -12,6 +12,7 @@
 #include <unistd.h>
 
 #include "src/system/core/lang.h"
+#include "src/system/core/utils.h"
 #include "src/system/decode/growfile.h"
 #include "src/system/library/mp4flac.h"
 #include "src/system/net/crypto.h"
@@ -554,6 +555,11 @@ static bool unwrap_mp4(download_t *d) {
 
 static void *download_main(void *arg) {
 	download_t *d = arg;
+	// Below the interface and the audio threads, so the TLS and the card
+	// writes of a download give way to them on this single core; but not idle
+	// class like a sync thread, because playback is reading this file as it
+	// grows and an idle thread gets almost nothing while music plays.
+	thread_be_low_priority("yandex download");
 	streamturn_acquire();
 	bool ok = !d->abandon && (d->unwrap ? unwrap_mp4(d) : copy_raw(d));
 	streamturn_release();
