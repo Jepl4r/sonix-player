@@ -762,12 +762,80 @@ static void fill_list(void) {
 	lv_obj_scroll_to_y(list_box, 0, LV_ANIM_OFF);
 }
 
+// ---------------------------------------------------------------------------
+// going back inside the list page
+//
+// Every Yandex list -- search results, an artist's albums, an album, a
+// playlist -- lives on ONE reused page, as on the Qobuz page. The screen
+// manager sees the same screen whichever list is up, so it has nothing to
+// stack: from an album opened off the search results, back used to land on
+// the search page, skipping the results (and, opened off an artist off the
+// results, skipping both). The page keeps its own history of the lists it
+// showed; the chevron and the swipe go through list_back_guard() first and
+// only leave the page once it is empty.
+//
+// My Wave is never stacked: going back to it would start a new session and
+// throw away what is playing. A list opened from outside the page (the home
+// rows, "Show album" from the player over another page) starts the history
+// afresh.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	job_kind_t kind;
+	char title[YANDEX_TITLE_MAX];
+	char a[YANDEX_TITLE_MAX];
+	char b[YANDEX_ID_MAX];
+} list_step_t;
+
+#define LIST_HISTORY_DEPTH 8
+static list_step_t list_history[LIST_HISTORY_DEPTH];
+static int list_history_len;
+static list_step_t list_current;
+static bool list_has_current;
+
+static void show_list(const list_step_t *step);
+
+static bool list_back_has_step(void) { return list_history_len > 0; }
+
+static bool list_back_guard(void) {
+	if (list_history_len == 0) {
+		list_has_current = false;
+		return false; // nothing underneath: leave the page
+	}
+	list_current = list_history[--list_history_len];
+	show_list(&list_current);
+	return true;
+}
+
 static void open_list(const char *title, job_kind_t kind, const char *a, const char *b) {
+	list_step_t step;
+	memset(&step, 0, sizeof(step));
+	step.kind = kind;
+	snprintf(step.title, sizeof(step.title), "%s", title ? title : "");
+	snprintf(step.a, sizeof(step.a), "%s", a ? a : "");
+	snprintf(step.b, sizeof(step.b), "%s", b ? b : "");
+	if (lv_screen_active() != list_screen) {
+		list_history_len = 0; // entering from outside: the history restarts
+	} else if (list_has_current && list_current.kind != JOB_WAVE && memcmp(&list_current, &step, sizeof(step)) != 0) {
+		if (list_history_len == LIST_HISTORY_DEPTH) {
+			memmove(list_history, list_history + 1, (LIST_HISTORY_DEPTH - 1) * sizeof(list_history[0]));
+			list_history_len--;
+		}
+		list_history[list_history_len++] = list_current;
+	}
+	list_current = step;
+	list_has_current = true;
+	show_list(&step);
+}
+
+static void show_list(const list_step_t *step) {
+	job_kind_t kind = step->kind;
+	const char *title = step->title, *a = step->a, *b = step->b;
 	lv_label_set_text(list_title, title);
 	list_is_wave = kind == JOB_WAVE;
-	bool is_album = kind == JOB_ALBUM && a && a[0];
+	bool is_album = kind == JOB_ALBUM && a[0];
 	if (is_album) {
-		snprintf(list_album_id, sizeof(list_album_id), "%s", a);
+		snprintf(list_album_id, sizeof(list_album_id), "%.*s", (int)sizeof(list_album_id) - 1, a); // an id: digits
 		snprintf(list_album_title, sizeof(list_album_title), "%s", title);
 	}
 	lv_obj_set_hidden(wave_bar, !list_is_wave);
@@ -980,6 +1048,12 @@ static void album_save_cb(lv_event_t *e) {
 	}
 }
 
+// A swipe back that starts on the page's bare margin and crosses into the
+// list was lost: a screen, having no parent, is the one object LVGL creates
+// without PRESS_LOCK, so the press passed to whatever the finger moved onto
+// and the screen heard "press lost". Locked, the margin keeps the press.
+static void hold_press(lv_obj_t *screen) { lv_obj_set_press_lock(screen, true); }
+
 static void build_list_page(gui_config_t *cfg) {
 	list_cfg = cfg;
 	list_screen = lv_obj_create(NULL);
@@ -1033,6 +1107,15 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_center(list_spin);
 	lv_obj_set_hidden(list_spin, true);
 	switcher_attach_back_gesture(list_screen);
+	hold_press(list_screen);
+	// The swipe back has to start somewhere: the list and the bars cover
+	// most of the page, and a press on them never reached the screen (the
+	// rows pass theirs up to the list).
+	switcher_attach_back_gesture(list_box);
+	switcher_attach_back_gesture(wave_bar);
+	switcher_attach_back_gesture(album_bar);
+	switcher_set_back_guard(list_screen, list_back_guard);
+	switcher_set_back_guard_peek(list_screen, list_back_has_step);
 }
 
 // ---------------------------------------------------------------------------
@@ -1461,9 +1544,13 @@ void yandexpage_init(gui_config_t *cfg) {
 
 	home_signed_out = column(yandex_screen, cfg, top);
 	settingsrow_action(home_signed_out, "yandex_sign_in", open_login_cb, NULL);
+	// As on the list page: the columns cover the page, the swipe starts there.
+	switcher_attach_back_gesture(home_signed_in);
+	switcher_attach_back_gesture(home_signed_out);
 
 	lv_obj_add_event_cb(yandex_screen, home_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(yandex_screen);
+	hold_press(yandex_screen);
 	paint_home();
 
 	build_login_page(cfg);
