@@ -776,6 +776,15 @@ static bool wav_needs_conversion(const wav_info_t *info) {
 // not read the card while running: the ROM is already entirely in memory.
 static int pcm_forced_buffer_ms;
 
+// Set while a DoP stream is opened: a USB DAC is then held to its own rates.
+// Through plughw a rate the DAC lacks is converted by the plug, which for DoP
+// is not a quality question -- interpolated DoP words are no longer DSD, and
+// the DAC plays them as noise at full level. With this the open fails
+// instead, and the track is converted to PCM (see play_decoded_file). Read
+// by open_pcm_device_now() on the playback thread; an external source never
+// opens while a track is playing.
+static bool pcm_exact_rate;
+
 // ---------------------------------------------------------------------------
 // Gapless: the PCM that stays open between tracks
 //
@@ -1476,6 +1485,16 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	// nearest one rather than failing the track -- and say so in the log.
 	unsigned int val = sample_rate;
 	int dir = 0;
+	bool exact_rate = pcm_exact_rate && (strncmp(device, "plughw:", 7) == 0 || strncmp(device, "hw:", 3) == 0);
+	if (exact_rate) {
+		snd_pcm_hw_params_set_rate_resample(pcm_handle, hw_params, 0);
+	}
+	if (exact_rate && snd_pcm_hw_params_set_rate(pcm_handle, hw_params, val, 0) < 0) {
+		fprintf(stderr, "audio: '%s' has no %d Hz of its own, and DoP cannot be converted\n", device, sample_rate);
+		last_open_err = -EINVAL;
+		snd_pcm_close(pcm_handle);
+		return NULL;
+	}
 	if (snd_pcm_hw_params_set_rate(pcm_handle, hw_params, val, 0) < 0) {
 		snd_pcm_hw_params_set_rate_near(pcm_handle, hw_params, &val, &dir);
 		fprintf(stderr, "audio: %d Hz unavailable, device settled on %u Hz\n", sample_rate, val);
@@ -3713,6 +3732,30 @@ static const int32_t *bt_resample_block(bt_resample_t *r, const void *in, int bi
 	return from;
 }
 
+// Whether the USB DAC in use would not take DSD at `dop_rate` over DoP: it
+// lacks the carrier rate, or takes only 16 bits, which cannot hold a marker
+// byte and sixteen bits of stream. False when the output is not a USB DAC or
+// cannot be asked. Such a DAC gets the track as PCM (dsd_to_pcm), which it
+// can play, instead of a stream it would play as noise or refuse.
+static bool usb_refuses_dop(int dop_rate) {
+	char device[sizeof(output_pcm)];
+	audio_get_output_device(device, sizeof(device));
+	usb_caps_t caps;
+	if (strncmp(device, "bluealsa", 8) == 0 || !usb_caps_for(device, &caps) || caps.rates == 0) {
+		return false;
+	}
+	if (caps.wide && usb_caps_has(&caps, dop_rate)) {
+		return false;
+	}
+	fprintf(stderr, "audio: the USB DAC %s; the DSD track goes to it as PCM\n",
+			caps.wide ? "has no rate for this DoP stream" : "takes 16 bits only, too few for DoP");
+	return true;
+}
+
+// Set when a DoP stream was refused at the open: the same track is opened
+// again at once and converted to PCM. Playback thread only.
+static bool dsd_force_pcm;
+
 // ---------------------------------------------------------------------------
 // 16-bit sources through the 32-bit chain, and the way back to 16 bits
 //
@@ -3866,7 +3909,13 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	}
 
 	// Headphones have no DSD mode to switch into: DSD goes to them as PCM.
-	bool dsd_as_pcm = decoder_passthrough(dec) && output_is_bluetooth() && decoder_dsd_to_pcm(dec);
+	// So does a USB DAC that cannot take this DoP stream, or one that refused it
+	// at the open (dsd_force_pcm).
+	bool force_pcm = dsd_force_pcm;
+	dsd_force_pcm = false;
+	bool dsd_as_pcm = decoder_passthrough(dec) &&
+					  (output_is_bluetooth() || force_pcm || usb_refuses_dop(decoder_sample_rate(dec))) &&
+					  decoder_dsd_to_pcm(dec);
 
 	int channels = decoder_channels(dec);
 	int sample_rate = decoder_sample_rate(dec);
@@ -3923,7 +3972,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	int decim_factor = bluetooth_decimation(sample_rate, channels, passthrough ? out_bits : 32, passthrough);
 	// 176.4 kHz is more than any Bluetooth link carries, whatever the
 	// decimation settings say.
-	if (dsd_as_pcm && decim_factor == 1) {
+	if (dsd_as_pcm && decim_factor == 1 && output_is_bluetooth()) {
 		unsigned sink = bluetooth_sink_rate();
 		decim_factor = decimate_factor_for(sample_rate, sink ? (int)sink : 44100);
 	}
@@ -4034,6 +4083,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// The previous track's PCM, if it stayed open and suits this one too: that
 	// is the whole of gapless. Never for DoP -- see the comment above
 	// gapless_release().
+	pcm_exact_rate = passthrough;
 	snd_pcm_t *pcm_handle = passthrough ? NULL : gapless_take(channels, dev_rate, dev_bits, &period_size);
 	playback_follow(pcm_handle);
 	if (pcm_handle) {
@@ -4072,12 +4122,32 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		dev_bits = out_bits;
 		pcm_handle = open_pcm_device(channels, sample_rate, out_bits, &period_size);
 	}
+	pcm_exact_rate = false;
+#ifdef HOST_BUILD
+	// SONIX_TEST_DOP_REFUSE (host builds only): the emulator's null device
+	// takes any rate, so it is made to refuse DoP here instead.
+	if (pcm_handle && passthrough && getenv("SONIX_TEST_DOP_REFUSE")) {
+		snd_pcm_close(pcm_handle);
+		pcm_handle = NULL;
+		pcm_device_open = false;
+		last_open_err = -EINVAL;
+	}
+#endif
+	if (!pcm_handle && passthrough && last_open_err != -ENOMEM) {
+		// DSD256 asks for 705.6 kHz, which an output that is not this device's
+		// own DAC may simply refuse. Rather than a track that does not play,
+		// it is opened again and converted to PCM -- the route Bluetooth takes
+		// -- at a rate the output has (see usb_rate_plan).
+		fprintf(stderr, "audio: DoP at %d Hz refused by this output; the track is converted to PCM instead\n",
+				sample_rate);
+		set_dac_dop(0);
+		decoder_close(dec);
+		dsd_force_pcm = true;
+		play_decoded_file(filepath, format);
+		return;
+	}
 	if (!pcm_handle && passthrough) {
-		// DSD256 asks the card for 705.6 kHz, which an output that is not this
-		// device's own DAC may simply refuse. The track does not play and the
-		// log says why rather than leaving a silent stop to be guessed at; only
-		// Bluetooth is sent PCM instead (decoder_dsd_to_pcm, above).
-		fprintf(stderr, "audio: DoP at %d Hz refused by this output; the track cannot play\n", sample_rate);
+		fprintf(stderr, "audio: DoP at %d Hz could not open (no memory); the track cannot play\n", sample_rate);
 	}
 	if (!pcm_handle) {
 		set_dac_dop(0);
@@ -4337,7 +4407,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				auto_set_output();
 				{
 					snd_pcm_uframes_t new_period = period_size;
+					pcm_exact_rate = passthrough;
 					pcm_handle = open_pcm_device(channels, dev_rate, dev_bits, &new_period);
+					pcm_exact_rate = false;
 					if (!pcm_handle) {
 						fprintf(stderr, "Audio: cannot reopen the device after a pause\n");
 						audio_command = AUDIO_CMD_STOP;
@@ -4381,7 +4453,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			int now_route = alsa_output_key();
 			if (now_route != track_route) {
 				track_route = now_route;
-				if (!pcm_reroute(&pcm_handle, channels, dev_rate, dev_bits, &period_size)) {
+				pcm_exact_rate = passthrough;
+				bool rerouted = pcm_reroute(&pcm_handle, channels, dev_rate, dev_bits, &period_size);
+				pcm_exact_rate = false;
+				if (!rerouted) {
 					fprintf(stderr, "Audio: reroute failed\n");
 					pthread_mutex_lock(&audio_mutex);
 					audio_command = AUDIO_CMD_STOP;

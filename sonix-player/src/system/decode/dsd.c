@@ -61,6 +61,7 @@ struct dsd_file {
 	int taps;	  // filter length in bytes
 	int sum_bits; // the filter's coefficients sum to 1 << sum_bits
 	const int32_t (*table)[256];
+	int32_t comp[MAX_CHANNELS][2]; // the droop compensator's last two inputs, per channel
 };
 
 // ---------------------------------------------------------------------------
@@ -347,7 +348,22 @@ static bool produce(dsd_file_t *d) {
 // Gain +6 dB: a full-scale DSD signal is 50 % modulation, half of what the
 // stream can carry, so without it DSD plays 6 dB quieter than PCM. What goes
 // past full scale is clamped.
+//
+// The droop. A CIC's passband is not flat: (sin(pi f / F) / (R sin(pi f /
+// RF)))^4 for an output rate F, 0.18 dB down at 10 kHz, 0.41 at 15 and 0.74
+// at 20 -- the same at DSD64, 128 and 256, since it depends only on f / F.
+// It is taken back by a three-tap FIR at 176.4 kHz, [-c, 1 + 2c, -c] with
+// c = 0.1793 (Q14: -2938, 22260, -2938), a least-squares fit of the CIC's
+// inverse up to 20 kHz: the two together are flat within 0.012 dB to 20 kHz.
+// Two multiplications per sample, a sixth of what the CIC itself costs at
+// DSD64. Its rise above the audible band (+4.7 dB at 88.2 kHz) lifts the
+// ultrasonic noise a little on the way into the decimator, which removes it.
+// What is left at 20 kHz once the stream reaches 44.1 kHz is the half-band
+// decimator's own transition (0.85 dB), which every 88.2 kHz track has too.
 // ---------------------------------------------------------------------------
+
+#define COMP_SIDE (-2938)
+#define COMP_CENTRE 22260 // with the sides, 1 << 14 at DC
 
 #define PCM_RATE 176400
 #define CIC_ORDER 4
@@ -412,6 +428,7 @@ static void history_clear(dsd_file_t *d) {
 	for (int c = 0; c < d->channels; c++) {
 		memset(d->chan[c] - d->taps, 0x69, (size_t)d->taps);
 	}
+	memset(d->comp, 0, sizeof(d->comp));
 }
 
 static bool produce_pcm(dsd_file_t *d) {
@@ -446,18 +463,25 @@ static bool produce_pcm(dsd_file_t *d) {
 			// The window of an output frame ends with the last byte it takes in.
 			const unsigned char *p = d->chan[c] + d->chan_read + d->step - taps;
 			int32_t *out = d->pcm + c;
+			int32_t x1 = d->comp[c][0], x2 = d->comp[c][1];
 			for (int i = 0; i < frames; i++, p += d->step, out += d->channels) {
 				int32_t acc = 0;
 				for (int k = 0; k < taps; k += 4) {
 					acc += t[k][p[k]] + t[k + 1][p[k + 1]] + t[k + 2][p[k + 2]] + t[k + 3][p[k + 3]];
 				}
-				if (acc > top) {
-					acc = top;
-				} else if (acc < -top) {
-					acc = -top;
+				// The droop compensator, one sample behind the CIC.
+				int64_t y = ((int64_t)COMP_CENTRE * x1 + (int64_t)COMP_SIDE * ((int64_t)acc + x2) + (1 << 13)) >> 14;
+				x2 = x1;
+				x1 = acc;
+				if (y > top) {
+					y = top;
+				} else if (y < -top) {
+					y = -top;
 				}
-				*out = (int32_t)((uint32_t)acc << shift);
+				*out = (int32_t)((uint32_t)y << shift);
 			}
+			d->comp[c][0] = x1;
+			d->comp[c][1] = x2;
 		}
 		d->chan_read += frames * d->step;
 		d->pcm_frames = frames;
@@ -506,7 +530,7 @@ bool dsd_to_pcm(dsd_file_t *d) {
 	d->pcm_frames = 0;
 	d->pcm_read = 0;
 	history_clear(d);
-	printf("dsd: DSD%d filtered to PCM %d Hz (%d-byte filter)\n", d->multiple, PCM_RATE, taps);
+	printf("dsd: DSD%d filtered to PCM %d Hz (%d-byte filter, droop compensated)\n", d->multiple, PCM_RATE, taps);
 	return true;
 }
 
