@@ -2211,6 +2211,73 @@ static snd_pcm_sframes_t pcm_write_bluetooth(snd_pcm_t *pcm, const void *buf, sn
 
 static bool playback_rt;
 
+// The stream the thread's priority follows, its buffer, and how much has been
+// written to it since it last stopped playing.
+static snd_pcm_t *follow_pcm;
+
+// ---------------------------------------------------------------------------
+// The link between this player and bluealsa
+//
+// A Bluetooth stream crosses three threads on its way out: this playback
+// thread fills the PCM's buffer (SCHED_RR 10 while it plays), bluealsa's
+// encoder empties the daemon's FIFO (SCHED_FIFO 12 with io_rt_priority, see
+// bluetooth.c) -- and between the two, inside this process, the ALSA plugin's
+// own "pcm-io" thread copies the buffer into the FIFO at the pace of the
+// clock.
+//
+// That middle thread is created by snd_pcm_start(), which runs inside the
+// write that fills the buffer -- the one moment this thread is deliberately
+// NOT real-time (see above) -- and a new thread takes the creator's
+// scheduling. So the one link of the chain that has to keep time ran at the
+// interface's level, and anything that keeps the core busy for a while (a
+// download's TLS and card writes, a flood of log lines) starved it: the
+// encoder ran dry, and when the thread got the core back it caught up in one
+// burst, emptied the buffer and reported an underrun. The 1.2.3 device log has
+// both: "write error: Broken pipe" during a Yandex download under LDAC 990,
+// and again in a five-second freeze with the core never idle.
+//
+// So once a Bluetooth stream is running, its pcm-io thread is put between the
+// two others, at SCHED_RR 11. It sleeps between periods and blocks on the
+// FIFO, so this costs no time; it only decides who goes first.
+// ---------------------------------------------------------------------------
+#define BT_IO_RT_PRIORITY (PLAYBACK_RT_PRIORITY + 1)
+
+static void bluetooth_io_thread_rt(void) {
+#ifndef HOST_BUILD
+	DIR *tasks = opendir("/proc/self/task");
+	if (!tasks) {
+		return;
+	}
+	struct dirent *de;
+	while ((de = readdir(tasks)) != NULL) {
+		pid_t tid = (pid_t)atoi(de->d_name);
+		if (tid <= 0) {
+			continue;
+		}
+		char path[64], comm[32] = "";
+		snprintf(path, sizeof(path), "/proc/self/task/%d/comm", (int)tid);
+		FILE *f = fopen(path, "re");
+		if (!f) {
+			continue;
+		}
+		bool io = fgets(comm, sizeof(comm), f) && strcmp(comm, "pcm-io\n") == 0;
+		fclose(f);
+		if (!io || sched_getscheduler(tid) == SCHED_RR) {
+			continue;
+		}
+		struct sched_param param = {.sched_priority = BT_IO_RT_PRIORITY};
+		if (sched_setscheduler(tid, SCHED_RR, &param) == 0) {
+			fprintf(stderr, "audio[%ld]: bluealsa's pcm-io thread %d at SCHED_RR %d\n", log_ms(), (int)tid,
+					BT_IO_RT_PRIORITY);
+		} else {
+			fprintf(stderr, "audio: bluealsa's pcm-io thread %d stays at normal priority: %s\n", (int)tid,
+					strerror(errno));
+		}
+	}
+	closedir(tasks);
+#endif
+}
+
 static void playback_set_rt(bool on) {
 	if (on == playback_rt) {
 		return;
@@ -2219,11 +2286,12 @@ static void playback_set_rt(bool on) {
 	if (pthread_setschedparam(pthread_self(), on ? SCHED_RR : SCHED_OTHER, &param) == 0) {
 		playback_rt = on;
 	}
+	// The stream has just started: on Bluetooth that is when the plugin's
+	// thread exists, freshly made at the level this one had a moment ago.
+	if (on && follow_pcm && pcm_is_bluetooth(follow_pcm)) {
+		bluetooth_io_thread_rt();
+	}
 }
-
-// The stream the thread's priority follows, its buffer, and how much has been
-// written to it since it last stopped playing.
-static snd_pcm_t *follow_pcm;
 static snd_pcm_uframes_t follow_buffer;
 static snd_pcm_uframes_t follow_filled;
 
