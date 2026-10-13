@@ -27,6 +27,7 @@
 #include <poll.h>
 #include <sys/prctl.h>
 #include <sys/stat.h>
+#include <sys/syscall.h>
 #include <dirent.h>
 #include <alloca.h>
 #include <alsa/asoundlib.h>
@@ -1831,20 +1832,181 @@ static long long interface_ticks(void) {
 	return stat_ticks(path);
 }
 
-static void health_sample_system(health_t *h) {
-	if (!system_ticks(&h->sys_total, &h->sys_idle)) {
-		h->sys_total = h->sys_idle = -1;
-	}
-	h->ui_ticks = interface_ticks();
-	h->bluealsa_ticks = output_is_bluetooth() ? bluealsa_ticks() : -1;
-}
-
 // Percent of the whole machine between two readings, -1 when either is missing.
 static int ticks_percent(long long before, long long after, long long total) {
 	if (before < 0 || after < 0 || total <= 0) {
 		return -1;
 	}
 	return (int)((after - before) * 100 / total);
+}
+
+// ---------------------------------------------------------------------------
+// Who has the core
+//
+// "idle 0%" says the core was busy, not with what, and the three figures
+// beside it -- the playback thread, the interface, bluealsa -- added up to a
+// quarter of it in the 1.2.3 device log: the rest had to be guessed from the
+// code. So every process's clock ticks are noted at the start of a span, and
+// every thread's in this process, where most of the work is, and when the
+// span ends with the core under CPU_TOP_IDLE_PCT idle the ones that grew the
+// most are named on a line of their own. The three already reported are left
+// out of it.
+//
+// A few dozen small reads of /proc every ten seconds, on the playback thread
+// like the readings above: a couple of milliseconds against a buffer of
+// several hundred. Kernel threads are processes like any other here, so a
+// card or a radio driver that is working hard shows by its name (mmcqd,
+// kworker, ksoftirqd).
+// ---------------------------------------------------------------------------
+#define CPU_TOP_MAX 320
+#define CPU_TOP_SHOWN 3
+#define CPU_TOP_IDLE_PCT 30
+#define CPU_TOP_MIN_PCT 2
+
+typedef struct {
+	int id;			   // a pid, or a tid of this process
+	bool thread;	   // ... which one
+	long long ticks;
+} cpu_mark_t;
+
+static cpu_mark_t cpu_marks[CPU_TOP_MAX];
+static int cpu_mark_count;
+static cpu_mark_t cpu_fresh[CPU_TOP_MAX];
+
+// Every process but this one, and this one's threads, into `out`.
+static int cpu_marks_read(cpu_mark_t *out) {
+	int count = 0;
+	int self = (int)getpid();
+	char path[64];
+
+	DIR *tasks = opendir("/proc/self/task");
+	if (tasks) {
+		struct dirent *de;
+		while (count < CPU_TOP_MAX && (de = readdir(tasks)) != NULL) {
+			int tid = atoi(de->d_name);
+			if (tid <= 0) {
+				continue;
+			}
+			snprintf(path, sizeof(path), "/proc/self/task/%d/stat", tid);
+			long long ticks = stat_ticks(path);
+			if (ticks >= 0) {
+				out[count++] = (cpu_mark_t){.id = tid, .thread = true, .ticks = ticks};
+			}
+		}
+		closedir(tasks);
+	}
+
+	DIR *proc = opendir("/proc");
+	if (proc) {
+		struct dirent *de;
+		while (count < CPU_TOP_MAX && (de = readdir(proc)) != NULL) {
+			int pid = atoi(de->d_name);
+			if (pid <= 0 || pid == self) {
+				continue;
+			}
+			snprintf(path, sizeof(path), "/proc/%d/stat", pid);
+			long long ticks = stat_ticks(path);
+			if (ticks >= 0) {
+				out[count++] = (cpu_mark_t){.id = pid, .thread = false, .ticks = ticks};
+			}
+		}
+		closedir(proc);
+	}
+	return count;
+}
+
+static void cpu_marks_take(void) { cpu_mark_count = cpu_marks_read(cpu_marks); }
+
+// "btmon 38%, kworker/0:1 5%, player:coverloader 3%" for a span of
+// `total_ticks`, or nothing when nobody took a noticeable share.
+static void cpu_top_report(long now, long long total_ticks) {
+	if (cpu_mark_count <= 0 || total_ticks <= 0) {
+		return;
+	}
+	int fresh = cpu_marks_read(cpu_fresh);
+	int self_tid = (int)syscall(SYS_gettid);
+	int interface = (int)getpid();
+
+	int top[CPU_TOP_SHOWN];
+	long long top_ticks[CPU_TOP_SHOWN];
+	int shown = 0;
+	int before = 0;
+	for (int i = 0; i < fresh; i++) {
+		const cpu_mark_t *now_mark = &cpu_fresh[i];
+		if (now_mark->thread && (now_mark->id == self_tid || now_mark->id == interface)) {
+			continue; // reported on the lines above
+		}
+		if (!now_mark->thread && now_mark->id == bluealsa_pid) {
+			continue;
+		}
+		// Both lists come out of readdir in the same order, so the match is
+		// almost always where the last one was found.
+		int found = -1;
+		for (int k = 0; k < cpu_mark_count; k++) {
+			int at = (before + k) % cpu_mark_count;
+			if (cpu_marks[at].id == now_mark->id && cpu_marks[at].thread == now_mark->thread) {
+				found = at;
+				break;
+			}
+		}
+		long long grew = now_mark->ticks - (found >= 0 ? cpu_marks[found].ticks : 0);
+		if (found >= 0) {
+			before = found + 1;
+		}
+		if (grew * 100 < total_ticks * CPU_TOP_MIN_PCT) {
+			continue;
+		}
+		// The short list, largest first.
+		if (shown == CPU_TOP_SHOWN && grew <= top_ticks[CPU_TOP_SHOWN - 1]) {
+			continue;
+		}
+		int pos = shown < CPU_TOP_SHOWN ? shown++ : CPU_TOP_SHOWN - 1;
+		while (pos > 0 && top_ticks[pos - 1] < grew) {
+			top[pos] = top[pos - 1];
+			top_ticks[pos] = top_ticks[pos - 1];
+			pos--;
+		}
+		top[pos] = i;
+		top_ticks[pos] = grew;
+	}
+	if (shown == 0) {
+		return;
+	}
+
+	char text[256];
+	size_t used = 0;
+	for (int n = 0; n < shown && used < sizeof(text); n++) {
+		const cpu_mark_t *m = &cpu_fresh[top[n]];
+		char path[64], comm[32] = "?";
+		if (m->thread) {
+			snprintf(path, sizeof(path), "/proc/self/task/%d/comm", m->id);
+		} else {
+			snprintf(path, sizeof(path), "/proc/%d/comm", m->id);
+		}
+		FILE *f = fopen(path, "r");
+		if (f) {
+			if (fgets(comm, sizeof(comm), f)) {
+				comm[strcspn(comm, "\n")] = '\0';
+			}
+			fclose(f);
+		}
+		int len = snprintf(text + used, sizeof(text) - used, "%s%s%s %lld%%", n ? ", " : "", m->thread ? "player:" : "",
+						   comm, top_ticks[n] * 100 / total_ticks);
+		if (len < 0) {
+			break;
+		}
+		used += (size_t)len;
+	}
+	fprintf(stderr, "audio[%ld]: the core went to: %s\n", now, text);
+}
+
+static void health_sample_system(health_t *h) {
+	if (!system_ticks(&h->sys_total, &h->sys_idle)) {
+		h->sys_total = h->sys_idle = -1;
+	}
+	h->ui_ticks = interface_ticks();
+	h->bluealsa_ticks = output_is_bluetooth() ? bluealsa_ticks() : -1;
+	cpu_marks_take();
 }
 
 static void health_start(health_t *h) {
@@ -1904,6 +2066,9 @@ static void health_tick(health_t *h, int rate, int out_rate, int bits) {
 			}
 			fprintf(stderr, "audio[%ld]: the core over the same span: idle %d%%, interface %d%%%s\n", now, idle_pct,
 					ui_pct, ba);
+			if (idle_pct < CPU_TOP_IDLE_PCT) {
+				cpu_top_report(now, dt);
+			}
 		}
 	}
 	health_start(h);
