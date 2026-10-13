@@ -22,10 +22,11 @@
 #include "src/system/net/http.h"
 #include "src/system/streaming/podcastdl.h"
 #include "src/system/streaming/yandexcache.h"
+#include "src/system/streaming/yandexsaved.h"
 
 // See yandexdl.h.
 
-#define LIBRARY_FOLDER "Yandex Music"
+#define LIBRARY_FOLDER YANDEXSAVED_FOLDER
 #define QUEUE_MAX 300 // about 400 KB at the very most, an album is ~20
 #define COVER_LIMIT (4 * 1024 * 1024)
 // A FLAC's own metadata blocks are kept (the seek table, an embedded
@@ -920,6 +921,19 @@ static void fetch_cover(const char *folder, const char *url) {
 	free(body);
 }
 
+// Into the index of saved tracks (yandexsaved.h), under the names the file
+// was tagged with: the album's own title rather than the track's copy of it.
+static void remember(const yandex_track_t *t, const tags_t *tags, int album_tracks, const char *path) {
+	yandex_track_t *saved = malloc(sizeof(*saved));
+	if (!saved) {
+		return;
+	}
+	*saved = *t;
+	snprintf(saved->album, sizeof(saved->album), "%s", tags->album);
+	yandexsaved_add(saved, tags->album_artist, tags->year, album_tracks, path);
+	free(saved);
+}
+
 // Saves one track. True when the file is in the library afterwards (saved
 // now or already there); false with `why` set otherwise.
 static bool save_track(const yandex_track_t *t, unsigned asked, char *why, size_t why_size) {
@@ -981,7 +995,10 @@ static bool save_track(const yandex_track_t *t, unsigned asked, char *why, size_
 		char existing[1300];
 		snprintf(existing, sizeof(existing), "%.1024s/%.220s.%s", folder, base, EXTS[i]);
 		if (exists(existing)) {
+			// Into the index all the same: this is how a file saved before
+			// there was one (1.2.4) becomes known to the Yandex pages.
 			printf("yandexdl: %s is already there\n", existing);
+			remember(t, &tags, have_meta ? meta.track_count : 0, existing);
 			return true;
 		}
 	}
@@ -1091,6 +1108,7 @@ static bool save_track(const yandex_track_t *t, unsigned asked, char *why, size_
 		write_sidecar(path, &tags);
 	}
 	fetch_cover(folder, have_meta && meta.cover[0] ? meta.cover : t->cover);
+	remember(t, &tags, have_meta ? meta.track_count : 0, path);
 	printf("yandexdl: saved %s\n", path);
 	return true;
 }

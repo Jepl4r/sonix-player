@@ -25,7 +25,8 @@
 // (see "MP4" in yandexdl.c). An MP4 that cannot be rewritten so is kept as it
 // came with a "<file>.tags" sidecar instead, which the player's tag reader --
 // and so the library -- applies over its own (metadata.c); 1.2.4 wrote one
-// for every MP4, and those are still read.
+// for every MP4, and those are still read. Every saved track goes into the
+// index of saved tracks (yandexsaved.h), which the Yandex pages play from.
 //
 // One file at a time, on a thread of its own at low priority, started on the
 // first request: nothing runs, and nothing is allocated, until something is

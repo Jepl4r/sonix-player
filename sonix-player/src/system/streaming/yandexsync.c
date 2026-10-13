@@ -10,6 +10,7 @@
 #include "src/system/streaming/yandex.h"
 #include "src/system/streaming/yandexcache.h"
 #include "src/system/streaming/yandexdl.h"
+#include "src/system/streaming/yandexsaved.h"
 
 // See yandexsync.h.
 
@@ -214,6 +215,7 @@ static bool provider_network_wanted(void) { return yandexcache_network_wanted() 
 static void provider_set_root(const char *sd_root) {
 	yandexcache_set_root(sd_root);
 	yandexdl_set_root(sd_root);
+	yandexsaved_set_root(sd_root);
 }
 
 // Shutdown, restart, update: the save in progress stops (its .part goes) and
@@ -223,28 +225,53 @@ static void provider_clear_on_exit(void) {
 	yandexcache_clear_on_exit();
 }
 
-static bool provider_is_track(const char *path) { return yandexcache_is_track(path); }
+// A saved file played from the Yandex pages is a Yandex track too -- its like
+// goes to the account, "Show album" opens the service's album -- but only
+// while that queue plays it (yandexsaved_claim): the same file played from
+// the Library is the library's, and its queue, position and star are kept as
+// for any other file.
+static bool provider_owns(const char *path) { return yandexcache_owns(path) || yandexsaved_claimed(path); }
+
+static bool provider_is_track(const char *path) { return yandexcache_is_track(path) || yandexsaved_claimed(path); }
+
+// The track id behind a path: the cache's file name, or the index's entry.
+static void track_ids(const char *path, char *id, size_t id_size, char *album, size_t album_size) {
+	yandexcache_track_id(path, id, id_size);
+	if (id[0]) {
+		if (album && !yandexcache_album_id(path, album, album_size)) {
+			album[0] = '\0';
+		}
+		return;
+	}
+	yandexsaved_track_for_path(path, id, id_size, album, album ? album_size : 0);
+}
 
 static bool provider_fav_get(const char *path) {
 	char id[YANDEX_ID_MAX];
-	yandexcache_track_id(path, id, sizeof(id));
+	track_ids(path, id, sizeof(id), NULL, 0);
 	return id[0] && yandex_is_liked(id);
 }
 
 static void provider_fav_toggle(const char *path, bool want, stream_provider_done_cb done, void *user) {
 	char id[YANDEX_ID_MAX], album[YANDEX_ID_MAX];
-	yandexcache_track_id(path, id, sizeof(id));
-	if (!yandexcache_album_id(path, album, sizeof(album))) {
-		album[0] = '\0';
-	}
+	track_ids(path, id, sizeof(id), album, sizeof(album));
 	yandexsync_like(id, album, want, done, user);
+}
+
+static bool provider_album_id(const char *path, char *out, size_t size) {
+	if (!out || size == 0) {
+		return false;
+	}
+	char id[YANDEX_ID_MAX];
+	track_ids(path, id, sizeof(id), out, size);
+	return out[0] != '\0';
 }
 
 static stream_provider_t provider = {
 	.id = "yandex",
 	.set_root = provider_set_root,
 	.cache_dir = yandexcache_dir,
-	.owns_path = yandexcache_owns,
+	.owns_path = provider_owns,
 	.downloading = provider_downloading,
 	.network_wanted = provider_network_wanted,
 	// Transient, like Qobuz's: swept on the way out (yandexcache.h). What was
@@ -255,7 +282,7 @@ static stream_provider_t provider = {
 	.fav_refresh = yandexsync_likes_refresh,
 	.fav_toggle = provider_fav_toggle,
 	.fav_failed_key = "yandex_like_failed",
-	.album_id = yandexcache_album_id,
+	.album_id = provider_album_id,
 	.album_failed_key = "yandex_album_failed",
 	// No playlists: "Add to playlist" offers the card's for a Yandex track.
 	.playlist_title_key = "yandex",
