@@ -9,10 +9,8 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/nowplaying/player.h"
-#include "src/gui/shell/confirm.h"
 #include "src/gui/shell/gridpage.h"
 #include "src/gui/shell/icons.h"
-#include "src/gui/shell/popover.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
@@ -21,7 +19,12 @@
 #include "src/gui/streaming/qobuzpage.h"
 #include "src/gui/streaming/radiopage.h"
 #include "src/gui/streaming/subsonicpage.h"
+#include "src/gui/streaming/svcui.h"
 #include "src/gui/shell/settingsrow.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_toast.h"
 #include "src/gui/streaming/tidalpage.h"
 #include "src/gui/streaming/yandexpage.h"
 #include "src/system/core/config.h"
@@ -215,27 +218,41 @@ static void tiles_rebuild(void) {
 
 // Taking a tile off. The service itself is untouched -- a Tidal account stays
 // signed in, the podcasts stay subscribed -- so adding it back later finds
-// everything as it was.
+// everything as it was. Nothing is lost, so 2.0 asks nothing first: the tile
+// goes at once and the toast offers it back (principle 6: a change is a toast
+// with Undo; confirmation is for what cannot be undone).
 static service_t removing;
+static int removed_at = -1; // where it stood, for Undo
 
-static void remove_confirmed(void *user) {
+static void undo_remove(void *user) {
 	(void)user;
-	for (int i = 0; i < added_n; i++) {
-		if (added[i] == removing) {
-			memmove(&added[i], &added[i + 1], (size_t)(added_n - i - 1) * sizeof(*added));
-			added_n--;
-			break;
-		}
+	if (removed_at < 0 || is_added(removing) || added_n >= SVC_COUNT) {
+		return;
 	}
+	int at = removed_at > added_n ? added_n : removed_at;
+	memmove(&added[at + 1], &added[at], (size_t)(added_n - at) * sizeof(*added));
+	added[at] = removing;
+	added_n++;
+	removed_at = -1;
 	tiles_save();
 	tiles_rebuild();
 }
 
 static void remove_action(void *user) {
 	(void)user;
-	char title[160];
-	lv_snprintf(title, sizeof(title), tr("streaming_remove_question"), tr(SERVICES[removing].entry.label));
-	confirm_show(title, "streaming_remove_note", "remove", remove_confirmed, NULL);
+	for (int i = 0; i < added_n; i++) {
+		if (added[i] == removing) {
+			memmove(&added[i], &added[i + 1], (size_t)(added_n - i - 1) * sizeof(*added));
+			added_n--;
+			removed_at = i;
+			break;
+		}
+	}
+	tiles_save();
+	tiles_rebuild();
+	char line[200];
+	lv_snprintf(line, sizeof(line), tr("streaming_tile_removed"), tr(SERVICES[removing].entry.label));
+	sx_toast_undo(line, undo_remove, NULL);
 }
 
 static void tile_long_pressed_cb(lv_event_t *e) {
@@ -247,31 +264,36 @@ static void tile_long_pressed_cb(lv_event_t *e) {
 		return;
 	}
 	// The lift that ends this press would otherwise arrive as a tap and open
-	// the service under the menu.
+	// the service under the sheet.
 	lv_indev_t *indev = lv_indev_active();
 	if (indev) {
 		lv_indev_wait_release(indev);
 	}
 	removing = shown[index];
-	static const popover_item_t items[] = {
-		{"streaming_remove_tile", remove_action, NULL},
+	sx_sheet_item_t items[] = {
+		{.label = tr("streaming_remove_tile"), .icon = &icon_x_small, .destructive = true, .action = remove_action},
 	};
-	popover_show(lv_event_get_current_target(e), items, 1);
+	sx_sheet_menu(tr(SERVICES[removing].entry.label), tr("streaming_remove_note"), items, 1);
 }
 
 // ---------------------------------------------------------------------------
-// The list behind the "+"
+// "Add a service"
 //
-// Every service not on the page yet, each with its picture and name. One the
-// firmware has no keys for is listed all the same, dimmed and saying why, so
-// the user knows it exists and why it cannot be had, rather than wondering
-// where it went.
+// Every service not on the page yet, as the handoff's cards: its name, a word
+// on what it is, and a plus. One the firmware has no keys for is listed all
+// the same, dimmed and saying why, so the user knows it exists and why it
+// cannot be had, rather than wondering where it went.
 // ---------------------------------------------------------------------------
 
-#define ADD_ROW_HEIGHT 88
-#define ADD_ICON_BOX 56
-
 static lv_obj_t *add_list;
+
+// What each service is, in a few words, under its name. The keys sit in an
+// array so the string extractor finds them (see radiopage.c).
+static const char *const ABOUT[SVC_COUNT] = {
+	[SVC_TIDAL] = "streaming_about_tidal",		 [SVC_QOBUZ] = "streaming_about_qobuz",
+	[SVC_RADIO] = "streaming_about_radio",		 [SVC_PODCASTS] = "streaming_about_podcasts",
+	[SVC_SUBSONIC] = "streaming_about_subsonic", [SVC_YANDEX] = "streaming_about_yandex",
+};
 
 static void add_row_cb(lv_event_t *e) {
 	if (switcher_back_drag_active()) {
@@ -294,69 +316,19 @@ static void add_row_cb(lv_event_t *e) {
 
 static void add_row(service_t s) {
 	bool usable = service_usable(s);
-
-	lv_obj_t *row = lv_btn_create(add_list);
-	lv_obj_set_size(row, lv_pct(100), ADD_ROW_HEIGHT);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_ver(row, 0, 0);
-	lv_obj_set_style_pad_column(row, 14, 0);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_scrollable(row, false);
-	lv_obj_set_event_bubble(row, true);
-	lv_obj_add_event_cb(row, add_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)s);
-
-	// The tile's own picture at half size, in its own colours, as on the
-	// Music page's arrangement list.
-	lv_obj_t *box = lv_obj_create(row);
-	lv_obj_remove_style_all(box);
-	lv_obj_set_size(box, ADD_ICON_BOX, ADD_ICON_BOX);
-	lv_obj_set_clickable(box, false);
-	lv_obj_t *icon = lv_image_create(box);
-	lv_image_set_src(icon, SERVICES[s].entry.icon);
-	lv_image_set_scale(icon, LV_SCALE_NONE / 2);
-	lv_obj_center(icon);
+	lv_obj_t *card = sx_card_create(add_list);
+	sx_card_title(card, tr(SERVICES[s].entry.label));
+	sx_card_subtitle(card, tr(usable ? ABOUT[s] : "streaming_no_keys"), false);
+	sx_card_on_click(card, add_row_cb, (void *)(intptr_t)s);
 	if (!usable) {
-		lv_obj_set_style_image_opa(icon, LV_OPA_40, 0);
-	}
-
-	// Name, and under it why it cannot be added when it cannot.
-	lv_obj_t *text = lv_obj_create(row);
-	lv_obj_remove_style_all(text);
-	lv_obj_set_flex_grow(text, 1);
-	lv_obj_set_height(text, LV_SIZE_CONTENT);
-	lv_obj_set_flex_flow(text, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(text, 2, 0);
-	lv_obj_set_clickable(text, false);
-	lv_obj_set_event_bubble(text, true);
-
-	lv_obj_t *name = lv_label_create(text);
-	lv_label_set_text(name, tr(SERVICES[s].entry.label));
-	lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(name, lv_pct(100));
-	lv_obj_add_style(name, usable ? &theme_style_text : &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(name, &font_ui_24, 0);
-
-	if (!usable) {
-		lv_obj_t *why = lv_label_create(text);
-		lv_label_set_text(why, tr("streaming_no_keys"));
-		lv_label_set_long_mode(why, LV_LABEL_LONG_WRAP);
-		lv_obj_set_width(why, lv_pct(100));
-		lv_obj_add_style(why, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(why, &font_ui_20, 0);
+		// Dimmed, and a tap says why rather than doing nothing.
+		sx_card_set_dim(card, true);
 		return;
 	}
-
-	lv_obj_t *plus = lv_image_create(row);
+	lv_obj_t *head = lv_obj_get_child(card, 0);
+	lv_obj_t *plus = lv_image_create(head);
 	lv_image_set_src(plus, &icon_plus);
-	lv_obj_add_style(plus, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor(plus, theme()->accent, 0);
-	lv_obj_set_style_image_recolor_opa(plus, LV_OPA_COVER, 0);
+	lv_obj_add_style(plus, &sx_style_icon_accent, 0);
 }
 
 static void add_rows_build(void) {
@@ -372,21 +344,14 @@ static void add_rows_build(void) {
 		}
 	}
 	if (listed == 0) {
-		lv_obj_t *note = lv_label_create(add_list);
-		lv_label_set_text(note, tr("streaming_all_added"));
-		lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-		lv_obj_set_width(note, lv_pct(100));
-		lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
-		lv_obj_add_style(note, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(note, &font_ui_24, 0);
-		lv_obj_set_style_pad_top(note, 40, 0);
+		svcui_note(add_list, tr("streaming_all_added"));
 	}
 	lv_obj_scroll_to_y(add_list, 0, LV_ANIM_OFF);
 }
 
 static void open_add_cb(lv_event_t *e) {
 	(void)e;
-	// Built at each opening rather than kept: six rows cost nothing to make,
+	// Built at each opening rather than kept: six cards cost nothing to make,
 	// and the list depends on what was added or taken off since.
 	add_rows_build();
 	switch_screen(add_screen);
@@ -397,25 +362,6 @@ static void open_add_cb(lv_event_t *e) {
 static void open_downloads_cb(lv_event_t *e) {
 	(void)e;
 	downloadspage_open(page_cfg);
-}
-
-// The corner buttons, the same shape as the Music page's search and settings:
-// slot 0 in the corner, slot 1 to its left.
-static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph) {
-	lv_obj_t *button = lv_btn_create(streaming_screen);
-	lv_obj_set_size(button, 56, 56);
-	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_border_width(button, 0, 0);
-	lv_obj_set_style_shadow_width(button, 0, 0);
-	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
-
-	lv_obj_t *icon = lv_image_create(button);
-	lv_image_set_src(icon, glyph);
-	lv_obj_add_style(icon, &theme_style_icon, 0);
-	lv_obj_center(icon);
-
-	return button;
 }
 
 void streaming_init(gui_config_t *cfg) {
@@ -434,7 +380,7 @@ void streaming_init(gui_config_t *cfg) {
 	lv_label_set_long_mode(empty_note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(empty_note, cfg->screen_width - 4 * cfg->padding);
 	lv_obj_set_style_text_align(empty_note, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_add_style(empty_note, &theme_style_text_dim, 0);
+	lv_obj_add_style(empty_note, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(empty_note, &font_ui_24, 0);
 	lv_obj_align(empty_note, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_clickable(empty_note, false);
@@ -445,10 +391,8 @@ void streaming_init(gui_config_t *cfg) {
 	lv_obj_t *title = settingsrow_title(streaming_screen, cfg, "streaming");
 	settingsrow_title_corner_slots(title, cfg, 2);
 
-	lv_obj_t *add_btn = corner_button(cfg, 0, &icon_plus);
-	lv_obj_add_event_cb(add_btn, open_add_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_t *downloads_btn = corner_button(cfg, 1, &icon_download);
-	lv_obj_add_event_cb(downloads_btn, open_downloads_cb, LV_EVENT_CLICKED, NULL);
+	svcui_header_button(streaming_screen, cfg, 0, &icon_plus, open_add_cb, NULL);
+	svcui_header_button(streaming_screen, cfg, 1, &icon_download, open_downloads_cb, NULL);
 
 	add_screen = lv_obj_create(NULL);
 	add_list = settingsrow_page(add_screen, cfg, "streaming_add_service");
