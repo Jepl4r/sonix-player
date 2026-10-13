@@ -4510,6 +4510,47 @@ static bool playback_reader_should_abort(void) {
 	return out;
 }
 
+#ifdef HOST_BUILD
+// SONIX_TEST_EXTERNAL=<raw file>:<rate>:<bits> plays a raw stereo file (S16 or
+// S32) through audio_external_write() a few seconds after start-up, in the
+// chunks a receiver hands over, so the external path can be measured in the
+// emulator the way the file player is. Host builds only.
+static void *external_test_thread(void *arg) {
+	(void)arg;
+	char spec[600];
+	snprintf(spec, sizeof(spec), "%s", getenv("SONIX_TEST_EXTERNAL"));
+	char *colon = strrchr(spec, ':');
+	int bits = colon ? atoi(colon + 1) : 16;
+	if (colon) {
+		*colon = '\0';
+	}
+	colon = strrchr(spec, ':');
+	int rate = colon ? atoi(colon + 1) : 44100;
+	if (colon) {
+		*colon = '\0';
+	}
+	sleep(3);
+	FILE *f = fopen(spec, "rb");
+	if (!f || (bits != 16 && bits != 32) || !audio_external_begin(rate, 2, bits)) {
+		fprintf(stderr, "audio: SONIX_TEST_EXTERNAL could not start\n");
+		if (f) {
+			fclose(f);
+		}
+		return NULL;
+	}
+	const int frame = 2 * bits / 8;
+	unsigned char chunk[441 * 8];
+	size_t got;
+	while ((got = fread(chunk, (size_t)frame, 441, f)) > 0) {
+		audio_external_write(chunk, (int)got);
+	}
+	fclose(f);
+	audio_external_end();
+	fprintf(stderr, "audio: SONIX_TEST_EXTERNAL done\n");
+	return NULL;
+}
+#endif
+
 int audio_init(void) {
 	static bool initialized = false;
 	if (initialized)
@@ -4533,6 +4574,15 @@ int audio_init(void) {
 		fprintf(stderr, "Audio: Failed to create background thread\n");
 		return -1;
 	}
+
+#ifdef HOST_BUILD
+	if (getenv("SONIX_TEST_EXTERNAL")) {
+		pthread_t test;
+		if (pthread_create(&test, NULL, external_test_thread, NULL) == 0) {
+			pthread_detach(test);
+		}
+	}
+#endif
 
 	initialized = true;
 	return 0;
@@ -5021,6 +5071,15 @@ static long external_underrun_logged_ms;
 static unsigned char *external_scaled;
 static size_t external_scaled_size;
 
+// The conversion to the output's rate, when it runs at another one: the same
+// polyphase filters and doubling the file player uses (see bt_resample_t).
+// AirPlay, the game sounds and most radio are 44.1 kHz, and the headphones
+// are nearly always held at 48: without it every one of them went through
+// alsa's linear converter. What the device is opened at, with it.
+static bt_resample_t external_conv;
+static int external_dev_rate;
+static int external_dev_bits;
+
 // How often the check below is worth making. The jack is a sysfs read and the
 // device name a string compare under a mutex, so it is not expensive -- but at
 // 44.1 kHz a receiver hands over a chunk every eleven milliseconds, and doing
@@ -5035,9 +5094,35 @@ static bool external_open_locked(void) {
 	// has not played anything since boot, none at all.
 	auto_set_output();
 
+	// The output's rate, when the stream is converted to it here. Only the two
+	// widths the converter reads; the others are left to the plug, as before.
+	bt_resample_close(&external_conv);
+	external_dev_rate = external_rate;
+	external_dev_bits = external_bits;
+	int target = (external_bits == 16 || external_bits == 32) ? bt_resample_target(external_rate, external_channels) : 0;
+	if (target && bt_resample_open(&external_conv, external_rate, target, external_channels)) {
+		external_dev_rate = target;
+		external_dev_bits = 32;
+		fprintf(stderr, "audio: the external source's %d Hz is resampled to %d Hz here (%s), not by alsa's linear converter\n",
+				external_rate, target,
+				external_conv.poly ? (external_conv.twice ? "polyphase, half-band x2" : "polyphase") : "half-band x2");
+	} else {
+		bt_resample_close(&external_conv);
+	}
+
 	pcm_forced_buffer_ms = external_buffer_ms;
 	snd_pcm_uframes_t period = 0;
-	external_pcm = open_pcm_device(external_channels, external_rate, external_bits, &period);
+	external_pcm = open_pcm_device(external_channels, external_dev_rate, external_dev_bits, &period);
+	if (!external_pcm && external_conv.on && last_open_err != -ENOMEM) {
+		// The output refused its own rate in S32: the stream goes as it did
+		// before, and the plug converts it.
+		fprintf(stderr, "audio: the resampled external stream would not open; alsa converts the %d Hz one instead\n",
+				external_rate);
+		bt_resample_close(&external_conv);
+		external_dev_rate = external_rate;
+		external_dev_bits = external_bits;
+		external_pcm = open_pcm_device(external_channels, external_dev_rate, external_dev_bits, &period);
+	}
 	pcm_forced_buffer_ms = 0;
 
 	if (!external_pcm) {
@@ -5208,14 +5293,36 @@ int audio_external_write(const void *frames, int count) {
 		frames = external_scaled;
 	}
 
+	// To the output's rate, last, as the file player does it.
+	int out_count = count;
+	int out_frame_bytes = external_frame_bytes;
+	if (external_conv.on) {
+		int made = 0;
+		const int32_t *converted =
+			bt_resample_block(&external_conv, frames, external_bits, count, external_channels, &made);
+		if (!converted) {
+			pthread_mutex_unlock(&external_lock);
+			return 0;
+		}
+		frames = converted;
+		out_count = made;
+		out_frame_bytes = external_channels * (int)sizeof(int32_t);
+		if (out_count == 0) {
+			// The filter holds it until the next chunk.
+			pthread_mutex_unlock(&external_lock);
+			return count;
+		}
+	}
+
 	int written = 0;
 	long last_progress_ms = log_ms();
-	while (written < count) {
-		const void *chunk = (const char *)frames + (size_t)written * external_frame_bytes;
-		if (pcm_takes_s24(external_pcm, external_bits)) {
-			chunk = s24_from_s32(&external_s24, chunk, (size_t)(count - written) * (size_t)external_channels);
+	while (written < out_count) {
+		const void *chunk = (const char *)frames + (size_t)written * (size_t)out_frame_bytes;
+		if (pcm_takes_s24(external_pcm, external_dev_bits)) {
+			chunk = s24_from_s32(&external_s24, chunk, (size_t)(out_count - written) * (size_t)external_channels);
 		}
-		snd_pcm_sframes_t got = chunk ? snd_pcm_writei(external_pcm, chunk, (snd_pcm_uframes_t)(count - written)) : -ENOMEM;
+		snd_pcm_sframes_t got =
+			chunk ? snd_pcm_writei(external_pcm, chunk, (snd_pcm_uframes_t)(out_count - written)) : -ENOMEM;
 		if (got > 0) {
 			written += (int)got;
 			last_progress_ms = log_ms();
@@ -5254,6 +5361,11 @@ int audio_external_write(const void *frames, int count) {
 	}
 
 	pthread_mutex_unlock(&external_lock);
+	// In the caller's frames: what it handed over, scaled by how much of the
+	// converted block went out.
+	if (out_count != count) {
+		return written >= out_count ? count : (int)((long long)written * count / out_count);
+	}
 	return written;
 }
 
@@ -5269,6 +5381,7 @@ void audio_external_end(void) {
 		external_device[0] = '\0';
 		printf("audio: external source finished; device handed back (%u underruns)\n", external_underruns);
 	}
+	bt_resample_close(&external_conv);
 
 	pthread_mutex_unlock(&external_lock);
 }
