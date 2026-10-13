@@ -9,6 +9,7 @@
 #include "src/system/audio/swvolume.h"
 #include "src/system/audio/eq.h"
 #include "src/system/audio/decimate.h"
+#include "src/system/audio/resample.h"
 #include "src/system/core/config.h"
 #include "src/system/device/power.h"
 #include "src/system/core/utils.h"
@@ -3316,6 +3317,96 @@ static int bluetooth_decimation(int sample_rate, int channels, int out_bits, boo
 	return sink_rate ? decimate_factor_for(sample_rate, (int)sink_rate) : 1;
 }
 
+// ---------------------------------------------------------------------------
+// 44.1 kHz into headphones held at 48 kHz
+//
+// On "Auto" bluealsa runs nearly every pair of headphones at 48 kHz, and the
+// player keeps the link there (see open_bluetooth_at_rate): a CD-rate track was
+// converted by the plug in front of bluealsa's PCM, and the plug on this
+// firmware has only alsa-lib's linear interpolator. Its images of the music
+// come back into the audible band at -30 to -40 dB -- a 10 kHz cymbal leaves a
+// 13.9 kHz ghost -- on most of what is listened to over Bluetooth with the
+// default settings.
+//
+// So when the stream reaching the device is at 44.1 kHz (a CD-rate track, or
+// 88.2 / 176.4 kHz and DSD after the decimator) and the link is at 48 kHz, the
+// conversion is done here, after the effects, by the polyphase filter of
+// resample.h, and the device is opened at 48 kHz S32: the plug then has
+// nothing to convert but the sample format (S32 to S16 for SBC and AAC, which
+// bluealsa takes at 16 bits; LDAC takes S32 as it is). About 3 million
+// multiply-adds a second for stereo.
+//
+//   [bluetooth]
+//   resampler = quality   this (the default)
+//             = fast      leave it to alsa's linear converter, as before 1.2.4
+//
+// The position, the fade and every byte count stay in the track's frames, as
+// with the decimator; only what goes into the write is at the link's rate.
+// ---------------------------------------------------------------------------
+#define BT_RESAMPLE_FROM 44100
+#define BT_RESAMPLE_TO 48000
+
+typedef struct {
+	bool on;
+	resampler_t filter;
+	int32_t *wide; // a 16-bit block widened to S32
+	int32_t *out;  // the block at 48 kHz
+	size_t room;   // input frames the two are sized for
+} bt_resample_t;
+
+static bool bt_resample_wanted(int rate, int channels) {
+	if (rate != BT_RESAMPLE_FROM || channels < 1 || channels > RESAMPLE_CHANNELS_MAX || !resample_quality_wanted()) {
+		return false;
+	}
+#ifdef HOST_BUILD
+	// The emulator has no Bluetooth: this runs the same path into its null
+	// device, so the loop around it can be watched there.
+	if (getenv("SONIX_TEST_RESAMPLE")) {
+		return true;
+	}
+#endif
+	// "follow_track_rate" lets bluealsa's plugin move the link itself.
+	return output_is_bluetooth() && !config_get_int("bluetooth", "follow_track_rate", 0) &&
+		   bluetooth_sink_rate() == BT_RESAMPLE_TO;
+}
+
+static void bt_resample_close(bt_resample_t *r) {
+	free(r->wide);
+	free(r->out);
+	memset(r, 0, sizeof(*r));
+}
+
+// `frames` frames of the chain's output (S16 or S32) at 44.1 kHz, converted.
+// The block at 48 kHz and its length, or NULL when there was no memory for it.
+static const int32_t *bt_resample_block(bt_resample_t *r, const void *in, int bits, int frames, int channels,
+										int *made) {
+	*made = 0;
+	if ((size_t)frames > r->room) {
+		int32_t *wide = realloc(r->wide, (size_t)frames * (size_t)channels * sizeof(int32_t));
+		if (wide) {
+			r->wide = wide;
+		}
+		int32_t *out = realloc(r->out, (size_t)resample_out_max(frames) * (size_t)channels * sizeof(int32_t));
+		if (out) {
+			r->out = out;
+		}
+		if (!wide || !out) {
+			return NULL;
+		}
+		r->room = (size_t)frames;
+	}
+	const int32_t *from = in;
+	if (bits == 16) {
+		const short *narrow = in;
+		for (int i = 0; i < frames * channels; i++) {
+			r->wide[i] = (int32_t)narrow[i] * 65536;
+		}
+		from = r->wide;
+	}
+	*made = resample_s32(&r->filter, from, frames, r->out);
+	return r->out;
+}
+
 static void play_decoded_file(const char *filepath, decode_format_t format) {
 	decoder_t *dec = decoder_open(filepath, format);
 	if (!dec) {
@@ -3421,6 +3512,21 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				sample_rate, decim_factor, out_rate);
 	}
 
+	// What the device is opened with: the chain's rate and width, or 48 kHz
+	// S32 when the 44.1 kHz stream is converted here (see bt_resample_t).
+	bt_resample_t resampler = {0};
+	resampler.on =
+		!passthrough && bt_resample_wanted(out_rate, channels) && resample_init(&resampler.filter, channels) == 0;
+	if (!resampler.on) {
+		resample_free(); // the shared table goes when no stream uses it
+	}
+	int dev_rate = resampler.on ? BT_RESAMPLE_TO : out_rate;
+	int dev_bits = resampler.on ? 32 : out_bits;
+	if (resampler.on) {
+		fprintf(stderr, "audio: the %d Hz stream is resampled to %d Hz here (polyphase), not by alsa's linear converter\n",
+				out_rate, dev_rate);
+	}
+
 	pthread_mutex_lock(&audio_mutex);
 	progress_total_secs = (double)total_frames / sample_rate;
 	progress_current_secs = opening_position();
@@ -3459,28 +3565,40 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// The previous track's PCM, if it stayed open and suits this one too: that
 	// is the whole of gapless. Never for DoP -- see the comment above
 	// gapless_release().
-	snd_pcm_t *pcm_handle = passthrough ? NULL : gapless_take(channels, out_rate, out_bits, &period_size);
+	snd_pcm_t *pcm_handle = passthrough ? NULL : gapless_take(channels, dev_rate, dev_bits, &period_size);
 	playback_follow(pcm_handle);
 	if (pcm_handle) {
 		pcm_device_open = true;
 	} else {
-		pcm_handle = open_pcm_device(channels, out_rate, out_bits, &period_size);
+		pcm_handle = open_pcm_device(channels, dev_rate, dev_bits, &period_size);
 	}
-	if (!pcm_handle && out_bits == 32 && !passthrough && last_open_err == -ENOMEM) {
+	if (!pcm_handle && resampler.on && last_open_err != -ENOMEM) {
+		// The link refused 48 kHz S32: the stream goes as it did before, and
+		// the plug converts it.
+		fprintf(stderr, "audio: the resampled stream would not open; alsa converts the %d Hz one instead\n", out_rate);
+		bt_resample_close(&resampler);
+		dev_rate = out_rate;
+		dev_bits = out_bits;
+		pcm_handle = open_pcm_device(channels, dev_rate, dev_bits, &period_size);
+	}
+	if (!pcm_handle && dev_bits == 32 && !passthrough && last_open_err == -ENOMEM) {
 		// Not the device refusing S32: the driver found no memory even for the
 		// smallest buffer. Another open straight away, in any format, asks the
 		// same exhausted kernel for more.
 		fprintf(stderr, "audio: not retried at 16 bit -- the driver is out of memory, not the format refused\n");
-	} else if (!pcm_handle && out_bits == 32 && !passthrough) {
+	} else if (!pcm_handle && dev_bits == 32 && !passthrough) {
 		// If this output cannot do S32 for some reason, 16-bit playback still
 		// beats silence. Not for DoP: sixteen bits cannot carry a marker byte
 		// and a twenty-four bit payload, so half a DoP stream is not quieter
 		// DSD, it is noise.
 		fprintf(stderr, "Audio: S32 open failed, falling back to 16-bit\n");
 		out_bits = 16;
-		// The decimator is S32 only.
+		// The decimator is S32 only, and so is the resampler.
 		decim_factor = 1;
 		out_rate = sample_rate;
+		bt_resample_close(&resampler);
+		dev_rate = out_rate;
+		dev_bits = out_bits;
 		pcm_handle = open_pcm_device(channels, sample_rate, out_bits, &period_size);
 	}
 	if (!pcm_handle && passthrough) {
@@ -3632,6 +3750,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			if (decim_factor > 1) {
 				decimate_reset(&decim);
 			}
+			if (resampler.on) {
+				resample_reset(&resampler.filter);
+			}
 
 			// And the starvation flag recorded before the seek: it belonged to
 			// the old position (growfile_seek already clears it; this is the
@@ -3662,6 +3783,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 
 			if (entering) {
 				int64_t rewind_bytes = pause_stop_stream(pcm_handle, frame_bytes) * decim_factor;
+				if (resampler.on) {
+					// What is queued is at the link's rate.
+					rewind_bytes = rewind_bytes * RESAMPLE_M / RESAMPLE_L;
+				}
 				if (rewind_bytes > 0) {
 					// The frames still queued were never heard: put the decoder
 					// back over them so resuming carries on from where the
@@ -3672,6 +3797,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 					if (decoder_seek_to_frame(dec, resume_frame)) {
 						if (decim_factor > 1) {
 							decimate_reset(&decim);
+						}
+						if (resampler.on) {
+							resample_reset(&resampler.filter);
 						}
 						bytes_played = (int64_t)(resume_frame * frame_bytes);
 						pthread_mutex_lock(&audio_mutex);
@@ -3742,7 +3870,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				auto_set_output();
 				{
 					snd_pcm_uframes_t new_period = period_size;
-					pcm_handle = open_pcm_device(channels, out_rate, out_bits, &new_period);
+					pcm_handle = open_pcm_device(channels, dev_rate, dev_bits, &new_period);
 					if (!pcm_handle) {
 						fprintf(stderr, "Audio: cannot reopen the device after a pause\n");
 						audio_command = AUDIO_CMD_STOP;
@@ -3786,7 +3914,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			int now_route = alsa_output_key();
 			if (now_route != track_route) {
 				track_route = now_route;
-				if (!pcm_reroute(&pcm_handle, channels, out_rate, out_bits, &period_size)) {
+				if (!pcm_reroute(&pcm_handle, channels, dev_rate, dev_bits, &period_size)) {
 					fprintf(stderr, "Audio: reroute failed\n");
 					pthread_mutex_lock(&audio_mutex);
 					audio_command = AUDIO_CMD_STOP;
@@ -3995,9 +4123,31 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			}
 		}
 
+		// To the link's rate, last: the effects ran at the track's.
+		const void *out_block = buffer;
+		uint64_t out_frames = frames_read;
+		if (resampler.on) {
+			int made = 0;
+			out_block = bt_resample_block(&resampler, buffer, out_bits, (int)frames_read, channels, &made);
+			if (!out_block) {
+				fprintf(stderr, "Audio: Out of memory for the resampler\n");
+				pthread_mutex_lock(&audio_mutex);
+				audio_command = AUDIO_CMD_STOP;
+				playback_status = AUDIO_STATUS_STOPPED;
+				pthread_mutex_unlock(&audio_mutex);
+				break;
+			}
+			out_frames = (uint64_t)made;
+			if (out_frames == 0) {
+				// The filter holds it until the next block.
+				bytes_played += (int64_t)input_frames * frame_bytes;
+				continue;
+			}
+		}
+
 		health_lap(&health, STAGE_EFFECTS);
 		snd_pcm_sframes_t written =
-			pcm_write_recover(&pcm_handle, buffer, frames_read, channels, out_rate, out_bits, &period_size);
+			pcm_write_recover(&pcm_handle, out_block, out_frames, channels, dev_rate, dev_bits, &period_size);
 		health_lap(&health, STAGE_WRITE);
 
 		if (written == -EINTR) {
@@ -4020,16 +4170,16 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		}
 
 		bt_seek_probe_report(pcm_handle);
-		bt_start_probe_note(pcm_handle, written, out_rate);
+		bt_start_probe_note(pcm_handle, written, dev_rate);
 
 		// The position moves by INPUT frames: at 1.5x, one period written to
 		// the card is a period and a half of the book. Scaled by how much of
 		// the block the card actually took, for the rare partial write.
-		if (frames_read > 0) {
-			bytes_played += (int64_t)((double)written * frame_bytes * (double)input_frames / (double)frames_read);
+		if (out_frames > 0) {
+			bytes_played += (int64_t)((double)written * frame_bytes * (double)input_frames / (double)out_frames);
 		}
-		health_tick(&health, sample_rate, out_rate, source_bits);
-		host_pace(written, out_rate);
+		health_tick(&health, sample_rate, dev_rate, source_bits);
+		host_pace(written, dev_rate);
 		pthread_mutex_lock(&audio_mutex);
 		report_position((double)bytes_played / bytes_per_sec);
 		pthread_mutex_unlock(&audio_mutex);
@@ -4048,7 +4198,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	bool keep_open = pcm_handle && gapless_enabled && played_to_the_end && !is_paused && !passthrough &&
 					 (!pcm_is_bluetooth(pcm_handle) || bt_hold_usable(pcm_handle));
 	if (keep_open) {
-		gapless_hold(pcm_handle, channels, out_rate, out_bits, period_size);
+		gapless_hold(pcm_handle, channels, dev_rate, dev_bits, period_size);
 		pcm_handle = NULL;
 	}
 
@@ -4106,6 +4256,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		set_dac_dop(0);
 	}
 	free(buffer);
+	bt_resample_close(&resampler);
 	speed_close(stretch);
 	decoder_close(dec);
 }
