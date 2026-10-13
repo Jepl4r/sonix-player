@@ -1,7 +1,7 @@
 {
     "device-name": "HiBy R1",
     "dac-info": "Cirrus Logic CS43131",
-    "OS_version": "1.2.4",
+    "OS_version": "1.2.5",
     "build_version": "030920262043",
     "ota-repo": "Rekkod-Tree/sonix-player-rekkod-mod"
 }
