@@ -31,6 +31,7 @@
 #include "src/system/playback/device_state.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/playback/playlist.h"
+#include "src/gui/nowplaying/trackmenu.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 
@@ -687,7 +688,8 @@ static void entry_long_pressed_cb(lv_event_t *e) {
 
 // What the chosen rows turn into, and where it goes.
 typedef enum {
-	SEND_QUEUE,
+	SEND_QUEUE,		// "Play next"
+	SEND_QUEUE_END, // "Add to end of queue"
 	SEND_FAVOURITES,
 	SEND_PLAYLIST,
 } send_t;
@@ -777,22 +779,14 @@ static void gather_done_cb(void *arg) {
 	}
 
 	switch (g->to) {
-	case SEND_QUEUE: {
-		int queued = 0;
-		for (int i = 0; i < g->count; i++) {
-			queued += playlist_insert_next(g->paths[i]) ? 1 : 0;
-		}
-		if (queued > 0) {
-			// Written down now: the mirror on disk is otherwise refreshed only
-			// when a track is loaded, and a power-off before that loses the
-			// addition.
-			device_state_queue_changed();
-			toast_success(queued == 1 ? "added_to_the_queue" : "queue_tracks_added");
-		} else {
-			toast_error("playlist_cannot_add_the_tracks");
-		}
+	case SEND_QUEUE:
+	case SEND_QUEUE_END:
+		// Written down at once, inside: the mirror on disk is otherwise
+		// refreshed only when a track is loaded, and a power-off before that
+		// loses the addition.
+		trackmenu_queue_paths((const char *const *)g->paths, g->count,
+							  g->to == SEND_QUEUE ? PLAYLIST_QUEUE_NEXT : PLAYLIST_QUEUE_END);
 		break;
-	}
 	case SEND_FAVOURITES:
 		playlistpage_add_favourites((const char *const *)g->paths, g->count);
 		break;
@@ -858,9 +852,18 @@ static void selection_send(send_t to) {
 	pthread_detach(thread);
 }
 
+static void sel_queue_chosen(playlist_queue_where_t where, void *user) {
+	(void)user;
+	selection_send(where == PLAYLIST_QUEUE_NEXT ? SEND_QUEUE : SEND_QUEUE_END);
+}
+
+// Which of the two first: one button stands for the queue, and both answers
+// are common enough to be a tap away.
 static void sel_queue_cb(lv_event_t *e) {
-	(void)e;
-	selection_send(SEND_QUEUE);
+	if (!selecting || chosen_count == 0 || gathering) {
+		return;
+	}
+	trackmenu_queue_choose(lv_event_get_current_target(e), sel_queue_chosen, NULL);
 }
 
 static void sel_fav_cb(lv_event_t *e) {

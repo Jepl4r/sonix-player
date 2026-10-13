@@ -16,6 +16,7 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/popover.h"
+#include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -222,13 +223,13 @@ static void menu_fav_action(void *user) {
 	}
 }
 
-// Right after the track playing, the same as the library lists' menu. The
-// queue on disk is written now so a power-off does not lose the addition.
+// "Play next" or "Add to end of queue" (`user`), the same as the library
+// lists' menu. The queue on disk is written now so a power-off does not lose
+// the addition.
 static void menu_queue_action(void *user) {
-	(void)user;
-	if (menu_path[0] && playlist_insert_next(menu_path)) {
-		device_state_queue_changed();
-		toast_success("added_to_the_queue");
+	if (menu_path[0]) {
+		const char *path = menu_path;
+		trackmenu_queue_paths(&path, 1, (playlist_queue_where_t)(intptr_t)user);
 	}
 }
 
@@ -311,12 +312,13 @@ static void track_long_pressed_cb(lv_event_t *e) {
 	menu_playlist_count = 0;
 	playlists_for_each(collect_playlist_cb, NULL);
 
-	popover_item_t items[4];
+	popover_item_t items[5];
 	int n = 0;
 	items[n++] = (popover_item_t){
 		library_fav_contains(menu_path) ? "remove_from_favourites" : "medialist_add_to_favourites", menu_fav_action, NULL,
 		false};
-	items[n++] = (popover_item_t){"add_to_queue", menu_queue_action, NULL, false};
+	items[n++] = (popover_item_t){"queue_play_next", menu_queue_action, (void *)(intptr_t)PLAYLIST_QUEUE_NEXT, false};
+	items[n++] = (popover_item_t){"queue_add_to_end", menu_queue_action, (void *)(intptr_t)PLAYLIST_QUEUE_END, false};
 	items[n++] = (popover_item_t){"add_to_playlist", menu_playlist_action, NULL, false};
 	if (menu_playlist_count > 0) {
 		items[n++] = (popover_item_t){"medialist_remove_from_playlist", menu_remove_action, NULL, false};

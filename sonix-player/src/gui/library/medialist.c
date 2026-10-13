@@ -1596,27 +1596,28 @@ static void sel_add_cb(lv_event_t *e) {
 	path_list_free(&list);
 }
 
-// Each track right after the one playing, the first chosen first -- see
-// playlist_insert_next() -- and the queue on disk written now rather than at
-// the next track change.
-static void sel_queue_cb(lv_event_t *e) {
-	panel_t *p = lv_event_get_user_data(e);
+// The chosen tracks into the queue, the first chosen first: after the one
+// playing ("Play next", see playlist_insert_next()) or after everything ("Add to
+// end of queue"), and the queue on disk written once for the set.
+static void sel_queue_chosen(playlist_queue_where_t where, void *user) {
+	panel_t *p = user;
 	if (!p || !p->selecting || p->sel_count == 0) {
 		return;
 	}
 	path_list_t list = {NULL, 0, 0};
 	sel_gather(p, &list);
-	int queued = 0;
-	for (int i = 0; i < list.count; i++) {
-		queued += playlist_insert_next(list.paths[i]) ? 1 : 0;
-	}
-	if (queued > 0) {
-		device_state_queue_changed();
-		toast_success(queued == 1 ? "added_to_the_queue" : "queue_tracks_added");
-	} else {
-		gui_notify_popup("playlist_cannot_add_the_tracks");
-	}
+	trackmenu_queue_paths((const char *const *)list.paths, list.count, where);
 	path_list_free(&list);
+}
+
+// The button asks which of the two first: a selection bar has one button for
+// the queue, and both answers are common enough to be one tap away.
+static void sel_queue_cb(lv_event_t *e) {
+	panel_t *p = lv_event_get_user_data(e);
+	if (!p || !p->selecting || p->sel_count == 0) {
+		return;
+	}
+	trackmenu_queue_choose(lv_event_get_current_target(e), sel_queue_chosen, p);
 }
 
 static void sel_fav_cb(lv_event_t *e) {
@@ -3355,6 +3356,53 @@ static void play_menu_random_track_cb(lv_event_t *e) {
 	queue_random_track(p);
 }
 
+// The whole list into the queue rather than in place of it: an album, an
+// artist's records, a playlist, the favourites -- whatever the page is. In the
+// order "Play in sequence" would play it, read in windows like the selection
+// is, and with the selection's ceiling: "All tracks" queued whole is a library
+// copied into memory.
+static void play_menu_queue(playlist_queue_where_t where) {
+	panel_t *p = play_menu_panel;
+	play_menu_hide();
+	if (!p) {
+		return;
+	}
+	if (p->from_paths) {
+		const char **paths = NULL;
+		int count = menu_paths_collect(p, &paths);
+		if (count > 0) {
+			trackmenu_queue_paths(paths, count, where);
+		}
+		free(paths);
+		return;
+	}
+	library_index_t *ix = menu_tracks_open(p);
+	if (!ix) {
+		return;
+	}
+	path_list_t list = {NULL, 0, 0};
+	int total = library_index_count(ix);
+	bool more = true;
+	for (int first = 0; first < total && more; first += 256) {
+		int want = total - first < 256 ? total - first : 256;
+		int got = library_index_window(ix, first, want, collect_path_cb, &list);
+		more = got == want && list.count < SELECTION_MAX_TRACKS;
+	}
+	library_index_close(ix);
+	trackmenu_queue_paths((const char *const *)list.paths, list.count, where);
+	path_list_free(&list);
+}
+
+static void play_menu_next_cb(lv_event_t *e) {
+	(void)e;
+	play_menu_queue(PLAYLIST_QUEUE_NEXT);
+}
+
+static void play_menu_end_cb(lv_event_t *e) {
+	(void)e;
+	play_menu_queue(PLAYLIST_QUEUE_END);
+}
+
 // One of the records on screen at random, its tracks in order, and the records
 // after it at random too (device_state_play_random_album). In order, whatever
 // the mode was: a mode changed while it plays then carries on to the records
@@ -3433,6 +3481,8 @@ static void play_menu_build(panel_t *p) {
 	play_menu_row(card, "medialist_play_in_sequence", play_menu_sequence_cb);
 	p->play_menu_random_album = play_menu_row(card, "medialist_play_albums_in_random_order", play_menu_random_album_cb);
 	play_menu_row(card, "medialist_queue_random_track", play_menu_random_track_cb);
+	play_menu_row(card, "queue_play_next", play_menu_next_cb);
+	play_menu_row(card, "queue_add_to_end", play_menu_end_cb);
 }
 
 static void play_menu_clicked_cb(lv_event_t *e) {
@@ -3526,21 +3576,20 @@ static void menu_playlist_action(void *user) {
 	}
 }
 
-// "Add to queue": the track goes in right after the one playing, and a second
-// one after that -- see playlist_insert_next().
+// "Play next": the track goes in right after the one playing, and a second
+// one after that -- see playlist_insert_next(). "Add to end of queue": after
+// everything already there. `user` says which.
 //
-// And the queue on disk is refreshed here rather than left to the next track
-// change: the mirror only writes it when a track is loaded, so a track queued
-// and then a power-off would be a track the next boot has never heard of.
+// Either way the queue on disk is refreshed here rather than left to the next
+// track change (trackmenu_queue_paths): the mirror only writes it when a track
+// is loaded, so a track queued and then a power-off would be a track the next
+// boot has never heard of.
 static void menu_queue_action(void *user) {
-	(void)user;
 	if (!menu_path[0]) {
 		return;
 	}
-	if (playlist_insert_next(menu_path)) {
-		device_state_queue_changed();
-		toast_success("added_to_the_queue");
-	}
+	const char *path = menu_path;
+	trackmenu_queue_paths(&path, 1, (playlist_queue_where_t)(intptr_t)user);
 }
 
 static void menu_details_action(void *user) {
@@ -3618,7 +3667,7 @@ static void menu_btn_cb(lv_event_t *e) {
 		menu_artist[0] = '\0';
 	}
 
-	popover_item_t items[6];
+	popover_item_t items[7];
 	int n = 0;
 	// The two "add to" lines stay next to each other: they are the same kind
 	// of thing, and reading past one to reach the other is friction with no
@@ -3627,7 +3676,8 @@ static void menu_btn_cb(lv_event_t *e) {
 	// it.
 	items[n++] = (popover_item_t){
 		library_fav_contains(menu_path) ? "remove_from_favourites" : "medialist_add_to_favourites", menu_fav_action, NULL};
-	items[n++] = (popover_item_t){"add_to_queue", menu_queue_action, NULL};
+	items[n++] = (popover_item_t){"queue_play_next", menu_queue_action, (void *)(intptr_t)PLAYLIST_QUEUE_NEXT};
+	items[n++] = (popover_item_t){"queue_add_to_end", menu_queue_action, (void *)(intptr_t)PLAYLIST_QUEUE_END};
 	// Inside a playlist the useful action is the opposite one: this list is
 	// where the track already is, so offering to file it somewhere else while
 	// looking at it would be the wrong way round.
@@ -4438,11 +4488,42 @@ static void head_play_cb(lv_event_t *e) {
 	play_artist(lv_event_get_user_data(e), false);
 }
 
+// The queue glyph under an album's cover: the record into the queue, either
+// way, or one of its tracks at random -- what the glyph did on its own before
+// the queue had two ends. A menu rather than three glyphs: the row under the
+// cover has room for shuffle, the Play pill and one more.
+static panel_t *head_menu_panel;
+
+static void head_queue_pick(void *user) {
+	panel_t *p = head_menu_panel;
+	head_menu_panel = NULL;
+	if (!p) {
+		return;
+	}
+	intptr_t what = (intptr_t)user;
+	if (what < 0) {
+		queue_random_track(p);
+		return;
+	}
+	play_menu_panel = p; // the list play_menu_queue() reads
+	play_menu_queue((playlist_queue_where_t)what);
+}
+
 static void head_queue_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active()) {
 		return;
 	}
-	queue_random_track(lv_event_get_user_data(e));
+	panel_t *p = lv_event_get_user_data(e);
+	if (!p) {
+		return;
+	}
+	static const popover_item_t ITEMS[] = {
+		{"queue_play_next", head_queue_pick, (void *)(intptr_t)PLAYLIST_QUEUE_NEXT},
+		{"queue_add_to_end", head_queue_pick, (void *)(intptr_t)PLAYLIST_QUEUE_END},
+		{"medialist_queue_random_track", head_queue_pick, (void *)(intptr_t)-1},
+	};
+	head_menu_panel = p;
+	popover_show(lv_event_get_current_target(e), ITEMS, 3);
 }
 
 // A bare glyph: shuffle, and a track into the queue. Pressed, it dims.

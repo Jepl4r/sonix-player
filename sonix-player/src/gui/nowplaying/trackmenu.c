@@ -11,6 +11,7 @@
 #include "src/gui/library/medialist.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/library/playlistpage.h"
+#include "src/gui/shell/confirm.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/shell/settingsrow.h"
@@ -72,6 +73,16 @@ static int queue_chosen_count;
 static lv_obj_t *queue_remove_btn;
 static lv_obj_t *queue_close_btn;
 
+// With exactly one upcoming row chosen it can be moved a place up or down. The
+// order changes in memory only; the card hears of it once, when the page is
+// left (queue_moved), instead of once per press of an arrow.
+static lv_obj_t *queue_up_btn;
+static lv_obj_t *queue_down_btn;
+static bool queue_moved;
+
+// Outside the choosing: the menu with "Clear upcoming" and "Save as playlist".
+static lv_obj_t *queue_more_btn;
+
 static lv_obj_t *details_card;
 static lv_obj_t *details_scroll;
 static gui_config_t *g_cfg;
@@ -88,10 +99,28 @@ static void queue_row_paint_check(queue_row_t *row) {
 	lv_obj_set_hidden(row->check, !on);
 }
 
+// The one row chosen, when exactly one is and it is still to come: the row the
+// arrows move. -1 otherwise.
+static int queue_movable_index(void) {
+	if (!queue_selecting || !queue_chosen || queue_chosen_count != 1) {
+		return -1;
+	}
+	for (int i = 0; i < queue_total; i++) {
+		if (queue_chosen[i]) {
+			return i > playlist_current_index() ? i : -1;
+		}
+	}
+	return -1;
+}
+
 static void queue_selection_show(void) {
+	bool movable = queue_movable_index() >= 0;
 	lv_obj_set_hidden(queue_remove_btn, !queue_selecting);
 	lv_obj_set_hidden(queue_close_btn, !queue_selecting);
-	settingsrow_title_corner_slots(queue_title, g_cfg, queue_selecting ? 2 : 0);
+	lv_obj_set_hidden(queue_up_btn, !movable);
+	lv_obj_set_hidden(queue_down_btn, !movable);
+	lv_obj_set_hidden(queue_more_btn, queue_selecting || queue_total == 0);
+	settingsrow_title_corner_slots(queue_title, g_cfg, queue_selecting ? (movable ? 4 : 2) : 1);
 	for (int i = 0; i < QUEUE_ROW_POOL; i++) {
 		queue_row_paint_check(&queue_rows[i]);
 	}
@@ -138,7 +167,9 @@ static void queue_selection_toggle(queue_row_t *row) {
 		queue_selection_stop();
 		return;
 	}
-	queue_row_paint_check(row);
+	// The arrows come and go with "exactly one": a second row chosen takes
+	// them away, letting it go again brings them back.
+	queue_selection_show();
 }
 
 static queue_row_t *queue_row_of(lv_obj_t *button) {
@@ -204,6 +235,174 @@ static void queue_close_cb(lv_event_t *e) {
 	queue_selection_stop();
 }
 
+static void queue_window_update(void);
+
+// One place up or down for the chosen row, the choice going with it. The rows
+// are bound again where they are rather than the page reopened on the playing
+// track: the row being moved is what is being looked at.
+static void queue_move(int delta) {
+	int index = queue_movable_index();
+	if (index < 0 || !playlist_move(index, delta)) {
+		return;
+	}
+	queue_chosen[index] = 0;
+	queue_chosen[index + delta] = 1;
+	queue_moved = true;
+
+	// Keep the moved row on screen.
+	int32_t top = lv_obj_get_scroll_y(queue_list);
+	int32_t height = lv_obj_get_content_height(queue_list);
+	int32_t row_top = (index + delta) * QUEUE_ROW_PITCH;
+	if (row_top < top) {
+		lv_obj_scroll_to_y(queue_list, row_top, LV_ANIM_OFF);
+	} else if (row_top + QUEUE_ROW_PITCH > top + height) {
+		lv_obj_scroll_to_y(queue_list, row_top + QUEUE_ROW_PITCH - height, LV_ANIM_OFF);
+	}
+	for (int i = 0; i < QUEUE_ROW_POOL; i++) {
+		queue_rows[i].index = -2; // two rows changed tracks: bind them all again
+	}
+	queue_window_update();
+	queue_selection_show();
+}
+
+static void queue_up_cb(lv_event_t *e) {
+	(void)e;
+	queue_move(-1);
+}
+
+static void queue_down_cb(lv_event_t *e) {
+	(void)e;
+	queue_move(1);
+}
+
+static void queue_clear_confirmed(void *user) {
+	(void)user;
+	if (!playlist_clear_upcoming()) {
+		return;
+	}
+	device_state_queue_changed();
+	toast_success("trackmenu_queue_cleared");
+	queue_rebuild();
+}
+
+static void queue_clear_cb(void *user) {
+	(void)user;
+	// Asked first: a list of a hundred tracks picked one by one is gone with a
+	// single tap otherwise.
+	confirm_show("trackmenu_queue_clear_question", NULL, "trackmenu_queue_clear", queue_clear_confirmed, NULL);
+}
+
+// The queue as it would play, into the playlist picker -- the same picker, and
+// so the same writer, "Add to playlist" uses: the user chooses a playlist or
+// makes a new one there. Streamed tracks are left out: their files are a
+// cache's and are gone a few albums later, which is also why the queue mirror
+// on the card never holds them.
+#define QUEUE_SAVE_MAX 2000
+
+static void queue_save_cb(void *user) {
+	(void)user;
+	int total = playlist_count();
+	int want = total < QUEUE_SAVE_MAX ? total : QUEUE_SAVE_MAX;
+	if (want <= 0) {
+		return;
+	}
+	char **paths = calloc((size_t)want, sizeof(*paths));
+	if (!paths) {
+		return;
+	}
+	int n = 0;
+	for (int i = 0; i < want; i++) {
+		char path[512];
+		if (!playlist_path_at(i, path, sizeof(path)) || stream_provider_owns(path) ||
+			podcastcache_is_episode(path)) {
+			continue;
+		}
+		paths[n] = strdup(path);
+		if (!paths[n]) {
+			break;
+		}
+		n++;
+	}
+	if (n == 0) {
+		gui_notify_popup("trackmenu_queue_nothing_to_save");
+	} else {
+		if (total > QUEUE_SAVE_MAX) {
+			// Said, not done silently: "All tracks" as the queue is a library,
+			// and a playlist of a library is not what anybody saving a queue
+			// has in mind.
+			char text[160];
+			snprintf(text, sizeof(text), tr("trackmenu_queue_save_capped"), QUEUE_SAVE_MAX);
+			toast_plain(text);
+		}
+		// The picker goes back to this page when it is done: the queue is
+		// where the user was, and where the result can be seen.
+		playlistpage_add_tracks((const char *const *)paths, n);
+	}
+	for (int i = 0; i < n; i++) {
+		free(paths[i]);
+	}
+	free(paths);
+}
+
+static void queue_more_cb(lv_event_t *e) {
+	if (switcher_back_drag_active()) {
+		return;
+	}
+	static const popover_item_t ITEMS[] = {
+		{"trackmenu_queue_clear_upcoming", queue_clear_cb, NULL},
+		{"trackmenu_queue_save", queue_save_cb, NULL},
+	};
+	// "Clear upcoming" only when something is upcoming.
+	bool upcoming = playlist_current_index() >= 0 && playlist_current_index() + 1 < playlist_count();
+	if (upcoming) {
+		popover_show(lv_event_get_current_target(e), ITEMS, 2);
+	} else if (playlist_count() > 0) {
+		popover_show(lv_event_get_current_target(e), ITEMS + 1, 1);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// Queueing from the menus
+// ---------------------------------------------------------------------------
+
+int trackmenu_queue_paths(const char *const *paths, int count, playlist_queue_where_t where) {
+	int queued = playlist_queue_paths(paths, count, where);
+	if (queued > 0) {
+		// Written down now: the mirror on disk is otherwise refreshed only when
+		// a track is loaded, and a power-off before that loses the addition.
+		// One write for the whole set, whatever its size.
+		device_state_queue_changed();
+		toast_success(where == PLAYLIST_QUEUE_NEXT ? "queue_will_play_next" : "queue_added_to_end");
+	} else {
+		gui_notify_popup("playlist_cannot_add_the_tracks");
+	}
+	return queued;
+}
+
+static trackmenu_queue_chosen_cb choose_cb;
+static void *choose_user;
+
+static void choose_picked(void *user) {
+	trackmenu_queue_chosen_cb cb = choose_cb;
+	choose_cb = NULL;
+	if (cb) {
+		cb((playlist_queue_where_t)(intptr_t)user, choose_user);
+	}
+}
+
+void trackmenu_queue_choose(lv_obj_t *anchor, trackmenu_queue_chosen_cb chosen, void *user) {
+	if (!anchor || !chosen) {
+		return;
+	}
+	static const popover_item_t ITEMS[] = {
+		{"queue_play_next", choose_picked, (void *)(intptr_t)PLAYLIST_QUEUE_NEXT},
+		{"queue_add_to_end", choose_picked, (void *)(intptr_t)PLAYLIST_QUEUE_END},
+	};
+	choose_cb = chosen;
+	choose_user = user;
+	popover_show(anchor, ITEMS, 2);
+}
+
 static void queue_row_clicked_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active()) {
 		return;
@@ -252,7 +451,12 @@ static void queue_row_paint_mark(queue_row_t *row) {
 		return;
 	}
 	bool is_playing_row = row->index == playlist_current_index();
-	lv_image_set_src(row->icon, is_playing_row ? &icon_now_playing : &icon_music2);
+	// A "Play next" still to come carries the queue glyph instead of the note:
+	// it says why the track is where it is, and that a change of shuffle will
+	// not move it.
+	lv_image_set_src(row->icon, is_playing_row							   ? &icon_now_playing
+								: playlist_is_queued_next(row->index) ? &icon_list_queue
+																	   : &icon_music2);
 	lv_obj_add_style(row->icon, &theme_style_icon, 0);
 	if (is_playing_row) {
 		lv_obj_set_style_image_recolor(row->icon, theme()->accent, 0);
@@ -384,6 +588,8 @@ static void queue_rebuild(void) {
 	} else {
 		lv_obj_set_hidden(queue_empty, true);
 	}
+	// Nothing to clear or to save in an empty queue: no menu either.
+	lv_obj_set_hidden(queue_more_btn, queue_selecting || queue_total == 0);
 }
 
 static void queue_loaded_cb(lv_event_t *e) {
@@ -394,6 +600,11 @@ static void queue_loaded_cb(lv_event_t *e) {
 static void queue_unloaded_cb(lv_event_t *e) {
 	(void)e;
 	queue_selection_stop();
+	// The moves, written down once on the way out rather than on every press.
+	if (queue_moved) {
+		queue_moved = false;
+		device_state_queue_changed();
+	}
 }
 
 static lv_obj_t *queue_corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
@@ -419,6 +630,12 @@ static void build_queue_page(gui_config_t *cfg) {
 	queue_title = settingsrow_title(queue_screen, cfg, "trackmenu_queue");
 	queue_close_btn = queue_corner_button(cfg, 0, &icon_close, queue_close_cb);
 	queue_remove_btn = queue_corner_button(cfg, 1, &icon_list_x, queue_remove_cb);
+	queue_down_btn = queue_corner_button(cfg, 2, &icon_chevron_up, queue_down_cb);
+	lv_image_set_rotation(lv_obj_get_child(queue_down_btn, 0), 1800); // the up chevron, turned over
+	queue_up_btn = queue_corner_button(cfg, 3, &icon_chevron_up, queue_up_cb);
+	queue_more_btn = queue_corner_button(cfg, 0, &icon_ellipsis_vertical, queue_more_cb);
+	lv_obj_set_hidden(queue_more_btn, false);
+	settingsrow_title_corner_slots(queue_title, cfg, 1);
 
 	int content_top = settingsrow_content_top(cfg);
 	int width = cfg->screen_width - 2 * cfg->padding;

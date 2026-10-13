@@ -52,7 +52,45 @@ void playlist_load_paths_ordered(const char *const *list, int count, int start_i
 // The queue becomes a custom one, because a folder queue can be rebuilt from
 // the directory at any moment and that would quietly throw the addition away.
 // Returns false only when the track could not be stored (out of memory).
+//
+// "Play next" is a promise that holds across a change of order: switching
+// shuffle on or off, or a rescan rebuilding a library queue, deals everything
+// else again but puts the tracks queued this way and not yet played back right
+// after the playing one, in the order they were queued. Repeat-one still
+// repeats the playing track: the queued ones come up when it is skipped.
 bool playlist_insert_next(const char *path);
+
+// Where queued tracks go.
+typedef enum {
+	PLAYLIST_QUEUE_NEXT, // "Play next": after the track playing, as above
+	PLAYLIST_QUEUE_END,	 // "Add to end of queue": after everything already there
+} playlist_queue_where_t;
+
+// Queues a set of tracks at once, in the order given: what the menus and the
+// selection bars use for an album, an artist or a chosen handful. One pass
+// over the queue for the whole set rather than one per track. NEXT behaves as
+// playlist_insert_next() for each in turn; END appends to the playback order --
+// under shuffle that is the end of the current deal, played last, and a deal
+// dealt afresh (shuffle switched on, shuffle-repeat coming round) mixes them
+// in with the rest, since they carry no promise. With nothing queued the set
+// simply becomes the queue. Returns how many went in.
+int playlist_queue_paths(const char *const *paths, int count, playlist_queue_where_t where);
+
+// Takes out everything after the playing track. The queue becomes a custom
+// list of paths, like after playlist_remove(). False when there was nothing
+// to take out.
+bool playlist_clear_upcoming(void);
+
+// Swaps the entry at `index` (playback order) with its neighbour above
+// (`delta` -1) or below (+1). Only entries still to come move, and only among
+// themselves. An in-memory change of order: a library-backed queue keeps its
+// query on the card, so after a restart such a queue is in its listed order
+// again, as a shuffled one is dealt again.
+bool playlist_move(int index, int delta);
+
+// Whether the entry at `index` (playback order) is a "Play next" still waiting
+// to come up.
+bool playlist_is_queued_next(int index);
 
 // The same, but at a slot chosen by the caller rather than after the current
 // track. For putting a saved queue back exactly as it was left.

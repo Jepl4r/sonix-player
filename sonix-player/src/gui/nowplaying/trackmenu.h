@@ -2,6 +2,7 @@
 #define TRACKMENU_H
 
 #include "src/gui/shell/gui.h"
+#include "src/system/playback/playlist.h"
 
 #include "lvgl/lvgl.h"
 
@@ -35,5 +36,19 @@ bool trackmenu_show_artist(void);
 // carries it now. The rows themselves do not change -- the queue is the same
 // list -- so nothing here rebinds or re-reads anything.
 void trackmenu_notify_now_playing(void);
+
+// Queueing from a menu, the one way every list does it: "Play next" or "Add to
+// end of queue" (playlist_queue_paths), the queue written down to the card once
+// for the whole set, and a toast saying which of the two happened -- or a
+// notice when nothing could be queued. Returns how many tracks went in. UI
+// thread. A streaming page can hand its tracks' cache paths in here too: the
+// queue fetches a missing one when it comes up (device_state_add_prepare_cb).
+int trackmenu_queue_paths(const char *const *paths, int count, playlist_queue_where_t where);
+
+// The two choices as a popover by `anchor`, for a button that stands for
+// "queue" as a whole (the selection bars): `chosen` gets the pick, after the
+// popover has closed. UI thread.
+typedef void (*trackmenu_queue_chosen_cb)(playlist_queue_where_t where, void *user);
+void trackmenu_queue_choose(lv_obj_t *anchor, trackmenu_queue_chosen_cb chosen, void *user);
 
 #endif /* TRACKMENU_H */
