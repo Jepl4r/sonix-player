@@ -16,6 +16,7 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_styles.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/device/power.h"
@@ -38,18 +39,11 @@ lv_obj_t *btaudio_screen;
 static lv_obj_t *volume_switch;
 static lv_obj_t *airpods_row;
 static lv_obj_t *airpods_icon;
-static lv_obj_t *codec_row;
-static lv_obj_t *codec_value;
-static lv_obj_t *coexist_note; // LDAC 990 and a busy Wi-Fi radio; hidden otherwise
 static lv_obj_t *battery_row;  // the headset's own level; hidden while unknown
 static lv_obj_t *battery_value;
 static lv_obj_t *battery_switch;
 static lv_timer_t *poll_timer;
 
-// The codec list is its own page: how many entries there are depends on what
-// the headphones answered with, so the rows are built every time it opens.
-static lv_obj_t *codec_screen;
-static lv_obj_t *codec_list;
 
 // ---------------------------------------------------------------------------
 // switching the output over
@@ -81,197 +75,6 @@ static void restart_playback_if_running(void) {
 		audio_pause();
 	}
 	player_refresh_now_playing();
-}
-
-// ---------------------------------------------------------------------------
-// The codec list
-//
-// What the two ends have in common on the link that is up, and nothing when
-// nothing is connected. There is no preference to set in advance: the player
-// reads what the headphones offer the moment they connect and takes the best of
-// it by itself, so a list shown with nothing on the other end would be a list
-// of things to choose that nothing would come of.
-//
-// Touching a row moves the link onto that codec, and the choice is remembered
-// for those headphones: their next connection asks for it again (falling back
-// to the automatic choice if they refuse). "Auto", at the top, forgets it.
-//
-// LDAC appears four times because its bit rate is a separate setting from the
-// codec itself -- 990, 660 and 330 fixed, and adaptive, which lets the rate
-// follow the link. The stock player lays them out the same way; 330 is the one
-// for a crowded place, where 660 already drops out.
-// ---------------------------------------------------------------------------
-
-#define CODEC_ROWS (BT_MAX_CODECS + 4)
-
-typedef struct {
-	char label[BT_CODEC_MAX + 8]; // the row's name: "LDAC 990"
-	char codec[BT_CODEC_MAX];	  // what to ask bluealsa for
-	const char *ldac;			  // the quality that goes with it, NULL for the rest
-} codec_row_t;
-
-static codec_row_t codec_rows[CODEC_ROWS];
-static int codec_row_count;
-
-static void codec_chosen_cb(lv_event_t *e) {
-	const codec_row_t *row = lv_event_get_user_data(e);
-	if (!row) {
-		return;
-	}
-	if (row->ldac) {
-		bluetooth_set_ldac_quality(row->ldac);
-	}
-	bluetooth_set_codec(row->codec);
-	switch_screen(btaudio_screen);
-}
-
-static void codec_auto_cb(lv_event_t *e) {
-	(void)e;
-	bluetooth_set_codec_auto();
-	switch_screen(btaudio_screen);
-}
-
-// Best first, which is the order the automatic choice walks and the order
-// anybody reading the list expects.
-static int codec_order(const char *name) {
-	if (strcasecmp(name, "LDAC") == 0) {
-		return 50;
-	}
-	if (strcasecmp(name, "aptX-HD") == 0) {
-		return 40;
-	}
-	if (strcasecmp(name, "aptX") == 0) {
-		return 30;
-	}
-	if (strcasecmp(name, "AAC") == 0) {
-		return 20;
-	}
-	if (strcasecmp(name, "SBC") == 0) {
-		return 10;
-	}
-	return 5; // something this build has not heard of: after the known ones
-}
-
-static void build_codec_rows(char mine[][BT_CODEC_MAX], int count) {
-	// Sorted in place: five entries, so the simplest sort there is.
-	for (int i = 0; i < count; i++) {
-		for (int j = i + 1; j < count; j++) {
-			if (codec_order(mine[j]) > codec_order(mine[i])) {
-				// %.*s: the compiler cannot see that each row is terminated,
-				// and warns that a name could run on into the next one.
-				char swap[BT_CODEC_MAX];
-				snprintf(swap, sizeof(swap), "%.*s", BT_CODEC_MAX - 1, mine[i]);
-				snprintf(mine[i], BT_CODEC_MAX, "%.*s", BT_CODEC_MAX - 1, mine[j]);
-				snprintf(mine[j], BT_CODEC_MAX, "%.*s", BT_CODEC_MAX - 1, swap);
-			}
-		}
-	}
-
-	codec_row_count = 0;
-	for (int i = 0; i < count && codec_row_count < CODEC_ROWS; i++) {
-		if (strcasecmp(mine[i], "LDAC") == 0) {
-			static const struct {
-				const char *suffix;
-				const char *quality;
-			} LDAC_MODES[] = {{" 990", "high"}, {" 660", "standard"}, {" 330", "mobile"}, {"", "abr"}};
-			for (size_t m = 0; m < sizeof(LDAC_MODES) / sizeof(LDAC_MODES[0]) && codec_row_count < CODEC_ROWS; m++) {
-				codec_row_t *row = &codec_rows[codec_row_count++];
-				snprintf(row->label, sizeof(row->label), "LDAC%s", LDAC_MODES[m].suffix);
-				snprintf(row->codec, sizeof(row->codec), "LDAC");
-				row->ldac = LDAC_MODES[m].quality;
-			}
-			continue;
-		}
-		codec_row_t *row = &codec_rows[codec_row_count++];
-		// By length rather than with %s: the compiler cannot see that each row
-		// of the table is terminated, and warns that a name could run on into
-		// the next one.
-		size_t length = strnlen(mine[i], BT_CODEC_MAX - 1);
-		memcpy(row->label, mine[i], length);
-		row->label[length] = '\0';
-		memcpy(row->codec, mine[i], length);
-		row->codec[length] = '\0';
-		row->ldac = NULL;
-	}
-}
-
-static void codec_list_message(const char *tag) {
-	lv_obj_t *none = lv_label_create(codec_list);
-	lv_label_set_text(none, tr(tag));
-	lv_obj_add_style(none, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(none, &font_ui_22, 0);
-	lv_obj_set_width(none, lv_pct(100));
-	lv_label_set_long_mode(none, LV_LABEL_LONG_WRAP);
-}
-
-static void rebuild_codec_list(void) {
-	lv_obj_clean(codec_list);
-	codec_row_count = 0;
-
-	char offered[BT_MAX_CODECS][BT_CODEC_MAX];
-	char selected[BT_CODEC_MAX] = "";
-	int offered_count = bluetooth_get_codecs(offered, BT_MAX_CODECS, selected, sizeof(selected));
-
-	if (!bluetooth_audio_active()) {
-		codec_list_message("btaudio_no_device");
-		return;
-	}
-	if (offered_count <= 0) {
-		// Connected, and bluealsa has not answered yet or the sink named nothing
-		// this build understands. Either way there is nothing to offer.
-		codec_list_message("btaudio_no_codecs");
-		return;
-	}
-
-	build_codec_rows(offered, offered_count);
-
-	// "Auto" first, marked while nothing is remembered for these headphones:
-	// then the automatic choice is the one in force.
-	char chosen[BT_CODEC_MAX];
-	bool by_hand = bluetooth_codec_chosen(chosen, sizeof(chosen));
-	lv_obj_t *auto_value = NULL;
-	settingsrow_add(codec_list, "btaudio_codec_auto", &auto_value, codec_auto_cb, NULL);
-	lv_label_set_text(auto_value, by_hand ? "" : tr("in_use"));
-	lv_obj_set_style_text_color(auto_value, theme()->accent, 0);
-
-	// Then one mark per codec, for which one the link is actually on.
-	const char *quality = bluetooth_ldac_quality();
-
-	for (int i = 0; i < codec_row_count; i++) {
-		codec_row_t *row = &codec_rows[i];
-		bool ldac_matches = !row->ldac || strcmp(row->ldac, quality) == 0;
-		bool in_force = selected[0] && strcasecmp(selected, row->codec) == 0 && ldac_matches;
-
-		lv_obj_t *value = NULL;
-		settingsrow_add(codec_list, row->label, &value, codec_chosen_cb, row);
-
-		// The rate goes with the mark: it is what was negotiated for the codec
-		// in force, and the 44.1 kHz setting makes it worth a look.
-		unsigned rate = bluetooth_sink_rate();
-		if (in_force && rate) {
-			char text[48];
-			if (rate % 1000 == 0) {
-				snprintf(text, sizeof(text), "%s \xC2\xB7 %u kHz", tr("in_use"), rate / 1000);
-			} else {
-				snprintf(text, sizeof(text), "%s \xC2\xB7 %.1f kHz", tr("in_use"), rate / 1000.0);
-			}
-			lv_label_set_text(value, text);
-		} else {
-			lv_label_set_text(value, in_force ? tr("in_use") : "");
-		}
-		lv_obj_set_style_text_color(value, theme()->accent, 0);
-	}
-}
-
-static void codec_screen_loaded_cb(lv_event_t *e) {
-	(void)e;
-	bluetooth_refresh_codecs();
-	rebuild_codec_list();
-}
-
-static void codec_row_cb(lv_event_t *e) {
-	(void)e;
-	switch_screen(codec_screen);
 }
 
 // ---------------------------------------------------------------------------
@@ -395,19 +198,21 @@ static void rate_pick_cb(lv_event_t *e) {
 	encoder_pills_refresh();
 }
 
-static lv_obj_t *option_note(lv_obj_t *parent, const char *text) {
-	lv_obj_t *note = lv_label_create(parent);
+// What a choice does, inside its card under the pills: the 2.0 card carries
+// its explanation rather than leaving it to a note under it.
+static lv_obj_t *option_note(lv_obj_t *card, const char *text) {
+	lv_obj_t *note = lv_label_create(card);
 	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(note, lv_pct(100));
-	lv_obj_add_style(note, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(note, &font_ui_22, 0);
+	lv_obj_add_style(note, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(note, &font_ui_21, 0);
 	lv_label_set_text(note, tr(text));
 	return note;
 }
 
 static void build_encoder_options(lv_obj_t *container) {
 	lv_obj_t *pills = NULL;
-	settingsrow_pills(container, "btaudio_sample_rate", &pills);
+	lv_obj_t *card = settingsrow_pills(container, "btaudio_sample_rate", &pills);
 	// Auto and 44.1 kHz are what bluealsa is started with; "Follow the music"
 	// and 96 kHz move the link between tracks without restarting it (see
 	// bluetooth.c, "the link's rate"). 96 kHz is an LDAC choice: on any other
@@ -416,13 +221,13 @@ static void build_encoder_options(lv_obj_t *container) {
 	rate_pills[BT_RATE_44K] = settingsrow_pill_text(pills, "44.1 kHz", BT_RATE_44K, rate_pick_cb);
 	rate_pills[BT_RATE_FOLLOW] = settingsrow_pill(pills, "btaudio_rate_follow", BT_RATE_FOLLOW, rate_pick_cb);
 	rate_pills[BT_RATE_96K] = settingsrow_pill_text(pills, "96 kHz", BT_RATE_96K, rate_pick_cb);
-	option_note(container, "btaudio_sample_rate_note");
+	option_note(card, "btaudio_sample_rate_note");
 
 	pills = NULL;
-	settingsrow_pills(container, "btaudio_aac_mode", &pills);
+	card = settingsrow_pills(container, "btaudio_aac_mode", &pills);
 	aac_vbr_pill = settingsrow_pill_text(pills, "VBR", 1, aac_pick_cb);
 	aac_cbr_pill = settingsrow_pill_text(pills, "CBR 220", 0, aac_pick_cb);
-	option_note(container, "btaudio_aac_mode_note");
+	option_note(card, "btaudio_aac_mode_note");
 
 	encoder_pills_refresh();
 	theme_register_refresh(encoder_pills_refresh);
@@ -471,7 +276,7 @@ static void keep_on_pick_cb(lv_event_t *e) {
 
 static void build_keep_on_options(lv_obj_t *container) {
 	lv_obj_t *pills = NULL;
-	settingsrow_pills(container, "btaudio_keep_on", &pills);
+	lv_obj_t *card = settingsrow_pills(container, "btaudio_keep_on", &pills);
 	for (int i = 0; i < KEEP_ON_COUNT; i++) {
 		char text[16];
 		if (KEEP_ON_SECONDS[i] < 60) {
@@ -481,7 +286,7 @@ static void build_keep_on_options(lv_obj_t *container) {
 		}
 		keep_on_pills[i] = settingsrow_pill_text(pills, text, KEEP_ON_SECONDS[i], keep_on_pick_cb);
 	}
-	option_note(container, "btaudio_keep_on_note");
+	option_note(card, "btaudio_keep_on_note");
 	keep_on_refresh();
 	theme_register_refresh(keep_on_refresh);
 }
@@ -494,21 +299,6 @@ static bool wifi_downloading(void) {
 		   ota_busy();
 }
 
-// The hint under the codec row: only with LDAC set to 990, the one quality that
-// leaves no room for the Wi-Fi side of the shared chip (bluetooth.c).
-static void refresh_coexist_note(bool connected) {
-	bool ldac_990 = strcmp(bluetooth_ldac_quality(), "high") == 0;
-	bool held = bluetooth_ldac_held_back();
-	bool show = connected && ldac_990 && (held || wifi_downloading());
-	if (show) {
-		const char *text = tr(held ? "btaudio_ldac_wifi_transfer" : "btaudio_ldac_wifi_busy");
-		if (strcmp(lv_label_get_text(coexist_note), text) != 0) {
-			lv_label_set_text(coexist_note, text);
-		}
-	}
-	lv_obj_set_hidden(coexist_note, !show);
-}
-
 static void refresh_name_row(void);
 
 static void refresh_page(void) {
@@ -516,28 +306,7 @@ static void refresh_page(void) {
 	// from this page, so it is re-read here rather than written once.
 	refresh_name_row();
 
-	bt_device_t device;
-	bool connected = bluetooth_connected_device(&device);
-
-	char selected[BT_CODEC_MAX];
-	char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
-	int count = bluetooth_get_codecs(codecs, BT_MAX_CODECS, selected, sizeof(selected));
-
-	// "LDAC 990 · 48 kHz" rather than the bare name: the bit rate and the
-	// link's rate are the two things the name alone does not say.
-	char summary[64];
-	if (connected && bluetooth_codec_summary(NULL, summary, sizeof(summary))) {
-		lv_label_set_text(codec_value, summary);
-	} else {
-		lv_label_set_text(codec_value, connected && selected[0] ? selected : "--");
-	}
-
-	// Only while something is connected: the list is what the other end offers,
-	// so with nothing on the other end there is nothing behind the row.
-	settingsrow_chevron_active(codec_row, connected && count > 0);
-
 	refresh_battery_row(refresh_airpods_row());
-	refresh_coexist_note(connected);
 
 	bool sync = bluetooth_volume_sync();
 	if (lv_obj_has_state(volume_switch, LV_STATE_CHECKED) != sync) {
@@ -673,7 +442,6 @@ static void routing_watch_cb(lv_timer_t *timer) {
 
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
-	bluetooth_refresh_codecs();
 	refresh_page();
 	lv_timer_resume(poll_timer);
 }
@@ -811,7 +579,7 @@ void btaudio_init(gui_config_t *cfg) {
 	// whatever is connected to it.
 	settingsrow_add(container, "bt_rename", &name_row_value, name_row_cb, NULL);
 
-	// The AirPods row, above the codec: it is about the headphones themselves
+	// The AirPods row, near the top: it is about the headphones themselves
 	// rather than about the link, and it is the one row here that is not
 	// always there.
 	airpods_row = settingsrow_add(container, "airpods", NULL, airpods_row_cb, NULL);
@@ -827,43 +595,35 @@ void btaudio_init(gui_config_t *cfg) {
 	lv_obj_set_clickable(battery_row, false);
 	lv_obj_set_hidden(battery_row, true);
 
-	// The codec in use, and the list of what the sink offered.
-	codec_row = settingsrow_add(container, "btaudio_codecs", &codec_value, codec_row_cb, NULL);
-	coexist_note = option_note(container, "btaudio_ldac_wifi_busy");
-	lv_obj_set_hidden(coexist_note, true);
+	// The codec and LDAC's rate are on the Bluetooth page itself since 2.0,
+	// as pills under the connected headphones.
 
 	// One level or two, on by default. On, the keys here move the headphones
 	// over AVRCP absolute volume and their own buttons move the number on the
 	// screen. Off, bluealsa attenuates the stream on this side and the
 	// headphones keep their own level, so the two are independent.
-	settingsrow_toggle(container, "btaudio_synchronised_volume", &volume_switch, volume_toggle_cb);
+	settingsrow_switch_card(container, "btaudio_synchronised_volume", NULL, &volume_switch, volume_toggle_cb);
 	if (bluetooth_volume_sync()) {
 		lv_obj_add_state(volume_switch, LV_STATE_CHECKED);
 	}
 
 	// The headset battery, opt-in: see refresh_battery_row() above.
-	settingsrow_toggle(container, "btaudio_headset_battery", &battery_switch, battery_toggle_cb);
+	settingsrow_switch_card(container, "btaudio_headset_battery", "btaudio_headset_battery_note", &battery_switch,
+							battery_toggle_cb);
 	if (bluetooth_headset_battery_enabled()) {
 		lv_obj_add_state(battery_switch, LV_STATE_CHECKED);
 	}
-	option_note(container, "btaudio_headset_battery_note");
 
 	// The codec and any rate conversion, under the artist on Now Playing
 	// (btline.h). On by default.
-	settingsrow_toggle(container, "btaudio_nowplaying_details", &details_switch, details_toggle_cb);
+	settingsrow_switch_card(container, "btaudio_nowplaying_details", "btaudio_nowplaying_details_note",
+							&details_switch, details_toggle_cb);
 	if (btline_enabled()) {
 		lv_obj_add_state(details_switch, LV_STATE_CHECKED);
 	}
-	option_note(container, "btaudio_nowplaying_details_note");
 
 	build_encoder_options(container);
 	build_keep_on_options(container);
-
-	// --- the codec list, on a page of its own ---
-	codec_screen = lv_obj_create(NULL);
-	codec_list = settingsrow_page(codec_screen, cfg, "btaudio_codecs");
-	lv_obj_add_event_cb(codec_screen, codec_screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
-	switcher_attach_back_gesture(codec_screen);
 
 	poll_timer = lv_timer_create(poll_cb, BTAUDIO_POLL_MS, NULL);
 	lv_timer_pause(poll_timer);
