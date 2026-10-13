@@ -308,11 +308,18 @@ void thread_signal_stack(void) {
 // Nice ten instead: about a tenth of a saturated core, the whole of an idle one,
 // and prompt when it wakes from a read. It stays below the interface, which is
 // the part of SCHED_IDLE worth keeping.
+//
+// The policy is set back to SCHED_OTHER first, not assumed. A thread inherits
+// its creator's policy, and some of the threads that call this are created by
+// idle-class ones: a streaming download is started by the page's prefetch
+// thread as often as by its worker. Under SCHED_IDLE the nice value is not
+// even looked at, so without this the download that playback reads as it grows
+// stayed idle-class however it asked -- the very starvation this is meant to
+// end.
 void thread_be_low_priority(const char *name) {
 	thread_signal_stack();
 
-	pid_t tid = (pid_t)syscall(SYS_gettid);
-	setpriority(PRIO_PROCESS, (id_t)tid, 10);
+	thread_set_background_level(true);
 
 	if (name) {
 		prctl(PR_SET_NAME, name, 0, 0, 0);

@@ -758,10 +758,14 @@ static bool download_pump(download_t *d, long until, bool *finished) {
 
 // The rest of the download, after playback has started.
 static void *download_thread(void *arg) {
-	// Background priority, like every other worker: there is one core, and a
-	// thread writing to the card at full priority takes it away from the UI.
-	// That was half the reason the UI stuttered.
-	thread_be_background("qobuz download");
+	// Below the interface and the audio threads, so the TLS and the card
+	// writes give way to them on this single core -- a thread writing to the
+	// card at full priority was half the reason the interface stuttered. But
+	// not idle class: playback reads this file as it grows, and with Bluetooth
+	// encoding and a decoder busy an idle-class thread gets well under one
+	// percent of the core, so the music caught up with the download and
+	// stopped to refill. As yandexcache.c's download since 1.2.4.
+	thread_be_low_priority("qobuz download");
 
 	download_t *d = arg;
 	bool finished = false;
