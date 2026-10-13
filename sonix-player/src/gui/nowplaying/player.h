@@ -88,6 +88,11 @@ void player_output_unplugged(const char *what);
 void player_key_play_pause(void);
 void player_key_next(void);
 void player_key_prev(void);
+// The side buttons' remappable extras (keymap.h). Each says what it did in a
+// toast, since the player is usually in a pocket when they are pressed.
+void player_key_favourite(void);   // the star, add only: never takes one off
+void player_key_next_album(void);  // device_state_next_album()
+void player_key_cycle_mode(void);  // the repeat/shuffle button
 
 // What the player's on-screen prev/next buttons do: seconds-sized skips on an
 // audiobook or podcast, previous/next track otherwise. The control centre

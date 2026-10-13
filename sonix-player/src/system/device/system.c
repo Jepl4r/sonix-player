@@ -1545,6 +1545,16 @@ static void run_mapped_action(keymap_button_t button) {
 	case KEYMAP_ACTION_VOLUME_DOWN:
 		apply_volume_step(KEY_VOLUMEDOWN);
 		break;
+	case KEYMAP_ACTION_FAVOURITE:
+		gui_notify_key(GUI_KEY_FAVOURITE);
+		break;
+	case KEYMAP_ACTION_NEXT_ALBUM:
+		gui_notify_key(GUI_KEY_NEXT_ALBUM);
+		break;
+	case KEYMAP_ACTION_CYCLE_MODE:
+		gui_notify_key(GUI_KEY_CYCLE_MODE);
+		break;
+	case KEYMAP_ACTION_COUNT:
 	case KEYMAP_ACTION_NONE:
 	default:
 		break;

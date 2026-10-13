@@ -45,8 +45,18 @@ typedef enum {
 	KEYMAP_ACTION_NEXT,
 	KEYMAP_ACTION_VOLUME_UP,
 	KEYMAP_ACTION_VOLUME_DOWN,
+	// One-shot actions on what is playing. None of them repeats or seeks when
+	// held: a held "next album" would run through the library.
+	KEYMAP_ACTION_FAVOURITE,  // star the playing track (the player's star, add only)
+	KEYMAP_ACTION_NEXT_ALBUM, // first track of the next record
+	KEYMAP_ACTION_CYCLE_MODE, // the player's repeat/shuffle button
 	KEYMAP_ACTION_COUNT,
 } keymap_action_t;
+
+// The actions every button had from the start, which the remapping page lists
+// first: the ones after them are behind a "More actions" line, because the
+// list it is drawn in holds seven.
+#define KEYMAP_ACTION_BASIC_COUNT (KEYMAP_ACTION_VOLUME_DOWN + 1)
 
 // Reads the configuration. Call once at startup, before the key threads start.
 void keymap_init(void);

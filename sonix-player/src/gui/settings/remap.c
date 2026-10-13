@@ -492,6 +492,32 @@ static void picked(void *user) {
 	refresh_values();
 }
 
+// The second list: the actions past the first six, for the button being
+// chosen. Shown on the next pass of the loop, because this runs inside the
+// click of a row of the popover it rebuilds.
+static void more_show_async(void *user) {
+	(void)user;
+	if (choosing >= KEYMAP_BTN_COUNT || !rows[choosing]) {
+		return;
+	}
+	keymap_action_t current = keymap_get(choosing);
+	static popover_item_t items[KEYMAP_ACTION_COUNT - KEYMAP_ACTION_BASIC_COUNT];
+	int n = 0;
+	for (int i = KEYMAP_ACTION_BASIC_COUNT; i < KEYMAP_ACTION_COUNT; i++) {
+		items[n].label = keymap_action_name((keymap_action_t)i);
+		items[n].action = picked;
+		items[n].user = (void *)(intptr_t)i;
+		items[n].checked = ((keymap_action_t)i == current);
+		n++;
+	}
+	popover_show(rows[choosing], items, n);
+}
+
+static void more_picked(void *user) {
+	(void)user;
+	lv_async_call(more_show_async, NULL);
+}
+
 static void open_chooser(keymap_button_t button) {
 	if (button >= KEYMAP_BTN_COUNT || !rows[button]) {
 		return;
@@ -500,21 +526,26 @@ static void open_chooser(keymap_button_t button) {
 
 	keymap_action_t current = keymap_get(button);
 
-	// Six entries, exactly as many as the popover shows: one per action these
-	// buttons can perform, plus "none", since a button pressed by accident in a
-	// pocket is reason enough to disable it.
-	static popover_item_t items[KEYMAP_ACTION_COUNT];
-	for (int i = 0; i < KEYMAP_ACTION_COUNT; i++) {
+	// Seven entries, exactly as many as the popover shows: the six actions
+	// these buttons always had -- "none" among them, since a button pressed by
+	// accident in a pocket is reason enough to disable it -- and a line for the
+	// rest (favourite, next album, the shuffle/repeat mode), which open a
+	// second list. That line carries the tick when one of them is chosen.
+	static const popover_item_t MORE = {"remap_more_actions", more_picked, NULL};
+	static popover_item_t items[KEYMAP_ACTION_BASIC_COUNT + 1];
+	for (int i = 0; i < KEYMAP_ACTION_BASIC_COUNT; i++) {
 		items[i].label = keymap_action_name((keymap_action_t)i);
 		items[i].action = picked;
 		items[i].user = (void *)(intptr_t)i;
 		items[i].checked = ((keymap_action_t)i == current);
 	}
+	items[KEYMAP_ACTION_BASIC_COUNT] = MORE;
+	items[KEYMAP_ACTION_BASIC_COUNT].checked = current >= KEYMAP_ACTION_BASIC_COUNT;
 
 	// The anchor is always the row, even when the photo was touched: the popover
 	// opens next to its anchor, and next to an invisible rectangle on a screen
 	// edge it would end up half off-screen.
-	popover_show(rows[button], items, KEYMAP_ACTION_COUNT);
+	popover_show(rows[button], items, KEYMAP_ACTION_BASIC_COUNT + 1);
 }
 
 static void pick_clicked_cb(lv_event_t *e) {

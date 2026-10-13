@@ -184,6 +184,16 @@ bool device_state_play_random_album(library_filter_t filter, const char *value);
 bool device_state_folder_chaining(void);
 void device_state_set_folder_chaining(bool on);
 
+// "Next album", for a button: the first track of the next record. In the queue
+// first -- the next entry, in playing order, from another album (the album
+// "stop after this album" goes by), looked for among the next few hundred --
+// and when the queue holds no other record ahead, the record after this one
+// the way "play albums back to back" or "play by folder" would take it, even
+// with those options off: the key asks for it. Under shuffle the next entry
+// is usually another album's, so it is then the next track. False, with
+// nothing changed, when there is no next record anywhere. UI thread.
+bool device_state_next_album(char *out_path, size_t out_size);
+
 // User-initiated skip to the next/previous track in the folder queue. Start
 // the new track and return true (optionally copying its path into out_path);
 // return false if the queue is empty.

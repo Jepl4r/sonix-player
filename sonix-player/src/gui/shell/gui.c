@@ -529,6 +529,13 @@ static void key_async_cb(void *user_data) {
 			return;
 		}
 		break;
+	default:
+		// The rest act on this player's own queue and track, which is not
+		// what a phone streaming into the receiver is playing.
+		if (btreceiver_is_active()) {
+			return;
+		}
+		break;
 	}
 
 	switch (key) {
@@ -540,6 +547,15 @@ static void key_async_cb(void *user_data) {
 		break;
 	case GUI_KEY_PREV:
 		player_key_prev();
+		break;
+	case GUI_KEY_FAVOURITE:
+		player_key_favourite();
+		break;
+	case GUI_KEY_NEXT_ALBUM:
+		player_key_next_album();
+		break;
+	case GUI_KEY_CYCLE_MODE:
+		player_key_cycle_mode();
 		break;
 	}
 }

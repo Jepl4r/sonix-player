@@ -1338,6 +1338,59 @@ static bool stop_after_fire(char *out_path, size_t out_size) {
 	return true;
 }
 
+// How far ahead "next album" looks in the queue for another record. Each step
+// is a database lookup, or a tag read for a file the library does not hold, so
+// it is bounded; a record is rarely longer than a few dozen tracks.
+#define NEXT_ALBUM_SCAN_MAX 200
+
+bool device_state_next_album(char *out_path, size_t out_size) {
+	if (radio_is_active() || audiobook_is_playing() || !current_metadata_file[0]) {
+		return false; // a station has no albums, and a book is one
+	}
+	playlist_resync_to_current();
+
+	char here[512];
+	album_key(current_metadata_file, &current_metadata, here, sizeof(here));
+	int count = playlist_count();
+	int current = playlist_current_index();
+	for (int i = current + 1; current >= 0 && i < count && i <= current + NEXT_ALBUM_SCAN_MAX; i++) {
+		char path[512], key[512];
+		if (!playlist_path_at(i, path, sizeof(path))) {
+			continue;
+		}
+		album_key(path, NULL, key, sizeof(key));
+		if (strcmp(key, here) != 0 && playlist_set_current(i)) {
+			load_and_play(path);
+			if (out_path && out_size > 0) {
+				snprintf(out_path, out_size, "%s", path);
+			}
+			return true;
+		}
+	}
+
+	// Nothing else ahead in the queue: the record beside this one -- when the
+	// queue is a record and this track is on it. A track queued after an album
+	// has its own record, and the one after the album is not "next" to it.
+	const char *album = playlist_album();
+	if (album && album[0] && library_album_same(here, album)) {
+		char held[256];
+		snprintf(held, sizeof(held), "%s", album); // the queue is about to be replaced
+		if (random_albums_beside(held, true) || play_album_beside(held, true)) {
+			if (out_path && out_size > 0) {
+				playlist_current_path(out_path, out_size);
+			}
+			return true;
+		}
+	}
+	if (!playlist_is_custom() && play_folder_beside(current_metadata_file, true)) {
+		if (out_path && out_size > 0) {
+			playlist_current_path(out_path, out_size);
+		}
+		return true;
+	}
+	return false;
+}
+
 bool device_state_advance_auto(char *out_path, size_t out_size) {
 	if (radio_is_active()) {
 		return false; // a stream never finishes, so there is nothing to advance to

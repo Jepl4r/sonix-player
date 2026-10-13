@@ -138,6 +138,11 @@ typedef enum {
 	GUI_KEY_PLAY_PAUSE,
 	GUI_KEY_NEXT,
 	GUI_KEY_PREV,
+	// What a remapped side button can also do (keymap.h). Never sent by a
+	// remote: they act on the local player only.
+	GUI_KEY_FAVOURITE,
+	GUI_KEY_NEXT_ALBUM,
+	GUI_KEY_CYCLE_MODE,
 } gui_key_t;
 
 void gui_notify_key(gui_key_t key);

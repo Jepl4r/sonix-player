@@ -16,6 +16,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/shell/toast.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/quickpanel.h"
 #include "src/gui/shell/scrolltext.h"
@@ -3346,13 +3347,10 @@ static void update_service_badge(void) {
 	}
 }
 
-// Repaints the star from the database: filled yellow when the loaded track
-// is a favourite, quiet outline otherwise.
-static void update_fav_button(void) {
-	if (!fav_btn_icon) {
-		return;
-	}
-
+// Whether what is playing is starred, by whichever list owns its star. Shared
+// by the star itself and the side button's "add to favourites", so the two can
+// never disagree about what a press would do.
+static bool fav_current_starred(void) {
 	// A station is starred in the radio favourites, not the music library:
 	// there is no file to put in the database, and the list the star feeds is
 	// the one on the Radio page.
@@ -3384,6 +3382,16 @@ static void update_fav_button(void) {
 		device_state_get(&state);
 		starred = state.current_file[0] && library_fav_contains(state.current_file);
 	}
+	return starred;
+}
+
+// Repaints the star from the database: filled yellow when the loaded track
+// is a favourite, quiet outline otherwise.
+static void update_fav_button(void) {
+	if (!fav_btn_icon) {
+		return;
+	}
+	bool starred = fav_current_starred();
 
 	// The star's colour is decided here and nowhere else. This function runs
 	// last on every track change, so anything that tints the star elsewhere is
@@ -4043,6 +4051,68 @@ void player_key_prev(void) {
 		device_state_seek(0);
 	}
 	update_progress();
+}
+
+// "Add to favourites" from a side button: what the star does, but only ever the
+// adding half. A key pressed by feel, in a pocket, must not take a favourite
+// away -- pressed twice it says the track is already there. The star decides
+// where it goes: the library, the account of the service the track streams
+// from (its like), the radio favourites, a podcast followed.
+void player_key_favourite(void) {
+	device_state_t state;
+	device_state_get(&state);
+	if (!state.current_file[0] && !state.live) {
+		toast_plain("trackmenu_nothing_is_playing");
+		return;
+	}
+	if (audiobook_mode) {
+		return; // the star is hidden on a book: a book is not a favourite track
+	}
+	if (fav_current_starred()) {
+		toast_glyph(&icon_star_filled, tr("player_key_favourite_already"));
+		return;
+	}
+	fav_btn_event_cb(NULL);
+	toast_glyph(&icon_star_filled, tr("player_key_favourite_added"));
+}
+
+void player_key_next_album(void) {
+	if (live_mode || dlna_owns_playback() || audiobook_mode) {
+		return; // a station, the phone's queue, a book: no next record here
+	}
+	if (device_state_next_album(NULL, 0)) {
+		refresh_now_playing();
+	} else {
+		toast_plain("player_key_no_next_album");
+	}
+	update_progress();
+}
+
+// The repeat/shuffle button's step, with its name said: the button shows the
+// mode on screen, the key in a pocket has nothing to show it on.
+void player_key_cycle_mode(void) {
+	if (podcast_mode || audiobook_mode) {
+		return; // the button is hidden there: these queues carry their own order
+	}
+	static const char *const NAMES[] = {
+		[PLAYBACK_MODE_NORMAL] = "player_mode_normal",
+		[PLAYBACK_MODE_REPEAT_ALL] = "player_mode_repeat_all",
+		[PLAYBACK_MODE_REPEAT_ONE] = "player_mode_repeat_one",
+		[PLAYBACK_MODE_SHUFFLE] = "player_mode_shuffle",
+		[PLAYBACK_MODE_SHUFFLE_REPEAT] = "player_mode_shuffle_repeat",
+	};
+	static const lv_image_dsc_t *const GLYPHS[] = {
+		[PLAYBACK_MODE_NORMAL] = &icon_repeat_off,
+		[PLAYBACK_MODE_REPEAT_ALL] = &icon_repeat_all,
+		[PLAYBACK_MODE_REPEAT_ONE] = &icon_repeat_one,
+		[PLAYBACK_MODE_SHUFFLE] = &icon_shuffle,
+		[PLAYBACK_MODE_SHUFFLE_REPEAT] = &icon_shuffle_repeat,
+	};
+	playback_mode_t mode = playlist_cycle_mode();
+	update_repeat_button();
+	if ((size_t)mode < sizeof(NAMES) / sizeof(NAMES[0])) {
+		toast_glyph(GLYPHS[mode], tr(NAMES[mode]));
+	}
 }
 
 // The book's menu. A book with no chapters still lists them, and says so when
