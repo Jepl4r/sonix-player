@@ -882,7 +882,7 @@ static int scan(entry_t *out, int max, long *total, bool (*keep)(const char *ste
 			continue;
 		}
 		if (out && count < max && strlen(e->d_name) < sizeof(out[0].name)) {
-			snprintf(out[count].name, sizeof(out[count].name), "%s", e->d_name);
+			snprintf(out[count].name, sizeof(out[count].name), "%.*s", (int)sizeof(out[count].name) - 1, e->d_name); // fits: checked above
 			out[count].size = (long)st.st_size;
 			out[count].atime = (long)st.st_atime;
 			count++;

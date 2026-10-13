@@ -33,15 +33,29 @@
 #include "src/system/streaming/yandexcache.h"
 #include "src/system/streaming/yandexdl.h"
 #include "src/system/streaming/yandexsaved.h"
+#include "src/system/streaming/yandexlist.h"
+#include "src/system/streaming/yandexplay.h"
 #include "src/system/streaming/yandexsync.h"
 #include "src/system/streaming/yandexwave.h"
 
 // See yandexpage.h. Deliberately smaller than the Tidal page: no artwork in
-// the lists (the cover still arrives with each track, beside the file), no
-// paging (the API hands whole lists), one list page for every kind of row.
+// the lists (the cover still arrives with each track, beside the file), one
+// list page for every kind of row.
+//
+// What is not the page lives beside it, for any page to reuse: the service
+// (yandex.c), long lists by the page (yandexlist.c), playing them
+// (yandexplay.c), My Wave (yandexwave.c), likes (yandexsync.c).
 
 #define MAX_ROWS 150
 #define LOGIN_QR_SIZE 220
+
+// The list is drawn as a window over it: SLOT_COUNT rows exist and are given
+// whichever entries are on screen as it scrolls, so a liked list of five
+// thousand costs the same two dozen rows as a list of ten (1.2.5 built every
+// row, seven objects each). Rows are ROW_H tall, ROW_PITCH apart.
+#define SLOT_COUNT 24
+#define ROW_H 80
+#define ROW_PITCH (ROW_H + 10)
 
 typedef enum { ROW_TRACK, ROW_ALBUM, ROW_ARTIST, ROW_PLAYLIST } row_kind_t;
 
@@ -66,9 +80,9 @@ typedef enum {
 	JOB_ARTIST,
 	JOB_SEARCH,
 	JOB_WAVE,
-	JOB_PLAY,
-	JOB_FETCH,
 	JOB_DISLIKE,
+	// The details of one page of the list on screen (yandexlist.h).
+	JOB_PAGE,
 	// Built on the GUI thread from the index of saved tracks, never sent to
 	// the worker: they must open with the network down, and the worker may be
 	// waiting out a request that will not be answered.
@@ -80,8 +94,9 @@ typedef struct {
 	job_kind_t kind;
 	char a[YANDEX_TITLE_MAX]; // id, owner, search text...
 	char b[YANDEX_ID_MAX];	  // kind, album id
-	int n;					  // index; for a dislike the seconds heard
+	int n;					  // the page; for a dislike the seconds heard
 	unsigned generation;	  // list jobs: list_generation when asked
+	yandexlist_t *list;		  // JOB_PAGE: a reference to the list, the job's
 } job_t;
 
 // One job's answer, handed to the GUI thread whole through gui_post's user
@@ -95,12 +110,14 @@ typedef struct {
 typedef struct {
 	job_kind_t kind;
 	unsigned generation;
-	int index; // JOB_PLAY: the queue entry, -1 when it failed
-	char path[512];
+	int page; // JOB_PAGE: which
 	char error[256];
 	stream_err_t error_class; // what kind of failure `error` is (streamerr.h)
 	yandex_login_state_t login_state;
 	yandex_login_t login; // a copy: the worker keeps polling with its own
+	// A list of tracks (liked, a playlist, an album, My Wave): the ids, with
+	// details by the page. NULL for the other lists, whose rows follow.
+	yandexlist_t *list;
 	int count;
 	row_t rows[]; // `count` of them
 } job_result_t;
@@ -119,8 +136,17 @@ static time_t login_deadline;
 static lv_obj_t *list_title, *list_box, *list_spin, *wave_bar, *album_bar;
 // The album bar: what of the record is on the card, and Save or Delete.
 static lv_obj_t *album_state, *album_state_label, *album_btn_label, *album_tick;
-// Each row's "saved on the card" mark (NULL for a row that has none).
-static lv_obj_t *row_marks[MAX_ROWS];
+// The rows drawn (see SLOT_COUNT): each shows entry `index` of the list, -1
+// none. A slot is the entry's index modulo SLOT_COUNT, so a scroll rebinds
+// only the rows that came into view.
+typedef struct {
+	lv_obj_t *row, *title, *sub, *mark, *menu;
+	int index;
+} slot_t;
+static slot_t slots[SLOT_COUNT];
+// What gives the list its height (an invisible point at the bottom), and an
+// empty or error message in place of rows.
+static lv_obj_t *list_end, *list_message;
 // What the list on screen is (JOB_LIKED, JOB_ALBUM, JOB_SAVED...).
 static job_kind_t list_kind;
 // The album a JOB_ALBUM list shows, for its "Save album" button.
@@ -130,11 +156,9 @@ static gui_config_t *list_cfg;
 // search
 static lv_obj_t *search_field;
 
-// The rows on screen (GUI thread): those of the answer shown, which owns
-// them. NULL before the first list.
+// The answer on screen (GUI thread), which owns its rows or its list. NULL
+// before the first list.
 static job_result_t *shown;
-static row_t *rows;
-static int row_count;
 static bool list_is_wave;
 // Raised by each list asked for (GUI thread): an answer carrying an older
 // number belongs to a list the user has since left, and is dropped.
@@ -143,47 +167,38 @@ static unsigned list_generation;
 // when the job is done.
 static row_t *result;
 static int result_count;
+static yandexlist_t *result_list;
 static char result_error[256];
 static stream_err_t result_class;
 
-// The queue: what was played from a list, with the track behind each path.
-// It grows as My Wave adds batches, up to QUEUE_MAX (days of music).
-#define QUEUE_MAX 1000
-static yandex_track_t *queued;
-static char (*queued_paths)[512];
-static int queued_count;
-static int queued_room;
-static bool queue_is_wave;
-
 // Worker. Three kinds of work, each with its own place, so that none can
 // push another out:
-//   * `pending`: what the user just asked for -- a list, a sign-in step, the
-//     track tapped. One at a time: a newer request replaces an older one
-//     still waiting (the user changed their mind).
-//   * `fetch_pending`: the track playback has reached, or the next one. A
-//     newer one replaces an older one: playback has moved on.
+//   * `pending`: what the user just asked for -- a list, a sign-in step. One
+//     at a time: a newer request replaces an older one still waiting (the
+//     user changed their mind).
+//   * `page_pending`: the details of the rows coming into view. A newer page
+//     replaces an older one: the list has scrolled on.
 //   * `events`: dislikes, each one sent.
-// In 1.2.5 the fetches and My Wave's "more" shared the one `pending` slot
-// with the lists: a fetch asked for while the wave's request waited replaced
-// it (and the other way round), and the request, or the track playback was
-// stopped for, was lost without a word. My Wave's requests now live in
-// yandexwave.c.
+// Playing (yandexplay.c) and My Wave (yandexwave.c) have workers of their
+// own: in 1.2.5 the fetch of the next track and the wave's "more" shared the
+// one `pending` slot with the lists, and whichever came second wiped out the
+// other without a word.
 static pthread_mutex_t job_lock = PTHREAD_MUTEX_INITIALIZER;
 static pthread_cond_t job_cond = PTHREAD_COND_INITIALIZER;
 static job_t pending;
-static job_t fetch_pending;
+static job_t page_pending;
 #define EVENTS_MAX 8
 static job_t events[EVENTS_MAX];
 static int events_count;
 static bool worker_started;
-// What the worker is doing right now (JOB_NONE when waiting), for the watch:
-// a track being asked for is a reason to keep Wi-Fi up, and a second fetch is
-// not queued over one already running. Under job_lock.
-static job_kind_t running_kind;
+// The page asked for and not answered yet, so a scroll does not ask for it
+// again every frame; and the last one that failed, not asked again for a few
+// seconds -- with the network down every frame of a scroll would (GUI thread).
+static int page_asked = -1;
+static int page_failed = -1;
+static time_t page_failed_at;
 
 static void job_done_async(void *user);
-static void fetch_done_async(void *user);
-static void play_done_async(void *user);
 
 static void submit(const job_t *job) {
 	pthread_mutex_lock(&job_lock);
@@ -191,8 +206,9 @@ static void submit(const job_t *job) {
 		if (events_count < EVENTS_MAX) {
 			events[events_count++] = *job;
 		}
-	} else if (job->kind == JOB_FETCH) {
-		fetch_pending = *job;
+	} else if (job->kind == JOB_PAGE) {
+		yandexlist_free(page_pending.list); // replaced: its reference goes
+		page_pending = *job;
 	} else {
 		pending = *job;
 	}
@@ -203,115 +219,85 @@ static void submit(const job_t *job) {
 static void ensure_buffers(void) {
 	if (!result) {
 		result = calloc(MAX_ROWS, sizeof(*result));
-		queued = calloc(MAX_ROWS, sizeof(*queued));
-		queued_paths = calloc(MAX_ROWS, sizeof(*queued_paths));
-		queued_room = queued && queued_paths ? MAX_ROWS : 0;
 	}
-}
-
-// Room for `count` queue entries (GUI thread, which owns the queue; the
-// worker only reads entries the GUI has finished writing). False when the
-// queue is at QUEUE_MAX or memory is short: the entries already there stay.
-static bool queue_reserve(int count) {
-	if (count <= queued_room) {
-		return true;
-	}
-	if (count > QUEUE_MAX) {
-		return false;
-	}
-	int room = queued_room * 2 > count ? queued_room * 2 : count;
-	room = room < QUEUE_MAX ? room : QUEUE_MAX;
-	// The worker may be reading an entry this very moment (a fetch): the old
-	// blocks are swapped under the lock it takes to start one.
-	yandex_track_t *t = malloc((size_t)room * sizeof(*t));
-	char(*p)[512] = malloc((size_t)room * sizeof(*p));
-	if (!t || !p) {
-		free(t);
-		free(p);
-		return false;
-	}
-	pthread_mutex_lock(&job_lock);
-	memcpy(t, queued, (size_t)queued_count * sizeof(*t));
-	memcpy(p, queued_paths, (size_t)queued_count * sizeof(*p));
-	yandex_track_t *old_t = queued;
-	char(*old_p)[512] = queued_paths;
-	queued = t;
-	queued_paths = p;
-	queued_room = room;
-	pthread_mutex_unlock(&job_lock);
-	free(old_t);
-	free(old_p);
-	return true;
 }
 
 // ---------------------------------------------------------------------------
 // worker
 // ---------------------------------------------------------------------------
 
-static int fill_tracks(int got, yandex_track_t *tmp) {
-	result_count = 0;
-	for (int i = 0; i < got && i < MAX_ROWS; i++) {
-		result[result_count].kind = ROW_TRACK;
-		result[result_count].u.track = tmp[i];
-		result_count++;
+// yandex_ref_cb: each entry of a long list, into the list being built.
+static void add_ref_cb(const char *track_id, const char *album_id, const yandex_track_t *track, void *user) {
+	yandexlist_t *list = user;
+	if (track) {
+		yandexlist_add_track(list, track);
+	} else {
+		yandexlist_add_id(list, track_id, album_id);
+	}
+}
+
+// A list of tracks whose details came whole (an album, My Wave's first
+// batch), as a yandexlist like the long ones. -1 when out of memory.
+static int list_from_tracks(const yandex_track_t *tracks, int got) {
+	if (got < 0) {
+		return got;
+	}
+	result_list = yandexlist_new();
+	for (int i = 0; result_list && i < got; i++) {
+		yandexlist_add_track(result_list, &tracks[i]);
+	}
+	if (!result_list) {
+		snprintf(result_error, sizeof(result_error), "%s", tr("out_of_memory"));
+		return -1;
 	}
 	return got;
 }
 
-// A copy of queue entry `index`, taken under the lock the queue's growth
-// takes (queue_reserve): the worker never reads the queue itself, which the
-// GUI thread may move while a download runs. False when there is no such
-// entry (the queue was replaced since the job was asked for).
-static bool queued_copy(int index, yandex_track_t *out) {
-	pthread_mutex_lock(&job_lock);
-	bool ok = index >= 0 && index < queued_count && queued;
-	if (ok) {
-		*out = queued[index];
+// A long list: the ids (one request), and the details of its first page (a
+// second), so the first rows show at once. What it costs is logged.
+static int list_from_refs(int got, const char *what) {
+	if (got < 0 || !result_list) {
+		yandexlist_free(result_list);
+		result_list = NULL;
+		return -1;
 	}
-	pthread_mutex_unlock(&job_lock);
-	return ok;
-}
-
-// Starts the download of track `t` and returns its real path. The codec, and
-// so the extension, is only known now.
-static bool fetch_track(const yandex_track_t *t, char *path, size_t size) {
-	if (yandexcache_find(t->id, path, size)) {
-		return true; // prefetched under its real name: no need to ask again
+	if (got > 0 && !yandexlist_page_ready(result_list, 0) && yandexlist_fetch_page(result_list, 0) < 0) {
+		// The ids are here: the rows show "loading" and ask again as they
+		// come into view.
+		fprintf(stderr, "yandex: %s: the first page did not come (%s)\n", what, yandex_last_error());
 	}
-	yandex_file_t file;
-	if (!yandex_file_info(t->id, &file)) {
-		result_class = streamerr_describe("yandex", yandex_last_error(), result_error, sizeof(result_error));
-		return false;
-	}
-	if (!yandexcache_start(t, &file, path, size)) {
-		result_class = streamerr_describe("yandex", yandexcache_last_error(), result_error, sizeof(result_error));
-		return false;
-	}
-	yandexcache_write_sidecars(t, path);
-	// Counts towards the next sweep and is spared by it until the queue knows.
-	yandexcache_note_played(path);
-	return true;
+	printf("yandex: %s: %d tracks, the list holds %zu bytes\n", what, got, yandexlist_memory(result_list));
+	return got;
 }
 
 static void run_list_job(const job_t *job) {
-	yandex_track_t *tmp = calloc(MAX_ROWS, sizeof(*tmp));
-	if (!tmp) {
-		return;
+	// Room for the answers that come whole (an album, a search...); the long
+	// lists come as ids and need none.
+	yandex_track_t *tmp = NULL;
+	if (job->kind != JOB_LIKED && job->kind != JOB_PLAYLIST) {
+		tmp = calloc(MAX_ROWS * 2, sizeof(*tmp));
+		if (!tmp) {
+			snprintf(result_error, sizeof(result_error), "%s", tr("out_of_memory"));
+			return;
+		}
 	}
 	int got = -1;
 	result_count = 0;
+	result_list = NULL;
 	switch (job->kind) {
 	case JOB_LIKED:
-		got = fill_tracks(yandex_liked_tracks(tmp, MAX_ROWS), tmp);
+		result_list = yandexlist_new();
+		got = list_from_refs(result_list ? yandex_liked_ids(add_ref_cb, result_list) : -1, "liked list");
 		break;
 	case JOB_PLAYLIST:
-		got = fill_tracks(yandex_playlist_tracks(job->a, job->b, tmp, MAX_ROWS), tmp);
+		result_list = yandexlist_new();
+		got = list_from_refs(result_list ? yandex_playlist_ids(job->a, job->b, add_ref_cb, result_list) : -1, "playlist");
 		break;
 	case JOB_ALBUM:
-		got = fill_tracks(yandex_album_tracks(job->a, tmp, MAX_ROWS), tmp);
+		got = list_from_tracks(tmp, yandex_album_tracks(job->a, tmp, MAX_ROWS * 2));
 		break;
 	case JOB_WAVE:
-		got = fill_tracks(yandex_wave_start(NULL, 0, tmp, MAX_ROWS), tmp);
+		got = list_from_tracks(tmp, yandex_wave_start(NULL, 0, tmp, MAX_ROWS));
 		break;
 	case JOB_PLAYLISTS: {
 		yandex_playlist_t *p = (yandex_playlist_t *)tmp; // smaller than a track
@@ -358,27 +344,18 @@ static void run_list_job(const job_t *job) {
 		break;
 	}
 	if (got < 0) {
+		yandexlist_free(result_list);
+		result_list = NULL;
 		result_class = streamerr_describe("yandex", yandex_last_error(), result_error, sizeof(result_error));
 	}
 	free(tmp);
 }
 
-// Whatever is coming down gives way to what the user just asked for -- unless
-// it is that very track (prefetch got there first): abandoning it would only
-// restart it from zero. The cache itself never abandons (yandexcache_start),
-// this is the page's call, as on the Tidal page.
-static void abandon_unless(const char *id) {
-	char busy[YANDEX_ID_MAX];
-	yandexcache_downloading_id(busy, sizeof(busy));
-	if (strcmp(busy, id) != 0) {
-		streamturn_abandon_all();
-	}
-}
-
-// Packs the job's answer -- the rows built in `result`, the error, whatever
-// else it carries -- into a block of its own, for the GUI thread to take over
-// and free. NULL when there is no memory for even the bare block: nothing is
-// posted then, and the spinner stays up, which is the truth.
+// Packs the job's answer -- the rows built in `result` or the list in
+// `result_list`, the error, whatever else it carries -- into a block of its
+// own, for the GUI thread to take over and free. NULL when there is no memory
+// for even the bare block: nothing is posted then, and the spinner stays up,
+// which is the truth.
 static job_result_t *job_result_new(const job_t *job, int count) {
 	if (count < 0) {
 		count = 0;
@@ -392,19 +369,29 @@ static job_result_t *job_result_new(const job_t *job, int count) {
 		}
 	}
 	if (!r) {
+		yandexlist_free(result_list);
+		result_list = NULL;
 		return NULL;
 	}
 	memset(r, 0, sizeof(*r));
 	r->kind = job->kind;
 	r->generation = job->generation;
-	r->index = -1;
 	snprintf(r->error, sizeof(r->error), "%s", result_error);
 	r->error_class = result_class;
 	r->count = count;
+	r->list = result_list;
+	result_list = NULL;
 	if (count > 0) {
 		memcpy(r->rows, result, (size_t)count * sizeof(row_t));
 	}
 	return r;
+}
+
+static void free_result(job_result_t *r) {
+	if (r) {
+		yandexlist_free(r->list);
+		free(r);
+	}
 }
 
 static void *worker_main(void *arg) {
@@ -414,30 +401,30 @@ static void *worker_main(void *arg) {
 	http_set_thread_timeout_cap(STREAM_UI_TIMEOUT_SECS);
 	for (;;) {
 		pthread_mutex_lock(&job_lock);
-		running_kind = JOB_NONE;
-		while (pending.kind == JOB_NONE && fetch_pending.kind == JOB_NONE && events_count == 0) {
+		while (pending.kind == JOB_NONE && page_pending.kind == JOB_NONE && events_count == 0) {
 			pthread_cond_wait(&job_cond, &job_lock);
 		}
-		// What the user asked for first, then the track playback needs, then
+		// What the user asked for first, then the rows coming into view, then
 		// the dislikes (sent in order, none dropped).
 		job_t job;
 		if (pending.kind != JOB_NONE) {
 			job = pending;
 			pending.kind = JOB_NONE;
-		} else if (fetch_pending.kind != JOB_NONE) {
-			job = fetch_pending;
-			fetch_pending.kind = JOB_NONE;
+		} else if (page_pending.kind != JOB_NONE) {
+			job = page_pending;
+			page_pending.kind = JOB_NONE;
+			page_pending.list = NULL; // the job's now
 		} else {
 			job = events[0];
 			memmove(events, events + 1, (size_t)(--events_count) * sizeof(events[0]));
 		}
-		running_kind = job.kind;
 		pthread_mutex_unlock(&job_lock);
 
 		result_error[0] = '\0';
 		result_class = STREAM_ERR_NONE;
 		streamerr_begin();
 		result_count = 0;
+		result_list = NULL;
 		switch (job.kind) {
 		case JOB_LOGIN_BEGIN:
 			login_state = yandex_login_begin(&login) ? YANDEX_LOGIN_PENDING : YANDEX_LOGIN_ERROR;
@@ -456,39 +443,13 @@ static void *worker_main(void *arg) {
 				snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
 			}
 			break;
-		case JOB_PLAY: {
-			// The tapped track first; the rest download as playback reaches
-			// them (yandexpage_prepare_track) or ahead of it (JOB_FETCH).
-			yandex_track_t t;
-			char path[512];
-			bool ok = queued_copy(job.n, &t);
-			if (ok) {
-				abandon_unless(t.id);
-				ok = fetch_track(&t, path, sizeof(path));
+		case JOB_PAGE:
+			if (yandexlist_fetch_page(job.list, job.n) < 0) {
+				result_class = streamerr_describe("yandex", yandex_last_error(), result_error, sizeof(result_error));
 			}
-			job_result_t *r = job_result_new(&job, 0);
-			if (r) {
-				// The queue's path is set by the GUI thread, which owns the
-				// queue (play_done_async).
-				r->index = ok ? job.n : -1;
-				snprintf(r->path, sizeof(r->path), "%s", ok ? path : "");
-				gui_post(play_done_async, r);
-			}
-			continue;
-		}
-		case JOB_FETCH: {
-			yandex_track_t t;
-			char path[512];
-			if (queued_copy(job.n, &t) && fetch_track(&t, path, sizeof(path))) {
-				char *owned = strdup(path);
-				if (owned) {
-					gui_post(fetch_done_async, owned);
-				}
-			} else {
-				fprintf(stderr, "yandex: fetching %d failed: %s\n", job.n, result_error);
-			}
-			continue;
-		}
+			result_list = job.list; // the reference travels back with the answer
+			job.list = NULL;
+			break;
 		default:
 			run_list_job(&job);
 			break;
@@ -496,10 +457,13 @@ static void *worker_main(void *arg) {
 		job_result_t *r = job_result_new(&job, result_count);
 		if (r) {
 			r->login_state = login_state;
+			r->page = job.n;
 			if (job.kind == JOB_LOGIN_BEGIN || job.kind == JOB_LOGIN_POLL) {
 				r->login = login;
 			}
-			gui_post(job_done_async, r);
+			if (!gui_post(job_done_async, r)) {
+				free_result(r);
+			}
 		}
 	}
 	return NULL;
@@ -528,406 +492,37 @@ static void run(job_kind_t kind, const char *a, const char *b, int n) {
 }
 
 // ---------------------------------------------------------------------------
-// playback
+// playback (yandexplay.c does it; the page hears how it went)
 // ---------------------------------------------------------------------------
 
-// The track behind a path: a cache file is named after it, a saved file is
-// looked up in the index.
-static void path_track_id(const char *path, char *id, size_t size) {
-	yandexcache_track_id(path, id, size);
-	if (!id[0]) {
-		yandexsaved_track_for_path(path, id, size, NULL, 0);
-	}
-}
-
-static int queue_index_of(const char *path) {
-	// The queue's own path first: a saved file whose entry has just been
-	// dropped (deleted on a computer) is still found.
-	for (int i = 0; path && path[0] && i < queued_count; i++) {
-		if (strcmp(queued_paths[i], path) == 0) {
-			return i;
-		}
-	}
-	char id[YANDEX_ID_MAX];
-	path_track_id(path, id, sizeof(id));
-	for (int i = 0; id[0] && i < queued_count; i++) {
-		if (strcmp(queued[i].id, id) == 0) {
-			return i;
-		}
-	}
-	return -1;
-}
-
-// ---------------------------------------------------------------------------
-// saved tracks in the queue
-//
-// A track saved to the card plays from there: no network, no second copy in
-// the cache. Each queue entry gets its path here -- the saved file when the
-// index has one that can be read, else the cache's (the real one when it is
-// complete, a guess at ".flac" until it is fetched). The saved files in the
-// queue are claimed (yandexsaved_claim), so that while this queue plays them
-// they are Yandex tracks to the rest of the player: the like goes to the
-// account, the badge shows. Claimed only while the queue is ours: the watch
-// below lets go as soon as something else is playing.
-// ---------------------------------------------------------------------------
-
-static bool claims_live;
-
-static uint32_t text_hash(const char *s) {
-	uint32_t h = 2166136261u;
-	for (; *s; s++) {
-		h = (h ^ (uint8_t)*s) * 16777619u;
-	}
-	return h;
-}
-
-static bool resolve_path(int index) {
-	char *path = queued_paths[index];
-	if (yandexsaved_local(queued[index].id, path, sizeof(queued_paths[0]))) {
-		return true;
-	}
-	if (!yandexcache_find(queued[index].id, path, sizeof(queued_paths[0]))) {
-		yandexcache_path(queued[index].id, "flac", path, sizeof(queued_paths[0]));
-	}
-	return false;
-}
-
-// Whether the queue playing is the one this page queued. Something else
-// playing -- the Library, another service -- means the saved files go back to
-// being the library's. Ours when it holds the very paths this page queued:
-// the Library playing the same album shares files with it, so one entry is
-// not enough; in any order, for shuffle deals its own -- the sums of the
-// paths' hashes are compared. A few hundred short hashes.
-static bool queue_is_ours(void) {
-	int count = playlist_count();
-	if (playlist_is_library_backed() || count != queued_count) {
-		return false;
-	}
-	uint32_t theirs = 0, mine = 0;
-	char path[512];
-	for (int i = 0; i < count; i++) {
-		if (!playlist_path_at(i, path, sizeof(path))) {
-			return false;
-		}
-		theirs += text_hash(path);
-		mine += text_hash(queued_paths[i]);
-	}
-	return theirs == mine;
-}
-
-static void claim_saved(void) {
-	const char **saved = malloc((size_t)(queued_count > 0 ? queued_count : 1) * sizeof(*saved));
-	if (!saved) {
-		return;
-	}
-	int n = 0;
-	for (int i = 0; i < queued_count; i++) {
-		if (!yandexcache_owns(queued_paths[i])) {
-			saved[n++] = queued_paths[i];
-		}
-	}
-	yandexsaved_claim(saved, n);
-	claims_live = n > 0;
-	free(saved);
-}
-
-// True while the worker has a track to ask for, or is asking: pending, or
-// running. Under job_lock, which is held only for the read.
-static bool worker_fetching(void) {
-	pthread_mutex_lock(&job_lock);
-	job_kind_t kinds[3] = {pending.kind, fetch_pending.kind, running_kind};
-	pthread_mutex_unlock(&job_lock);
-	bool fetching = false;
-	for (int i = 0; i < 3; i++) {
-		fetching |= kinds[i] == JOB_PLAY || kinds[i] == JOB_FETCH;
-	}
-	return fetching;
-}
-
-// Asks for queue entry `index` ahead of playback, unless it is already on the
-// card, or anything at all is coming down: the cache downloads one track at a
-// time and starting another abandons the one in flight -- which, right after a
-// track starts, is the very file being played. The watch below asks again
-// every second, so the next track follows as soon as this one is complete.
-static void fetch_ahead(int index) {
-	if (index < 0 || index >= queued_count || yandexcache_busy() || worker_fetching()) {
-		return;
-	}
-	if (!yandexcache_owns(queued_paths[index])) {
-		return; // saved on the card: nothing to fetch
-	}
-	if (yandexcache_find(queued[index].id, NULL, 0)) {
-		return;
-	}
-	yandexcache_set_network_wanted(true);
-	run(JOB_FETCH, NULL, NULL, index);
-}
-
-static void play_from(int start) {
-	const char **ptrs = malloc((size_t)(queued_count > 0 ? queued_count : 1) * sizeof(*ptrs));
-	if (!ptrs) {
-		return;
-	}
-	for (int i = 0; i < queued_count; i++) {
-		ptrs[i] = queued_paths[i];
-	}
-	device_state_play_list(ptrs, queued_count, start);
-	free(ptrs);
-}
-
-static void play_done_async(void *user) {
-	job_result_t *r = user;
+static void playback_event(yandexplay_event_t event, const char *text) {
 	lv_obj_set_hidden(list_spin, true);
-	int index = r->index;
-	if (index < 0 || index >= queued_count) {
-		toast_error(r->error[0] ? r->error : tr("download_failed"));
-		free(r);
-		return;
+	switch (event) {
+	case YANDEXPLAY_STARTED:
+		player_refresh_now_playing();
+		switch_screen(player_screen);
+		break;
+	case YANDEXPLAY_FAILED:
+		toast_error(text[0] ? text : tr("download_failed"));
+		break;
+	case YANDEXPLAY_SKIPPED: {
+		char line[320];
+		snprintf(line, sizeof(line), tr("yandex_skipped"), text);
+		toast_error(line);
+		break;
 	}
-	snprintf(queued_paths[index], sizeof(queued_paths[0]), "%s", r->path);
-	free(r);
-	play_from(index);
-	player_refresh_now_playing();
-	switch_screen(player_screen);
-	fetch_ahead(index + 1);
+	}
 }
 
-// A queued track has arrived after playback asked for it: the queue gets its
-// real name (the extension was a guess) and playback starts there.
-static void fetch_done_async(void *user) {
-	char *path = user;
-	int index = queue_index_of(path);
-	if (index >= 0) {
-		bool was_guess = strcmp(queued_paths[index], path) != 0;
-		snprintf(queued_paths[index], sizeof(queued_paths[0]), "%s", path);
-		device_state_t state;
-		device_state_get(&state);
-		if (state.status != AUDIO_STATUS_PLAYING || was_guess) {
-			// Stopped by prepare_track, waiting for this one.
-			if (state.status != AUDIO_STATUS_PLAYING) {
-				play_from(index);
-				player_refresh_now_playing();
-			}
-		}
-	}
-	free(path);
-}
-
-// The "downloading" notice goes through gui_post: device_state calls
-// yandexpage_prepare_track from whatever thread starts the track -- the UI
-// thread for a tap, but also another page's worker starting its queue -- and
-// LVGL may only be touched from the UI thread (see tidalpage.c).
-static void downloading_note_async(void *user) {
-	(void)user;
-	gui_notify_popup("downloading");
-}
-
-// A queue entry whose file is not what the queue thought: a saved file that
-// has gone (the track streams again), or a track saved since the queue was
-// made (it plays from the card instead of being fetched). The entry gets its
-// path anew and playback restarts there; for a track that must be fetched,
-// starting it lands in yandexpage_prepare_track again, which fetches it.
-static void requeue_async(void *user) {
-	char *path = user;
-	int index = queue_index_of(path);
-	free(path);
-	if (index < 0) {
-		return;
-	}
-	resolve_path(index);
-	claim_saved();
-	play_from(index);
-	player_refresh_now_playing();
-}
-
-bool yandexpage_prepare_track(const char *path) {
-	if (!yandexcache_owns(path)) {
-		// A saved file starting from another queue (the Library's album) is
-		// the library's from its first frame: the claim goes before the
-		// player draws the badge and the star. The watch tidies up after.
-		if (yandexsaved_claimed(path) && !queue_is_ours()) {
-			yandexsaved_claim(NULL, 0);
-			return true;
-		}
-		// One of the queue's saved files, gone since: the track streams.
-		if (yandexsaved_claimed(path) && access(path, R_OK) != 0) {
-			char *copy = strdup(path);
-			if (copy) {
-				yandexcache_set_network_wanted(true);
-				device_state_stop();
-				gui_post(requeue_async, copy);
-				return false;
-			}
-		}
-		return true;
-	}
-	// Downloaded (an MP4 only appears under its name once complete), or
-	// arriving right now -- the decoder reads a growing file.
-	if (growfile_is_growing(path) || access(path, F_OK) == 0) {
-		return true;
-	}
-	int index = queue_index_of(path);
-	if (index < 0) {
-		return true; // not ours to fetch: let the decoder say what it thinks
-	}
-	// Saved on the card since the queue was made: played from there.
-	if (yandexsaved_local(queued[index].id, NULL, 0)) {
-		char *copy = strdup(path);
-		if (copy) {
-			device_state_stop();
-			gui_post(requeue_async, copy);
-			return false;
-		}
-	}
-	// The network is needed now, before the stop: see
-	// yandexcache_network_wanted().
-	yandexcache_set_network_wanted(true);
-	device_state_stop();
-	// Playback moved on to a track that is not here yet: the one still coming
-	// down, if any, is no longer what is wanted.
-	abandon_unless(queued[index].id);
-	run(JOB_FETCH, NULL, NULL, index);
-	gui_post(downloading_note_async, NULL);
-	return false;
-}
-
-// ---------------------------------------------------------------------------
-// My Wave: the station's next batch, appended
-//
-// yandexwave.c asks for it -- when two tracks or fewer are left, whatever
-// page is up -- and hands it over on its worker; it lands here on the GUI
-// thread and goes to the end of the queue, guessed names first, fetched as
-// playback nears them. A queue that had already run out by then (the
-// station could not be reached for a while) carries on with the first new
-// track.
-// ---------------------------------------------------------------------------
-
-typedef struct {
-	int count;
-	bool restarted;
-	yandex_track_t tracks[];
-} wave_batch_t;
-
-static void wave_batch_async(void *user) {
-	wave_batch_t *b = user;
-	int added = 0;
-	if (queue_is_wave && !playlist_is_library_backed()) {
-		device_state_t state;
-		device_state_get(&state);
-		int count_before = playlist_count();
-		// Run out: stopped on the last entry, which is a file that played --
-		// not one waiting for its download.
-		bool ran_out = state.status == AUDIO_STATUS_STOPPED && count_before > 0 && playlist_current_index() == count_before - 1;
-		ran_out = ran_out && queue_index_of(state.current_file) >= 0 && access(state.current_file, F_OK) == 0 && !worker_fetching();
-		if (queue_reserve(queued_count + b->count)) {
-			for (int i = 0; i < b->count; i++) {
-				queued[queued_count] = b->tracks[i];
-				resolve_path(queued_count);
-				if (!playlist_insert_at(queued_paths[queued_count], playlist_count())) {
-					break;
-				}
-				queued_count++;
-				added++;
-			}
-		} else {
-			fprintf(stderr, "yandex: wave: the queue is full (%d tracks), batch dropped\n", queued_count);
-		}
-		if (added > 0) {
-			claim_saved();
-			device_state_queue_changed();
-			if (ran_out) {
-				printf("yandex: wave: the queue had run out, going on with the new batch\n");
-				device_state_play_queue_index(count_before);
-				player_refresh_now_playing();
-			}
-		}
-	}
-	yandexwave_batch_done(added);
-	free(b);
-}
-
-// On the wave's worker: copied and bounced to the GUI thread.
-static void wave_batch_cb(const yandex_track_t *tracks, int count, bool restarted, void *user) {
-	(void)user;
-	wave_batch_t *b = malloc(sizeof(*b) + (size_t)count * sizeof(b->tracks[0]));
-	if (b) {
-		b->count = count;
-		b->restarted = restarted;
-		memcpy(b->tracks, tracks, (size_t)count * sizeof(b->tracks[0]));
-		if (gui_post(wave_batch_async, b)) {
-			return;
-		}
-		free(b);
-	}
-	yandexwave_batch_done(0); // lost: asked for again
-}
-
-// What the wave watch is told every second: the wave track loaded now, and
-// how many are queued after it.
-static void wave_watch(const device_state_t *state, int index, bool library_queue) {
-	if (index < 0 || library_queue) {
-		yandexwave_watch(NULL, false, 0);
-		return;
-	}
-	int count = playlist_count();
-	int current = playlist_current_index();
-	int remaining = current >= 0 ? count - current - 1 : 0;
-	yandexwave_watch(&queued[index], state->status == AUDIO_STATUS_PLAYING, remaining);
-}
-
-// The queue watch, once a second on the GUI thread, the Qobuz page's in small:
-//   * protects the queued files -- the one playing and those after it -- from
-//     the cache's sweep and ceiling;
-//   * asks for the next track once nothing else is coming down;
-//   * works out whether Yandex still needs the network, which is the only
-//     place that lowers the flag (those that raise it do so at once);
-//   * and tells My Wave what happened.
-// Nothing of ours ever queued: one comparison and out.
+// Once a second on the GUI thread, whatever page is up.
 static void queue_watch_cb(lv_timer_t *timer) {
 	(void)timer;
-	if (queued_count == 0) {
-		return;
-	}
-	bool library_queue = playlist_is_library_backed();
-	int count = playlist_count();
-	int current = playlist_current_index();
-
-	// Something else plays now: the saved files go back to the library (see
-	// queue_is_ours). Only while a saved file is claimed.
-	if (claims_live && !queue_is_ours()) {
-		yandexsaved_claim(NULL, 0);
-		claims_live = false;
-	}
-
-	static char keep[YANDEXCACHE_PROTECTED_MAX][512];
-	static const char *keep_ptr[YANDEXCACHE_PROTECTED_MAX];
-	int protect = 0;
-	for (int i = current; !library_queue && i >= 0 && i < count && protect < YANDEXCACHE_PROTECTED_MAX; i++) {
-		if (playlist_path_at(i, keep[protect], sizeof(keep[0])) && yandexcache_owns(keep[protect])) {
-			keep_ptr[protect] = keep[protect];
-			protect++;
-		}
-	}
-	yandexcache_set_protected(keep_ptr, protect);
-
-	device_state_t state;
-	device_state_get(&state);
-	int index = queue_index_of(state.current_file);
-	if (index >= 0 && !library_queue) {
-		fetch_ahead(index + 1);
-	}
-	yandexcache_set_network_wanted(yandexcache_busy() || worker_fetching() || yandexwave_requesting());
-
-	if (queue_is_wave) {
-		wave_watch(&state, index, library_queue);
-	}
+	yandexplay_watch();
 }
 
 // ---------------------------------------------------------------------------
 // list page
 // ---------------------------------------------------------------------------
-
-static void row_clicked_cb(lv_event_t *e);
 
 static void row_texts(const row_t *r, char *name, size_t ns, char *detail, size_t ds) {
 	switch (r->kind) {
@@ -960,81 +555,32 @@ static void row_menu_cb(lv_event_t *e);
 // like, saving it) and an album (saving it whole).
 static bool row_has_menu(const row_t *r) { return (r->kind == ROW_TRACK && r->u.track.id[0]) || (r->kind == ROW_ALBUM && r->u.album.id[0]); }
 
-static void make_row(int index) {
-	char name[YANDEX_TITLE_MAX], detail[YANDEX_TITLE_MAX + 32];
-	row_texts(&rows[index], name, sizeof(name), detail, sizeof(detail));
-
-	lv_obj_t *row = lv_btn_create(list_box);
-	lv_obj_set_size(row, lv_pct(100), 80);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_left(row, 16, 0);
-	lv_obj_set_style_pad_right(row, 6, 0);
-	lv_obj_set_style_pad_column(row, 4, 0);
-	lv_obj_set_scrollable(row, false);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_event_bubble(row, true);
-	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
-
-	lv_obj_t *texts = lv_obj_create(row);
-	lv_obj_set_flex_grow(texts, 1);
-	lv_obj_set_height(texts, LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(texts, 0, 0);
-	lv_obj_set_style_border_width(texts, 0, 0);
-	lv_obj_set_style_pad_all(texts, 0, 0);
-	lv_obj_set_style_pad_row(texts, 4, 0);
-	lv_obj_set_scrollable(texts, false);
-	lv_obj_set_event_bubble(texts, true);
-	lv_obj_set_clickable(texts, false);
-	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
-
-	lv_obj_t *label = lv_label_create(texts);
-	lv_label_set_text(label, name);
-	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(label, lv_pct(100));
-	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-
-	lv_obj_t *sub = lv_label_create(texts);
-	lv_label_set_text(sub, detail);
-	lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(sub, lv_pct(100));
-	lv_obj_add_style(sub, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(sub, &font_ui_18, 0);
-
-	// The mark: a small tick for a track on the card, or an album all of
-	// whose tracks are. Hidden until refresh_marks() says otherwise, so a
-	// save finishing while the list is open needs no new rows.
-	row_marks[index] = NULL;
-	if (rows[index].kind == ROW_TRACK || rows[index].kind == ROW_ALBUM) {
-		lv_obj_t *mark = lv_image_create(row);
-		lv_image_set_src(mark, &icon_check_small);
-		lv_obj_add_style(mark, &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor(mark, theme()->accent, 0);
-		lv_obj_set_style_image_recolor_opa(mark, LV_OPA_COVER, 0);
-		lv_obj_set_hidden(mark, true);
-		row_marks[index] = mark;
+// How many entries the list on screen has, and entry `index` as a row: from
+// the answer's rows, or from its list of tracks. False for a track whose
+// details have not come yet: `out` then carries its ids only, and the row
+// says "Loading...".
+static int view_count(void) {
+	if (!shown) {
+		return 0;
 	}
+	return shown->list ? yandexlist_count(shown->list) : shown->count;
+}
 
-	if (row_has_menu(&rows[index])) {
-		lv_obj_t *menu_btn = lv_btn_create(row);
-		lv_obj_set_size(menu_btn, 48, 48);
-		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_border_width(menu_btn, 0, 0);
-		lv_obj_set_style_shadow_width(menu_btn, 0, 0);
-		lv_obj_set_style_pad_all(menu_btn, 0, 0);
-		lv_obj_set_ext_click_area(menu_btn, 12);
-		lv_obj_add_event_cb(menu_btn, row_menu_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
-		lv_obj_t *dots = lv_image_create(menu_btn);
-		lv_image_set_src(dots, &icon_ellipsis_vertical);
-		lv_obj_add_style(dots, &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
-		lv_obj_center(dots);
+static bool view_row(int index, row_t *out) {
+	memset(out, 0, sizeof(*out));
+	out->kind = ROW_TRACK;
+	if (!shown || index < 0 || index >= view_count()) {
+		return false;
 	}
+	if (!shown->list) {
+		*out = shown->rows[index];
+		return true;
+	}
+	if (yandexlist_track(shown->list, index, &out->u.track)) {
+		return true;
+	}
+	yandexlist_ids(shown->list, index, out->u.track.id, sizeof(out->u.track.id), out->u.track.album_id, sizeof(out->u.track.album_id));
+	return false;
 }
 
 // ---------------------------------------------------------------------------
@@ -1048,7 +594,7 @@ static void make_row(int index) {
 // there -- they are on the card.
 static bool row_saved(const row_t *r) {
 	if (r->kind == ROW_TRACK) {
-		return yandexsaved_has(r->u.track.id);
+		return r->u.track.id[0] && yandexsaved_has(r->u.track.id);
 	}
 	if (r->kind == ROW_ALBUM && r->u.album.id[0] && r->u.album.track_count > 0) {
 		return yandexsaved_album_count(r->u.album.id) >= r->u.album.track_count;
@@ -1063,17 +609,166 @@ static void marks_recolor(void) {
 	if (album_tick) {
 		lv_obj_set_style_image_recolor(album_tick, accent, 0);
 	}
-	for (int i = 0; i < row_count && i < MAX_ROWS; i++) {
-		if (row_marks[i]) {
-			lv_obj_set_style_image_recolor(row_marks[i], accent, 0);
+	for (int i = 0; i < SLOT_COUNT; i++) {
+		if (slots[i].mark) {
+			lv_obj_set_style_image_recolor(slots[i].mark, accent, 0);
 		}
 	}
 }
 
+// ---------------------------------------------------------------------------
+// the rows: a window over the list
+// ---------------------------------------------------------------------------
+
+static void slot_clicked_cb(lv_event_t *e);
+
+static void make_slot(slot_t *slot) {
+	lv_obj_t *row = lv_btn_create(list_box);
+	lv_obj_set_size(row, lv_pct(100), ROW_H);
+	lv_obj_add_style(row, &theme_style_card, 0);
+	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_border_width(row, 0, 0);
+	lv_obj_set_style_shadow_width(row, 0, 0);
+	lv_obj_set_style_pad_all(row, 0, 0);
+	lv_obj_set_scrollable(row, false);
+	lv_obj_set_event_bubble(row, true);
+	lv_obj_add_event_cb(row, slot_clicked_cb, LV_EVENT_CLICKED, slot);
+
+	// The two lines sit on the row itself, left of the mark and the dots: no
+	// flex container between, two objects fewer a row.
+	slot->title = lv_label_create(row);
+	lv_label_set_long_mode(slot->title, LV_LABEL_LONG_DOT);
+	lv_obj_add_style(slot->title, &theme_style_text, 0);
+	lv_obj_set_style_text_font(slot->title, &font_ui_22, 0);
+	lv_obj_align(slot->title, LV_ALIGN_TOP_LEFT, 16, 12);
+
+	slot->sub = lv_label_create(row);
+	lv_label_set_long_mode(slot->sub, LV_LABEL_LONG_DOT);
+	lv_obj_add_style(slot->sub, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(slot->sub, &font_ui_18, 0);
+	lv_obj_align(slot->sub, LV_ALIGN_TOP_LEFT, 16, 44);
+
+	// The mark: a small tick for a track on the card, or an album all of
+	// whose tracks are.
+	slot->mark = lv_image_create(row);
+	lv_image_set_src(slot->mark, &icon_check_small);
+	lv_obj_add_style(slot->mark, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor(slot->mark, theme()->accent, 0);
+	lv_obj_set_style_image_recolor_opa(slot->mark, LV_OPA_COVER, 0);
+	lv_obj_align(slot->mark, LV_ALIGN_RIGHT_MID, -58, 0);
+	lv_obj_set_hidden(slot->mark, true);
+
+	lv_obj_t *menu_btn = lv_btn_create(row);
+	lv_obj_set_size(menu_btn, 48, 48);
+	lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_border_width(menu_btn, 0, 0);
+	lv_obj_set_style_shadow_width(menu_btn, 0, 0);
+	lv_obj_set_style_pad_all(menu_btn, 0, 0);
+	lv_obj_set_ext_click_area(menu_btn, 12);
+	lv_obj_align(menu_btn, LV_ALIGN_RIGHT_MID, -6, 0);
+	lv_obj_add_event_cb(menu_btn, row_menu_cb, LV_EVENT_CLICKED, slot);
+	lv_obj_t *dots = lv_image_create(menu_btn);
+	lv_image_set_src(dots, &icon_ellipsis_vertical);
+	lv_obj_add_style(dots, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
+	lv_obj_center(dots);
+	slot->menu = menu_btn;
+
+	slot->row = row;
+	slot->index = -1;
+	lv_obj_set_hidden(row, true);
+}
+
+// Puts entry `index` on the slot: its texts, its mark, its dots.
+static void bind_slot(slot_t *slot, int index) {
+	slot->index = index;
+	row_t r;
+	bool have = view_row(index, &r);
+	char name[YANDEX_TITLE_MAX], detail[YANDEX_TITLE_MAX + 32];
+	if (have) {
+		row_texts(&r, name, sizeof(name), detail, sizeof(detail));
+	} else {
+		snprintf(name, sizeof(name), "%s", tr("loading"));
+		detail[0] = '\0';
+	}
+	lv_label_set_text(slot->title, name);
+	lv_label_set_text(slot->sub, detail);
+	bool menu = have && row_has_menu(&r);
+	bool mark = have && (r.kind == ROW_TRACK || r.kind == ROW_ALBUM) && row_saved(&r);
+	lv_obj_set_hidden(slot->menu, !menu);
+	lv_obj_set_hidden(slot->mark, !mark);
+	// The texts stop short of whatever is on their right.
+	int right = menu ? 66 : 16;
+	right += mark ? 30 : 0;
+	int width = lv_obj_get_content_width(list_box) - 16 - right;
+	lv_obj_set_width(slot->title, width);
+	lv_obj_set_width(slot->sub, width);
+	lv_obj_set_pos(slot->row, 0, index * ROW_PITCH);
+	lv_obj_set_hidden(slot->row, false);
+}
+
+static void request_page(int page);
+
+// Gives the rows in view (and a few either side) their entries, and asks for
+// the details of the pages they show -- the next page too once the view nears
+// its end, so scrolling on finds it there. Cheap when nothing moved: a slot
+// already showing its entry is left alone.
+static void bind_view(bool force) {
+	if (!slots[0].row) {
+		return; // no list shown yet
+	}
+	int count = view_count();
+	int first = (int)(lv_obj_get_scroll_y(list_box) / ROW_PITCH) - 4;
+	if (first > count - SLOT_COUNT) {
+		first = count - SLOT_COUNT;
+	}
+	if (first < 0) {
+		first = 0;
+	}
+	for (int k = 0; k < SLOT_COUNT; k++) {
+		int index = first + k;
+		slot_t *slot = &slots[index % SLOT_COUNT];
+		if (index >= count) {
+			slot->index = -1;
+			lv_obj_set_hidden(slot->row, true);
+		} else if (force || slot->index != index) {
+			bind_slot(slot, index);
+		}
+	}
+	if (shown && shown->list && count > 0) {
+		int last = first + SLOT_COUNT - 1 < count - 1 ? first + SLOT_COUNT - 1 : count - 1;
+		int pages[3] = {first / YANDEXLIST_PAGE, last / YANDEXLIST_PAGE, (last + YANDEXLIST_PAGE / 2) / YANDEXLIST_PAGE};
+		for (int i = 0; i < 3; i++) {
+			if (pages[i] * YANDEXLIST_PAGE < count && !yandexlist_page_ready(shown->list, pages[i])) {
+				request_page(pages[i]);
+				break;
+			}
+		}
+	}
+}
+
+static void request_page(int page) {
+	if (page == page_asked || (page == page_failed && time(NULL) - page_failed_at < 5)) {
+		return;
+	}
+	page_asked = page;
+	start_worker();
+	job_t job = {.kind = JOB_PAGE, .n = page, .generation = list_generation, .list = yandexlist_ref(shown->list)};
+	submit(&job);
+}
+
+static void list_scrolled_cb(lv_event_t *e) {
+	(void)e;
+	bind_view(false);
+}
+
 static void refresh_marks(void) {
-	for (int i = 0; i < row_count && i < MAX_ROWS; i++) {
-		if (row_marks[i]) {
-			lv_obj_set_hidden(row_marks[i], !row_saved(&rows[i]));
+	for (int i = 0; i < SLOT_COUNT; i++) {
+		if (slots[i].row && slots[i].index >= 0) {
+			row_t r;
+			bool have = view_row(slots[i].index, &r);
+			lv_obj_set_hidden(slots[i].mark, !(have && (r.kind == ROW_TRACK || r.kind == ROW_ALBUM) && row_saved(&r)));
 		}
 	}
 }
@@ -1082,10 +777,12 @@ static void refresh_marks(void) {
 // are on the card.
 static void album_saved_counts(int *saved, int *playable) {
 	*saved = *playable = 0;
-	for (int i = 0; i < row_count; i++) {
-		if (rows[i].kind == ROW_TRACK && rows[i].u.track.available) {
+	int count = view_count();
+	for (int i = 0; i < count; i++) {
+		row_t r;
+		if (view_row(i, &r) && r.kind == ROW_TRACK && r.u.track.available) {
 			(*playable)++;
-			*saved += yandexsaved_has(rows[i].u.track.id);
+			*saved += yandexsaved_has(r.u.track.id);
 		}
 	}
 }
@@ -1108,28 +805,50 @@ static void update_album_bar(void) {
 
 static void retry_list(void);
 
-static void fill_list(void) {
-	memset(row_marks, 0, sizeof(row_marks));
-	lv_obj_clean(list_box);
-	for (int i = 0; i < row_count; i++) {
-		make_row(i);
+// Empties the page: no rows bound, no message. The rows themselves are made
+// here the first time a list is shown: a player that never opens a Yandex
+// list never has them.
+static void clear_list(void) {
+	if (!slots[0].row) {
+		for (int i = 0; i < SLOT_COUNT; i++) {
+			make_slot(&slots[i]);
+		}
 	}
-	refresh_marks();
+	for (int i = 0; i < SLOT_COUNT; i++) {
+		slots[i].index = -1;
+		lv_obj_set_hidden(slots[i].row, true);
+	}
+	if (list_message) {
+		lv_obj_delete(list_message);
+		list_message = NULL;
+	}
+	lv_obj_set_pos(list_end, 0, 0);
+	page_asked = -1;
+}
+
+static void fill_list(void) {
+	clear_list();
+	int count = view_count();
+	lv_obj_scroll_to_y(list_box, 0, LV_ANIM_OFF);
+	// The bottom of the list, for the scroll to know its height.
+	lv_obj_set_pos(list_end, 0, count > 0 ? count * ROW_PITCH - 10 : 0);
+	bind_view(true);
 	update_album_bar();
-	if (row_count == 0 && shown && shown->error[0] && shown->error_class != STREAM_ERR_NONE) {
+	if (count == 0 && shown && shown->error[0] && shown->error_class != STREAM_ERR_NONE) {
 		// What went wrong and "Retry", as on the other services' pages.
-		streamerror_show(streamerror_create(list_box), shown->error_class, shown->error, retry_list, NULL);
-	} else if (row_count == 0) {
-		lv_obj_t *empty = lv_label_create(list_box);
+		list_message = streamerror_create(list_box);
+		lv_obj_set_width(list_message, lv_pct(100));
+		streamerror_show(list_message, shown->error_class, shown->error, retry_list, NULL);
+	} else if (count == 0) {
+		list_message = lv_label_create(list_box);
 		// An empty list with a word of its own (nothing saved on the card yet)
 		// says it; any other empty list the usual line.
-		lv_label_set_text(empty, shown && shown->error[0] ? shown->error : tr("yandex_empty"));
-		lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
-		lv_obj_set_width(empty, lv_pct(100));
-		lv_obj_add_style(empty, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(empty, &font_ui_20, 0);
+		lv_label_set_text(list_message, shown && shown->error[0] ? shown->error : tr("yandex_empty"));
+		lv_label_set_long_mode(list_message, LV_LABEL_LONG_WRAP);
+		lv_obj_set_width(list_message, lv_pct(100));
+		lv_obj_add_style(list_message, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(list_message, &font_ui_20, 0);
 	}
-	lv_obj_scroll_to_y(list_box, 0, LV_ANIM_OFF);
 }
 
 // ---------------------------------------------------------------------------
@@ -1212,7 +931,6 @@ static job_result_t *saved_result(job_kind_t kind, const char *album_id) {
 	}
 	r->kind = kind;
 	r->generation = list_generation;
-	r->index = -1;
 	int count = 0;
 	if (kind == JOB_SAVED) {
 		yandex_album_t *albums = (yandex_album_t *)tracks; // smaller than a track
@@ -1260,9 +978,7 @@ static void show_list(const list_step_t *step) {
 	int y = top + (list_is_wave || is_album ? 66 : 0);
 	lv_obj_set_pos(list_box, list_cfg->padding, y);
 	lv_obj_set_height(list_box, list_cfg->screen_height - y - 4);
-	memset(row_marks, 0, sizeof(row_marks));
-	lv_obj_clean(list_box);
-	row_count = 0;
+	clear_list();
 	switch_screen(list_screen);
 	list_generation++;
 	if (kind == JOB_SAVED || kind == JOB_SAVED_ALBUM) {
@@ -1284,72 +1000,65 @@ static void retry_list(void) {
 	}
 }
 
-// Queues every playable track of the list and plays the tapped one. Paths
-// for the rest are guesses (".flac") until they are fetched; the real name
-// replaces the guess when it arrives.
+// Plays the list from the tapped track: the whole of it becomes the queue --
+// a liked list of thousands as ids, each track's details and file fetched
+// when playback nears it (yandexplay.c). A list of mixed rows (search, an
+// artist, what is saved) queues its tracks.
 static void play_rows(int tapped) {
-	// A list from the card may be the first thing played: the worker, which
-	// allocates the queue with its own buffers, may never have started.
-	ensure_buffers();
-	if (!queued || !queued_paths) {
-		toast_error(tr("out_of_memory"));
-		return;
-	}
-	queued_count = 0;
-	int start = 0;
-	for (int i = 0; i < row_count && queued_count < MAX_ROWS; i++) {
-		if (rows[i].kind != ROW_TRACK || !rows[i].u.track.available) {
-			continue;
-		}
-		if (i == tapped) {
-			start = queued_count;
-		}
-		queued[queued_count] = rows[i].u.track;
-		resolve_path(queued_count);
-		queued_count++;
-	}
-	if (queued_count == 0) {
-		return;
-	}
-	claim_saved();
-	queue_is_wave = list_is_wave;
-	if (queue_is_wave) {
-		yandexwave_begin(queued, queued_count, wave_batch_cb, NULL);
-	} else {
-		yandexwave_end();
-	}
-	if (!yandexcache_owns(queued_paths[start])) {
-		// Saved on the card: it plays now, with or without a network.
-		play_from(start);
-		player_refresh_now_playing();
-		switch_screen(player_screen);
-		fetch_ahead(start + 1);
+	row_t r;
+	bool have = view_row(tapped, &r);
+	if (have && r.kind == ROW_TRACK && !r.u.track.available) {
+		toast_error(tr("yandex_no_file"));
 		return;
 	}
 	lv_obj_set_hidden(list_spin, false);
-	yandexcache_set_network_wanted(true);
-	run(JOB_PLAY, NULL, NULL, start);
-}
-
-static void row_clicked_cb(lv_event_t *e) {
-	int index = (int)(intptr_t)lv_event_get_user_data(e);
-	if (index < 0 || index >= row_count) {
+	if (shown && shown->list) {
+		if (!yandexplay_list(shown->list, tapped, list_is_wave)) {
+			lv_obj_set_hidden(list_spin, true);
+		}
 		return;
 	}
-	const row_t *r = &rows[index];
-	switch (r->kind) {
+	yandexlist_t *tracks = yandexlist_new();
+	int start = -1;
+	int count = view_count();
+	for (int i = 0; tracks && i < count; i++) {
+		if (view_row(i, &r) && r.kind == ROW_TRACK && r.u.track.available && yandexlist_add_track(tracks, &r.u.track) && i == tapped) {
+			start = yandexlist_count(tracks) - 1;
+		}
+	}
+	if (start < 0 || !yandexplay_list(tracks, start, false)) {
+		lv_obj_set_hidden(list_spin, true);
+	}
+	yandexlist_free(tracks);
+}
+
+static void slot_clicked_cb(lv_event_t *e) {
+	const slot_t *slot = lv_event_get_user_data(e);
+	row_t r;
+	if (!slot || slot->index < 0) {
+		return;
+	}
+	if (!view_row(slot->index, &r)) {
+		// A track still loading: it plays all the same, its details come
+		// with its file.
+		if (shown && shown->list) {
+			play_rows(slot->index);
+		}
+		return;
+	}
+	switch (r.kind) {
 	case ROW_TRACK:
-		play_rows(index);
+		play_rows(slot->index);
 		break;
 	case ROW_ALBUM:
 		// In the Saved list an album opens from the card, network or not.
-		open_list(r->u.album.title, list_kind == JOB_SAVED ? JOB_SAVED_ALBUM : JOB_ALBUM, r->u.album.id, NULL);
+		open_list(r.u.album.title, list_kind == JOB_SAVED ? JOB_SAVED_ALBUM : JOB_ALBUM, r.u.album.id, NULL);
 		break;
 	case ROW_ARTIST:
-		open_list(r->u.artist.name, JOB_ARTIST, r->u.artist.id, NULL);
+		open_list(r.u.artist.name, JOB_ARTIST, r.u.artist.id, NULL);
 		break;
 	case ROW_PLAYLIST:
-		open_list(r->u.playlist.title, JOB_PLAYLIST, r->u.playlist.owner, r->u.playlist.kind);
+		open_list(r.u.playlist.title, JOB_PLAYLIST, r.u.playlist.owner, r.u.playlist.kind);
 		break;
 	}
 }
@@ -1465,11 +1174,10 @@ static void row_menu_cb(lv_event_t *e) {
 	if (switcher_back_drag_active() || player_sheet_drag_active()) {
 		return;
 	}
-	int index = (int)(intptr_t)lv_event_get_user_data(e);
-	if (index < 0 || index >= row_count) {
+	const slot_t *slot = lv_event_get_user_data(e);
+	if (!slot || slot->index < 0 || !view_row(slot->index, &menu_row)) {
 		return;
 	}
-	menu_row = rows[index];
 	popover_item_t items[3];
 	memset(items, 0, sizeof(items));
 	int n = 0;
@@ -1519,18 +1227,16 @@ static void row_menu_cb(lv_event_t *e) {
 // the way the player's star goes (yandexsync.c), so the two always agree.
 static void wave_rate_cb(lv_event_t *e) {
 	bool like = lv_event_get_user_data(e) != NULL;
-	device_state_t state;
-	device_state_get(&state);
-	int index = queue_index_of(state.current_file);
-	if (index < 0) {
+	yandex_track_t t;
+	if (!yandexplay_current(&t)) {
 		return;
 	}
 	if (like) {
-		yandexsync_like(queued[index].id, queued[index].album_id, true, like_done, NULL);
+		yandexsync_like(t.id, t.album_id, true, like_done, NULL);
 	} else {
 		// The dislike carries how long the track was heard; the skip that
 		// follows is then not reported on top of it.
-		run(JOB_DISLIKE, queued[index].id, queued[index].album_id, yandexwave_disliked(queued[index].id));
+		run(JOB_DISLIKE, t.id, t.album_id, yandexwave_disliked(t.id));
 	}
 	toast_success(tr(like ? "yandex_liked_it" : "yandex_disliked_it"));
 	if (!like) {
@@ -1649,8 +1355,15 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(list_box, 0, 0);
 	lv_obj_set_style_border_width(list_box, 0, 0);
 	lv_obj_set_style_pad_all(list_box, 0, 0);
-	lv_obj_set_style_pad_row(list_box, 10, 0);
-	lv_obj_set_flex_flow(list_box, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_scroll_dir(list_box, LV_DIR_VER);
+	// No layout: the rows are placed by hand, a window over the list (see
+	// SLOT_COUNT), and this point at the bottom gives the scroll its height.
+	list_end = lv_obj_create(list_box);
+	lv_obj_set_size(list_end, 1, 1);
+	lv_obj_set_style_bg_opa(list_end, 0, 0);
+	lv_obj_set_style_border_width(list_end, 0, 0);
+	lv_obj_set_clickable(list_end, false);
+	lv_obj_add_event_cb(list_box, list_scrolled_cb, LV_EVENT_SCROLL, NULL);
 
 	list_spin = spinner_create(list_screen, &icon_loader_big);
 	lv_obj_center(list_spin);
@@ -1823,34 +1536,54 @@ static void job_done_async(void *user) {
 	job_result_t *r = user;
 	if (r->kind == JOB_LOGIN_BEGIN || r->kind == JOB_LOGIN_POLL) {
 		login_result(r);
-		free(r);
+		free_result(r);
 		return;
 	}
 	if (r->kind == JOB_DISLIKE) {
 		if (r->error[0]) {
 			toast_error(r->error);
 		}
-		free(r);
+		free_result(r);
+		return;
+	}
+	if (r->kind == JOB_PAGE) {
+		// A page of the list on screen came (or failed: its rows keep saying
+		// "Loading..." and ask again when scrolled to). The rows showing it
+		// get their texts; the next page in view, if any, is asked for.
+		bool here = shown && r->list == shown->list;
+		page_asked = -1;
+		if (r->error[0]) {
+			page_failed = r->page;
+			page_failed_at = time(NULL);
+		}
+		if (here && !r->error[0]) {
+			for (int i = 0; i < SLOT_COUNT; i++) {
+				if (slots[i].row && slots[i].index >= 0 && slots[i].index / YANDEXLIST_PAGE == r->page) {
+					bind_slot(&slots[i], slots[i].index);
+				}
+			}
+			bind_view(false);
+			update_album_bar();
+		}
+		free_result(r);
 		return;
 	}
 	// A list the user has since left (or asked for again): another answer is
 	// on its way, and this one would only flash past -- or, arriving last,
 	// stay up under the wrong title.
 	if (r->generation != list_generation) {
-		free(r);
+		free_result(r);
 		return;
 	}
 	lv_obj_set_hidden(list_spin, true);
-	free(shown);
+	free_result(shown);
 	shown = r;
-	rows = r->rows;
-	row_count = r->count;
 	fill_list();
 	// The rows' menus say "Like" or "Remove like" from the account's list:
 	// asked for now if it is not here yet (once a session, see yandexsync).
 	yandexsync_likes_refresh(NULL);
 	// My Wave plays as soon as it has something: that is what the button means.
-	if (r->kind == JOB_WAVE && row_count > 0) {
+	if (r->kind == JOB_WAVE && view_count() > 0) {
 		play_rows(0);
 	}
 }
@@ -1882,8 +1615,7 @@ static void logout_cb(lv_event_t *e) {
 	(void)e;
 	yandexdl_cancel_all(); // the account's files are not to be fetched any more
 	yandex_logout();
-	yandexwave_end();
-	queue_is_wave = false;
+	yandexplay_signed_out();
 	paint_home();
 }
 
@@ -2110,6 +1842,6 @@ void yandexpage_init(gui_config_t *cfg) {
 	build_list_page(cfg);
 	build_search_page(cfg);
 
-	device_state_add_prepare_cb(yandexpage_prepare_track);
+	yandexplay_init(playback_event);
 	lv_timer_create(queue_watch_cb, 1000, NULL);
 }

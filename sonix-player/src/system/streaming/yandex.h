@@ -108,10 +108,25 @@ yandex_login_state_t yandex_login_poll(const yandex_login_t *login);
 // Library. Each returns how many it put in `out` (at most `max`), -1 on error.
 // ---------------------------------------------------------------------------
 
-int yandex_liked_tracks(yandex_track_t *out, int max);
 int yandex_playlists(yandex_playlist_t *out, int max);
-int yandex_playlist_tracks(const char *owner, const char *kind, yandex_track_t *out, int max);
 int yandex_album_tracks(const char *album_id, yandex_track_t *out, int max);
+
+// The long lists come as references first (yandexlist.h keeps them): each
+// entry is handed to `each` in order, its album id possibly empty, `track`
+// non-NULL when the answer carried the details anyway. They return how many
+// entries there were, -1 on error.
+typedef void (*yandex_ref_cb)(const char *track_id, const char *album_id, const yandex_track_t *track, void *user);
+
+// GET /users/{uid}/likes/tracks: every liked track, newest first. Fills the
+// mirror the star reads (below) on the way; `each` may be NULL.
+int yandex_liked_ids(yandex_ref_cb each, void *user);
+// GET /users/{owner}/playlists/{kind}?rich-tracks=false.
+int yandex_playlist_ids(const char *owner, const char *kind, yandex_ref_cb each, void *user);
+
+// POST /tracks, 50 ids a request: the details of tracks known by id ("id" or
+// "id:album"). Tracks the service no longer has are missing from `out`.
+// Returns how many came, -1 when the first request failed.
+int yandex_tracks(const char *const *refs, int count, yandex_track_t *out, int max);
 
 // What a saved file needs to know about its album beyond what each track
 // carries: who the record is by (not the track's artists: a compilation is
@@ -140,10 +155,10 @@ bool yandex_like_track(const char *track_id, const char *album_id, bool like);
 bool yandex_dislike_track(const char *track_id, const char *album_id, int played_secs);
 
 // The mirror of the liked ids the player's star reads: filled by
-// yandex_liked_tracks() or yandex_liked_refresh() (ids only, one request),
-// empty until then. The three below are cheap, never touch the network and
-// may be called from any thread, the GUI's included.
-#define YANDEX_LIKED_ID_MAX 16
+// yandex_liked_ids() or yandex_liked_refresh() (ids only, one request),
+// empty until then; every id the account has, compactly. The three below are
+// cheap, never touch the network and may be called from any thread, the
+// GUI's included.
 bool yandex_liked_refresh(void);
 bool yandex_liked_known(void);
 bool yandex_is_liked(const char *track_id);

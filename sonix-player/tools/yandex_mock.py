@@ -139,7 +139,47 @@ def any_track(tid):
     return TRACKS.get(str(tid)) or gen_track(tid)
 
 
-state = {"polls": 0, "batch": 0, "liked": ["101", "102", "103", "104", "105"],
+def full_track(tid):
+    """A track as /tracks really answers: the fields the player reads and the
+    many it does not (a real object is one to three kilobytes), so that what
+    a list of them costs the player can be measured."""
+    t = any_track(tid)
+    if not t:
+        return None
+    t = json.loads(json.dumps(t))
+    n = int(t["id"])
+    album = t["albums"][0]
+    album.update({"coverUri": f"avatars.yandex.net/get-music-content/{n % 97}/{n:08x}.a.{album['id']}-1/%%",
+                  "genre": "pop", "year": 2000 + n % 25, "releaseDate": f"{2000 + n % 25}-03-01T00:00:00+03:00",
+                  "trackCount": 12, "available": True, "availableForPremiumUsers": True, "availableForMobile": True,
+                  "labels": [{"id": 1000 + n % 50, "name": "Mock Records"}], "recent": False, "veryImportant": False,
+                  "artists": [{"id": 7, "name": t["artists"][0]["name"], "various": False, "composer": False,
+                               "cover": {"type": "from-artist-photos", "uri": "avatars.yandex.net/get-music-content/7/a/%%"},
+                               "genres": []}],
+                  "ogImage": f"avatars.yandex.net/get-music-content/{n % 97}/{n:08x}.a.{album['id']}-1/%%",
+                  "metaType": "music", "contentWarning": "explicit" if n % 9 == 0 else None})
+    t["artists"][0].update({"various": False, "composer": False, "genres": [],
+                            "cover": {"type": "from-artist-photos", "uri": "avatars.yandex.net/get-music-content/7/a/%%",
+                                      "prefix": f"{n:08x}/"}})
+    t.update({"realId": t["id"], "coverUri": album["coverUri"], "ogImage": album["coverUri"], "type": "music",
+              "lyricsAvailable": n % 3 == 0, "rememberPosition": False, "trackSharingFlag": "COVER_ONLY",
+              "trackSource": "OWN", "fileSize": 0, "previewDurationMs": 30000, "storageDir": "",
+              "r128": {"i": -8.5, "tp": 0.6}, "fade": {"inStart": 0.5, "inStop": 2.1, "outStart": 200.2, "outStop": 205.3},
+              "derivedColors": {"average": "#5c4a3b", "waveText": "#ffffff", "miniPlayer": "#a37f61", "accent": "#e6b38a"},
+              "lyricsInfo": {"hasAvailableSyncLyrics": False, "hasAvailableTextLyrics": n % 3 == 0},
+              "major": {"id": 2, "name": "SONY_MUSIC"}, "specialAudioResources": []})
+    return t
+
+
+# YANDEX_MOCK_LIKED=N: an account with N liked tracks (generated, 10000 up,
+# after the five real ones), to see what a list of thousands costs.
+LIKED_EXTRA = [str(10000 + i) for i in range(int(os.environ.get("YANDEX_MOCK_LIKED") or 0))]
+
+# A playlist of 1200 (generated) for the paging of big playlists.
+BIG_PLAYLIST = [str(20000 + i) for i in range(1200)]
+PLAYLISTS = {"3": ["103", "101"], "4": BIG_PLAYLIST}
+
+state = {"polls": 0, "batch": 0, "liked": ["101", "102", "103", "104", "105"] + LIKED_EXTRA,
          "session": 0, "wave_next": 3000, "tracks_calls": 0, "feedback": 0}
 lock = threading.Lock()
 
@@ -214,12 +254,25 @@ class Handler(BaseHTTPRequestHandler):
                                               "plus": {"hasPlus": plus}}})
         if p == f"/users/{UID}/likes/tracks":
             with lock:
-                ids = [{"id": t, "albumId": "11"} for t in state["liked"]]
-            return self.send_json({"result": {"library": {"uid": UID, "tracks": ids}}})
+                ids = [{"id": t, "albumId": str(any_track(t)["albums"][0]["id"]),
+                        "timestamp": f"2025-{1 + i % 12:02d}-{1 + i % 28:02d}T10:00:00+00:00"}
+                       for i, t in enumerate(state["liked"])]
+            sys.stderr.write(f"mock: LIKED LIST {len(ids)} ids\n")
+            return self.send_json({"result": {"library": {"uid": UID, "revision": 42, "playlistUuid": "mock-uuid", "tracks": ids}}})
         if p == f"/users/{UID}/playlists/list":
-            return self.send_json({"result": [{"kind": 3, "title": "Road Trip", "trackCount": 2, "owner": {"uid": UID}}]})
-        if p == f"/users/{UID}/playlists/3":
-            return self.send_json({"result": {"tracks": [{"id": 103, "track": TRACKS["103"]}, {"id": 101, "track": TRACKS["101"]}]}})
+            return self.send_json({"result": [{"kind": 3, "title": "Road Trip", "trackCount": 2, "owner": {"uid": UID}},
+                                              {"kind": 4, "title": "Big Mix", "trackCount": len(BIG_PLAYLIST), "owner": {"uid": UID}}]})
+        m = re.match(rf"^/users/(\d+)/playlists/(\d+)$", p)
+        if m and m.group(2) in PLAYLISTS:
+            ids = PLAYLISTS[m.group(2)]
+            # rich-tracks=false: the ids only, as the service answers it;
+            # otherwise every track whole.
+            if q.get("rich-tracks") == "false":
+                tracks = [{"id": int(t), "albumId": any_track(t)["albums"][0]["id"], "timestamp": "2025-05-01T10:00:00+00:00"} for t in ids]
+            else:
+                tracks = [{"id": int(t), "track": full_track(t)} for t in ids]
+            sys.stderr.write(f"mock: PLAYLIST {m.group(1)}/{m.group(2)} rich-tracks={q.get('rich-tracks')}: {len(ids)} tracks\n")
+            return self.send_json({"result": {"kind": int(m.group(2)), "title": "x", "owner": {"uid": int(m.group(1))}, "trackCount": len(ids), "tracks": tracks}})
         if p.startswith("/albums/") and p.endswith("/with-tracks"):
             album = ALBUMS.get(p.split("/")[2])
             if not album:
@@ -382,7 +435,8 @@ class Handler(BaseHTTPRequestHandler):
             return
         if p == "/tracks":
             ids = body.get("track-ids", "").split(",")
-            found = [any_track(i.split(":")[0]) for i in ids]
+            found = [full_track(i.split(":")[0]) for i in ids]
+            sys.stderr.write(f"mock: TRACKS {len(ids)} asked, from {ids[0] if ids else '-'}\n")
             return self.send_json({"result": [t for t in found if t]})
         if p == "/rotor/session/new":
             return self.wave_new(body)

@@ -91,15 +91,19 @@ static pthread_mutex_t wave_lock = PTHREAD_MUTEX_INITIALIZER;
 static char wave_session[96];
 static char wave_batch[96];
 
-// The ids of the liked tracks, for the player's star. Filled by the liked
-// list or yandex_liked_refresh(), kept current by every like written. Read
-// from the GUI thread on every redraw of the star while the workers write it,
-// hence the lock; allocated on first fill, so a player never signed in spends
-// nothing on it.
-#define LIKED_MAX 2000
+// The ids of the liked tracks, for the player's star and the rows' menus.
+// Filled by the liked list or yandex_liked_refresh(), kept current by every
+// like written. Read from the GUI thread on every redraw of the star while the
+// workers write it, hence the lock; allocated on first fill, so a player never
+// signed in spends nothing on it. Every id the account has, however many: a
+// catalogue id is a number and is kept as four bytes (thousands of likes are
+// a few kilobytes), anything else -- a user's upload -- as text. 1.2.5 kept
+// the newest 2000 as text, and the star on an older like said "not liked".
 static pthread_mutex_t liked_lock = PTHREAD_MUTEX_INITIALIZER;
-static char (*liked_ids)[YANDEX_LIKED_ID_MAX];
-static int liked_count;
+static uint32_t *liked_nums;
+static int liked_count, liked_room;
+static char (*liked_other)[YANDEX_ID_MAX];
+static int liked_other_count, liked_other_room;
 static bool liked_loaded;
 
 static void set_error(const char *fmt, ...) {
@@ -214,9 +218,11 @@ void yandex_logout(void) {
 	wave_session[0] = wave_batch[0] = '\0';
 	pthread_mutex_unlock(&wave_lock);
 	pthread_mutex_lock(&liked_lock);
-	free(liked_ids);
-	liked_ids = NULL;
-	liked_count = 0;
+	free(liked_nums);
+	free(liked_other);
+	liked_nums = NULL;
+	liked_other = NULL;
+	liked_count = liked_room = liked_other_count = liked_other_room = 0;
 	liked_loaded = false;
 	pthread_mutex_unlock(&liked_lock);
 }
@@ -692,25 +698,43 @@ static int tracks_from_array(const json_doc_t *doc, int arr, yandex_track_t *out
 // library
 // ---------------------------------------------------------------------------
 
-// POST /tracks, in batches of 100, for lists that arrive as bare ids.
-static int tracks_by_id(char (*ids)[YANDEX_LIKED_ID_MAX], int count, yandex_track_t *out, int max) {
+// The elements of array `arr`, one after the other, in a single pass:
+// json_at() walks the array from its start on every call, and over the
+// thousands of a liked list that is millions of steps. -1 after the last.
+static int next_element(const json_doc_t *doc, int arr, int prev) {
+	if (arr < 0) {
+		return -1;
+	}
+	int end = doc->toks[arr].end;
+	for (int i = prev < 0 ? arr + 1 : prev + 1; i < doc->count && doc->toks[i].start < end; i++) {
+		if (doc->toks[i].parent == arr) {
+			return i;
+		}
+	}
+	return -1;
+}
+
+// POST /tracks, in batches of 50: the details of tracks known by id ("id" or
+// "id:album"). The form is sized from the ids themselves: the separator is an
+// escaped comma, three bytes, and an id may carry its album.
+#define TRACKS_BATCH 50
+
+int yandex_tracks(const char *const *refs, int count, yandex_track_t *out, int max) {
 	int got = 0;
-	for (int from = 0; from < count && got < max; from += 100) {
-		// Sized from the ids themselves: a liked id may carry its album
-		// ("12345678:87654321") and the separator is an escaped comma, three
-		// bytes, so no fixed width per id is safe.
-		int to = count - from < 100 ? count : from + 100;
+	for (int from = 0; from < count && got < max; from += TRACKS_BATCH) {
+		int to = count - from < TRACKS_BATCH ? count : from + TRACKS_BATCH;
 		size_t room = sizeof("track-ids=");
 		for (int i = from; i < to; i++) {
-			room += 3 + strnlen(ids[i], YANDEX_LIKED_ID_MAX);
+			room += 3 + strlen(refs[i]);
 		}
 		char *form = malloc(room);
 		if (!form) {
-			break;
+			set_error("%s", tr("out_of_memory"));
+			return got ? got : -1;
 		}
 		size_t used = (size_t)snprintf(form, room, "track-ids=");
 		for (int i = from; i < to && used < room; i++) {
-			used += (size_t)snprintf(form + used, room - used, "%s%.*s", i > from ? "%2C" : "", YANDEX_LIKED_ID_MAX, ids[i]);
+			used += (size_t)snprintf(form + used, room - used, "%s%s", i > from ? "%2C" : "", refs[i]);
 		}
 		char url[400];
 		snprintf(url, sizeof(url), "%s/tracks", api_url);
@@ -719,18 +743,56 @@ static int tracks_by_id(char (*ids)[YANDEX_LIKED_ID_MAX], int count, yandex_trac
 		bool ok = api("POST", url, form, NULL, &body, &doc);
 		free(form);
 		if (!ok) {
+			fprintf(stderr, "yandex: details of %d tracks (from %s) failed -> %d (%s)\n", to - from, refs[from], last_status, last_error);
 			return got ? got : -1;
 		}
-		got += tracks_from_array(&doc, json_get(&doc, json_root(&doc), "result"), out + got, max - got);
+		int n = tracks_from_array(&doc, json_get(&doc, json_root(&doc), "result"), out + got, max - got);
+		printf("yandex: details of %d tracks (from %s): %d came\n", to - from, refs[from], n);
+		got += n;
 		api_done(body, &doc);
 	}
 	return got;
 }
 
-// GET likes/tracks: the bare ids, newest first, into a fresh buffer the
-// caller frees. -1 on error. The mirror takes a copy.
-static int fetch_liked_ids(char (**out)[YANDEX_LIKED_ID_MAX]) {
-	*out = NULL;
+// Fills the mirror afresh from an answer's ids. Built aside, swapped in
+// under the lock: the star reads the old one meanwhile.
+typedef struct {
+	uint32_t *nums;
+	int count, room;
+	char (*other)[YANDEX_ID_MAX];
+	int other_count, other_room;
+} liked_set_t;
+
+static bool liked_set_add(liked_set_t *set, const char *id) {
+	char *end = NULL;
+	unsigned long v = strtoul(id, &end, 10);
+	if (id[0] >= '0' && id[0] <= '9' && end && !*end && v > 0 && v < 0x80000000UL) {
+		if (set->count == set->room) {
+			int room = set->room ? set->room * 2 : 256;
+			uint32_t *nums = realloc(set->nums, (size_t)room * sizeof(*nums));
+			if (!nums) {
+				return false;
+			}
+			set->nums = nums;
+			set->room = room;
+		}
+		set->nums[set->count++] = (uint32_t)v;
+		return true;
+	}
+	if (set->other_count == set->other_room) {
+		int room = set->other_room ? set->other_room * 2 : 8;
+		char(*other)[YANDEX_ID_MAX] = realloc(set->other, (size_t)room * sizeof(*other));
+		if (!other) {
+			return false;
+		}
+		set->other = other;
+		set->other_room = room;
+	}
+	snprintf(set->other[set->other_count++], sizeof(set->other[0]), "%s", id);
+	return true;
+}
+
+int yandex_liked_ids(yandex_ref_cb each, void *user) {
 	if (!ensure_uid()) {
 		return -1;
 	}
@@ -743,56 +805,39 @@ static int fetch_liked_ids(char (**out)[YANDEX_LIKED_ID_MAX]) {
 	}
 	int arr = json_path(&doc, json_root(&doc), "result.library.tracks");
 	int n = arr >= 0 ? json_len(&doc, arr) : 0;
-	printf("yandex: %d liked tracks on the account (uid %s)%s\n", n, user_uid, arr < 0 ? ", no list in the answer" : "");
-	if (n > LIKED_MAX) {
-		n = LIKED_MAX;
-	}
-	char(*ids)[YANDEX_LIKED_ID_MAX] = malloc((size_t)(n > 0 ? n : 1) * sizeof(*ids));
-	if (!ids) {
-		api_done(body, &doc);
-		set_error("%s", tr("out_of_memory"));
-		return -1;
-	}
+	printf("yandex: %d liked tracks on the account (uid %s)%s, %zu bytes of answer\n", n, user_uid, arr < 0 ? ", no list in the answer" : "", strlen(body));
+	liked_set_t set = {0};
 	int count = 0;
-	for (int i = 0; i < n; i++) {
-		id_of(&doc, json_at(&doc, arr, i), "id", ids[count], sizeof(ids[0]));
-		if (ids[count][0]) {
-			count++;
+	for (int el = next_element(&doc, arr, -1); el >= 0; el = next_element(&doc, arr, el)) {
+		char id[YANDEX_ID_MAX], album[YANDEX_ID_MAX];
+		id_of(&doc, el, "id", id, sizeof(id));
+		id_of(&doc, el, "albumId", album, sizeof(album));
+		if (!id[0]) {
+			continue;
 		}
+		liked_set_add(&set, id);
+		if (each) {
+			each(id, album, NULL, user);
+		}
+		count++;
 	}
 	api_done(body, &doc);
 
 	pthread_mutex_lock(&liked_lock);
-	if (!liked_ids) {
-		liked_ids = malloc(LIKED_MAX * sizeof(*liked_ids));
-	}
-	if (liked_ids) {
-		memcpy(liked_ids, ids, (size_t)count * sizeof(*ids));
-		liked_count = count;
-		liked_loaded = true;
-	}
+	free(liked_nums);
+	free(liked_other);
+	liked_nums = set.nums;
+	liked_count = set.count;
+	liked_room = set.room;
+	liked_other = set.other;
+	liked_other_count = set.other_count;
+	liked_other_room = set.other_room;
+	liked_loaded = true;
 	pthread_mutex_unlock(&liked_lock);
-	*out = ids;
 	return count;
 }
 
-int yandex_liked_tracks(yandex_track_t *out, int max) {
-	char(*ids)[YANDEX_LIKED_ID_MAX];
-	int count = fetch_liked_ids(&ids);
-	if (count < 0) {
-		return -1;
-	}
-	int got = tracks_by_id(ids, count < max ? count : max, out, max);
-	free(ids);
-	return got;
-}
-
-bool yandex_liked_refresh(void) {
-	char(*ids)[YANDEX_LIKED_ID_MAX];
-	int count = fetch_liked_ids(&ids);
-	free(ids);
-	return count >= 0;
-}
+bool yandex_liked_refresh(void) { return yandex_liked_ids(NULL, NULL) >= 0; }
 
 bool yandex_liked_known(void) {
 	pthread_mutex_lock(&liked_lock);
@@ -801,11 +846,22 @@ bool yandex_liked_known(void) {
 	return known;
 }
 
-// Call with liked_lock held.
+// Where the id sits in the mirror: >= 0 in the numbers, <= -2 in the others
+// (-2 - index), -1 nowhere. Call with liked_lock held.
 static int liked_index_locked(const char *track_id) {
-	for (int i = 0; liked_ids && i < liked_count; i++) {
-		if (strcmp(liked_ids[i], track_id) == 0) {
-			return i;
+	char *end = NULL;
+	unsigned long v = strtoul(track_id, &end, 10);
+	if (track_id[0] >= '0' && track_id[0] <= '9' && end && !*end && v > 0 && v < 0x80000000UL) {
+		for (int i = 0; liked_nums && i < liked_count; i++) {
+			if (liked_nums[i] == (uint32_t)v) {
+				return i;
+			}
+		}
+		return -1;
+	}
+	for (int i = 0; liked_other && i < liked_other_count; i++) {
+		if (strcmp(liked_other[i], track_id) == 0) {
+			return -2 - i;
 		}
 	}
 	return -1;
@@ -816,7 +872,7 @@ bool yandex_is_liked(const char *track_id) {
 		return false;
 	}
 	pthread_mutex_lock(&liked_lock);
-	bool found = liked_index_locked(track_id) >= 0;
+	bool found = liked_index_locked(track_id) != -1;
 	pthread_mutex_unlock(&liked_lock);
 	return found;
 }
@@ -827,19 +883,22 @@ void yandex_liked_mark(const char *track_id, bool liked) {
 	}
 	pthread_mutex_lock(&liked_lock);
 	int i = liked_index_locked(track_id);
-	if (liked && i < 0) {
-		if (!liked_ids) {
-			liked_ids = malloc(LIKED_MAX * sizeof(*liked_ids));
-		}
-		if (liked_ids && liked_count < LIKED_MAX) {
-			// Newest first, like the account's own list.
-			memmove(liked_ids[1], liked_ids[0], (size_t)liked_count * sizeof(liked_ids[0]));
-			snprintf(liked_ids[0], sizeof(liked_ids[0]), "%s", track_id);
-			liked_count++;
+	if (liked && i == -1) {
+		liked_set_t set = {liked_nums, liked_count, liked_room, liked_other, liked_other_count, liked_other_room};
+		if (liked_set_add(&set, track_id)) {
+			liked_nums = set.nums;
+			liked_count = set.count;
+			liked_room = set.room;
+			liked_other = set.other;
+			liked_other_count = set.other_count;
+			liked_other_room = set.other_room;
 		}
 	} else if (!liked && i >= 0) {
-		memmove(liked_ids[i], liked_ids[i + 1], (size_t)(liked_count - i - 1) * sizeof(liked_ids[0]));
-		liked_count--;
+		liked_nums[i] = liked_nums[--liked_count]; // the order means nothing here
+	} else if (!liked && i <= -2) {
+		int at = -2 - i;
+		memmove(liked_other[at], liked_other[at + 1], (size_t)(liked_other_count - at - 1) * sizeof(liked_other[0]));
+		liked_other_count--;
 	}
 	pthread_mutex_unlock(&liked_lock);
 }
@@ -880,17 +939,66 @@ int yandex_playlists(yandex_playlist_t *out, int max) {
 	return got;
 }
 
-int yandex_playlist_tracks(const char *owner, const char *kind, yandex_track_t *out, int max) {
+// One element of a list of track references -- a liked list, a playlist
+// asked with rich-tracks=false, an artist's track ids -- handed to `each`:
+// {"id":..,"albumId":..}, the same with the whole track under "track" (a
+// playlist answered rich after all), a bare "id:album" string or a bare
+// number. False when it names no track.
+static bool ref_from(const json_doc_t *doc, int el, yandex_ref_cb each, void *user) {
+	char id[YANDEX_ID_MAX * 2] = "", album[YANDEX_ID_MAX] = "";
+	int inner = doc->toks[el].type == JSON_OBJECT ? json_get(doc, el, "track") : -1;
+	if (inner >= 0) {
+		yandex_track_t t;
+		track_from(doc, inner, &t);
+		if (!t.id[0]) {
+			return false;
+		}
+		if (each) {
+			each(t.id, t.album_id, &t, user);
+		}
+		return true;
+	}
+	if (doc->toks[el].type == JSON_OBJECT) {
+		id_of(doc, el, "id", id, sizeof(id));
+		id_of(doc, el, "albumId", album, sizeof(album));
+	} else {
+		id_any(doc, el, id, sizeof(id));
+	}
+	char *colon = strchr(id, ':');
+	if (colon) {
+		*colon = '\0';
+		if (!album[0]) {
+			snprintf(album, sizeof(album), "%s", colon + 1);
+		}
+	}
+	if (!id[0]) {
+		return false;
+	}
+	if (each) {
+		each(id, album, NULL, user);
+	}
+	return true;
+}
+
+int yandex_playlist_ids(const char *owner, const char *kind, yandex_ref_cb each, void *user) {
+	// rich-tracks=false: the ids only, a few dozen bytes a track instead of
+	// two kilobytes -- a playlist of thousands answered in full would not even
+	// fit the answer's limit. The details come a page at a time.
 	char url[400];
-	snprintf(url, sizeof(url), "%s/users/%s/playlists/%s", api_url, owner, kind);
+	snprintf(url, sizeof(url), "%s/users/%s/playlists/%s?rich-tracks=false", api_url, owner, kind);
 	char *body;
 	json_doc_t doc;
 	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
 		return -1;
 	}
-	int got = tracks_from_array(&doc, json_path(&doc, json_root(&doc), "result.tracks"), out, max);
+	int arr = json_path(&doc, json_root(&doc), "result.tracks");
+	int count = 0;
+	for (int el = next_element(&doc, arr, -1); el >= 0; el = next_element(&doc, arr, el)) {
+		count += ref_from(&doc, el, each, user);
+	}
+	printf("yandex: playlist %s/%s: %d tracks, %zu bytes of answer\n", owner, kind, count, strlen(body));
 	api_done(body, &doc);
-	return got;
+	return count;
 }
 
 int yandex_album_tracks(const char *album_id, yandex_track_t *out, int max) {

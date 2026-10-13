@@ -105,6 +105,16 @@ bool playlist_is_queued_next(int index);
 // stored (out of memory).
 bool playlist_insert_at(const char *path, int slot);
 
+// Gives every entry that is `old_path` the name `new_path` instead, in place:
+// the order, the position, the "play next" marks and the mode stay as they
+// are. For a streaming track whose file name was a guess until it came down
+// (the extension follows the codec): rebuilding the queue for a new name, as
+// the Yandex page did, lost what had been queued by hand and dealt shuffle
+// afresh. Only entries held as paths are looked at -- a library list's own
+// rows are the library's. The revision does not move (the queue's copy on
+// the card is not rewritten for a name). Returns how many were renamed.
+int playlist_replace_path(const char *old_path, const char *new_path);
+
 // Takes the entries at `indices` (positions in playback order) out of the
 // queue. The one playing is never taken out, and the others keep their order.
 // The queue becomes a custom list of paths. False when nothing was taken out.

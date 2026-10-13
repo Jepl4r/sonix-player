@@ -30,7 +30,4 @@ extern lv_obj_t *yandex_screen;
 // (not signed in, no id).
 bool yandexpage_open_album(const char *album_id, const char *title);
 
-// "Can this file be played right now?", for the queue (registered by init).
-bool yandexpage_prepare_track(const char *path);
-
 #endif /* YANDEXPAGE_H */
