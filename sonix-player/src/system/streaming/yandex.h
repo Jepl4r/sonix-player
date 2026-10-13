@@ -45,7 +45,8 @@ typedef struct {
 	char cover[YANDEX_URL_MAX]; // already a full https:// URL, see yandex_cover_url()
 	int duration;				// seconds
 	int track_number;
-	bool available; // false = in the catalogue but not playable here
+	int disc_number; // the album's volume, 1 for most; 0 when not said
+	bool available;	 // false = in the catalogue but not playable here
 } yandex_track_t;
 
 typedef struct {
@@ -111,6 +112,22 @@ int yandex_liked_tracks(yandex_track_t *out, int max);
 int yandex_playlists(yandex_playlist_t *out, int max);
 int yandex_playlist_tracks(const char *owner, const char *kind, yandex_track_t *out, int max);
 int yandex_album_tracks(const char *album_id, yandex_track_t *out, int max);
+
+// What a saved file needs to know about its album beyond what each track
+// carries: who the record is by (not the track's artists: a compilation is
+// "Various Artists"), its year and genre, how many discs, the cover.
+typedef struct {
+	char id[YANDEX_ID_MAX];
+	char title[YANDEX_TITLE_MAX];
+	char artist[YANDEX_NAME_MAX]; // the album's artists, or "Various Artists"
+	char genre[48];				  // as the service names it ("rusrock"), may be empty
+	char cover[YANDEX_URL_MAX];	  // full https:// URL, large
+	int year;					  // 0 when not said
+	int discs;					  // volumes, at least 1
+	int track_count;
+} yandex_album_meta_t;
+// /albums/<id>/with-tracks, the album's fields only.
+bool yandex_album_meta(const char *album_id, yandex_album_meta_t *out);
 int yandex_artist_albums(const char *artist_id, yandex_album_t *out, int max);
 // /search?type=all. The counts are capacities on the way in and what was
 // filled on the way out.

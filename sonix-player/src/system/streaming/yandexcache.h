@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
+#include <stdio.h>
 
 #include "src/system/streaming/yandex.h"
 
@@ -46,6 +48,18 @@ const char *yandexcache_extension(const char *codec);
 // (or, for an MP4 container, once all of it is). `out` gets the path.
 bool yandexcache_start(const yandex_track_t *track, const yandex_file_t *file, char *out, size_t size);
 const char *yandexcache_last_error(void);
+
+// Downloads `file` into `out` (the caller's, left open) on the caller's own
+// thread: decrypted, and unwrapped into plain FLAC when it is flac-mp4 --
+// exactly what the cache would hold, for a copy kept elsewhere (yandexdl.h).
+// Gives way to everything being listened to: while the cache or another
+// service downloads, it drops its connection, waits and resumes with a ranged
+// request. One at a time. `progress` (may be NULL) hears the bytes written
+// and the source size (0 while unknown). `samples` (may be NULL) gets a
+// flac-mp4's counted length, 0 otherwise. False with `err` set on failure or
+// after yandexcache_fetch_cancel().
+bool yandexcache_fetch(const char *track_id, const yandex_file_t *file, FILE *out, void (*progress)(long written, long total, void *user), void *user, uint64_t *samples, char *err, size_t err_size);
+void yandexcache_fetch_cancel(void);
 
 // The tags beside the file ("<file>.tags") and the cover ("<stem>.jpg").
 void yandexcache_write_sidecars(const yandex_track_t *track, const char *path);

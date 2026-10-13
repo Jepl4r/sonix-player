@@ -26,6 +26,7 @@
 #include "src/system/streaming/streamturn.h"
 #include "src/system/streaming/yandex.h"
 #include "src/system/streaming/yandexcache.h"
+#include "src/system/streaming/yandexdl.h"
 #include "src/system/streaming/yandexsync.h"
 
 // See yandexpage.h. Deliberately smaller than the Tidal page: no artwork in
@@ -105,7 +106,10 @@ static lv_timer_t *login_timer;
 static yandex_login_t login;
 static time_t login_deadline;
 // list
-static lv_obj_t *list_title, *list_box, *list_spin, *wave_bar;
+static lv_obj_t *list_title, *list_box, *list_spin, *wave_bar, *album_bar;
+// The album a JOB_ALBUM list shows, for its "Save album" button.
+static char list_album_id[YANDEX_ID_MAX];
+static char list_album_title[YANDEX_TITLE_MAX];
 static gui_config_t *list_cfg;
 // search
 static lv_obj_t *search_field;
@@ -676,8 +680,8 @@ static void row_texts(const row_t *r, char *name, size_t ns, char *detail, size_
 static void row_menu_cb(lv_event_t *e);
 
 // Rows with something to offer on their own get the three dots: a track (its
-// like) and an album.
-static bool row_has_menu(const row_t *r) { return r->kind == ROW_TRACK && r->u.track.id[0]; }
+// like, saving it) and an album (saving it whole).
+static bool row_has_menu(const row_t *r) { return (r->kind == ROW_TRACK && r->u.track.id[0]) || (r->kind == ROW_ALBUM && r->u.album.id[0]); }
 
 static void make_row(int index) {
 	char name[YANDEX_TITLE_MAX], detail[YANDEX_TITLE_MAX + 32];
@@ -761,10 +765,17 @@ static void fill_list(void) {
 static void open_list(const char *title, job_kind_t kind, const char *a, const char *b) {
 	lv_label_set_text(list_title, title);
 	list_is_wave = kind == JOB_WAVE;
+	bool is_album = kind == JOB_ALBUM && a && a[0];
+	if (is_album) {
+		snprintf(list_album_id, sizeof(list_album_id), "%s", a);
+		snprintf(list_album_title, sizeof(list_album_title), "%s", title);
+	}
 	lv_obj_set_hidden(wave_bar, !list_is_wave);
-	// The list starts under the like/dislike bar only when there is one.
+	lv_obj_set_hidden(album_bar, !is_album);
+	// The list starts under the like/dislike bar (or the album's) only when
+	// there is one.
 	int top = settingsrow_content_top(list_cfg);
-	int y = top + (list_is_wave ? 66 : 0);
+	int y = top + (list_is_wave || is_album ? 66 : 0);
 	lv_obj_set_pos(list_box, list_cfg->padding, y);
 	lv_obj_set_height(list_box, list_cfg->screen_height - y - 4);
 	lv_obj_clean(list_box);
@@ -873,6 +884,19 @@ static void do_row_like(void *user) {
 	toast_success(tr(like ? "yandex_liked_it" : "yandex_unliked_it"));
 }
 
+static void save_refused(void) { toast_error(tr("yandex_save_refused")); }
+
+static void do_row_save(void *user) {
+	(void)user;
+	if (menu_row.kind == ROW_ALBUM) {
+		if (!yandexdl_album(menu_row.u.album.id, menu_row.u.album.title)) {
+			save_refused();
+		}
+	} else if (!yandexdl_track(&menu_row.u.track)) {
+		save_refused();
+	}
+}
+
 static void row_menu_cb(lv_event_t *e) {
 	lv_event_stop_bubbling(e); // the tap belongs to the menu, not the row
 	if (switcher_back_drag_active() || player_sheet_drag_active()) {
@@ -894,6 +918,15 @@ static void row_menu_cb(lv_event_t *e) {
 		items[n].label = liked ? "yandex_unlike" : "yandex_like";
 		items[n].action = do_row_like;
 		items[n].user = liked ? NULL : (void *)1;
+		n++;
+		if (menu_row.u.track.available) {
+			items[n].label = "yandex_save";
+			items[n].action = do_row_save;
+			n++;
+		}
+	} else if (menu_row.kind == ROW_ALBUM) {
+		items[n].label = "yandex_save_album";
+		items[n].action = do_row_save;
 		n++;
 	}
 	if (n > 0) {
@@ -937,6 +970,16 @@ static lv_obj_t *wave_button(lv_obj_t *parent, const char *key, bool like) {
 	return btn;
 }
 
+static void album_save_cb(lv_event_t *e) {
+	(void)e;
+	if (switcher_back_drag_active()) {
+		return;
+	}
+	if (!list_album_id[0] || !yandexdl_album(list_album_id, list_album_title)) {
+		save_refused();
+	}
+}
+
 static void build_list_page(gui_config_t *cfg) {
 	list_cfg = cfg;
 	list_screen = lv_obj_create(NULL);
@@ -955,6 +998,27 @@ static void build_list_page(gui_config_t *cfg) {
 	wave_button(wave_bar, "yandex_like", true);
 	wave_button(wave_bar, "yandex_dislike", false);
 	lv_obj_set_hidden(wave_bar, true);
+
+	// An album's own bar: the whole record into the library.
+	album_bar = lv_obj_create(list_screen);
+	lv_obj_set_size(album_bar, cfg->screen_width - 2 * cfg->padding, 60);
+	lv_obj_align(album_bar, LV_ALIGN_TOP_MID, 0, top);
+	lv_obj_set_style_bg_opa(album_bar, 0, 0);
+	lv_obj_set_style_border_width(album_bar, 0, 0);
+	lv_obj_set_style_pad_all(album_bar, 0, 0);
+	lv_obj_set_flex_flow(album_bar, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(album_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_t *save = lv_btn_create(album_bar);
+	lv_obj_set_size(save, LV_SIZE_CONTENT, 52);
+	lv_obj_set_style_pad_hor(save, 22, 0);
+	lv_obj_set_style_radius(save, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_shadow_width(save, 0, 0);
+	lv_obj_add_event_cb(save, album_save_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *save_label = lv_label_create(save);
+	lv_label_set_text(save_label, tr("yandex_save_album"));
+	lv_obj_set_style_text_font(save_label, &font_ui_20, 0);
+	lv_obj_center(save_label);
+	lv_obj_set_hidden(album_bar, true);
 
 	list_box = lv_obj_create(list_screen);
 	lv_obj_set_size(list_box, cfg->screen_width - 2 * cfg->padding, cfg->screen_height - top - 70);
@@ -1191,6 +1255,7 @@ static void open_search_cb(lv_event_t *e) {
 }
 static void logout_cb(lv_event_t *e) {
 	(void)e;
+	yandexdl_cancel_all(); // the account's files are not to be fetched any more
 	yandex_logout();
 	queue_is_wave = false;
 	paint_home();
@@ -1230,7 +1295,91 @@ static void quality_pick_cb(lv_event_t *e) {
 	quality_refresh();
 }
 
+// ---------------------------------------------------------------------------
+// saving to the library: what the worker says, and a line on the home page
+//
+// The line and its once-a-second timer exist only while something is being
+// saved: the timer deletes itself when the queue is done.
+// ---------------------------------------------------------------------------
+
+static lv_obj_t *save_status;
+static lv_timer_t *save_timer;
+
+static void save_status_refresh(void) {
+	yandexdl_status_t st;
+	yandexdl_status(&st);
+	if (!st.active || !st.title[0]) {
+		lv_obj_set_hidden(save_status, true);
+		return;
+	}
+	char line[200];
+	int current = st.done + st.failed + 1;
+	snprintf(line, sizeof(line), tr("yandex_saving"), current, current + st.queued, st.title);
+	if (st.percent >= 0) {
+		size_t used = strlen(line);
+		snprintf(line + used, sizeof(line) - used, " \xC2\xB7 %d%%", st.percent);
+	}
+	lv_label_set_text(save_status, line);
+	lv_obj_set_hidden(save_status, false);
+}
+
+static void save_timer_cb(lv_timer_t *timer) {
+	(void)timer;
+	save_status_refresh();
+	if (!yandexdl_busy()) {
+		lv_timer_delete(save_timer);
+		save_timer = NULL;
+	}
+}
+
+typedef struct {
+	yandexdl_event_t event;
+	int count;
+	char text[400];
+} save_note_t;
+
+static void save_note_async(void *user) {
+	save_note_t *note = user;
+	char line[480];
+	switch (note->event) {
+	case YANDEXDL_QUEUED:
+		snprintf(line, sizeof(line), tr("yandex_save_queued"), note->text);
+		toast_success(line);
+		if (!save_timer) {
+			save_timer = lv_timer_create(save_timer_cb, 1000, NULL);
+		}
+		break;
+	case YANDEXDL_FAILED:
+		toast_error(note->text);
+		break;
+	case YANDEXDL_FINISHED:
+		if (note->count > 0) {
+			snprintf(line, sizeof(line), tr("yandex_saved_to"), note->text, note->count);
+			toast_success(line);
+		}
+		break;
+	case YANDEXDL_STOPPED:
+		toast_plain(note->text);
+		break;
+	}
+	save_status_refresh();
+	free(note);
+}
+
+// From the save worker (or whoever cancelled): bounced to the interface.
+static void save_listener(yandexdl_event_t event, int count, const char *text) {
+	save_note_t *note = malloc(sizeof(*note));
+	if (!note) {
+		return;
+	}
+	note->event = event;
+	note->count = count;
+	snprintf(note->text, sizeof(note->text), "%s", text ? text : "");
+	gui_post(save_note_async, note);
+}
+
 static void paint_home(void) {
+	save_status_refresh();
 	bool in = yandex_logged_in();
 	lv_obj_set_hidden(home_signed_in, !in);
 	lv_obj_set_hidden(home_signed_out, in);
@@ -1285,6 +1434,15 @@ void yandexpage_init(gui_config_t *cfg) {
 	settingsrow_action(home_signed_in, "yandex_liked", open_liked_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_playlists", open_playlists_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_search", open_search_cb, NULL);
+	// What is being saved to the library, while something is: under the
+	// rows, where it is seen without scrolling.
+	save_status = lv_label_create(home_signed_in);
+	lv_label_set_long_mode(save_status, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(save_status, lv_pct(100));
+	lv_obj_add_style(save_status, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(save_status, &font_ui_18, 0);
+	lv_obj_set_hidden(save_status, true);
+	yandexdl_set_listener(save_listener);
 	lv_obj_t *pills;
 	lv_obj_t *quality_card = settingsrow_pills(home_signed_in, "audio_quality", &pills);
 	quality_pills[YANDEX_QUALITY_LOSSLESS] = settingsrow_pill(pills, "yandex_quality_lossless", YANDEX_QUALITY_LOSSLESS, quality_pick_cb);

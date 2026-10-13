@@ -16,6 +16,7 @@
 #include "src/system/library/mp4flac.h"
 #include "src/system/net/crypto.h"
 #include "src/system/net/http.h"
+#include "src/system/streaming/provider.h"
 #include "src/system/streaming/streamturn.h"
 
 // See yandexcache.h.
@@ -55,10 +56,16 @@ typedef struct {
 	size_t key_len; // 16 or 32
 	bool encrypted;
 
+	// A download for somebody else (yandexcache_fetch): written to their file,
+	// not the cache's, with no growfile, and giving way to playback.
+	bool detached;
+	void (*progress)(long written, long total, void *user);
+	void *progress_user;
 	uint64_t samples; // flac-mp4: the length counted while unwrapping
 } download_t;
 
-static download_t *current; // the one download in flight, or NULL
+static download_t *current;	 // the one download in flight, or NULL
+static download_t *detached; // the one yandexcache_fetch() in flight, or NULL
 
 static void set_error(const char *fmt, ...) {
 	va_list ap;
@@ -268,12 +275,46 @@ static bool src_open(download_t *d) {
 	return false;
 }
 
+// A detached download (yandexcache_fetch: a track saved to the library) never
+// competes with what is being listened to: while the cache or any other
+// service is downloading, it lets go of its connection and waits, then picks
+// up where it was with a ranged request. The playing track gets the whole of
+// the Wi-Fi and the card, and the saved file loses nothing but time.
+static bool others_downloading(void) {
+	if (yandexcache_busy()) {
+		return true;
+	}
+	for (int i = 0; i < stream_provider_count(); i++) {
+		const stream_provider_t *p = stream_provider_at(i);
+		if (p && strcmp(p->id, "yandex") != 0 && p->downloading && p->downloading()) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static void give_way(download_t *d) {
+	if (!d->detached || !others_downloading()) {
+		return;
+	}
+	if (d->st_open) {
+		http_stream_close(&d->st);
+		d->st_open = false;
+	}
+	printf("yandex: saving %s waits for playback's download (at %ld bytes)\n", d->track_id, d->src_pos);
+	while (!d->abandon && others_downloading()) {
+		usleep(500 * 1000);
+	}
+	printf("yandex: saving %s goes on\n", d->track_id);
+}
+
 // Reads up to `n` bytes at the source position, decrypted. 0 at the end of
 // the file, -1 on failure.
 static long src_read(download_t *d, uint8_t *buf, long n) {
 	if (d->src_total > 0 && d->src_pos >= d->src_total) {
 		return 0;
 	}
+	give_way(d);
 	for (int attempt = 0; attempt < 3; attempt++) {
 		if (d->abandon) {
 			return -1;
@@ -328,6 +369,13 @@ static bool src_read_full(download_t *d, uint8_t *buf, long n) {
 // ---------------------------------------------------------------------------
 
 static void note_written(download_t *d, long written) {
+	if (d->detached) {
+		d->written = written;
+		if (d->progress) {
+			d->progress(written, d->src_total, d->progress_user);
+		}
+		return;
+	}
 	pthread_mutex_lock(&lock);
 	d->written = written;
 	pthread_cond_broadcast(&changed);
@@ -542,6 +590,68 @@ static void *download_main(void *arg) {
 	return NULL;
 }
 
+bool yandexcache_fetch(const char *track_id, const yandex_file_t *file, FILE *out, void (*progress)(long written, long total, void *user), void *user, uint64_t *samples, char *err, size_t err_size) {
+	if (samples) {
+		*samples = 0;
+	}
+	if (err && err_size) {
+		err[0] = '\0';
+	}
+	download_t *d = calloc(1, sizeof(*d));
+	if (!d) {
+		return false;
+	}
+	snprintf(d->track_id, sizeof(d->track_id), "%s", track_id);
+	d->file = *file;
+	d->unwrap = strcmp(file->codec, "flac-mp4") == 0;
+	d->f = out;
+	d->detached = true;
+	d->progress = progress;
+	d->progress_user = user;
+	if (file->key[0]) {
+		if (!hex_key(file->key, d->key, &d->key_len) || !crypto_aes_ctr_available(d->key_len)) {
+			if (err && err_size) {
+				snprintf(err, err_size, "%s", tr("yandex_cannot_decrypt"));
+			}
+			free(d);
+			return false;
+		}
+		d->encrypted = true;
+	}
+	pthread_mutex_lock(&lock);
+	detached = d;
+	pthread_mutex_unlock(&lock);
+
+	bool ok = d->unwrap ? unwrap_mp4(d) : copy_raw(d);
+	ok = ok && !d->abandon && fflush(out) == 0;
+
+	pthread_mutex_lock(&lock);
+	detached = NULL;
+	if (d->st_open) {
+		http_stream_close(&d->st);
+		d->st_open = false;
+	}
+	pthread_mutex_unlock(&lock);
+	if (!ok && err && err_size) {
+		snprintf(err, err_size, "%s", d->abandon ? tr("download_cancelled") : d->error[0] ? d->error : tr("download_failed"));
+	}
+	if (ok && samples) {
+		*samples = d->samples;
+	}
+	free(d);
+	return ok;
+}
+
+void yandexcache_fetch_cancel(void) {
+	pthread_mutex_lock(&lock);
+	if (detached) {
+		detached->abandon = true;
+		if (detached->st_open) {
+			http_stream_wake(&detached->st);
+		}
+	}
+	pthread_mutex_unlock(&lock);
+}
 
 static void streamturn_hook(void) { yandexcache_abandon_all(); }
 

@@ -1892,7 +1892,9 @@ static void read_sidecar_tags(const char *filepath, song_metadata_t *out) {
 		// published -- a podcast episode's MP3 very often carries the tags of the
 		// show, or of the most recent episode, or none at all.
 		//
-		// Music on the card is unaffected: no .tags file is there.
+		// Music on the card is unaffected: no .tags file is there -- except
+		// beside an AAC track saved from Yandex Music (yandexdl.h), whose MP4
+		// is not retagged and whose sidecar is the tags it should have.
 		if (strcmp(key, "title") == 0) {
 			snprintf(out->title, sizeof(out->title), "%s", value);
 		} else if (strcmp(key, "artist") == 0) {
@@ -1907,6 +1909,8 @@ static void read_sidecar_tags(const char *filepath, song_metadata_t *out) {
 			out->disc_number = atoi(value);
 		} else if (strcmp(key, "year") == 0) {
 			out->year = atoi(value);
+		} else if (strcmp(key, "genre") == 0) {
+			snprintf(out->genre, sizeof(out->genre), "%s", value);
 		}
 	}
 	fclose(f);

@@ -629,6 +629,8 @@ static void track_from(const json_doc_t *doc, int t, yandex_track_t *out) {
 		json_obj_str(doc, album, "title", out->album, sizeof(out->album));
 		int pos = json_path(doc, album, "trackPosition.index");
 		out->track_number = pos >= 0 ? (int)json_long(doc, pos, 0) : 0;
+		int volume = json_path(doc, album, "trackPosition.volume");
+		out->disc_number = volume >= 0 ? (int)json_long(doc, volume, 0) : 0;
 	}
 	char uri[300] = "";
 	if (!json_obj_str(doc, t, "coverUri", uri, sizeof(uri)) && album >= 0) {
@@ -900,6 +902,44 @@ int yandex_album_tracks(const char *album_id, yandex_track_t *out, int max) {
 	}
 	api_done(body, &doc);
 	return got;
+}
+
+bool yandex_album_meta(const char *album_id, yandex_album_meta_t *out) {
+	memset(out, 0, sizeof(*out));
+	char url[400];
+	snprintf(url, sizeof(url), "%s/albums/%s/with-tracks", api_url, album_id);
+	char *body;
+	json_doc_t doc;
+	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		return false;
+	}
+	int a = json_get(&doc, json_root(&doc), "result");
+	snprintf(out->id, sizeof(out->id), "%s", album_id);
+	json_obj_str(&doc, a, "title", out->title, sizeof(out->title));
+	// A compilation's artist is the service's placeholder ("сборник") with
+	// "various" set: the conventional name says it to any player.
+	int artists = json_get(&doc, a, "artists");
+	bool various = artists >= 0 && json_len(&doc, artists) > 0 && json_obj_bool(&doc, json_at(&doc, artists, 0), "various", false);
+	if (various) {
+		snprintf(out->artist, sizeof(out->artist), "Various Artists");
+	} else {
+		artists_of(&doc, a, out->artist, sizeof(out->artist));
+	}
+	json_obj_str(&doc, a, "genre", out->genre, sizeof(out->genre));
+	out->year = (int)json_obj_long(&doc, a, "year", 0);
+	if (!out->year) {
+		char date[32] = "";
+		json_obj_str(&doc, a, "releaseDate", date, sizeof(date));
+		out->year = atoi(date);
+	}
+	char uri[300] = "";
+	json_obj_str(&doc, a, "coverUri", uri, sizeof(uri));
+	yandex_cover_url(uri, 1000, out->cover, sizeof(out->cover));
+	int volumes = json_get(&doc, a, "volumes");
+	out->discs = volumes >= 0 && json_len(&doc, volumes) > 0 ? json_len(&doc, volumes) : 1;
+	out->track_count = (int)json_obj_long(&doc, a, "trackCount", 0);
+	api_done(body, &doc);
+	return out->title[0] != '\0';
 }
 
 int yandex_artist_albums(const char *artist_id, yandex_album_t *out, int max) {

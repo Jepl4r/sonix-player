@@ -9,6 +9,7 @@
 #include "src/system/streaming/provider.h"
 #include "src/system/streaming/yandex.h"
 #include "src/system/streaming/yandexcache.h"
+#include "src/system/streaming/yandexdl.h"
 
 // See yandexsync.h.
 
@@ -203,7 +204,24 @@ void yandexsync_likes_refresh(void (*done)(void)) {
 // the track's, is in the sidecar: read only when the star is tapped.
 // ---------------------------------------------------------------------------
 
-static bool provider_downloading(void) { return yandexcache_busy(); }
+// A track being saved to the library counts as a download too: the Wi-Fi
+// must stay up and the player awake for it, as for the cache's own.
+static bool provider_downloading(void) { return yandexcache_busy() || yandexdl_busy(); }
+
+static bool provider_network_wanted(void) { return yandexcache_network_wanted() || yandexdl_busy(); }
+
+// The card: the cache follows it, and a save queued for the old one stops.
+static void provider_set_root(const char *sd_root) {
+	yandexcache_set_root(sd_root);
+	yandexdl_set_root(sd_root);
+}
+
+// Shutdown, restart, update: the save in progress stops (its .part goes) and
+// the cache is swept as before.
+static void provider_clear_on_exit(void) {
+	yandexdl_cancel_all();
+	yandexcache_clear_on_exit();
+}
 
 static bool provider_is_track(const char *path) { return yandexcache_is_track(path); }
 
@@ -224,13 +242,14 @@ static void provider_fav_toggle(const char *path, bool want, stream_provider_don
 
 static stream_provider_t provider = {
 	.id = "yandex",
-	.set_root = yandexcache_set_root,
+	.set_root = provider_set_root,
 	.cache_dir = yandexcache_dir,
 	.owns_path = yandexcache_owns,
 	.downloading = provider_downloading,
-	.network_wanted = yandexcache_network_wanted,
-	// Transient, like Qobuz's: swept on the way out (yandexcache.h).
-	.clear_on_exit = yandexcache_clear_on_exit,
+	.network_wanted = provider_network_wanted,
+	// Transient, like Qobuz's: swept on the way out (yandexcache.h). What was
+	// saved to the library is the user's and is never touched.
+	.clear_on_exit = provider_clear_on_exit,
 	.is_track = provider_is_track,
 	.fav_get = provider_fav_get,
 	.fav_refresh = yandexsync_likes_refresh,

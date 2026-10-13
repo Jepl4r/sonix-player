@@ -22,6 +22,7 @@ streaming-keys.ini. FILES_DIR holds the audio the tracks resolve to:
                     moov first, AES-256-CTR with KEY_256
     t105.m4a    AAC in fragmented MP4 (codec "aac-mp4"): the lossy file of
                 every track that has one, and track 105's only file
+    cover.jpg   every album's cover (/cover/<size>)
 
     (t101.flac, t104.mp4 are kept for older tests; nothing serves them now.)
 
@@ -79,24 +80,34 @@ LOSSLESS = {
 MP3_ONLY = {"103"}
 
 
-def track(tid, title, artist, album_id, album, secs):
+def track(tid, title, artist, album_id, album, secs, index, volume=1):
     return {
         "id": str(tid),
         "title": title,
         "available": True,
         "durationMs": secs * 1000,
         "artists": [{"id": 7, "name": artist}],
-        "albums": [{"id": album_id, "title": album, "trackPosition": {"index": tid % 100}}],
+        "albums": [{"id": album_id, "title": album, "trackPosition": {"index": index, "volume": volume}}],
     }
 
 
 TRACKS = {
-    "101": track(101, "Pink Noise (FLAC)", "Mock Artist", 11, "Mock Album", 45),
-    "102": track(102, "Encrypted Sine", "Mock Artist", 11, "Mock Album", 25),
-    "103": track(103, "MP3 Sine", "Другой Артист", 12, "Second Album", 25),
-    "104": track(104, "FLAC in MP4", "Mock Artist", 12, "Second Album", 25),
-    "105": track(105, "AAC in MP4", "Mock Artist", 12, "Second Album", 30),
+    "101": track(101, "Pink Noise (FLAC)", "Mock Artist", 11, "Mock Album", 45, 1),
+    "102": track(102, "Encrypted Sine", "Mock Artist", 11, "Mock Album", 25, 2),
+    "103": track(103, "MP3 Sine", "Другой Артист", 12, "Second Album", 25, 1),
+    "104": track(104, "FLAC in MP4", "Mock Artist", 12, "Second Album", 25, 2),
+    "105": track(105, "AAC: in MP4?", "Mock Artist", 12, "Second Album", 30, 1, 2),
 }
+
+# The albums, as /albums/<id>/with-tracks gives them: the second has two
+# discs (volumes) and the artist of its first track differs from the album's.
+ALBUMS = {
+    "11": {"id": 11, "title": "Mock Album", "year": 2024, "genre": "rock", "trackCount": 2,
+           "artists": [{"id": 7, "name": "Mock Artist"}], "volumes": [["101", "102"]]},
+    "12": {"id": 12, "title": "Second Album", "year": 2025, "genre": "rusrock", "trackCount": 3,
+           "artists": [{"id": 7, "name": "Mock Artist"}], "volumes": [["103", "104"], ["105"]]},
+}
+
 
 state = {"polls": 0, "batch": 0, "liked": ["101", "102", "103", "104", "105"]}
 lock = threading.Lock()
@@ -160,6 +171,8 @@ class Handler(BaseHTTPRequestHandler):
         p = url.path
         if p.startswith("/files/"):
             return self.serve_file(p[len("/files/"):])
+        if p.startswith("/cover/"):
+            return self.serve_file("cover.jpg")  # covers are public, as on avatars.yandex.net
         if not self.authorised():
             return
         if self.like_refused("GET", p):
@@ -177,7 +190,14 @@ class Handler(BaseHTTPRequestHandler):
         if p == f"/users/{UID}/playlists/3":
             return self.send_json({"result": {"tracks": [{"id": 103, "track": TRACKS["103"]}, {"id": 101, "track": TRACKS["101"]}]}})
         if p.startswith("/albums/") and p.endswith("/with-tracks"):
-            return self.send_json({"result": {"id": 11, "title": "Mock Album", "volumes": [[TRACKS["101"], TRACKS["102"]]]}})
+            album = ALBUMS.get(p.split("/")[2])
+            if not album:
+                return self.send_json({"error": {"name": "not-found"}}, 404)
+            host = self.headers.get("Host")
+            result = dict(album, coverUri=f"http://{host}/cover/%%",
+                          volumes=[[TRACKS[t] for t in v] for v in album["volumes"]])
+            return self.send_json({"result": result})
+
         if p.startswith("/artists/") and p.endswith("/direct-albums"):
             return self.send_json({"result": {"albums": [{"id": 11, "title": "Mock Album", "year": 2024, "artists": [{"name": "Mock Artist"}]},
                                                          {"id": 12, "title": "Second Album", "year": 2025, "artists": [{"name": "Mock Artist"}]}]}})
@@ -186,7 +206,8 @@ class Handler(BaseHTTPRequestHandler):
             hits = [t for t in TRACKS.values() if text in t["title"].lower() or text in t["artists"][0]["name"].lower()]
             return self.send_json({"result": {
                 "tracks": {"results": hits},
-                "albums": {"results": [{"id": 11, "title": "Mock Album", "year": 2024, "artists": [{"name": "Mock Artist"}]}]},
+                "albums": {"results": [{"id": 11, "title": "Mock Album", "year": 2024, "artists": [{"name": "Mock Artist"}]},
+                                       {"id": 12, "title": "Second Album", "year": 2025, "artists": [{"name": "Mock Artist"}]}]},
                 "artists": {"results": [{"id": 7, "name": "Mock Artist"}]},
             }})
         if p == "/get-file-info":
@@ -247,7 +268,7 @@ class Handler(BaseHTTPRequestHandler):
         if rng:
             self.send_header("Content-Range", f"bytes {start}-{end}/{size}")
         self.end_headers()
-        kbps = int(os.environ.get("YANDEX_MOCK_KBPS", "0"))
+        kbps = int(os.environ.get("YANDEX_MOCK_KBPS") or 0)
         chunk = kbps * 1024 // 10 if kbps > 0 else len(data) or 1
         try:
             for at in range(0, len(data), chunk):
