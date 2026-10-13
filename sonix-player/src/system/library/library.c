@@ -1562,6 +1562,95 @@ static bool db_open_file(const char *db_path) {
 	return true;
 }
 
+// ---------------------------------------------------------------------------
+// What the index was written with
+//
+// Some of what the library shows is read from a file's tags or header at scan
+// time and nowhere else: a track's length, and whether a record is a
+// compilation filed under "Various Artists". An index written by a firmware
+// that did not know about one of them carries the gap until the card is
+// scanned again -- Detect changes only reads files that are new or changed,
+// and a backfill cannot invent what was never read. The search keys and the
+// sort keys are not in the list: those are worked out from what the table
+// already holds, and backfilled at boot.
+//
+// PRAGMA user_version holds the set, one bit per feature (library.h) plus
+// INDEX_FEATURES_KNOWN, which says the number was written here and is not the
+// zero every database starts with. A full scan writes every bit, cancelled or
+// not: it empties the tables first, so whatever rows it leaves were all
+// written by this firmware. Detect changes writes none -- the rows it leaves
+// alone are as old as they were.
+// ---------------------------------------------------------------------------
+
+#define INDEX_FEATURES_KNOWN (1u << 30)
+
+// What a full scan would add to the index open now; 0 with none open. Written
+// on whichever thread opens, closes or scans, read by the interface: a word,
+// and a stale answer only shows or hides a notice one page-open late.
+static volatile unsigned index_missing;
+
+static unsigned user_version_read(void) {
+	unsigned version = 0;
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "PRAGMA user_version", -1, &stmt, NULL) == SQLITE_OK) {
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			version = (unsigned)sqlite3_column_int(stmt, 0);
+		}
+		sqlite3_finalize(stmt);
+	}
+	return version;
+}
+
+static void user_version_write(unsigned version) {
+	char sql[48];
+	snprintf(sql, sizeof(sql), "PRAGMA user_version=%d", (int)version);
+	exec(sql);
+}
+
+// For a database from before the number was kept: which firmware wrote it,
+// told from the rows. Track lengths came in the same release as compilations
+// (1.2.1), so rows that carry lengths were written by a scan that knew about
+// both. The first few hundred rows are what the first full scan wrote -- the
+// ones Detect changes added since come after them -- so they are the sample:
+// the stock firmware leaves end_time at 0 on every one, this one fills it for
+// all but the odd file whose container does not give its length up cheaply.
+// A CUE sheet's tracks are left out of the count; their end_time was never
+// the length. With db_lock held.
+static unsigned index_features_guess(void) {
+	if (count_rows("SELECT COUNT(*) FROM (SELECT 1 FROM MEDIA_TABLE LIMIT 1)") == 0) {
+		// Nothing indexed: nothing in it predates anything.
+		return INDEX_FEATURES_KNOWN | LIBRARY_INDEX_FEATURES;
+	}
+	const char *sample = "(SELECT end_time FROM MEDIA_TABLE WHERE path NOT LIKE '%?track=%' ORDER BY rowid LIMIT 400)";
+	char sql[192];
+	snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s", sample);
+	int files = count_rows(sql);
+	snprintf(sql, sizeof(sql), "SELECT COUNT(*) FROM %s WHERE end_time > 0", sample);
+	int timed = count_rows(sql);
+	// Nine in ten: a few files without a length are this firmware's ordinary
+	// result, a sample mostly without one is an older scan.
+	bool current = files == 0 || timed * 10 >= files * 9;
+	printf("library: index from before its features were recorded; %d of %d sampled tracks have a length, %s\n",
+		   timed, files, current ? "taken as current" : "taken as an older scan");
+	return INDEX_FEATURES_KNOWN | (current ? LIBRARY_INDEX_FEATURES : 0);
+}
+
+// Reads (or, the first time, works out and writes) what the open index has.
+// With db_lock held.
+static void index_features_check(void) {
+	unsigned stored = user_version_read();
+	if (!(stored & INDEX_FEATURES_KNOWN)) {
+		stored = index_features_guess();
+		user_version_write(stored);
+	}
+	index_missing = LIBRARY_INDEX_FEATURES & ~stored;
+	if (index_missing) {
+		printf("library: a full scan would add to this index (features 0x%x)\n", index_missing);
+	}
+}
+
+unsigned library_index_missing(void) { return db ? index_missing : 0; }
+
 bool library_open(const char *db_path) {
 	if (db) {
 		return true;
@@ -1571,6 +1660,7 @@ bool library_open(const char *db_path) {
 	}
 
 	pthread_mutex_lock(&db_lock);
+	index_features_check();
 	links_check();
 	bump_all_generations(); // a different card is a different set of row ids
 	pthread_mutex_unlock(&db_lock);
@@ -1610,6 +1700,7 @@ void library_close(void) {
 			fprintf(stderr, "library: sqlite3_close returned %d; the handle may be leaking\n", rc);
 		}
 		db = NULL;
+		index_missing = 0;
 		artist_links = album_artist_links = genre_links = false;
 		bump_all_generations(); // every open list is now looking at nothing
 	}
@@ -1721,6 +1812,7 @@ static bool replace_damaged(void) {
 		rescue_user_tables(aside);
 	}
 	if (opened) {
+		index_features_check(); // a new, empty file: nothing to offer
 		links_check();
 	}
 	bump_all_generations();
@@ -5772,6 +5864,10 @@ static void full_scan_run(void) {
 		exec("ROLLBACK"); // no-op when the BEGIN itself never took
 	} else {
 		exec("COMMIT");
+		// Stopped early or not: the tables were emptied, so every row in them
+		// now was written by this scan.
+		user_version_write(INDEX_FEATURES_KNOWN | LIBRARY_INDEX_FEATURES);
+		index_missing = 0;
 	}
 	finalize_statements();
 

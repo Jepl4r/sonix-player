@@ -8,6 +8,7 @@
 #include "src/gui/library/browser.h"
 #include "src/gui/library/libraryscan.h"
 #include "src/gui/nowplaying/coverflow.h"
+#include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gridpage.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
@@ -303,9 +304,128 @@ static void show_tiles_or_panel(void) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// What a full rescan would add
+//
+// An index written before this firmware knew about track lengths or
+// compilations does without them until the card is scanned again
+// (library_index_missing()). Nothing rescans on its own -- that is minutes of
+// card reading, and the user's to start -- so the page says what a rescan
+// would bring, once: a card at the foot of the tiles, with the scan button and
+// "Not now". "Not now" is remembered for those features ([library]
+// index_notice_seen, a bit each), so the card comes back only for something
+// a later firmware adds. Built the first time it has something to say; on an
+// index that is up to date it costs one comparison per visit.
+// ---------------------------------------------------------------------------
+
+static lv_obj_t *upgrade_card;
+static lv_obj_t *upgrade_text;
+static lv_obj_t *upgrade_scan_pill;
+static lv_obj_t *upgrade_later_pill;
+
+static unsigned upgrade_pending(void) {
+	unsigned seen = (unsigned)config_get_int("library", "index_notice_seen", 0);
+	return library_index_missing() & ~seen;
+}
+
+static void upgrade_scan_cb(lv_event_t *e) {
+	(void)e;
+	// The scan row's own way in: which folders, then the scan page. The card
+	// goes when the scan has rewritten the index, not before -- the folder
+	// question can still be cancelled.
+	libraryscan_choose_folders();
+}
+
+static void upgrade_later_cb(lv_event_t *e) {
+	(void)e;
+	unsigned seen = (unsigned)config_get_int("library", "index_notice_seen", 0);
+	config_set_int("library", "index_notice_seen", (long)(seen | library_index_missing()));
+	config_save();
+	lv_obj_set_hidden(upgrade_card, true);
+}
+
+// The pills' colours are hand-set (settingsrow_pill_active), so a change of
+// theme paints them again.
+static void upgrade_repaint(void) {
+	settingsrow_pill_active(upgrade_scan_pill, true);
+	settingsrow_pill_active(upgrade_later_pill, false);
+}
+
+static void upgrade_build(void) {
+	upgrade_card = lv_obj_create(music_screen);
+	lv_obj_set_width(upgrade_card, grid_cfg->screen_width - 2 * grid_cfg->padding);
+	lv_obj_set_height(upgrade_card, LV_SIZE_CONTENT);
+	lv_obj_align(upgrade_card, LV_ALIGN_BOTTOM_MID, 0, -grid_cfg->padding);
+	lv_obj_add_style(upgrade_card, &theme_style_card, 0);
+	lv_obj_set_style_radius(upgrade_card, 16, 0);
+	lv_obj_set_style_border_width(upgrade_card, 0, 0);
+	// Lifted off the tiles it lies over, so it reads as a notice and not as a
+	// seventh tile.
+	lv_obj_set_style_shadow_width(upgrade_card, 24, 0);
+	lv_obj_set_style_shadow_opa(upgrade_card, LV_OPA_40, 0);
+	lv_obj_set_style_shadow_color(upgrade_card, lv_color_black(), 0);
+	lv_obj_set_style_pad_all(upgrade_card, 20, 0);
+	lv_obj_set_style_pad_row(upgrade_card, 16, 0);
+	lv_obj_set_scrollable(upgrade_card, false);
+	lv_obj_set_flex_flow(upgrade_card, LV_FLEX_FLOW_COLUMN);
+
+	upgrade_text = lv_label_create(upgrade_card);
+	lv_label_set_long_mode(upgrade_text, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(upgrade_text, lv_pct(100));
+	lv_obj_add_style(upgrade_text, &theme_style_text, 0);
+	lv_obj_set_style_text_font(upgrade_text, &font_ui_22, 0);
+
+	lv_obj_t *pills = lv_obj_create(upgrade_card);
+	lv_obj_remove_style_all(pills);
+	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_style_pad_gap(pills, 12, 0);
+	lv_obj_set_scrollable(pills, false);
+	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
+	upgrade_scan_pill = settingsrow_pill(pills, "music_index_rescan", 0, upgrade_scan_cb);
+	upgrade_later_pill = settingsrow_pill(pills, "music_index_not_now", 0, upgrade_later_cb);
+	upgrade_repaint();
+	theme_register_refresh(upgrade_repaint);
+}
+
+// On the tiles only, never over the scan panel or the missing-card note, and
+// not while a scan is running: that scan is the answer already.
+static void upgrade_show(bool tiles_shown) {
+	unsigned pending = tiles_shown && !library_scan_running() ? upgrade_pending() : 0;
+	if (!pending) {
+		if (upgrade_card) {
+			lv_obj_set_hidden(upgrade_card, true);
+		}
+		return;
+	}
+	if (!upgrade_card) {
+		upgrade_build();
+	}
+	static const struct {
+		unsigned feature;
+		const char *tag;
+	} FEATURES[] = {
+		{LIBRARY_INDEX_DURATIONS, "music_index_durations"},
+		{LIBRARY_INDEX_COMPILATIONS, "music_index_compilations"},
+	};
+	char text[512];
+	int used = snprintf(text, sizeof(text), "%s", tr("music_index_notice"));
+	bool first = true;
+	for (size_t i = 0; i < sizeof(FEATURES) / sizeof(FEATURES[0]) && used < (int)sizeof(text); i++) {
+		if (pending & FEATURES[i].feature) {
+			used += snprintf(text + used, sizeof(text) - (size_t)used, "%s%s", first ? " " : ", ",
+							 tr(FEATURES[i].tag));
+			first = false;
+		}
+	}
+	lv_label_set_text(upgrade_text, text);
+	lv_obj_set_hidden(upgrade_card, false);
+	lv_obj_move_foreground(upgrade_card);
+}
+
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
 	show_tiles_or_panel();
+	upgrade_show(gui_card_available() && library_track_count() > 0);
 }
 
 // The corner buttons share everything but icon and action.
