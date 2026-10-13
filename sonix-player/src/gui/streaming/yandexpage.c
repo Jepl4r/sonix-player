@@ -10,6 +10,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
@@ -95,6 +96,9 @@ typedef enum {
 	// with the dislikes.
 	JOB_LIKE_ARTIST,
 	JOB_LIKE_ALBUM,
+	// An album's tracks for "Play next" / "Add to end of queue" (`n`: where),
+	// in order with the above.
+	JOB_QUEUE_ALBUM,
 	// The details of one page of the list on screen (yandexlist.h).
 	JOB_PAGE,
 	// Built on the GUI thread from the index of saved tracks, never sent to
@@ -219,7 +223,7 @@ static void job_done_async(void *user);
 
 static void submit(const job_t *job) {
 	pthread_mutex_lock(&job_lock);
-	if (job->kind == JOB_DISLIKE || job->kind == JOB_LIKE_ARTIST || job->kind == JOB_LIKE_ALBUM) {
+	if (job->kind == JOB_DISLIKE || job->kind == JOB_LIKE_ARTIST || job->kind == JOB_LIKE_ALBUM || job->kind == JOB_QUEUE_ALBUM) {
 		if (events_count < EVENTS_MAX) {
 			events[events_count++] = *job;
 		}
@@ -379,6 +383,9 @@ static void run_list_job(const job_t *job) {
 	}
 	case JOB_LIKED_ALBUMS:
 	case JOB_NEW_RELEASES: {
+		if (job->kind == JOB_NEW_RELEASES) {
+			ensure_collection(); // the rows' menus say "Remove like" for a liked album
+		}
 		yandex_album_t *a = (yandex_album_t *)tmp;
 		got = job->kind == JOB_LIKED_ALBUMS ? yandex_liked_albums(a, MAX_ROWS) : yandex_new_releases(a, MAX_ROWS);
 		add_album_rows(a, got);
@@ -410,6 +417,7 @@ static void run_list_job(const job_t *job) {
 	}
 	case JOB_SEARCH: {
 		// Artists first, then albums, then tracks: one list, short of each.
+		ensure_collection();
 		yandex_artist_t ar[5];
 		yandex_album_t al[10];
 		int nr = 5, na = 10, nt = 40;
@@ -532,6 +540,21 @@ static void *worker_main(void *arg) {
 				snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
 			}
 			break;
+		case JOB_QUEUE_ALBUM: {
+			yandex_track_t *tmp = calloc(MAX_ROWS * 2, sizeof(*tmp));
+			int got = tmp ? yandex_album_tracks(job.a, tmp, MAX_ROWS * 2) : -1;
+			if (got < 0) {
+				result_class = streamerr_describe("yandex", tmp ? yandex_last_error() : tr("out_of_memory"), result_error, sizeof(result_error));
+			}
+			for (int i = 0; i < got && result_count < MAX_ROWS; i++) {
+				if (tmp[i].available) {
+					result[result_count].kind = ROW_TRACK;
+					result[result_count++].u.track = tmp[i];
+				}
+			}
+			free(tmp);
+			break;
+		}
 		case JOB_LIKE_ARTIST:
 		case JOB_LIKE_ALBUM: {
 			bool ok = job.kind == JOB_LIKE_ARTIST ? yandex_like_artist(job.a, job.n != 0) : yandex_like_album(job.a, job.n != 0);
@@ -1270,6 +1293,74 @@ static void like_object_done(const job_result_t *r) {
 	artist_bar_refresh();
 }
 
+// ---------------------------------------------------------------------------
+// "Play next" and "Add to end of queue"
+//
+// The same two lines as on the Library's rows, through the same door
+// (trackmenu_queue_paths: the queue written down once, the toast). A Yandex
+// track goes in by its file -- the saved one, or the cache's, fetched when
+// playback reaches it (yandexplay.c knows the track from here on, whatever
+// queue it lands in). An album's tracks are asked for first, unless the
+// album is on the card.
+// ---------------------------------------------------------------------------
+
+static void queue_tracks(const yandex_track_t *tracks, int count, playlist_queue_where_t where) {
+	char **paths = NULL;
+	int n = yandexplay_paths_for(tracks, count, &paths);
+	if (n > 0) {
+		trackmenu_queue_paths((const char *const *)paths, n, where);
+	} else {
+		gui_notify_popup("playlist_cannot_add_the_tracks");
+	}
+	free(paths);
+}
+
+static void do_row_queue(void *user) {
+	playlist_queue_where_t where = (playlist_queue_where_t)(intptr_t)user;
+	if (menu_row.kind == ROW_TRACK) {
+		queue_tracks(&menu_row.u.track, 1, where);
+		return;
+	}
+	if (menu_row.kind != ROW_ALBUM) {
+		return;
+	}
+	// In the Saved list, or saved whole: from the card, network or not.
+	int saved = yandexsaved_album_count(menu_row.u.album.id);
+	if (saved > 0 && (list_kind == JOB_SAVED || row_saved(&menu_row))) {
+		yandex_track_t *tracks = calloc((size_t)saved, sizeof(*tracks));
+		int n = tracks ? yandexsaved_tracks(menu_row.u.album.id, tracks, saved) : 0;
+		queue_tracks(tracks, n, where);
+		free(tracks);
+		return;
+	}
+	run(JOB_QUEUE_ALBUM, menu_row.u.album.id, NULL, (int)where);
+}
+
+// The album's tracks have come: queued now.
+static void queue_album_done(job_result_t *r) {
+	if (r->count == 0) {
+		toast_error(r->error[0] ? r->error : tr("playlist_cannot_add_the_tracks"));
+		return;
+	}
+	yandex_track_t *tracks = malloc((size_t)r->count * sizeof(*tracks));
+	if (!tracks) {
+		toast_error(tr("out_of_memory"));
+		return;
+	}
+	for (int i = 0; i < r->count; i++) {
+		tracks[i] = r->rows[i].u.track;
+	}
+	queue_tracks(tracks, r->count, (playlist_queue_where_t)r->page);
+	free(tracks);
+}
+
+// The two lines, into `items` (room for two). Labels are the Library's keys.
+static int queue_items(popover_item_t *items) {
+	items[0] = (popover_item_t){"queue_play_next", do_row_queue, (void *)(intptr_t)PLAYLIST_QUEUE_NEXT, false};
+	items[1] = (popover_item_t){"queue_add_to_end", do_row_queue, (void *)(intptr_t)PLAYLIST_QUEUE_END, false};
+	return 2;
+}
+
 static void save_refused(void) { toast_error(tr("yandex_save_refused")); }
 
 static void do_row_save(void *user) {
@@ -1355,6 +1446,11 @@ static void row_menu_cb(lv_event_t *e) {
 		items[n].action = do_row_like;
 		items[n].user = liked ? NULL : (void *)1;
 		n++;
+		// The two "add to" lines next to each other, as on the Library's
+		// rows. Not for a track the service cannot give.
+		if (menu_row.u.track.available) {
+			n += queue_items(&items[n]);
+		}
 		if (saved) {
 			items[n].label = "yandex_saved_on_card";
 			items[n].checked = true;
@@ -1370,6 +1466,7 @@ static void row_menu_cb(lv_event_t *e) {
 		items[n].action = do_album_like;
 		items[n].user = liked ? NULL : (void *)1;
 		n++;
+		n += queue_items(&items[n]);
 		if (saved) {
 			items[n].label = "yandex_saved_on_card";
 			items[n].checked = true;
@@ -1742,6 +1839,11 @@ static void job_done_async(void *user) {
 	}
 	if (r->kind == JOB_LIKE_ARTIST || r->kind == JOB_LIKE_ALBUM) {
 		like_object_done(r);
+		free_result(r);
+		return;
+	}
+	if (r->kind == JOB_QUEUE_ALBUM) {
+		queue_album_done(r);
 		free_result(r);
 		return;
 	}
