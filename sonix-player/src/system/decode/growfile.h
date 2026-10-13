@@ -50,6 +50,16 @@ bool growfile_is_growing(const char *path);
 // its tags) while it is playing is the fastest way to break everything.
 bool growfile_prefix_is_growing(const char *prefix);
 
+// What is being written right now, for a page that shows the downloads: up to
+// `max` entries copied out, their number returned. A snapshot under the lock,
+// nothing waited for: cheap enough for a once-a-second poll.
+typedef struct {
+	char path[512];
+	long done;
+	long total; // 0 when the server did not say
+} growfile_info_t;
+int growfile_list(growfile_info_t *out, int max);
+
 // --- reader side ----------------------------------------------------------
 
 // Registers the question "is there a reason to stop waiting?". The waits in

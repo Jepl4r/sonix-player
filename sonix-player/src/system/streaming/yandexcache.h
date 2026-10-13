@@ -107,6 +107,9 @@ void yandexcache_note_played(const char *path);
 // The tracks the queue still expects: the current one and those after it. The
 // sweep and the ceiling skip them. GUI thread.
 void yandexcache_set_protected(const char *const *paths, int count);
+// "Clear cache" on the Downloads page: every file but the one coming down
+// right now, which playback may be reading. Any thread.
+void yandexcache_clear(void);
 // Shutdown, restart, update, factory reset: the cache does not survive a power
 // cycle.
 void yandexcache_clear_on_exit(void);
