@@ -629,13 +629,21 @@ static int tracks_from_array(const json_doc_t *doc, int arr, yandex_track_t *out
 static int tracks_by_id(char (*ids)[YANDEX_LIKED_ID_MAX], int count, yandex_track_t *out, int max) {
 	int got = 0;
 	for (int from = 0; from < count && got < max; from += 100) {
-		char *form = malloc(32 + 17 * 100);
+		// Sized from the ids themselves: a liked id may carry its album
+		// ("12345678:87654321") and the separator is an escaped comma, three
+		// bytes, so no fixed width per id is safe.
+		int to = count - from < 100 ? count : from + 100;
+		size_t room = sizeof("track-ids=");
+		for (int i = from; i < to; i++) {
+			room += 3 + strnlen(ids[i], YANDEX_LIKED_ID_MAX);
+		}
+		char *form = malloc(room);
 		if (!form) {
 			break;
 		}
-		size_t used = (size_t)sprintf(form, "track-ids=");
-		for (int i = from; i < count && i < from + 100; i++) {
-			used += (size_t)sprintf(form + used, "%s%s", i > from ? "%2C" : "", ids[i]);
+		size_t used = (size_t)snprintf(form, room, "track-ids=");
+		for (int i = from; i < to && used < room; i++) {
+			used += (size_t)snprintf(form + used, room - used, "%s%.*s", i > from ? "%2C" : "", YANDEX_LIKED_ID_MAX, ids[i]);
 		}
 		char url[400];
 		snprintf(url, sizeof(url), "%s/tracks", api_url);
