@@ -49,8 +49,9 @@
 // sx_row_set_compact() is called.
 //
 // UI thread only. Cost: 13 objects per row (16 with a thumbnail image); an
-// idle row runs nothing. The equaliser runs one 10 fps timer while at least
-// one is shown and the music plays, redrawing only its 21 x 22 px.
+// idle row runs nothing. The equaliser runs one 10 fps timer while a set of
+// bars exists and the music plays (stepping them only while one is on screen,
+// paused with the panel dark), redrawing only their 21 x 22 px.
 // ---------------------------------------------------------------------------
 
 typedef struct {

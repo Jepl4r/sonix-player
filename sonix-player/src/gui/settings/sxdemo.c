@@ -1,10 +1,12 @@
 #include "sxdemo.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
+#include "src/gui/shell/switcher.h"
 #include "src/gui/shell/sx_card.h"
 #include "src/gui/shell/sx_palette.h"
 #include "src/gui/shell/sx_row.h"
@@ -310,8 +312,22 @@ static void build(gui_config_t *cfg) {
 	theme_register_refresh(paint_gradient);
 }
 
+#ifdef HOST_BUILD
+// Emulator only: SONIX_SXDEMO=1 opens this page shortly after start, for
+// screenshots of the components without a walk through the settings.
+static void open_cb(lv_timer_t *t) {
+	lv_timer_delete(t);
+	switch_screen(sxdemo_screen);
+}
+#endif
+
 void sxdemo_init(gui_config_t *cfg) {
 	(void)cfg;
 	sxdemo_screen = lv_obj_create(NULL);
 	gui_page_defer(sxdemo_screen, build);
+#ifdef HOST_BUILD
+	if (getenv("SONIX_SXDEMO")) {
+		lv_timer_create(open_cb, 1500, NULL);
+	}
+#endif
 }

@@ -13,6 +13,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/touch.h"
 #include "src/system/core/lang.h"
+#include "src/system/device/power.h"
 
 typedef enum { LEAD_NONE, LEAD_THUMB, LEAD_NUMBER, LEAD_LETTER } lead_kind_t;
 
@@ -120,9 +121,16 @@ static bool eq_any_shown(void) {
 	return false;
 }
 
+// Runs while the music plays and a set of bars exists; steps them only while
+// one of them is on screen. Pausing it when none is on screen would leave the
+// bars standing still on coming back to their page until the next change of
+// play state -- the visibility check is the cheaper price.
 static void eq_timer_cb(lv_timer_t *t) {
-	if (!eq_playing || !eq_any_shown()) {
+	if (!eq_playing || eq_count == 0) {
 		lv_timer_pause(t);
+		return;
+	}
+	if (!eq_any_shown()) {
 		return;
 	}
 	eq_clock_ms += SX_EQ_FRAME_MS;
@@ -137,6 +145,8 @@ static void eq_timer_cb(lv_timer_t *t) {
 static void eq_wake(void) {
 	if (!eq_timer) {
 		eq_timer = lv_timer_create(eq_timer_cb, SX_EQ_FRAME_MS, NULL);
+		// Nothing to animate for a dark panel.
+		power_pause_in_standby(eq_timer);
 	}
 	bool run = eq_playing && eq_count > 0;
 	if (run) {
