@@ -28,6 +28,13 @@ lv_obj_t *settingsrow_page(lv_obj_t *screen, gui_config_t *cfg, const char *titl
 // page with no corner buttons the whole width back.
 void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int buttons);
 
+// 2.0: the heading of `screen` takes the whole width when nothing else stands
+// in the header row and its page never said how many buttons it has there --
+// the default reserves one, which on a page with none cut long titles short.
+// Called by the switcher as each page is shown; does nothing after the page
+// set the width itself.
+void settingsrow_title_fit_header(lv_obj_t *screen, gui_config_t *cfg);
+
 // The heading a settingsrow_page() built, for a page whose title changes after
 // it is built (Language names itself in two languages and one of them moves).
 lv_obj_t *settingsrow_page_title(lv_obj_t *screen);

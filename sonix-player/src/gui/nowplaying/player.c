@@ -26,6 +26,7 @@
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/shell/sx_mini.h"
 #include "src/gui/shell/sx_palette.h"
+#include "src/gui/shell/sx_row.h"
 #include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
@@ -722,6 +723,7 @@ static void apply_playback_status(audio_status_t status) {
 	// wait for its own five-second poll; so does the mini player.
 	topbar_refresh_playback();
 	sx_mini_set_playing(playing);
+	sx_eq_set_playing(playing);
 
 	// Every route into and out of playing comes through here -- the button, the
 	// side keys, the end of a track, a remote, the poll putting the screen back

@@ -29,6 +29,15 @@ static void parts_free_cb(lv_event_t *e) { free(lv_event_get_user_data(e)); }
 
 static card_parts_t *parts_of(lv_obj_t *card) { return card ? lv_obj_get_user_data(card) : NULL; }
 
+// The same for a part of the head row: asked for one, the head is in use.
+static card_parts_t *head_parts(lv_obj_t *card) {
+	card_parts_t *p = parts_of(card);
+	if (p && p->head) {
+		lv_obj_set_hidden(p->head, false);
+	}
+	return p;
+}
+
 // ---------------------------------------------------------------------------
 // The looks
 // ---------------------------------------------------------------------------
@@ -125,11 +134,18 @@ lv_obj_t *sx_card_create(lv_obj_t *parent) {
 		lv_obj_set_flex_align(p->head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 		lv_obj_set_style_pad_column(p->head, 10, 0);
 
+		// The text column carries the head's 60 px itself and centres its
+		// lines in them: a row track is only as tall as its tallest child, so
+		// a minimum on the head alone would leave the text at its top.
 		p->text = sx_box(p->head);
 		lv_obj_set_height(p->text, LV_SIZE_CONTENT);
+		lv_obj_set_style_min_height(p->text, SX_CARD_MIN_H, 0);
 		lv_obj_set_flex_grow(p->text, 1);
 		lv_obj_set_flex_flow(p->text, LV_FLEX_FLOW_COLUMN);
+		lv_obj_set_flex_align(p->text, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 		lv_obj_set_style_pad_row(p->text, 4, 0);
+		// Until something is put in it: a card of pills alone has no head.
+		lv_obj_set_hidden(p->head, true);
 	}
 	return card;
 }
@@ -160,7 +176,7 @@ void sx_card_on_click(lv_obj_t *card, lv_event_cb_t cb, void *user) {
 }
 
 lv_obj_t *sx_card_title(lv_obj_t *card, const char *text) {
-	card_parts_t *p = parts_of(card);
+	card_parts_t *p = head_parts(card);
 	if (!p) {
 		return NULL;
 	}
@@ -177,7 +193,7 @@ lv_obj_t *sx_card_title(lv_obj_t *card, const char *text) {
 }
 
 lv_obj_t *sx_card_subtitle(lv_obj_t *card, const char *text, bool mono) {
-	card_parts_t *p = parts_of(card);
+	card_parts_t *p = head_parts(card);
 	if (!p) {
 		return NULL;
 	}
@@ -196,7 +212,7 @@ lv_obj_t *sx_card_subtitle(lv_obj_t *card, const char *text, bool mono) {
 }
 
 lv_obj_t *sx_card_value(lv_obj_t *card, const char *text) {
-	card_parts_t *p = parts_of(card);
+	card_parts_t *p = head_parts(card);
 	if (!p) {
 		return NULL;
 	}
@@ -212,7 +228,7 @@ lv_obj_t *sx_card_value(lv_obj_t *card, const char *text) {
 }
 
 lv_obj_t *sx_card_chevron(lv_obj_t *card) {
-	card_parts_t *p = parts_of(card);
+	card_parts_t *p = head_parts(card);
 	if (!p) {
 		return NULL;
 	}
@@ -243,7 +259,7 @@ static void switch_tap_cb(lv_event_t *e) {
 }
 
 lv_obj_t *sx_card_switch(lv_obj_t *card, lv_event_cb_t cb) {
-	card_parts_t *p = parts_of(card);
+	card_parts_t *p = head_parts(card);
 	if (!p) {
 		return NULL;
 	}

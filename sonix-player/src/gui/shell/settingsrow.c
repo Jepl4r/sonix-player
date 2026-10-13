@@ -306,6 +306,28 @@ void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int butt
 	fit_title(title, width);
 }
 
+void settingsrow_title_fit_header(lv_obj_t *screen, gui_config_t *cfg) {
+	lv_obj_t *title = settingsrow_page_title(screen);
+	if (!title || lv_obj_get_style_width(title, LV_PART_MAIN) != title_width(cfg, 1)) {
+		return; // no heading of ours, or the page sized it itself
+	}
+	uint32_t count = lv_obj_get_child_count(screen);
+	for (uint32_t i = 0; i < count; i++) {
+		lv_obj_t *child = lv_obj_get_child(screen, (int32_t)i);
+		if (child == title || lv_obj_is_hidden(child) || lv_obj_check_type(child, &lv_label_class)) {
+			continue;
+		}
+		int32_t y = lv_obj_get_style_y(child, LV_PART_MAIN);
+		lv_align_t align = lv_obj_get_style_align(child, LV_PART_MAIN);
+		bool top = align == LV_ALIGN_DEFAULT || align == LV_ALIGN_TOP_LEFT || align == LV_ALIGN_TOP_MID ||
+				   align == LV_ALIGN_TOP_RIGHT;
+		if (top && y >= SX_STATUSBAR_H && y < SX_BODY_TOP) {
+			return; // something of the page's own in the header row
+		}
+	}
+	settingsrow_title_corner_slots(title, cfg, 0);
+}
+
 // Returns the heading settingsrow_page() created, for pages whose title is not
 // fixed text. Found by class rather than by index, so callers do not depend on
 // the order in which this file creates children.

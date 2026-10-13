@@ -24,6 +24,7 @@
 #include "src/gui/shell/touch.h"
 #include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/shell/quickpanel.h"
+#include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/sx_frame.h"
 #include "src/gui/shell/sx_mini.h"
 #include "src/gui/shell/sx_sheet.h"
@@ -61,6 +62,7 @@ static lv_obj_t *chevron_page;
 // status bar: normally it tucks in underneath, on the player (status bar
 // hidden, artwork at the top) it moves up to the top edge.
 static int8_t back_btn_top_bar_height;
+static gui_config_t *switcher_cfg;
 
 // On the player the status bar is hidden, so there is no row of its own for the
 // chevron to line up with and it would sit against the top edge. This is the
@@ -743,6 +745,9 @@ static void load_screen_dir(lv_obj_t *target_screen, nav_dir_t dir) {
 	// their glyph (touch.h). Looked for here, on the way in, so that every
 	// page's own way of building them is covered without each being told.
 	touch_header(target_screen);
+	if (switcher_cfg) {
+		settingsrow_title_fit_header(target_screen, switcher_cfg);
+	}
 
 	// The bottom slot: lists given room at their end, bottom controls lifted
 	// clear of the mini player, an idle card put in place (sx_frame.h).
@@ -1011,6 +1016,7 @@ void back_btn_player_mode(bool in_player) {
 
 // The chevron lives on the top layer, so one button serves every page.
 void back_btn_init(gui_config_t *cfg) {
+	switcher_cfg = cfg;
 	back_btn_top_bar_height = cfg->top_bar_height;
 
 	back_btn = lv_btn_create(lv_layer_top());
