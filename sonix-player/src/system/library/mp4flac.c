@@ -175,6 +175,120 @@ static bool find_box(const uint8_t *data, size_t size, const char *name, box_t *
 }
 
 // ---------------------------------------------------------------------------
+// The length
+//
+// A whole MP4 says how long its track is in `stts` (runs of samples of one
+// duration). A fragmented one has an empty `stts` and says it fragment by
+// fragment instead, in each `trun`: a count, and per sample a duration or,
+// failing that, the default of the `tfhd` or, failing that, of the `trex`.
+// The sum, in the `mdhd` timescale, is the length the STREAMINFO of a
+// fragmented FLAC leaves at zero.
+// ---------------------------------------------------------------------------
+
+static void read_timing(mp4flac_t *m, const uint8_t *init, size_t init_size) {
+	box_t box;
+	if (find_box(init, init_size, "mdhd", &box, 0) && box.payload_size >= 24) {
+		// version 0: flags 4, created 4, modified 4, timescale 4, duration 4;
+		// version 1: the dates and the duration are 64-bit.
+		m->timescale = be32(box.payload + (box.payload[0] == 1 ? 20 : 12));
+	}
+	if (find_box(init, init_size, "trex", &box, 0) && box.payload_size >= 24) {
+		m->default_duration = be32(box.payload + 12); // flags, track, description, duration
+	}
+	if (find_box(init, init_size, "stts", &box, 0) && box.payload_size >= 8) {
+		uint32_t entries = be32(box.payload + 4);
+		for (uint64_t i = 0; i < entries && 8 + (i + 1) * 8 <= box.payload_size; i++) {
+			const uint8_t *e = box.payload + 8 + i * 8;
+			m->duration += (uint64_t)be32(e) * be32(e + 4);
+		}
+	}
+}
+
+static void count_traf(mp4flac_t *m, const uint8_t *data, size_t size) {
+	uint32_t fallback = m->default_duration;
+	walk_t w;
+	walk_init(&w, data, size);
+	const uint8_t *name;
+	const uint8_t *body;
+	size_t len;
+	while (walk_next(&w, &name, &body, &len)) {
+		if (memcmp(name, "tfhd", 4) == 0 && len >= 8) {
+			uint32_t flags = be32(body) & 0xffffff;
+			size_t at = 8 + ((flags & 0x01) ? 8 : 0) + ((flags & 0x02) ? 4 : 0);
+			if ((flags & 0x08) && at + 4 <= len) {
+				fallback = be32(body + at);
+			}
+		} else if (memcmp(name, "trun", 4) == 0 && len >= 8) {
+			uint32_t flags = be32(body) & 0xffffff;
+			uint64_t count = be32(body + 4);
+			if (!(flags & 0x100)) {
+				m->duration += count * fallback;
+				continue;
+			}
+			size_t at = 8 + ((flags & 0x01) ? 4 : 0) + ((flags & 0x04) ? 4 : 0);
+			size_t per = 4 + ((flags & 0x200) ? 4 : 0) + ((flags & 0x400) ? 4 : 0) + ((flags & 0x800) ? 4 : 0);
+			for (uint64_t i = 0; i < count && at + 4 <= len; i++, at += per) {
+				m->duration += be32(body + at);
+			}
+		}
+	}
+}
+
+static void count_segment(mp4flac_t *m, const uint8_t *data, size_t size) {
+	walk_t w;
+	walk_init(&w, data, size);
+	const uint8_t *name;
+	const uint8_t *body;
+	size_t len;
+	while (walk_next(&w, &name, &body, &len)) {
+		if (memcmp(name, "moof", 4) != 0) {
+			continue;
+		}
+		walk_t inner;
+		walk_init(&inner, body, len);
+		const uint8_t *child;
+		const uint8_t *cbody;
+		size_t clen;
+		while (walk_next(&inner, &child, &cbody, &clen)) {
+			if (memcmp(child, "traf", 4) == 0) {
+				count_traf(m, cbody, clen);
+			}
+		}
+	}
+}
+
+uint64_t mp4flac_total_samples(const mp4flac_t *m) {
+	if (!m || !m->duration) {
+		return 0;
+	}
+	if (!m->timescale || !m->sample_rate || m->timescale == m->sample_rate) {
+		return m->duration;
+	}
+	return m->duration * m->sample_rate / m->timescale;
+}
+
+bool mp4flac_patch_total_samples(const char *path, uint64_t samples) {
+	if (!path || !samples || samples >= (1ULL << 36)) {
+		return false;
+	}
+	FILE *f = fopen(path, "r+b");
+	if (!f) {
+		return false;
+	}
+	// "fLaC", the STREAMINFO block header, then its 34 bytes: the 36-bit total
+	// sits in the low nibble of byte 13 and all of bytes 14-17.
+	uint8_t head[8 + 18];
+	bool ok = fread(head, 1, sizeof(head), f) == sizeof(head) && memcmp(head, "fLaC", 4) == 0 && (head[4] & 0x7f) == 0;
+	uint8_t *si = head + 8;
+	ok = ok && (si[13] & 0x0f) == 0 && !si[14] && !si[15] && !si[16] && !si[17];
+	if (ok) {
+		uint8_t patch[5] = {(uint8_t)((si[13] & 0xf0) | ((samples >> 32) & 0x0f)), (uint8_t)(samples >> 24), (uint8_t)(samples >> 16), (uint8_t)(samples >> 8), (uint8_t)samples};
+		ok = fseek(f, 8 + 13, SEEK_SET) == 0 && fwrite(patch, 1, sizeof(patch), f) == sizeof(patch);
+	}
+	return fclose(f) == 0 && ok;
+}
+
+// ---------------------------------------------------------------------------
 
 const char *mp4flac_extension_for(const char *codecs) {
 	// Plain "flac", but also "fLaC" and the dotted forms: the manifest field is
@@ -232,6 +346,9 @@ bool mp4flac_begin(mp4flac_t *m, FILE *out, const char *codecs, const uint8_t *i
 	// exactly what has to be written after the signature.
 	const uint8_t *blocks = dfla.payload + 4;
 	size_t blocks_size = dfla.payload_size - 4;
+	// The STREAMINFO's 20-bit sample rate, bytes 10 to 12 of its body.
+	m->sample_rate = ((uint32_t)blocks[4 + 10] << 12) | ((uint32_t)blocks[4 + 11] << 4) | (blocks[4 + 12] >> 4);
+	read_timing(m, init, init_size);
 
 	if (!write_all(m, "fLaC", 4)) {
 		return false;
@@ -266,6 +383,8 @@ bool mp4flac_segment(mp4flac_t *m, const uint8_t *data, size_t size) {
 		return write_all(m, data, size);
 	}
 
+	count_segment(m, data, size);
+
 	// A segment can carry more than one `mdat` (several fragments in one
 	// segment). They hold FLAC frames back to back and must be written in the
 	// order they appear.
@@ -286,3 +405,5 @@ bool mp4flac_segment(mp4flac_t *m, const uint8_t *data, size_t size) {
 	// comparing `written` with `header_bytes`.
 	return true;
 }
+
+bool mp4flac_payload(mp4flac_t *m, const uint8_t *data, size_t size) { return m && m->out && data && write_all(m, data, size); }

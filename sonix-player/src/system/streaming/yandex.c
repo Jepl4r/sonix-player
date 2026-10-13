@@ -13,6 +13,7 @@
 #include "src/system/core/json.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/sha256.h"
+#include "src/system/net/crypto.h"
 #include "src/system/net/http.h"
 #include "src/system/streaming/streamkeys.h"
 #include "src/system/streaming/yandexsync.h"
@@ -31,10 +32,38 @@
 // renewal a year is nothing to the rate limit.
 #define REFRESH_MARGIN_SECS (30L * 24 * 3600)
 
-// The codecs asked for, best first. FLAC on its own comes first: it plays
-// while downloading with no unwrapping; flac-mp4 is unwrapped by the cache,
-// AAC in MP4 plays through decode/mp4.c, MP3 is the floor every track has.
-#define YANDEX_CODECS "flac,flac-mp4,aac-mp4,he-aac-mp4,mp3"
+// What each quality asks get-file-info for. The service picks the file itself,
+// from the codecs offered and what the account may have, so these are a
+// ceiling and a preference, not a promise.
+//
+// Lossless goes over "encraw". Since 2025 Yandex hands out its lossless files
+// only that way -- AES-256-CTR encrypted, mostly as FLAC in fragmented MP4
+// ("flac-mp4") -- and answers a "raw" request for quality=lossless with the
+// best lossy file in the list instead. That is what every 1.2.3 player got:
+// "aac-mp4" for every track, never FLAC, Plus or not. The cache decrypts on
+// the way to the card and unwraps flac-mp4 into a plain .flac, so encraw costs
+// a pass of AES over the bytes and nothing else. The open clients that get
+// FLAC today (yandex-music-downloader, MarshalX's yandex-music-api with
+// transport="encraw", the Lidarr and Music Assistant plugins) all ask this way.
+//
+// High is exactly the request 1.2.3 made, minus the FLAC it could not get:
+// quality=lossless with only the lossy codecs answers AAC 256 (or MP3 320),
+// which the device logs show. Normal is "nq", AAC around 192 kbit/s, the
+// value the same clients use for their middle setting.
+//
+// Plain FLAC stays ahead of flac-mp4: when the service still has one, it plays
+// while it downloads with nothing to unwrap.
+static const struct {
+	const char *config;	   // [yandex] quality
+	const char *quality;   // quality=
+	const char *codecs;	   // codecs=, best first
+	const char *transport; // transports=
+} QUALITIES[] = {
+	[YANDEX_QUALITY_LOSSLESS] = {"lossless", "lossless", "flac,flac-mp4,aac-mp4,he-aac-mp4,mp3", "encraw"},
+	[YANDEX_QUALITY_HIGH] = {"high", "lossless", "aac-mp4,mp3,he-aac-mp4", "raw"},
+	[YANDEX_QUALITY_NORMAL] = {"normal", "nq", "aac-mp4,mp3,he-aac-mp4", "raw"},
+};
+#define QUALITY_COUNT ((int)(sizeof(QUALITIES) / sizeof(QUALITIES[0])))
 
 static char api_url[256];
 static char auth_url[256];
@@ -47,6 +76,11 @@ static char user_uid[32];
 static char display_name[128];
 
 static __thread char last_error[256];
+// The HTTP status of the last API call on this thread (0 when it never got
+// an answer) and the start of its body: what the like log and the
+// get-file-info fallback look at. Never holds the token: that only goes out.
+static __thread int last_status;
+static __thread char last_body[160];
 
 // The rotor session: one at a time, and only the worker touches it.
 static char wave_session[96];
@@ -407,8 +441,19 @@ static bool token_refresh(void) {
 // ---------------------------------------------------------------------------
 
 // `json_body` NULL = GET (or a form POST when `form` is set).
+// The start of an answer, on one line, for the log.
+static void keep_body(const char *body) {
+	size_t n = 0;
+	for (const char *p = body ? body : ""; *p && n + 1 < sizeof(last_body); p++) {
+		last_body[n++] = (*p == '\n' || *p == '\r' || *p == '\t') ? ' ' : *p;
+	}
+	last_body[n] = '\0';
+}
+
 static bool api(const char *method, const char *url, const char *form, const char *json_body, char **body, json_doc_t *doc) {
 	last_error[0] = '\0';
+	last_status = 0;
+	last_body[0] = '\0';
 	*body = NULL;
 	if (!yandex_configured()) {
 		set_error("%s", tr("api_keys_unavailable"));
@@ -443,6 +488,8 @@ static bool api(const char *method, const char *url, const char *form, const cha
 			set_error("%s", why && why[0] ? why : tr("yandex_no_reply"));
 			return false;
 		}
+		last_status = status;
+		keep_body(*body);
 		if (is_refusal(status, *body)) {
 			free(*body);
 			*body = NULL;
@@ -460,7 +507,7 @@ static bool api(const char *method, const char *url, const char *form, const cha
 		}
 		pace_ok();
 		if (status < 200 || status >= 300) {
-			fprintf(stderr, "yandex: %s %s -> %d\n", method ? method : "GET", url, status);
+			fprintf(stderr, "yandex: %s %s -> %d %s\n", method ? method : "GET", url, status, last_body);
 			set_error(tr("yandex_answered_with"), status);
 			free(*body);
 			*body = NULL;
@@ -1070,17 +1117,93 @@ static void base64_nopad(const unsigned char *in, size_t len, char *out) {
 	out[o] = '\0';
 }
 
-bool yandex_file_info(const char *track_id, yandex_file_t *out) {
+yandex_quality_t yandex_get_quality(void) {
+	const char *v = config_get("yandex", "quality", "lossless");
+	for (int i = 0; i < QUALITY_COUNT; i++) {
+		if (strcmp(v, QUALITIES[i].config) == 0) {
+			return (yandex_quality_t)i;
+		}
+	}
+	return YANDEX_QUALITY_LOSSLESS;
+}
+
+void yandex_set_quality(yandex_quality_t quality) {
+	if ((int)quality < 0 || (int)quality >= QUALITY_COUNT) {
+		return;
+	}
+	config_set("yandex", "quality", QUALITIES[quality].config);
+	config_save();
+}
+
+static pthread_mutex_t format_lock = PTHREAD_MUTEX_INITIALIZER;
+static char last_format[48];
+
+void yandex_last_format(char *out, size_t size) {
+	pthread_mutex_lock(&format_lock);
+	snprintf(out, size, "%s", last_format);
+	pthread_mutex_unlock(&format_lock);
+}
+
+// "flac-mp4" -> "FLAC", "he-aac-mp4" -> "HE-AAC", with the bitrate when the
+// answer gave one (it does for the lossy files only).
+static void note_format(const yandex_file_t *file) {
+	char name[24];
+	size_t n = 0;
+	for (const char *p = file->codec; *p && n + 1 < sizeof(name); p++) {
+		if (strcmp(p, "-mp4") == 0) {
+			break;
+		}
+		name[n++] = (char)toupper((unsigned char)*p);
+	}
+	name[n] = '\0';
+	pthread_mutex_lock(&format_lock);
+	if (file->bitrate > 0) {
+		snprintf(last_format, sizeof(last_format), "%s %d kbps", name, file->bitrate);
+	} else {
+		snprintf(last_format, sizeof(last_format), "%s", name);
+	}
+	pthread_mutex_unlock(&format_lock);
+}
+
+// Whether the account has Plus: -1 not asked yet, then 0 or 1. Asked once, and
+// only when a lossless request came back lossy -- the one moment the answer
+// explains something. Lossless is a Plus feature; without it the service
+// quietly hands out AAC.
+static volatile int plus_state = -1;
+
+static void check_plus(void) {
+	if (plus_state >= 0) {
+		return;
+	}
+	char url[400];
+	snprintf(url, sizeof(url), "%s/account/status", api_url);
+	char *body;
+	json_doc_t doc;
+	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		return;
+	}
+	int plus = json_path(&doc, json_root(&doc), "result.plus.hasPlus");
+	plus_state = plus >= 0 ? (json_bool(&doc, plus, false) ? 1 : 0) : -1;
+	api_done(body, &doc);
+	printf("yandex: account has Plus: %s\n", plus_state == 1 ? "yes" : plus_state == 0 ? "no (lossless needs it)" : "not said");
+}
+
+bool yandex_needs_plus(void) { return plus_state == 0; }
+
+static bool is_lossless_codec(const char *codec) { return strncmp(codec, "flac", 4) == 0; }
+
+// One signed get-file-info. `refused` is set when the service answered with an
+// error (as opposed to not answering): the caller may try another transport.
+static bool file_info_once(const char *track_id, const char *quality, const char *codecs, const char *transport, yandex_file_t *out, bool *refused) {
 	memset(out, 0, sizeof(*out));
-	const char *quality = "lossless";
-	const char *transport = "raw";
+	*refused = false;
 
 	// The signature: ts + trackId + quality + the codecs without their commas
 	// + transport, HMAC-SHA256 with the application's key, base64 without the
 	// trailing '='. The codec list is sent with its commas, URL-encoded.
 	char codecs_flat[64];
 	size_t n = 0;
-	for (const char *p = YANDEX_CODECS; *p && n + 1 < sizeof(codecs_flat); p++) {
+	for (const char *p = codecs; *p && n + 1 < sizeof(codecs_flat); p++) {
 		if (*p != ',') {
 			codecs_flat[n++] = *p;
 		}
@@ -1092,19 +1215,25 @@ bool yandex_file_info(const char *track_id, yandex_file_t *out) {
 	snprintf(message, sizeof(message), "%s%s%s%s%s", ts, track_id, quality, codecs_flat, transport);
 	unsigned char mac[32];
 	hmac_sha256(streamkeys_yandex_sign_key(), message, mac);
-	char sign[48], sign_enc[96];
+	char sign[48], sign_enc[96], codecs_enc[128];
 	base64_nopad(mac, sizeof(mac), sign);
 	http_url_encode(sign, sign_enc, sizeof(sign_enc));
+	http_url_encode(codecs, codecs_enc, sizeof(codecs_enc));
 
 	char url[700];
-	snprintf(url, sizeof(url), "%s/get-file-info?ts=%s&trackId=%s&quality=%s&codecs=%s&transports=%s&sign=%s", api_url, ts, track_id, quality, "flac%2Cflac-mp4%2Caac-mp4%2Che-aac-mp4%2Cmp3", transport, sign_enc);
+	snprintf(url, sizeof(url), "%s/get-file-info?ts=%s&trackId=%s&quality=%s&codecs=%s&transports=%s&sign=%s", api_url, ts, track_id, quality, codecs_enc, transport, sign_enc);
 	char *body;
 	json_doc_t doc;
 	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		// 401 and 429 are about the session and the pace, which another
+		// transport would not change; any other answer might be.
+		*refused = last_status >= 400 && last_status != 401 && last_status != 429;
 		return false;
 	}
 	int info = json_path(&doc, json_root(&doc), "result.downloadInfo");
 	json_obj_str(&doc, info, "codec", out->codec, sizeof(out->codec));
+	json_obj_str(&doc, info, "quality", out->quality, sizeof(out->quality));
+	json_obj_str(&doc, info, "transport", out->transport, sizeof(out->transport));
 	int urls = json_get(&doc, info, "urls");
 	if (urls >= 0 && json_len(&doc, urls) > 0) {
 		json_str(&doc, json_at(&doc, urls, 0), out->url, sizeof(out->url));
@@ -1116,8 +1245,66 @@ bool yandex_file_info(const char *track_id, yandex_file_t *out) {
 	api_done(body, &doc);
 	if (!out->url[0] || !out->codec[0]) {
 		set_error("%s", tr("yandex_no_file"));
+		*refused = true;
 		return false;
 	}
-	printf("yandex: track %s as %s%s\n", track_id, out->codec, out->key[0] ? " (encrypted)" : "");
+	return true;
+}
+
+// A key the cache can use: 32 hex digits (AES-128, the mock's and older
+// answers') or 64 (AES-256, what encraw carries now), with libcrypto able to
+// do that size.
+static bool key_usable(const char *key) {
+	size_t len = strlen(key);
+	return (len == 32 || len == 64) && crypto_aes_ctr_available(len / 2);
+}
+
+// Three encraw refusals in a row and the session stops asking for it: two
+// requests per track against a door that stays shut would only hasten the
+// rate limit. A restart tries again.
+#define ENCRAW_STRIKES_MAX 3
+static volatile int encraw_strikes;
+
+bool yandex_file_info(const char *track_id, yandex_file_t *out) {
+	yandex_quality_t q = yandex_get_quality();
+	const char *quality = QUALITIES[q].quality;
+	const char *codecs = QUALITIES[q].codecs;
+	const char *transport = QUALITIES[q].transport;
+	if (strcmp(transport, "raw") != 0 && encraw_strikes >= ENCRAW_STRIKES_MAX) {
+		transport = "raw";
+	}
+
+	bool refused = false;
+	bool ok = file_info_once(track_id, quality, codecs, transport, out, &refused);
+	// encraw is what lossless needs, and the one thing here that can fail for
+	// reasons of its own: refused by the service, or a key this libcrypto
+	// cannot use. Either way a plain request still plays the track -- lossy,
+	// and the log says why.
+	const char *why = NULL;
+	if (!ok && refused && strcmp(transport, "raw") != 0) {
+		why = "the service refused it";
+	} else if (ok && out->key[0] && !key_usable(out->key)) {
+		why = "its key cannot be used here";
+	}
+	if (strcmp(transport, "raw") != 0) {
+		encraw_strikes = why ? encraw_strikes + 1 : ok ? 0 : encraw_strikes;
+	}
+	if (why) {
+		fprintf(stderr, "yandex: track %s over %s failed (%s: %d %s), asking for raw%s\n", track_id, transport, why, last_status, last_body, encraw_strikes >= ENCRAW_STRIKES_MAX ? " from now on" : "");
+		transport = "raw";
+		ok = file_info_once(track_id, quality, codecs, transport, out, &refused);
+	}
+	if (!ok) {
+		fprintf(stderr, "yandex: no file for track %s: %s\n", track_id, last_error);
+		return false;
+	}
+	note_format(out);
+	printf("yandex: track %s as %s %d kbps (quality %s, %s%s; asked %s over %s)\n", track_id, out->codec, out->bitrate, out->quality[0] ? out->quality : "?", out->transport[0] ? out->transport : transport, out->key[0] ? ", encrypted" : "", quality, transport);
+	if (q == YANDEX_QUALITY_LOSSLESS && !is_lossless_codec(out->codec)) {
+		// Not an error: many tracks exist in lossy form only. But the reason
+		// matters when it is every track, so the account is asked once.
+		printf("yandex: track %s has no lossless file for this account, %s instead\n", track_id, out->codec);
+		check_plus();
+	}
 	return true;
 }

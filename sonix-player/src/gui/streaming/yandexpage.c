@@ -1098,11 +1098,46 @@ static void logout_cb(lv_event_t *e) {
 	paint_home();
 }
 
+// Streaming quality, as pills on the home page (the Qobuz page's choice, made
+// once and left alone). Below them, what the last track really came as: the
+// service picks the file from what is offered, and "Lossless" on a track that
+// only exists as AAC is otherwise a silent surprise -- as is an account
+// without Plus, which gets no lossless at all.
+static lv_obj_t *quality_pills[3];
+static lv_obj_t *quality_format;
+
+static void quality_refresh(void) {
+	yandex_quality_t current = yandex_get_quality();
+	for (int i = 0; i < 3; i++) {
+		if (quality_pills[i]) {
+			settingsrow_pill_active(quality_pills[i], (int)current == i);
+		}
+	}
+	char format[48];
+	yandex_last_format(format, sizeof(format));
+	if (current == YANDEX_QUALITY_LOSSLESS && yandex_needs_plus()) {
+		lv_label_set_text(quality_format, tr("yandex_needs_plus"));
+	} else if (format[0]) {
+		lv_label_set_text_fmt(quality_format, tr("yandex_last_format"), format);
+	} else {
+		lv_label_set_text(quality_format, tr("yandex_quality_note"));
+	}
+}
+
+static void quality_pick_cb(lv_event_t *e) {
+	if (switcher_back_drag_active()) {
+		return;
+	}
+	yandex_set_quality((yandex_quality_t)(intptr_t)lv_event_get_user_data(e));
+	quality_refresh();
+}
+
 static void paint_home(void) {
 	bool in = yandex_logged_in();
 	lv_obj_set_hidden(home_signed_in, !in);
 	lv_obj_set_hidden(home_signed_out, in);
 	lv_label_set_text(home_user, yandex_display_name());
+	quality_refresh();
 }
 
 static void home_loaded_cb(lv_event_t *e) {
@@ -1152,6 +1187,17 @@ void yandexpage_init(gui_config_t *cfg) {
 	settingsrow_action(home_signed_in, "yandex_liked", open_liked_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_playlists", open_playlists_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_search", open_search_cb, NULL);
+	lv_obj_t *pills;
+	lv_obj_t *quality_card = settingsrow_pills(home_signed_in, "audio_quality", &pills);
+	quality_pills[YANDEX_QUALITY_LOSSLESS] = settingsrow_pill(pills, "yandex_quality_lossless", YANDEX_QUALITY_LOSSLESS, quality_pick_cb);
+	quality_pills[YANDEX_QUALITY_HIGH] = settingsrow_pill(pills, "yandex_quality_high", YANDEX_QUALITY_HIGH, quality_pick_cb);
+	quality_pills[YANDEX_QUALITY_NORMAL] = settingsrow_pill(pills, "yandex_quality_normal", YANDEX_QUALITY_NORMAL, quality_pick_cb);
+	quality_format = lv_label_create(quality_card);
+	lv_label_set_long_mode(quality_format, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(quality_format, lv_pct(100));
+	lv_obj_add_style(quality_format, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(quality_format, &font_ui_18, 0);
+	theme_register_refresh(quality_refresh);
 	settingsrow_action(home_signed_in, "yandex_sign_out", logout_cb, NULL);
 	home_user = lv_label_create(home_signed_in);
 	lv_obj_add_style(home_user, &theme_style_text_dim, 0);

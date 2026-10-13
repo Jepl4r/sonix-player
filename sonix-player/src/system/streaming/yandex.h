@@ -161,14 +161,40 @@ bool yandex_wave_active(void);
 // ---------------------------------------------------------------------------
 
 typedef struct {
-	char codec[24]; // "flac", "flac-mp4", "mp3", "aac-mp4", "he-aac-mp4", "aac"
+	char codec[24];		// "flac", "flac-mp4", "mp3", "aac-mp4", "he-aac-mp4", "aac"
+	char quality[16];	// what the service says it gave: "lossless", "hq", "nq"
+	char transport[12]; // "raw" or "encraw"
 	char url[1024];
-	char key[72]; // hex AES-128 key when the transport is encraw, else empty
-	int bitrate;  // kbps as declared, 0 when not
+	char key[72]; // hex AES key (32 digits: AES-128, 64: AES-256) for encraw, else empty
+	int bitrate;  // kbps as declared, 0 when not (always 0 for FLAC)
 } yandex_file_t;
 
-// Signs and sends get-file-info. False with yandex_last_error() set.
+// Signs and sends get-file-info for the quality below. Lossless goes over
+// "encraw" and falls back to a plain request, logged, when that is refused or
+// its key cannot be used. Logs what came and, when lossless was asked for and
+// a lossy file came, says so. False with yandex_last_error() set.
 bool yandex_file_info(const char *track_id, yandex_file_t *out);
+
+// True once the account was found to have no Plus (asked the first time a
+// lossless request came back lossy): lossless is a Plus feature.
+bool yandex_needs_plus(void);
+
+// What get-file-info asks for, [yandex] quality in device_config.ini:
+// "lossless" (the default), "high" or "normal". The service picks the file
+// from the codecs offered, so this is a ceiling, not a promise: a track with no
+// FLAC still comes as AAC under Lossless. Read on every request, so a change
+// applies from the next track fetched (what is already cached stays as it is).
+typedef enum {
+	YANDEX_QUALITY_LOSSLESS = 0, // FLAC over encraw, else the best lossy file
+	YANDEX_QUALITY_HIGH,		 // AAC 256 or MP3 320
+	YANDEX_QUALITY_NORMAL,		 // "nq": AAC around 192, lighter on card and air
+} yandex_quality_t;
+yandex_quality_t yandex_get_quality(void);
+void yandex_set_quality(yandex_quality_t quality);
+
+// What the last get-file-info actually gave, "FLAC" or "MP3 320 kbps", for the
+// settings to show. Empty before the first track. Any thread.
+void yandex_last_format(char *out, size_t size);
 
 // "avatars.yandex.net/get-music-content/.../%%" -> https://... at `px`x`px`.
 void yandex_cover_url(const char *uri, int px, char *out, size_t size);

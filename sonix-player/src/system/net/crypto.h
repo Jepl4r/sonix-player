@@ -5,7 +5,7 @@
 #include <stddef.h>
 #include <stdint.h>
 
-// AES-128 for the streaming services, borrowed from the OpenSSL the device
+// AES-128 (and AES-256 in counter mode) for the streaming services, borrowed from the OpenSSL the device
 // already ships.
 //
 // libcrypto is opened with dlopen() for the same reason tls.c does it (the
@@ -26,6 +26,7 @@
 // guarded by a mutex.
 
 #define CRYPTO_AES128_KEY_SIZE 16
+#define CRYPTO_AES256_KEY_SIZE 32
 #define CRYPTO_AES_BLOCK_SIZE 16
 
 // True when libcrypto was found, the symbols resolved and the self-test
@@ -42,6 +43,16 @@ bool crypto_available(void);
 // `in` and `out` may be the same buffer. Returns false when AES is
 // unavailable or OpenSSL reports an error; `out` is then undefined.
 bool crypto_aes128_ctr(const uint8_t key[CRYPTO_AES128_KEY_SIZE], const uint8_t iv[CRYPTO_AES_BLOCK_SIZE], const uint8_t *in, uint8_t *out, size_t len, uint64_t counter_offset);
+
+// The same with the key size given: 16 bytes (AES-128) or 32 (AES-256, what
+// Yandex Music's "encraw" files use since 2025). AES-256 is checked against
+// its own NIST vector (SP 800-38A F.5.5) at load, separately: a libcrypto that
+// lacks it still does AES-128, and this returns false for a 32-byte key.
+bool crypto_aes_ctr(const uint8_t *key, size_t key_len, const uint8_t iv[CRYPTO_AES_BLOCK_SIZE], const uint8_t *in, uint8_t *out, size_t len, uint64_t counter_offset);
+
+// Whether crypto_aes_ctr() would work with a key of `key_len` bytes. Loads
+// libcrypto on first use, like crypto_available().
+bool crypto_aes_ctr_available(size_t key_len);
 
 // AES-128-CBC decryption, as HLS #EXT-X-KEY:METHOD=AES-128 uses it on whole
 // segments. `len` must be a multiple of the block size. With `strip_padding`

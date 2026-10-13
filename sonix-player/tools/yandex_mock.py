@@ -12,12 +12,25 @@ Point the player at it with, in device_config.ini:
 and put the public desktop values of streaming-keys.ini.example in a plain
 streaming-keys.ini. FILES_DIR holds the audio the tracks resolve to:
 
-    t101.flac   track 101, plain FLAC (codec "flac", transport raw)
-    t102.enc    track 102, FLAC encrypted with AES-128-CTR, zero IV, key
-                00112233445566778899aabbccddeeff (codec "flac", "encraw")
-    t103.mp3    track 103 (codec "mp3")
-    t104.mp4    track 104, FLAC in fragmented MP4 (codec "flac-mp4")
-    t105.m4a    track 105, AAC in fragmented MP4 (codec "aac-mp4")
+    t101.lossless.enc  track 101 lossless: FLAC in fragmented MP4, encrypted
+                       with AES-256-CTR, zero IV, key KEY_256 below
+                       (codec "flac-mp4", transport "encraw")
+    t102.enc    track 102 lossless: plain FLAC encrypted with AES-128-CTR,
+                zero IV, key 00112233445566778899aabbccddeeff (an older answer)
+    t103.mp3    track 103 (codec "mp3"): lossy only, and every track's "nq"
+    t104.whole.enc  track 104 lossless: FLAC in a whole (not fragmented) MP4,
+                    moov first, AES-256-CTR with KEY_256
+    t105.m4a    AAC in fragmented MP4 (codec "aac-mp4"): the lossy file of
+                every track that has one, and track 105's only file
+
+    (t101.flac, t104.mp4 are kept for older tests; nothing serves them now.)
+
+get-file-info behaves like the real service does since 2025: a lossless file
+only goes out over transports=encraw; a "raw" request, or one for a track that
+has no lossless file, gets the best lossy file among the codecs asked for
+(AAC 256 in MP4, else MP3 320). quality=nq gets MP3 192. Set
+YANDEX_MOCK_REFUSE_ENCRAW=1 to have encraw refused with a 400 (the player must
+fall back to raw), YANDEX_MOCK_NO_PLUS=1 to have the account without Plus.
 
 What it checks, beside answering: the OAuth header on every API call, the
 device-flow sequence (two "pending" polls before the token), and the
@@ -46,14 +59,16 @@ SIGN_KEY = b"kzqU4XhfCaY6B6JTHODeq5"
 TOKEN = "mock-access-token"
 UID = 12345
 KEY_102 = "00112233445566778899aabbccddeeff"
+KEY_256 = "8f1e2d3c4b5a69788796a5b4c3d2e1f000112233445566778899aabbccddeeff"
 
-FILES = {
-    "101": ("flac", "t101.flac", None),
+# The lossless file of each track that has one: (codec, file, key).
+LOSSLESS = {
+    "101": ("flac-mp4", "t101.lossless.enc", KEY_256),
     "102": ("flac", "t102.enc", KEY_102),
-    "103": ("mp3", "t103.mp3", None),
-    "104": ("flac-mp4", "t104.mp4", None),
-    "105": ("aac-mp4", "t105.m4a", None),
+    "104": ("flac-mp4", "t104.whole.enc", KEY_256),
 }
+# Tracks whose only lossy file is an MP3; the others have AAC in MP4.
+MP3_ONLY = {"103"}
 
 
 def track(tid, title, artist, album_id, album, secs):
@@ -115,7 +130,9 @@ class Handler(BaseHTTPRequestHandler):
         if not self.authorised():
             return
         if p == "/account/status":
-            return self.send_json({"result": {"account": {"uid": UID, "login": "tester", "displayName": "Test User"}}})
+            plus = not os.environ.get("YANDEX_MOCK_NO_PLUS")
+            return self.send_json({"result": {"account": {"uid": UID, "login": "tester", "displayName": "Test User"},
+                                              "plus": {"hasPlus": plus}}})
         if p == f"/users/{UID}/likes/tracks":
             with lock:
                 ids = [{"id": t, "albumId": "11"} for t in state["liked"]]
@@ -142,15 +159,34 @@ class Handler(BaseHTTPRequestHandler):
         self.send_json({"error": "not found"}, 404)
 
     def file_info(self, q):
+        if not self.headers.get("X-Yandex-Music-Client", "").startswith("YandexMusic"):
+            sys.stderr.write("mock: get-file-info without X-Yandex-Music-Client\n")
+            return self.send_json({"error": {"name": "bad-client"}}, 400)
         message = q["ts"] + q["trackId"] + q["quality"] + q["codecs"].replace(",", "") + q["transports"]
         want = base64.b64encode(hmac.new(SIGN_KEY, message.encode(), hashlib.sha256).digest()).decode().rstrip("=")
         if q.get("sign") != want:
             sys.stderr.write(f"mock: BAD SIGNATURE for {message!r}: got {q.get('sign')} want {want}\n")
             return self.send_json({"error": {"name": "bad-sign"}}, 403)
-        sys.stderr.write(f"mock: signature OK for track {q['trackId']}\n")
-        codec, name, key = FILES.get(q["trackId"], FILES["103"])
+        tid, quality, transport = q["trackId"], q["quality"], q["transports"]
+        codecs = q["codecs"].split(",")
+        if transport == "encraw" and os.environ.get("YANDEX_MOCK_REFUSE_ENCRAW"):
+            sys.stderr.write(f"mock: file-info {tid} {quality}/{transport}: encraw REFUSED\n")
+            return self.send_json({"error": {"name": "transport-not-allowed"}}, 400)
+        plus = not os.environ.get("YANDEX_MOCK_NO_PLUS")
+        lossless = LOSSLESS.get(tid)
+        key = None
+        if quality == "lossless" and transport == "encraw" and plus and lossless and lossless[0] in codecs:
+            codec, name, key = lossless
+            got_quality, bitrate = "lossless", 0
+        elif quality == "nq":
+            codec, name, got_quality, bitrate = "mp3", "t103.mp3", "nq", 192
+        elif tid not in MP3_ONLY and "aac-mp4" in codecs:
+            codec, name, got_quality, bitrate = "aac-mp4", "t105.m4a", "hq", 256
+        else:
+            codec, name, got_quality, bitrate = "mp3", "t103.mp3", "hq", 320
+        sys.stderr.write(f"mock: file-info {tid} asked {quality}/{transport} codecs={q['codecs']} -> {codec} {bitrate} ({got_quality}{', encrypted' if key else ''})\n")
         host = self.headers.get("Host")
-        info = {"trackId": q["trackId"], "quality": "lossless", "codec": codec, "bitrate": 0,
+        info = {"trackId": tid, "quality": got_quality, "codec": codec, "bitrate": bitrate,
                 "transport": "encraw" if key else "raw", "urls": [f"http://{host}/files/{name}"]}
         if key:
             info["key"] = key

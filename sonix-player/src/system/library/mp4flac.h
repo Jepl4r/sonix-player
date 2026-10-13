@@ -54,6 +54,15 @@ typedef struct {
 	// header-only file must not be marked complete -- it would stay in the
 	// cache forever and the track would never be fetched again.
 	long header_bytes;
+
+	// How much audio went through, for the STREAMINFO a fragmented file leaves
+	// at zero (its sample tables are empty; the length is spread over the
+	// fragments). Counted from the sample tables of a whole file and from each
+	// fragment's `trun`, in the track's timescale; see mp4flac_total_samples().
+	uint64_t duration;
+	uint32_t timescale;		   // from `mdhd`, 0 when not found
+	uint32_t default_duration; // from `trex`: a fragment that does not say
+	uint32_t sample_rate;	   // from the STREAMINFO
 } mp4flac_t;
 
 // The extension the file will take, from the codec declared in the manifest
@@ -73,5 +82,19 @@ bool mp4flac_begin(mp4flac_t *m, FILE *out, const char *codecs, const uint8_t *i
 // One audio segment. When unwrapping, the `mdat` contents come out; otherwise
 // the whole segment. False when the write failed (card full).
 bool mp4flac_segment(mp4flac_t *m, const uint8_t *data, size_t size);
+
+// Audio bytes that are already FLAC frames, written as they are: the payload
+// of an `mdat` streamed straight through, for a file that is not fragmented
+// (moov first, then one mdat) and so never comes in segments.
+bool mp4flac_payload(mp4flac_t *m, const uint8_t *data, size_t size);
+
+// The length of what went through, in samples at the STREAMINFO rate; 0 when
+// it could not be told.
+uint64_t mp4flac_total_samples(const mp4flac_t *m);
+
+// Writes `samples` into the STREAMINFO of the finished .flac at `path` when it
+// says 0 (unknown) there, so players and the library scan show a length and
+// can seek by it. Five bytes rewritten in place; nothing else is touched.
+bool mp4flac_patch_total_samples(const char *path, uint64_t samples);
 
 #endif /* MP4FLAC_H */

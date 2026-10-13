@@ -51,8 +51,11 @@ typedef struct {
 	long window_left;
 	long src_total;
 	bool refreshed;
-	uint8_t key[16];
+	uint8_t key[CRYPTO_AES256_KEY_SIZE];
+	size_t key_len; // 16 or 32
 	bool encrypted;
+
+	uint64_t samples; // flac-mp4: the length counted while unwrapping
 } download_t;
 
 static download_t *current; // the one download in flight, or NULL
@@ -211,6 +214,24 @@ void yandexcache_abandon_all(void) {
 // the source
 // ---------------------------------------------------------------------------
 
+// The encraw key: 32 hex digits for AES-128 (older answers, the mock's), 64
+// for AES-256 (what the service sends since 2025). Anything else is refused.
+static bool hex_key(const char *hex, uint8_t out[CRYPTO_AES256_KEY_SIZE], size_t *len) {
+	size_t digits = strlen(hex);
+	if (digits != 2 * CRYPTO_AES128_KEY_SIZE && digits != 2 * CRYPTO_AES256_KEY_SIZE) {
+		return false;
+	}
+	for (size_t i = 0; i < digits / 2; i++) {
+		unsigned v;
+		if (sscanf(hex + 2 * i, "%2x", &v) != 1) {
+			return false;
+		}
+		out[i] = (uint8_t)v;
+	}
+	*len = digits / 2;
+	return true;
+}
+
 static bool src_open(download_t *d) {
 	for (int attempt = 0; attempt < 3 && !d->abandon; attempt++) {
 		if (http_stream_open_range(&d->st, d->file.url, d->src_pos, 20)) {
@@ -226,8 +247,18 @@ static bool src_open(download_t *d) {
 		if (!d->refreshed) {
 			d->refreshed = true;
 			yandex_file_t fresh;
-			if (yandex_file_info(d->track_id, &fresh)) {
+			// Only the same file under a new address will do: a different
+			// codec, or plain bytes where encrypted ones were coming (or the
+			// other way round), would splice two files into one.
+			if (yandex_file_info(d->track_id, &fresh) && strcmp(fresh.codec, d->file.codec) == 0 && !fresh.key[0] == !d->file.key[0]) {
 				snprintf(d->file.url, sizeof(d->file.url), "%s", fresh.url);
+				if (fresh.key[0] && strcmp(fresh.key, d->file.key) != 0) {
+					size_t len = 0;
+					if (!hex_key(fresh.key, d->key, &len) || len != d->key_len) {
+						break;
+					}
+					snprintf(d->file.key, sizeof(d->file.key), "%s", fresh.key);
+				}
 				continue;
 			}
 		}
@@ -261,7 +292,7 @@ static long src_read(download_t *d, uint8_t *buf, long n) {
 		if (got > 0) {
 			if (d->encrypted) {
 				static const uint8_t ZERO_IV[16] = {0};
-				if (!crypto_aes128_ctr(d->key, ZERO_IV, buf, buf, (size_t)got, (uint64_t)d->src_pos)) {
+				if (!crypto_aes_ctr(d->key, d->key_len, ZERO_IV, buf, buf, (size_t)got, (uint64_t)d->src_pos)) {
 					snprintf(d->error, sizeof(d->error), "%s", tr("yandex_cannot_decrypt"));
 					return -1;
 				}
@@ -327,15 +358,51 @@ static bool copy_raw(download_t *d) {
 	return ok;
 }
 
+// Copies `n` bytes of the source through the unwrapper (`u` set) or drops
+// them (`u` NULL), a buffer at a time; -1 for "to the end of the file".
+static bool pass_through(download_t *d, mp4flac_t *u, long n) {
+	uint8_t *buf = malloc(64 * 1024);
+	if (!buf) {
+		return false;
+	}
+	bool ok = true;
+	while (ok && n != 0) {
+		long want = n < 0 || n > 64 * 1024 ? 64 * 1024 : n;
+		long got = src_read(d, buf, want);
+		if (got == 0 && n < 0) {
+			break;
+		}
+		if (got <= 0) {
+			ok = false;
+			break;
+		}
+		if (u) {
+			ok = mp4flac_payload(u, buf, (size_t)got) && fflush(d->f) == 0;
+			note_written(d, u->written);
+		}
+		if (n > 0) {
+			n -= got;
+		}
+	}
+	free(buf);
+	return ok;
+}
+
 // flac-mp4: everything before the first moof is the init segment; after that
 // the file is moof+mdat pairs, each handed to mp4flac whole. One fragment in
 // RAM at a time.
+//
+// A file that is not fragmented -- moov, then a single mdat holding every
+// frame -- is unwrapped too: its mdat is FLAC frames back to back, streamed
+// through as it arrives rather than held. Yandex's own files are fragmented
+// (its web player feeds them to Media Source Extensions, which wants that),
+// but nothing on the service's side promises it.
 static bool unwrap_mp4(download_t *d) {
 	mp4flac_t u;
 	memset(&u, 0, sizeof(u));
 	uint8_t *init = NULL, *seg = NULL;
 	long init_len = 0, seg_len = 0;
-	bool begun = false, ok = false;
+	bool begun = false, whole = false, ok = false;
 
 	for (;;) {
 		uint8_t head[16];
@@ -361,6 +428,28 @@ static bool unwrap_mp4(download_t *d) {
 		}
 		bool is_moof = memcmp(head + 4, "moof", 4) == 0;
 		bool is_mdat = memcmp(head + 4, "mdat", 4) == 0;
+		bool to_end = size == 0; // "the rest of the file"
+		if (is_mdat && !begun && init_len > 0) {
+			// Not fragmented: the header is all there is before the audio.
+			if (!mp4flac_begin(&u, d->f, "flac", init, (size_t)init_len)) {
+				snprintf(d->error, sizeof(d->error), "%s", tr("yandex_unsupported_file"));
+				break;
+			}
+			begun = whole = true;
+			printf("yandex: %s is a whole MP4, its mdat streamed through\n", d->track_id);
+		}
+		if (whole) {
+			// The mdat goes through; whatever follows it (an index, padding)
+			// is read past.
+			if ((!to_end && size < (uint64_t)hlen) || !pass_through(d, is_mdat ? &u : NULL, to_end ? -1 : (long)(size - (uint64_t)hlen))) {
+				break;
+			}
+			if (to_end) {
+				ok = u.written > u.header_bytes;
+				break;
+			}
+			continue;
+		}
 		if (size < (uint64_t)hlen || size > (uint64_t)MAX_BOX) {
 			snprintf(d->error, sizeof(d->error), "%s", tr("yandex_unsupported_file"));
 			break;
@@ -411,6 +500,7 @@ static bool unwrap_mp4(download_t *d) {
 	}
 	free(init);
 	free(seg);
+	d->samples = mp4flac_total_samples(&u);
 	return ok;
 }
 
@@ -431,6 +521,11 @@ static void *download_main(void *arg) {
 		remove(growing);
 		fprintf(stderr, "yandex: download of %s failed: %s\n", d->track_id, d->abandon ? "abandoned" : d->error);
 	} else {
+		// The STREAMINFO a fragmented file leaves at "unknown length": known
+		// now, written in, so seeking and the progress bar work next time.
+		if (d->unwrap && d->samples && mp4flac_patch_total_samples(d->path, d->samples)) {
+			printf("yandex: %s is %llu samples long\n", d->track_id, (unsigned long long)d->samples);
+		}
 		printf("yandex: %s complete (%ld bytes)\n", d->track_id, d->written);
 	}
 	growfile_finish(growing, ok);
@@ -447,19 +542,6 @@ static void *download_main(void *arg) {
 	return NULL;
 }
 
-static bool hex_key(const char *hex, uint8_t out[16]) {
-	if (strlen(hex) < 32) {
-		return false;
-	}
-	for (int i = 0; i < 16; i++) {
-		unsigned v;
-		if (sscanf(hex + 2 * i, "%2x", &v) != 1) {
-			return false;
-		}
-		out[i] = (uint8_t)v;
-	}
-	return true;
-}
 
 static void streamturn_hook(void) { yandexcache_abandon_all(); }
 
@@ -505,7 +587,7 @@ bool yandexcache_start(const yandex_track_t *track, const yandex_file_t *file, c
 	yandexcache_path(track->id, yandexcache_extension(file->codec), d->path, sizeof(d->path));
 	snprintf(d->part, sizeof(d->part), "%s.part", d->path);
 	if (file->key[0]) {
-		if (!crypto_available() || !hex_key(file->key, d->key)) {
+		if (!hex_key(file->key, d->key, &d->key_len) || !crypto_aes_ctr_available(d->key_len)) {
 			set_error("%s", tr("yandex_cannot_decrypt"));
 			free(d);
 			return false;
