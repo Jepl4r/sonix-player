@@ -21,6 +21,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_palette.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/settings.h"
@@ -2438,6 +2439,10 @@ int main(int argc, char **argv) {
 	// still moving or a screen is sliding in: a watcher on the UI thread tells
 	// it so (covertone.h).
 	covertone_ui_init();
+	// The screen's colours come from the playing album's sleeve: the palette
+	// asks the covers' cache, and falls back to a hash of the album's name for
+	// an album not yet looked at (sx_palette.h, covertone.h).
+	sx_palette_set_tone_provider(covertone_tone_provider);
 
 	// The home screen up now, and the rest of the interface built behind it.
 	// Building every page was most of the wait for the first frame, and none of
