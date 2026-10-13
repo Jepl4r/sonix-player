@@ -10,6 +10,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/shell/confirm.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/popover.h"
@@ -20,6 +21,8 @@
 #include "src/gui/shell/toast.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/growfile.h"
+#include "src/system/device/system.h"
+#include "src/system/library/library.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/provider.h"
@@ -113,6 +116,10 @@ static yandex_login_t login;
 static time_t login_deadline;
 // list
 static lv_obj_t *list_title, *list_box, *list_spin, *wave_bar, *album_bar;
+// The album bar: what of the record is on the card, and Save or Delete.
+static lv_obj_t *album_state, *album_state_label, *album_btn_label, *album_tick;
+// Each row's "saved on the card" mark (NULL for a row that has none).
+static lv_obj_t *row_marks[MAX_ROWS];
 // What the list on screen is (JOB_LIKED, JOB_ALBUM, JOB_SAVED...).
 static job_kind_t list_kind;
 // The album a JOB_ALBUM list shows, for its "Save album" button.
@@ -876,6 +883,20 @@ static void make_row(int index) {
 	lv_obj_add_style(sub, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(sub, &font_ui_18, 0);
 
+	// The mark: a small tick for a track on the card, or an album all of
+	// whose tracks are. Hidden until refresh_marks() says otherwise, so a
+	// save finishing while the list is open needs no new rows.
+	row_marks[index] = NULL;
+	if (rows[index].kind == ROW_TRACK || rows[index].kind == ROW_ALBUM) {
+		lv_obj_t *mark = lv_image_create(row);
+		lv_image_set_src(mark, &icon_check_small);
+		lv_obj_add_style(mark, &theme_style_icon, 0);
+		lv_obj_set_style_image_recolor(mark, theme()->accent, 0);
+		lv_obj_set_style_image_recolor_opa(mark, LV_OPA_COVER, 0);
+		lv_obj_set_hidden(mark, true);
+		row_marks[index] = mark;
+	}
+
 	if (row_has_menu(&rows[index])) {
 		lv_obj_t *menu_btn = lv_btn_create(row);
 		lv_obj_set_size(menu_btn, 48, 48);
@@ -893,11 +914,83 @@ static void make_row(int index) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// what is on the card: the marks and the album bar
+// ---------------------------------------------------------------------------
+
+// A track is saved when the index has it; an album when the index holds as
+// many of its tracks as the service says it has (an album row that does not
+// say is not marked: a part saved must not look like the whole). In the Saved
+// list the album rows count only what is saved, so they are always marked
+// there -- they are on the card.
+static bool row_saved(const row_t *r) {
+	if (r->kind == ROW_TRACK) {
+		return yandexsaved_has(r->u.track.id);
+	}
+	if (r->kind == ROW_ALBUM && r->u.album.id[0] && r->u.album.track_count > 0) {
+		return yandexsaved_album_count(r->u.album.id) >= r->u.album.track_count;
+	}
+	return false;
+}
+
+// The ticks are the accent colour, set by hand on an image: a new accent
+// reaches them through the theme's refresh.
+static void marks_recolor(void) {
+	lv_color_t accent = theme()->accent;
+	if (album_tick) {
+		lv_obj_set_style_image_recolor(album_tick, accent, 0);
+	}
+	for (int i = 0; i < row_count && i < MAX_ROWS; i++) {
+		if (row_marks[i]) {
+			lv_obj_set_style_image_recolor(row_marks[i], accent, 0);
+		}
+	}
+}
+
+static void refresh_marks(void) {
+	for (int i = 0; i < row_count && i < MAX_ROWS; i++) {
+		if (row_marks[i]) {
+			lv_obj_set_hidden(row_marks[i], !row_saved(&rows[i]));
+		}
+	}
+}
+
+// The album page's own tracks are the measure: how many of the playable ones
+// are on the card.
+static void album_saved_counts(int *saved, int *playable) {
+	*saved = *playable = 0;
+	for (int i = 0; i < row_count; i++) {
+		if (rows[i].kind == ROW_TRACK && rows[i].u.track.available) {
+			(*playable)++;
+			*saved += yandexsaved_has(rows[i].u.track.id);
+		}
+	}
+}
+
+static void update_album_bar(void) {
+	if (lv_obj_is_hidden(album_bar)) {
+		return;
+	}
+	int saved, playable;
+	album_saved_counts(&saved, &playable);
+	bool complete = playable > 0 && saved == playable;
+	lv_obj_set_hidden(album_state, saved == 0);
+	if (complete) {
+		lv_label_set_text(album_state_label, tr("yandex_saved_on_card"));
+	} else if (saved > 0) {
+		lv_label_set_text_fmt(album_state_label, tr("yandex_saved_some"), saved, playable);
+	}
+	lv_label_set_text(album_btn_label, tr(complete ? "delete" : "yandex_save_album"));
+}
+
 static void fill_list(void) {
+	memset(row_marks, 0, sizeof(row_marks));
 	lv_obj_clean(list_box);
 	for (int i = 0; i < row_count; i++) {
 		make_row(i);
 	}
+	refresh_marks();
+	update_album_bar();
 	if (row_count == 0) {
 		lv_obj_t *empty = lv_label_create(list_box);
 		lv_label_set_text(empty, shown && shown->error[0] ? shown->error : tr("yandex_empty"));
@@ -1037,6 +1130,7 @@ static void show_list(const list_step_t *step) {
 	int y = top + (list_is_wave || is_album ? 66 : 0);
 	lv_obj_set_pos(list_box, list_cfg->padding, y);
 	lv_obj_set_height(list_box, list_cfg->screen_height - y - 4);
+	memset(row_marks, 0, sizeof(row_marks));
 	lv_obj_clean(list_box);
 	row_count = 0;
 	switch_screen(list_screen);
@@ -1178,6 +1272,53 @@ static void do_row_save(void *user) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// deleting from the card
+//
+// Asked first: it removes files. The files, any 1.2.4 sidecar beside them, the
+// index entries and the folders left empty go (yandexsaved_delete); the
+// library then looks for what changed, as after a save.
+// ---------------------------------------------------------------------------
+
+static void library_look_after_delete(void) {
+	if (storage_sd_root() && storage_sd_root()[0]) {
+		library_card_returned(storage_sd_root());
+	}
+}
+
+// The lists that come from the index show what is left.
+static void after_delete(void) {
+	library_look_after_delete();
+	if (lv_screen_active() == list_screen && (list_kind == JOB_SAVED || list_kind == JOB_SAVED_ALBUM)) {
+		show_list(&list_current);
+	} else {
+		refresh_marks();
+		update_album_bar();
+	}
+}
+
+static void delete_confirmed(void *user) {
+	(void)user;
+	bool ok;
+	if (menu_row.kind == ROW_ALBUM) {
+		ok = yandexsaved_delete_album(menu_row.u.album.id) > 0 || yandexsaved_album_count(menu_row.u.album.id) == 0;
+	} else {
+		ok = yandexsaved_delete(menu_row.u.track.id);
+	}
+	if (ok) {
+		toast_success(tr("yandex_deleted_from_card"));
+	} else {
+		toast_error(tr("yandex_delete_failed"));
+	}
+	after_delete();
+}
+
+static void do_row_delete(void *user) {
+	(void)user;
+	const char *name = menu_row.kind == ROW_ALBUM ? menu_row.u.album.title : menu_row.u.track.title;
+	confirm_show(menu_row.kind == ROW_ALBUM ? "yandex_delete_album_question" : "yandex_delete_track_question", name, "delete", delete_confirmed, NULL);
+}
+
 static void row_menu_cb(lv_event_t *e) {
 	lv_event_stop_bubbling(e); // the tap belongs to the menu, not the row
 	if (switcher_back_drag_active() || player_sheet_drag_active()) {
@@ -1188,9 +1329,13 @@ static void row_menu_cb(lv_event_t *e) {
 		return;
 	}
 	menu_row = rows[index];
-	popover_item_t items[2];
+	popover_item_t items[3];
 	memset(items, 0, sizeof(items));
 	int n = 0;
+	// On the card: the save is done, said with a tick, and the way to undo it
+	// is offered instead. Part of an album on the card: both.
+	bool saved = row_saved(&menu_row);
+	bool some = saved || (menu_row.kind == ROW_ALBUM && yandexsaved_album_count(menu_row.u.album.id) > 0);
 	if (menu_row.kind == ROW_TRACK) {
 		// Until the account's list has arrived nothing is known to be
 		// liked, and "Like" on a liked track is harmless: adding twice
@@ -1200,14 +1345,28 @@ static void row_menu_cb(lv_event_t *e) {
 		items[n].action = do_row_like;
 		items[n].user = liked ? NULL : (void *)1;
 		n++;
-		if (menu_row.u.track.available) {
+		if (saved) {
+			items[n].label = "yandex_saved_on_card";
+			items[n].checked = true;
+			n++;
+		} else if (menu_row.u.track.available) {
 			items[n].label = "yandex_save";
 			items[n].action = do_row_save;
 			n++;
 		}
 	} else if (menu_row.kind == ROW_ALBUM) {
-		items[n].label = "yandex_save_album";
-		items[n].action = do_row_save;
+		if (saved) {
+			items[n].label = "yandex_saved_on_card";
+			items[n].checked = true;
+		} else {
+			items[n].label = "yandex_save_album";
+			items[n].action = do_row_save;
+		}
+		n++;
+	}
+	if (some) {
+		items[n].label = "yandex_delete_from_card";
+		items[n].action = do_row_delete;
 		n++;
 	}
 	if (n > 0) {
@@ -1256,6 +1415,17 @@ static void album_save_cb(lv_event_t *e) {
 	if (switcher_back_drag_active()) {
 		return;
 	}
+	int saved, playable;
+	album_saved_counts(&saved, &playable);
+	if (playable > 0 && saved == playable) {
+		// All of it on the card already: the button is Delete.
+		memset(&menu_row, 0, sizeof(menu_row));
+		menu_row.kind = ROW_ALBUM;
+		snprintf(menu_row.u.album.id, sizeof(menu_row.u.album.id), "%s", list_album_id);
+		snprintf(menu_row.u.album.title, sizeof(menu_row.u.album.title), "%s", list_album_title);
+		do_row_delete(NULL);
+		return;
+	}
 	if (!list_album_id[0] || !yandexdl_album(list_album_id, list_album_title)) {
 		save_refused();
 	}
@@ -1301,10 +1471,33 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_radius(save, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(save, 0, 0);
 	lv_obj_add_event_cb(save, album_save_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_t *save_label = lv_label_create(save);
-	lv_label_set_text(save_label, tr("yandex_save_album"));
-	lv_obj_set_style_text_font(save_label, &font_ui_20, 0);
-	lv_obj_center(save_label);
+	album_btn_label = lv_label_create(save);
+	lv_label_set_text(album_btn_label, tr("yandex_save_album"));
+	lv_obj_set_style_text_font(album_btn_label, &font_ui_20, 0);
+	lv_obj_center(album_btn_label);
+	// Left of the button: a tick and how much of the record is on the card.
+	album_state = lv_obj_create(album_bar);
+	lv_obj_move_to_index(album_state, 0);
+	lv_obj_set_size(album_state, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+	lv_obj_set_style_bg_opa(album_state, 0, 0);
+	lv_obj_set_style_border_width(album_state, 0, 0);
+	lv_obj_set_style_pad_all(album_state, 0, 0);
+	lv_obj_set_style_pad_column(album_state, 6, 0);
+	lv_obj_set_style_margin_right(album_state, 14, 0);
+	lv_obj_set_scrollable(album_state, false);
+	lv_obj_set_clickable(album_state, false);
+	lv_obj_set_flex_flow(album_state, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(album_state, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	album_tick = lv_image_create(album_state);
+	lv_image_set_src(album_tick, &icon_check_small);
+	lv_obj_add_style(album_tick, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor(album_tick, theme()->accent, 0);
+	lv_obj_set_style_image_recolor_opa(album_tick, LV_OPA_COVER, 0);
+	theme_register_refresh(marks_recolor);
+	album_state_label = lv_label_create(album_state);
+	lv_obj_add_style(album_state_label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(album_state_label, &font_ui_20, 0);
+	lv_obj_set_hidden(album_state, true);
 	lv_obj_set_hidden(album_bar, true);
 
 	list_box = lv_obj_create(list_screen);
@@ -1652,6 +1845,11 @@ static void save_note_async(void *user) {
 		if (!save_timer) {
 			save_timer = lv_timer_create(save_timer_cb, 1000, NULL);
 		}
+		break;
+	case YANDEXDL_SAVED:
+		// The list on screen may show it: its tick, the album's bar.
+		refresh_marks();
+		update_album_bar();
 		break;
 	case YANDEXDL_FAILED:
 		toast_error(note->text);

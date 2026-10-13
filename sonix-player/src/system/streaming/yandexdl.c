@@ -1185,6 +1185,9 @@ static void *worker_main(void *arg) {
 				ok ? status.done++ : status.failed++;
 			}
 			pthread_mutex_unlock(&lock);
+			if (ok && !stale) {
+				tell(YANDEXDL_SAVED, 1, e.track.id);
+			}
 			if (!ok && !stale) {
 				fprintf(stderr, "yandexdl: %s not saved: %s\n", e.track.id, why);
 				char text[420];

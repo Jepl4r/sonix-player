@@ -59,6 +59,7 @@ bool yandexdl_busy(void);
 
 typedef enum {
 	YANDEXDL_QUEUED,   // `count` more to save
+	YANDEXDL_SAVED,	   // one track is on the card (or already was): `text` its id
 	YANDEXDL_FAILED,   // `text`: "<title>: <reason>"
 	YANDEXDL_FINISHED, // the queue emptied: `count` saved, `text` the folder
 	YANDEXDL_STOPPED,  // dropped (no card, signed out): `text` why
