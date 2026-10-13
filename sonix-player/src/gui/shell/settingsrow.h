@@ -78,6 +78,14 @@ lv_obj_t *settingsrow_toggle(lv_obj_t *parent, const char *name, lv_obj_t **swit
 // with the new state already set, as with a plain lv_switch.
 lv_obj_t *settingsrow_switch(lv_obj_t *parent, lv_event_cb_t cb);
 
+// 2.0: a switch card with the explanation inside it -- the name, under it in
+// the secondary colour what the switch does (`note`, a tag; NULL for none),
+// the switch at the right. A tap anywhere on the card flips it, as on the
+// prototype's cards; `cb` gets LV_EVENT_VALUE_CHANGED with the new state
+// already set either way. Returns the card.
+lv_obj_t *settingsrow_switch_card(lv_obj_t *parent, const char *name, const char *note, lv_obj_t **switch_out,
+								  lv_event_cb_t cb);
+
 // Both on one card: the name and its switch on the top line, a stepped slider
 // (marks and all) with its value underneath. For an option whose "how long"
 // only means anything while it is on.

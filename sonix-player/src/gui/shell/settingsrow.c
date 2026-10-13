@@ -557,6 +557,34 @@ lv_obj_t *settingsrow_toggle(lv_obj_t *parent, const char *name, lv_obj_t **swit
 	return card;
 }
 
+// A tap on the card's body is a tap on its switch. The switch's own tap stops
+// here too (it bubbles up from the head row), so it is told apart and left to
+// the switch.
+static void switch_card_clicked_cb(lv_event_t *e) {
+	lv_obj_t *sw = lv_event_get_user_data(e);
+	if (!sw || lv_event_get_target(e) == sw) {
+		return;
+	}
+	switch_tap_cb(e);
+}
+
+lv_obj_t *settingsrow_switch_card(lv_obj_t *parent, const char *name, const char *note, lv_obj_t **switch_out,
+								  lv_event_cb_t cb) {
+	lv_obj_t *card = sx_card_create(parent);
+	sx_card_title(card, tr(name));
+	if (note) {
+		sx_card_subtitle(card, tr(note), false);
+	}
+	lv_obj_t *sw = sx_card_switch(card, cb);
+	// The card is the button: pressed fill and all (sx_card_on_click), with the
+	// switch flipped by the same rule as a tap on the switch itself.
+	sx_card_on_click(card, switch_card_clicked_cb, sw);
+	if (switch_out) {
+		*switch_out = sw;
+	}
+	return card;
+}
+
 // The parts of a toggle+slider card, stored on the card itself so expanding
 // and collapsing it is one call rather than six.
 typedef struct {
