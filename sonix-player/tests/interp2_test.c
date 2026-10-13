@@ -90,7 +90,7 @@ static void chain_tone(double hz) {
 	static double mono[N * 5];
 	resampler_t r;
 	interp2_t p;
-	resample_init(&r, 2);
+	resample_init(&r, 44100, 48000, 2);
 	interp2_init(&p, 2);
 	for (int i = 0; i < N; i++) {
 		int32_t v = (int32_t)lrint(AMP * sin(2 * M_PI * hz * i / 44100.0) * 8388607.0) * 256;
@@ -133,7 +133,7 @@ static void chain_tone(double hz) {
 	if (!ok) {
 		failures++;
 	}
-	resample_free();
+	resample_close(&r);
 }
 
 int main(void) {

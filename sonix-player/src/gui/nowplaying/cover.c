@@ -109,7 +109,10 @@ static void raw_free(raw_image_t *img) {
 #define DECODE_BUDGET_RESERVE_BYTES 0
 #endif
 
-static size_t read_mem_available(void) {
+// What is free right now, without the page cache: MemFree, not MemAvailable
+// (see above). Which is the point -- a decode that fits in it takes nothing the
+// kernel has to evict.
+static size_t read_mem_free(void) {
 	FILE *f = fopen("/proc/meminfo", "r");
 	if (!f) {
 		return 0;
@@ -118,7 +121,7 @@ static size_t read_mem_available(void) {
 	char line[256];
 	size_t kb = 0;
 	while (fgets(line, sizeof(line), f)) {
-		if (sscanf(line, "MemAvailable: %zu kB", &kb) == 1) {
+		if (sscanf(line, "MemFree: %zu kB", &kb) == 1) {
 			break;
 		}
 	}
@@ -131,7 +134,7 @@ static size_t decode_budget_bytes(void) {
 	// Recomputed on every call: what was free at boot says nothing about what is
 	// free after an hour of playing. /proc/meminfo costs a few microseconds and
 	// this only runs on the worker thread.
-	size_t available = read_mem_available();
+	size_t available = read_mem_free();
 	size_t budget = available / DECODE_BUDGET_DIVISOR;
 
 	if (budget > DECODE_BUDGET_RESERVE_BYTES) {
@@ -2000,7 +2003,7 @@ void cover_set_cache_dir(const char *sd_root) {
 	if (!ok) {
 		printf("cover: thumbnail cache disabled\n");
 	}
-	fprintf(stderr, "cover: %zu KB free, decode budget %zu KB\n", read_mem_available() / 1024,
+	fprintf(stderr, "cover: %zu KB free, decode budget %zu KB\n", read_mem_free() / 1024,
 			decode_budget_bytes() / 1024);
 }
 

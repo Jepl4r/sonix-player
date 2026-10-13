@@ -82,6 +82,8 @@
 // ---------------------------------------------------------------------------
 
 static pthread_mutex_t lock = PTHREAD_MUTEX_INITIALIZER;
+// Signalled when the switch is turned on: the worker sleeps on it while off.
+static pthread_cond_t enabled_cond = PTHREAD_COND_INITIALIZER;
 static pthread_t worker;
 static bool worker_running;
 static bool enabled;
@@ -351,6 +353,7 @@ bool sonixlink_get_enabled(void) {
 void sonixlink_set_enabled(bool on) {
 	pthread_mutex_lock(&lock);
 	enabled = on;
+	pthread_cond_signal(&enabled_cond);
 	pthread_mutex_unlock(&lock);
 	config_set_int("wireless", "sonixlink", on ? 1 : 0);
 	config_save();
@@ -2869,7 +2872,24 @@ static void *sonixlink_worker(void *unused) {
 				pthread_mutex_unlock(&lock);
 				printf("sonixlink: off\n");
 			}
-			usleep(300 * 1000);
+			// A Bluetooth link handed over just before the switch went off,
+			// with no listener up yet, has nobody to serve it either.
+			for (int i = 0; i < MAX_CLIENTS; i++) {
+				if (clients[i].fd >= 0) {
+					client_close(&clients[i]);
+				}
+			}
+			// Asleep until the switch is turned on again: nothing else can
+			// need this thread meanwhile -- no socket is open, and a link
+			// handed over from Bluetooth is refused while off
+			// (sonixlink_adopt_link) -- so it does not wake at all, where it
+			// used to look at the switch three times a second for as long as
+			// the player ran.
+			pthread_mutex_lock(&lock);
+			while (!enabled) {
+				pthread_cond_wait(&enabled_cond, &lock);
+			}
+			pthread_mutex_unlock(&lock);
 			continue;
 		}
 

@@ -10,6 +10,7 @@
 #include "src/system/audio/eq.h"
 #include "src/system/audio/decimate.h"
 #include "src/system/audio/resample.h"
+#include "src/system/audio/usbaudio.h"
 #include "src/system/core/config.h"
 #include "src/system/device/power.h"
 #include "src/system/core/utils.h"
@@ -20,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdarg.h>
 #include <errno.h>
 #include <unistd.h>
@@ -778,6 +780,15 @@ static bool wav_needs_conversion(const wav_info_t *info) {
 // not read the card while running: the ROM is already entirely in memory.
 static int pcm_forced_buffer_ms;
 
+// Set while a DoP stream is opened: a USB DAC is then held to its own rates.
+// Through plughw a rate the DAC lacks is converted by the plug, which for DoP
+// is not a quality question -- interpolated DoP words are no longer DSD, and
+// the DAC plays them as noise at full level. With this the open fails
+// instead, and the track is converted to PCM (see play_decoded_file). Read
+// by open_pcm_device_now() on the playback thread; an external source never
+// opens while a track is playing.
+static bool pcm_exact_rate;
+
 // ---------------------------------------------------------------------------
 // Gapless: the PCM that stays open between tracks
 //
@@ -1478,6 +1489,16 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	// nearest one rather than failing the track -- and say so in the log.
 	unsigned int val = sample_rate;
 	int dir = 0;
+	bool exact_rate = pcm_exact_rate && (strncmp(device, "plughw:", 7) == 0 || strncmp(device, "hw:", 3) == 0);
+	if (exact_rate) {
+		snd_pcm_hw_params_set_rate_resample(pcm_handle, hw_params, 0);
+	}
+	if (exact_rate && snd_pcm_hw_params_set_rate(pcm_handle, hw_params, val, 0) < 0) {
+		fprintf(stderr, "audio: '%s' has no %d Hz of its own, and DoP cannot be converted\n", device, sample_rate);
+		last_open_err = -EINVAL;
+		snd_pcm_close(pcm_handle);
+		return NULL;
+	}
 	if (snd_pcm_hw_params_set_rate(pcm_handle, hw_params, val, 0) < 0) {
 		snd_pcm_hw_params_set_rate_near(pcm_handle, hw_params, &val, &dir);
 		fprintf(stderr, "audio: %d Hz unavailable, device settled on %u Hz\n", sample_rate, val);
@@ -3311,7 +3332,16 @@ static snd_pcm_uframes_t decimated_chunk(snd_pcm_uframes_t period, int out_rate,
 	return chunk * (snd_pcm_uframes_t)decim;
 }
 
+static int bt_resample_link(int channels);
+
 static int bluetooth_decimation(int sample_rate, int channels, int out_bits, bool passthrough) {
+#ifdef HOST_BUILD
+	// The emulator's stand-in link (see bt_resample_link) decimates like a
+	// real one.
+	if (!passthrough && out_bits == 32 && getenv("SONIX_TEST_RESAMPLE")) {
+		return decimate_factor_for(sample_rate, bt_resample_link(channels));
+	}
+#endif
 	if (passthrough || out_bits != 32 || channels < 1 || channels > DECIMATE_CHANNELS_MAX || !output_is_bluetooth()) {
 		return 1;
 	}
@@ -3331,24 +3361,30 @@ static int bluetooth_decimation(int sample_rate, int channels, int out_bits, boo
 // interpolator. Measured, 44.1 to 48 kHz: the music loses 1.5 dB at 10 kHz,
 // 3.4 at 15 and 6.3 at 20, and its images come back into the audible band
 // 20 dB under a 10 kHz tone (a cymbal at 10 kHz leaves a ghost at 13.9).
-// Upsampling to 96 kHz droops the same way.
+// Upsampling to 96 kHz droops the same way, and so does 48 to 44.1.
 //
-// Two of those conversions are what most listening over Bluetooth goes
-// through, and both are done here instead, after the effects:
+// So the conversions between the two families, and the doubling to a link at
+// twice a base rate, are done here instead, after the effects:
 //
 //   44.1 -> 48 kHz   "Auto", the default: bluealsa runs nearly every pair of
-//                    headphones at 48 kHz, and most music is 44.1. The
-//                    polyphase filter of resample.h.
-//   x2 to 96 kHz     LDAC on "96 kHz": a 48 kHz stream, or a 44.1 kHz one
-//                    after the step above. The half-band of decimate.h, run
-//                    as an interpolator.
+//                    headphones at 48 kHz, and most music is 44.1.
+//   48 -> 44.1 kHz   "44.1 kHz": the link forced to CD rate, and a 48, 96 or
+//                    192 kHz track -- the last two halved first by the
+//                    decimator, so it is 48 kHz that reaches this.
+//                    Both are the polyphase filters of resample.h.
+//   x2               LDAC on "96 kHz": a 48 kHz stream, or a 44.1 kHz one
+//                    after the step above (and 88.2 kHz the same way from
+//                    44.1). The half-band of decimate.h, run as an
+//                    interpolator.
 //
-// "The stream" is what reaches the device: a 88.2 or 176.4 kHz track (and DSD)
-// is first halved by the decimator, and 44.1 kHz is what it then is. The
-// device is opened at the link's rate in S32, so the plug has nothing left to
-// convert but the sample format (S32 to S16 for SBC and AAC, which bluealsa
-// takes at 16 bits; LDAC takes S32 as it is). About 3 million multiply-adds a
-// second for the first step in stereo, 1.2 million for the second.
+// "The stream" is what reaches the device: a hi-res track (and DSD) is first
+// brought down by the decimator, and a 88.2 or 96 kHz stream whose link is of
+// the other family is halved once more, to the base rate the filters start
+// from. The device is opened at the link's rate in S32, so the plug has
+// nothing left to convert but the sample format (S32 to S16 for SBC and AAC,
+// which bluealsa takes at 16 bits; LDAC takes S32 as it is). About 3 million
+// multiply-adds a second in stereo for 44.1 -> 48, 4.2 million for 48 ->
+// 44.1, 1.2 million for the doubling.
 //
 //   [bluetooth]
 //   resampler = quality   this (the default)
@@ -3357,66 +3393,290 @@ static int bluetooth_decimation(int sample_rate, int channels, int out_bits, boo
 // The position, the fade and every byte count stay in the track's frames, as
 // with the decimator; only what goes into the write is at the link's rate.
 // ---------------------------------------------------------------------------
-#define BT_RESAMPLE_FROM 44100
-#define BT_RESAMPLE_TO 48000
 
 typedef struct {
 	bool on;
-	bool to48;	// 44.1 -> 48 kHz
+	bool poly;	// between 44.1 and 48 kHz
 	bool twice; // then x2
 	resampler_t filter;
 	interp2_t doubler;
 	int32_t *wide; // a 16-bit block widened to S32
-	int32_t *out;  // the block at 48 kHz
+	int32_t *out;  // the block after the polyphase step
 	int32_t *out2; // ... and at twice that
 	size_t room;   // input frames the buffers are sized for
 } bt_resample_t;
 
-// The link's rate when the `rate` stream should be converted to it here; 0 to
-// leave the stream as it is.
-static int bt_resample_target(int rate, int channels) {
+// A base rate, and its double.
+static bool rate_is_base(int rate) { return rate == 44100 || rate == 48000; }
+static bool rate_is_double(int rate) { return rate == 2 * 44100 || rate == 2 * 48000; }
+
+// Whether a stream at `rate` can be brought to `target` here: through one of
+// the polyphase filters, the doubling, or both in that order.
+static bool rate_convertible(int rate, int target) {
+	if (rate == target || !rate_is_base(rate)) {
+		return false;
+	}
+	int base = rate_is_double(target) ? target / 2 : target;
+	return rate_is_base(base) && (base == rate || resample_supported(rate, base));
+}
+
+// The rate the Bluetooth link is held at when a stream may be converted to it
+// here; 0 when there is no link, the plug is asked to do it ("fast"), or
+// bluealsa's plugin moves the link itself ("follow_track_rate").
+static int bt_resample_link(int channels) {
 	if (channels < 1 || channels > RESAMPLE_CHANNELS_MAX || !resample_quality_wanted()) {
 		return 0;
 	}
-	int link = 0;
 #ifdef HOST_BUILD
-	// The emulator has no Bluetooth. SONIX_TEST_RESAMPLE=48000 or 96000 runs
-	// this path into its null device as if the link were at that rate, so the
-	// loop around it can be watched there.
+	// The emulator has no Bluetooth. SONIX_TEST_RESAMPLE=48000, 44100, 88200
+	// or 96000 runs this path into its null device as if the link were at that
+	// rate, so the loop around it can be watched there.
 	const char *test = getenv("SONIX_TEST_RESAMPLE");
 	if (test) {
-		link = atoi(test) == 96000 ? 96000 : BT_RESAMPLE_TO;
+		int want = atoi(test);
+		return (want == 44100 || rate_is_double(want)) ? want : 48000;
 	}
 #endif
-	// "follow_track_rate" lets bluealsa's plugin move the link itself.
-	if (!link && output_is_bluetooth() && !config_get_int("bluetooth", "follow_track_rate", 0)) {
-		link = (int)bluetooth_sink_rate();
-	}
-	if (rate == BT_RESAMPLE_FROM && (link == BT_RESAMPLE_TO || link == 2 * BT_RESAMPLE_TO)) {
-		return link;
-	}
-	if (rate == BT_RESAMPLE_TO && link == 2 * BT_RESAMPLE_TO) {
-		return link;
+	if (output_is_bluetooth() && !config_get_int("bluetooth", "follow_track_rate", 0)) {
+		return (int)bluetooth_sink_rate();
 	}
 	return 0;
 }
 
+// The link's rate when the `rate` stream should be converted to it here; 0 to
+// leave the stream as it is.
+static int bt_resample_target(int rate, int channels) {
+	int link = bt_resample_link(channels);
+	return link && rate_convertible(rate, link) ? link : 0;
+}
+
+// ---------------------------------------------------------------------------
+// A USB DAC that lacks the track's rate
+//
+// A USB DAC is opened through plughw, and the plug answers a rate the DAC
+// does not have by converting to one it does -- linearly, the same converter
+// as above. Plenty of USB-C dongles run at 48 kHz only, so on those every CD
+// rip, every Yandex track, AirPlay and the radio went through it.
+//
+// So the DAC is asked which rates it really has: its hw device is opened for
+// a moment (no stream, no buffer: snd-usb-audio allocates nothing before
+// hw_params) and every common rate is tested against it, together with
+// whether it takes more than 16 bits. The answer is kept per device name and
+// card, and reused when the device is busy -- a held gapless stream, or the
+// open stream of an external source. When the track's rate is missing, the
+// player converts it itself, to:
+//
+//   1. the highest rate of the same family below it, by the decimator alone
+//      (a 192 kHz track on a DAC that stops at 96); else twice it, by the
+//      half-band doubling (44.1 on a DAC that only has 88.2 and up);
+//   2. else the other family's base rate (44.1 <-> 48 kHz) by the polyphase
+//      filter, after the decimator for a hi-res track; else twice that.
+//
+// The lowest rate that carries the track whole is preferred over a higher
+// one: a doubling adds nothing to the music and costs time. A rate none of
+// that reaches (22.05 kHz, 32 kHz ...) is left to the plug, as before, and
+// the log says so. Under [bluetooth] resampler like the rest: "fast" leaves
+// every conversion to the plug.
+// ---------------------------------------------------------------------------
+
+static const int USB_PROBE_RATES[] = {44100, 48000, 88200, 96000, 176400, 192000, 352800, 384000, 705600, 768000};
+#define USB_PROBE_COUNT ((int)(sizeof(USB_PROBE_RATES) / sizeof(USB_PROBE_RATES[0])))
+
+typedef struct {
+	char device[sizeof(output_pcm)]; // "" when nothing was probed
+	char card[64];					 // the card's name, so a different DAC on the same number is noticed
+	unsigned rates;					 // a bit per USB_PROBE_RATES entry
+	bool wide;						 // takes 24 or 32-bit samples
+} usb_caps_t;
+
+static usb_caps_t usb_caps;
+static pthread_mutex_t usb_caps_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static bool output_is_usb_card(const char *device) {
+	return strncmp(device, "plughw:", 7) == 0 || strncmp(device, "hw:", 3) == 0;
+}
+
+static void usb_rates_text(unsigned rates, char *out, size_t size) {
+	out[0] = '\0';
+	size_t used = 0;
+	for (int i = 0; i < USB_PROBE_COUNT && used < size; i++) {
+		if (rates & (1u << i)) {
+			int n = snprintf(out + used, size - used, "%s%d", used ? ", " : "", USB_PROBE_RATES[i]);
+			used += n > 0 ? (size_t)n : 0;
+		}
+	}
+}
+
+// What the DAC behind `device` takes. False when it cannot be told: not a USB
+// card, or busy and never probed.
+static bool usb_caps_for(const char *device, usb_caps_t *out) {
+#ifdef HOST_BUILD
+	// The emulator has no USB DAC. SONIX_TEST_USB_RATES=48000,96000 makes its
+	// null device answer as a DAC with those rates, SONIX_TEST_USB_BITS=16 as
+	// one that takes 16 bits only.
+	const char *test = getenv("SONIX_TEST_USB_RATES");
+	if (test) {
+		memset(out, 0, sizeof(*out));
+		snprintf(out->device, sizeof(out->device), "%s", device);
+		for (int i = 0; i < USB_PROBE_COUNT; i++) {
+			char key[16];
+			snprintf(key, sizeof(key), "%d", USB_PROBE_RATES[i]);
+			if (strstr(test, key)) {
+				out->rates |= 1u << i;
+			}
+		}
+		const char *bits = getenv("SONIX_TEST_USB_BITS");
+		out->wide = !bits || atoi(bits) > 16;
+		return true;
+	}
+#endif
+	if (!output_is_usb_card(device)) {
+		return false;
+	}
+	char card[64] = "";
+	usbaudio_card_name(card, sizeof(card));
+
+	// The hw device under the plug: "plughw:1,0" is "hw:1,0".
+	char hw[sizeof(output_pcm)];
+	snprintf(hw, sizeof(hw), "%s", strncmp(device, "plug", 4) == 0 ? device + 4 : device);
+
+	snd_pcm_t *pcm = NULL;
+	int err = snd_pcm_open(&pcm, hw, SND_PCM_STREAM_PLAYBACK, SND_PCM_NONBLOCK);
+	if (err < 0) {
+		pthread_mutex_lock(&usb_caps_lock);
+		bool cached = strcmp(usb_caps.device, device) == 0 && strcmp(usb_caps.card, card) == 0;
+		if (cached) {
+			*out = usb_caps;
+		}
+		pthread_mutex_unlock(&usb_caps_lock);
+		if (!cached) {
+			fprintf(stderr, "audio: the USB DAC's rates cannot be read (%s: %s)\n", hw, snd_strerror(err));
+		}
+		return cached;
+	}
+
+	usb_caps_t caps;
+	memset(&caps, 0, sizeof(caps));
+	snprintf(caps.device, sizeof(caps.device), "%s", device);
+	snprintf(caps.card, sizeof(caps.card), "%s", card);
+	snd_pcm_hw_params_t *hw_params;
+	snd_pcm_hw_params_alloca(&hw_params);
+	if (snd_pcm_hw_params_any(pcm, hw_params) >= 0) {
+		for (int i = 0; i < USB_PROBE_COUNT; i++) {
+			if (snd_pcm_hw_params_test_rate(pcm, hw_params, (unsigned)USB_PROBE_RATES[i], 0) == 0) {
+				caps.rates |= 1u << i;
+			}
+		}
+		caps.wide = snd_pcm_hw_params_test_format(pcm, hw_params, SND_PCM_FORMAT_S32_LE) == 0 ||
+					snd_pcm_hw_params_test_format(pcm, hw_params, SND_PCM_FORMAT_S24_LE) == 0 ||
+					snd_pcm_hw_params_test_format(pcm, hw_params, SND_PCM_FORMAT_S24_3LE) == 0;
+	}
+	snd_pcm_close(pcm);
+
+	pthread_mutex_lock(&usb_caps_lock);
+	bool changed = strcmp(usb_caps.device, caps.device) != 0 || strcmp(usb_caps.card, caps.card) != 0 ||
+				   usb_caps.rates != caps.rates || usb_caps.wide != caps.wide;
+	usb_caps = caps;
+	pthread_mutex_unlock(&usb_caps_lock);
+	if (changed) {
+		char text[160];
+		usb_rates_text(caps.rates, text, sizeof(text));
+		fprintf(stderr, "audio: the USB DAC '%s' (%s) takes %s Hz, %s\n", card, hw, text[0] ? text : "no common rate",
+				caps.wide ? "24/32-bit samples" : "16-bit samples only");
+	}
+	*out = caps;
+	return true;
+}
+
+static bool usb_caps_has(const usb_caps_t *caps, int rate) {
+	for (int i = 0; i < USB_PROBE_COUNT; i++) {
+		if (USB_PROBE_RATES[i] == rate) {
+			return (caps->rates & (1u << i)) != 0;
+		}
+	}
+	return false;
+}
+
+// The rate a stream at `rate` should reach the USB DAC at, when the DAC lacks
+// it and the player can convert to one it has (see above); 0 otherwise.
+// `*halvings` is how many times the decimator halves the stream first.
+static int usb_rate_plan(int rate, int channels, int *halvings) {
+	*halvings = 0;
+	if (channels < 1 || channels > RESAMPLE_CHANNELS_MAX || !resample_quality_wanted()) {
+		return 0;
+	}
+	char device[sizeof(output_pcm)];
+	audio_get_output_device(device, sizeof(device));
+	usb_caps_t caps;
+	if (!usb_caps_for(device, &caps) || caps.rates == 0 || usb_caps_has(&caps, rate)) {
+		return 0;
+	}
+
+	int target = 0;
+	int halve = 0;
+	// 1. The same family: down by the decimator, or x2.
+	for (int k = 1; k <= 3 && !target; k++) {
+		int r = rate >> k;
+		if (rate % (1 << k) != 0 || r < 44100) {
+			break;
+		}
+		if (usb_caps_has(&caps, r)) {
+			target = r;
+			halve = k;
+		}
+	}
+	if (!target && rate_is_base(rate) && usb_caps_has(&caps, 2 * rate)) {
+		target = 2 * rate;
+	}
+	// 2. The other family, from the base rate.
+	if (!target) {
+		int k = 0;
+		while (k < 3 && !rate_is_base(rate >> k) && rate % (2 << k) == 0) {
+			k++;
+		}
+		int base = rate >> k;
+		if (rate_is_base(base)) {
+			int other = base == 44100 ? 48000 : 44100;
+			if (usb_caps_has(&caps, other)) {
+				target = other;
+				halve = k;
+			} else if (usb_caps_has(&caps, 2 * other)) {
+				target = 2 * other;
+				halve = k;
+			}
+		}
+	}
+
+	char text[160];
+	usb_rates_text(caps.rates, text, sizeof(text));
+	if (!target) {
+		fprintf(stderr, "audio: the USB DAC has no %d Hz (it takes %s) and none it has is reached from it here; alsa converts\n",
+				rate, text);
+		return 0;
+	}
+	fprintf(stderr, "audio: the USB DAC has no %d Hz (it takes %s); the stream is converted to %d Hz here\n", rate, text,
+			target);
+	*halvings = halve;
+	return target;
+}
+
 static bool bt_resample_open(bt_resample_t *r, int rate, int link, int channels) {
 	memset(r, 0, sizeof(*r));
-	r->to48 = rate == BT_RESAMPLE_FROM;
-	r->twice = link == 2 * BT_RESAMPLE_TO;
-	if (r->to48 && resample_init(&r->filter, channels) != 0) {
+	r->twice = rate_is_double(link);
+	int base = r->twice ? link / 2 : link;
+	r->poly = base != rate;
+	if (r->poly && resample_init(&r->filter, rate, base, channels) != 0) {
 		return false;
 	}
 	if (r->twice && interp2_init(&r->doubler, channels) != 0) {
 		return false;
 	}
-	r->on = r->to48 || r->twice;
+	r->on = r->poly || r->twice;
 	return r->on;
 }
 
 static void bt_resample_reset(bt_resample_t *r) {
-	if (r->to48) {
+	if (r->poly) {
 		resample_reset(&r->filter);
 	}
 	if (r->twice) {
@@ -3424,7 +3684,9 @@ static void bt_resample_reset(bt_resample_t *r) {
 	}
 }
 
+// Also gives the polyphase table back: the last stream to let go frees it.
 static void bt_resample_close(bt_resample_t *r) {
+	resample_close(&r->filter);
 	free(r->wide);
 	free(r->out);
 	free(r->out2);
@@ -3447,9 +3709,9 @@ static const int32_t *bt_resample_block(bt_resample_t *r, const void *in, int bi
 										int *made) {
 	*made = 0;
 	if ((size_t)frames > r->room) {
-		size_t at48 = (size_t)resample_out_max(frames) * (size_t)channels;
-		if (!grow_s32(&r->wide, (size_t)frames * (size_t)channels) || !grow_s32(&r->out, at48) ||
-			!grow_s32(&r->out2, 2 * at48)) {
+		size_t at_base = (size_t)(r->poly ? resample_out_max(&r->filter, frames) : frames) * (size_t)channels;
+		if (!grow_s32(&r->wide, (size_t)frames * (size_t)channels) || !grow_s32(&r->out, at_base) ||
+			!grow_s32(&r->out2, 2 * at_base)) {
 			return NULL;
 		}
 		r->room = (size_t)frames;
@@ -3463,7 +3725,7 @@ static const int32_t *bt_resample_block(bt_resample_t *r, const void *in, int bi
 		from = r->wide;
 	}
 	int count = frames;
-	if (r->to48) {
+	if (r->poly) {
 		count = resample_s32(&r->filter, from, count, r->out);
 		from = r->out;
 	}
@@ -3473,6 +3735,138 @@ static const int32_t *bt_resample_block(bt_resample_t *r, const void *in, int bi
 	}
 	*made = count;
 	return from;
+}
+
+// Whether the USB DAC in use would not take DSD at `dop_rate` over DoP: it
+// lacks the carrier rate, or takes only 16 bits, which cannot hold a marker
+// byte and sixteen bits of stream. False when the output is not a USB DAC or
+// cannot be asked. Such a DAC gets the track as PCM (dsd_to_pcm), which it
+// can play, instead of a stream it would play as noise or refuse.
+static bool usb_refuses_dop(int dop_rate) {
+	char device[sizeof(output_pcm)];
+	audio_get_output_device(device, sizeof(device));
+	usb_caps_t caps;
+	if (strncmp(device, "bluealsa", 8) == 0 || !usb_caps_for(device, &caps) || caps.rates == 0) {
+		return false;
+	}
+	if (caps.wide && usb_caps_has(&caps, dop_rate)) {
+		return false;
+	}
+	fprintf(stderr, "audio: the USB DAC %s; the DSD track goes to it as PCM\n",
+			caps.wide ? "has no rate for this DoP stream" : "takes 16 bits only, too few for DoP");
+	return true;
+}
+
+// Set when a DoP stream was refused at the open: the same track is opened
+// again at once and converted to PCM. Playback thread only.
+static bool dsd_force_pcm;
+
+// ---------------------------------------------------------------------------
+// 16-bit sources through the 32-bit chain, and the way back to 16 bits
+//
+// A 16-bit track went through the effects at 16 bits: ReplayGain, the EQ, the
+// balance, the fade and the software volume each rounded their result to 16
+// bits and the next started from there, and the last rounding was a plain
+// truncation-to-nearest with no dither -- distortion products at the 16-bit
+// floor that follow the music, worst on quiet passages, the very ones
+// ReplayGain and a low software volume make quieter still.
+//
+// So when, at the start of a track, something is switched on that changes the
+// samples, a 16-bit source runs the same S32 chain a 24-bit one does: decoded
+// at 16 bits (through the time stretcher as before), widened, processed with
+// 24 bits of precision, and handed to the device in S32 -- which the built-in
+// DAC takes as S24_LE, so the result reaches it with nothing rounded away. The
+// same happens to a 16-bit hi-res stream the decimator has to bring down, the
+// decimator being S32 only.
+//
+// Where the output takes 16 bits only -- SBC and AAC over Bluetooth, a USB DAC
+// that has nothing wider -- the S32 stream is requantised here, once, with
+// TPDF dither (two uniform values of one LSB each, summed), rather than
+// truncated by the plug. A block whose samples have nothing below bit 16 --
+// a 16-bit stream nothing changed -- is only narrowed: dither on a signal that
+// needs no requantising would be noise added to a bit-perfect stream.
+//
+// With nothing switched on, a 16-bit track stays on the 16-bit path from end
+// to end, as before: bit-perfect. The decision is made per track; switching
+// an effect on halfway through a 16-bit track takes the 16-bit chain until the
+// next one, as in 1.2.4.
+//
+// Cost: the S32 chain does the work the 16-bit one did on twice the bytes,
+// plus a widening; the dither is a xorshift and an add per sample.
+// ---------------------------------------------------------------------------
+
+// Whether something in the chain is going to change the samples.
+static bool effects_change_samples(void) {
+	return replaygain_active() || eq_get_enabled() || peq_get_enabled() || mseb_get_enabled() ||
+		   (soundfield_get_enabled() && soundfield_get_width() != 100) ||
+		   (balance_get_enabled() && balance_get_value() != BALANCE_CENTRE) || mono_get_enabled() ||
+		   crossfeed_get_enabled() || fade_enabled || swvolume_active();
+}
+
+// Whether the output in use takes more than 16 bits. True when it cannot be
+// told, which is what the player assumed until now: the plug narrows.
+static bool output_takes_wide(void) {
+	char device[sizeof(output_pcm)];
+	audio_get_output_device(device, sizeof(device));
+	if (strncmp(device, "bluealsa", 8) == 0) {
+		// bluealsa takes what the codec encodes from: S16 for SBC, AAC and
+		// aptX, more for LDAC, aptX HD and LC3plus.
+		char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
+		char codec[BT_CODEC_MAX] = "";
+		bluetooth_get_codecs(codecs, BT_MAX_CODECS, codec, sizeof(codec));
+		return !codec[0] || strcasecmp(codec, "LDAC") == 0 || strncasecmp(codec, "aptX-HD", 7) == 0 ||
+			   strncasecmp(codec, "aptX HD", 7) == 0 || strncasecmp(codec, "LC3plus", 7) == 0 ||
+			   strncasecmp(codec, "LHDC", 4) == 0;
+	}
+	usb_caps_t caps;
+	return !usb_caps_for(device, &caps) || caps.wide;
+}
+
+// TPDF dither from S32 to S16, in place: `samples` S32 samples become as many
+// S16 ones at the front of the same memory. `seed` is the generator's state,
+// one per stream.
+static void dither_to_s16(uint32_t *seed, void *buf, int samples) {
+	const int32_t *in = buf;
+	int16_t *out = buf;
+	int32_t low = 0;
+	for (int i = 0; i < samples; i++) {
+		low |= in[i] & 0xffff;
+	}
+	if (low == 0) {
+		for (int i = 0; i < samples; i++) {
+			out[i] = (int16_t)(in[i] >> 16);
+		}
+		return;
+	}
+	uint32_t x = *seed ? *seed : 0x9e3779b9u;
+	for (int i = 0; i < samples; i++) {
+		// xorshift32: two 16-bit uniforms per step.
+		x ^= x << 13;
+		x ^= x >> 17;
+		x ^= x << 5;
+		int64_t tpdf = (int64_t)(x & 0xffff) + (int64_t)(x >> 16) - 65535;
+		int64_t v = ((int64_t)in[i] + tpdf + 32768) >> 16;
+		out[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+	}
+	*seed = x;
+}
+
+// One block of 16-bit frames from the decoder, through the time stretcher when
+// there is one. Returns the frames that came out; `*input` is how many went
+// in, which is what the position moves by.
+static uint64_t read_s16_block(speed_t *stretch, decoder_t *dec, decoder_fill_t *fill, short *dst, uint64_t frames,
+							   uint64_t *input) {
+	pthread_mutex_lock(&audio_mutex);
+	double want_speed = playback_speed;
+	pthread_mutex_unlock(&audio_mutex);
+
+	if (stretch) {
+		speed_set_factor(stretch, want_speed);
+		return (uint64_t)speed_pull(stretch, dst, (int)frames, decoder_fill, fill, input);
+	}
+	uint64_t got = decoder_read_pcm_frames_s16(dec, frames, dst);
+	*input = got;
+	return got;
 }
 
 static void play_decoded_file(const char *filepath, decode_format_t format) {
@@ -3520,7 +3914,13 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	}
 
 	// Headphones have no DSD mode to switch into: DSD goes to them as PCM.
-	bool dsd_as_pcm = decoder_passthrough(dec) && output_is_bluetooth() && decoder_dsd_to_pcm(dec);
+	// So does a USB DAC that cannot take this DoP stream, or one that refused it
+	// at the open (dsd_force_pcm).
+	bool force_pcm = dsd_force_pcm;
+	dsd_force_pcm = false;
+	bool dsd_as_pcm = decoder_passthrough(dec) &&
+					  (output_is_bluetooth() || force_pcm || usb_refuses_dop(decoder_sample_rate(dec))) &&
+					  decoder_dsd_to_pcm(dec);
 
 	int channels = decoder_channels(dec);
 	int sample_rate = decoder_sample_rate(dec);
@@ -3541,6 +3941,14 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// as S32 (samples left-justified, bit-perfect), the way the stock player
 	// flips its stream to "PCM_FORMAT_PCM 32bit". Everything else stays 16.
 	int out_bits = source_bits > 16 ? 32 : 16;
+	// ...unless the chain is going to change a 16-bit stream: then it runs at
+	// 32 bits (see effects_change_samples). Not for DoP, which is never
+	// touched.
+	bool wide16 = false;
+	if (out_bits == 16 && !passthrough && effects_change_samples()) {
+		wide16 = true;
+		out_bits = 32;
+	}
 
 	// The Bluetooth link's own rate, when the "Sample rate" setting asks for
 	// one ("Follow the music", "96 kHz"; see bluetooth.c). Here and nowhere
@@ -3564,44 +3972,79 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// The rate the device is opened at. The position, the fade and every
 	// byte count below stay in the track's own frames.
 	decimator_t decim;
-	int decim_factor = bluetooth_decimation(sample_rate, channels, out_bits, passthrough);
+	// A 16-bit stream counts as S32 here: one the decimator takes runs the S32
+	// chain (wide16, below).
+	int decim_factor = bluetooth_decimation(sample_rate, channels, passthrough ? out_bits : 32, passthrough);
 	// 176.4 kHz is more than any Bluetooth link carries, whatever the
 	// decimation settings say.
-	if (dsd_as_pcm && decim_factor == 1) {
+	if (dsd_as_pcm && decim_factor == 1 && output_is_bluetooth()) {
 		unsigned sink = bluetooth_sink_rate();
 		decim_factor = decimate_factor_for(sample_rate, sink ? (int)sink : 44100);
 	}
-	// On a link held at 96 kHz a 88.2 kHz stream has no clean way up: halved
-	// once more, it takes the 44.1 kHz route below, to 48 and then x2.
-	if (!passthrough && out_bits == 32 && sample_rate / decim_factor == 2 * BT_RESAMPLE_FROM &&
-		decim_factor * 2 <= DECIMATE_MAX && bt_resample_target(BT_RESAMPLE_FROM, channels) == 2 * BT_RESAMPLE_TO) {
-		decim_factor *= 2;
+	// A stream still at 88.2 or 96 kHz whose link is of the other family has
+	// no clean way there: halved once more, it takes the base-rate route below
+	// -- 88.2 kHz to a link at 96 goes to 44.1, then 48, then x2.
+	if (!passthrough && rate_is_double(sample_rate / decim_factor) && decim_factor * 2 <= DECIMATE_MAX) {
+		int link = bt_resample_link(channels);
+		int half = sample_rate / decim_factor / 2;
+		if (link && !rate_convertible(sample_rate / decim_factor, link) && (half == link || rate_convertible(half, link))) {
+			decim_factor *= 2;
+		}
+	}
+	// A USB DAC without the track's rate: the rate it gets instead, and how
+	// often the decimator halves the stream on the way (see usb_rate_plan).
+	int usb_halvings = 0;
+	int usb_target = (passthrough || decim_factor > 1) ? 0 : usb_rate_plan(sample_rate, channels, &usb_halvings);
+	if (usb_target) {
+		decim_factor = 1 << usb_halvings;
 	}
 	if (decim_factor > 1 && decimate_init(&decim, decim_factor, channels) != 0) {
 		decim_factor = 1;
+		usb_target = 0;
+	}
+	// The decimator works on S32 only.
+	if (decim_factor > 1 && out_bits == 16) {
+		wide16 = true;
+		out_bits = 32;
+	}
+	if (wide16) {
+		fprintf(stderr, "audio: the 16-bit stream goes through the 32-bit chain (%s)\n",
+				decim_factor > 1 ? "decimated" : "effects on");
 	}
 	int out_rate = sample_rate / decim_factor;
 	if (decim_factor > 1) {
-		fprintf(stderr, "audio: the %d Hz track is decimated by %d to %d Hz before the effects, for the headphones\n",
-				sample_rate, decim_factor, out_rate);
+		fprintf(stderr, "audio: the %d Hz track is decimated by %d to %d Hz before the effects, for the %s\n",
+				sample_rate, decim_factor, out_rate, usb_target ? "USB DAC" : "headphones");
 	}
 
 	// What the device is opened with: the chain's rate and width, or the
-	// link's rate in S32 when the stream is converted here (see bt_resample_t).
+	// link's (or the USB DAC's) rate in S32 when the stream is converted here
+	// (see bt_resample_t).
 	bt_resample_t resampler = {0};
 	int link_rate = passthrough ? 0 : bt_resample_target(out_rate, channels);
+	if (!link_rate && usb_target && usb_target != out_rate) {
+		link_rate = usb_target;
+	}
 	if (link_rate && !bt_resample_open(&resampler, out_rate, link_rate, channels)) {
 		bt_resample_close(&resampler);
 	}
-	if (!resampler.to48) {
-		resample_free(); // the shared table goes when no stream uses it
-	}
 	int dev_rate = resampler.on ? link_rate : out_rate;
 	int dev_bits = resampler.on ? 32 : out_bits;
+	// An output that takes 16 bits only gets the S32 stream requantised here,
+	// with dither, instead of truncated by the plug.
+	bool dither = false;
+	uint32_t dither_seed = 0x2545f491u;
+	if (dev_bits == 32 && !passthrough && !output_takes_wide()) {
+		dev_bits = 16;
+		dither = true;
+		fprintf(stderr, "audio: the output takes 16 bits; the 32-bit stream is dithered (TPDF) to 16 here\n");
+	}
 	if (resampler.on) {
-		const char *how = "polyphase";
-		if (resampler.twice) {
-			how = resampler.to48 ? "polyphase to 48 kHz, half-band x2" : "half-band x2";
+		char how[64];
+		if (resampler.twice && resampler.poly) {
+			snprintf(how, sizeof(how), "polyphase to %d Hz, half-band x2", link_rate / 2);
+		} else {
+			snprintf(how, sizeof(how), "%s", resampler.twice ? "half-band x2" : "polyphase");
 		}
 		fprintf(stderr, "audio: the %d Hz stream is resampled to %d Hz here (%s), not by alsa's linear converter\n",
 				out_rate, dev_rate, how);
@@ -3646,6 +4089,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// The previous track's PCM, if it stayed open and suits this one too: that
 	// is the whole of gapless. Never for DoP -- see the comment above
 	// gapless_release().
+	pcm_exact_rate = passthrough;
 	snd_pcm_t *pcm_handle = passthrough ? NULL : gapless_take(channels, dev_rate, dev_bits, &period_size);
 	playback_follow(pcm_handle);
 	if (pcm_handle) {
@@ -3674,6 +4118,8 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		// DSD, it is noise.
 		fprintf(stderr, "Audio: S32 open failed, falling back to 16-bit\n");
 		out_bits = 16;
+		wide16 = false;
+		dither = false;
 		// The decimator is S32 only, and so is the resampler.
 		decim_factor = 1;
 		out_rate = sample_rate;
@@ -3682,12 +4128,32 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		dev_bits = out_bits;
 		pcm_handle = open_pcm_device(channels, sample_rate, out_bits, &period_size);
 	}
+	pcm_exact_rate = false;
+#ifdef HOST_BUILD
+	// SONIX_TEST_DOP_REFUSE (host builds only): the emulator's null device
+	// takes any rate, so it is made to refuse DoP here instead.
+	if (pcm_handle && passthrough && getenv("SONIX_TEST_DOP_REFUSE")) {
+		snd_pcm_close(pcm_handle);
+		pcm_handle = NULL;
+		pcm_device_open = false;
+		last_open_err = -EINVAL;
+	}
+#endif
+	if (!pcm_handle && passthrough && last_open_err != -ENOMEM) {
+		// DSD256 asks for 705.6 kHz, which an output that is not this device's
+		// own DAC may simply refuse. Rather than a track that does not play,
+		// it is opened again and converted to PCM -- the route Bluetooth takes
+		// -- at a rate the output has (see usb_rate_plan).
+		fprintf(stderr, "audio: DoP at %d Hz refused by this output; the track is converted to PCM instead\n",
+				sample_rate);
+		set_dac_dop(0);
+		decoder_close(dec);
+		dsd_force_pcm = true;
+		play_decoded_file(filepath, format);
+		return;
+	}
 	if (!pcm_handle && passthrough) {
-		// DSD256 asks the card for 705.6 kHz, which an output that is not this
-		// device's own DAC may simply refuse. The track does not play and the
-		// log says why rather than leaving a silent stop to be guessed at; only
-		// Bluetooth is sent PCM instead (decoder_dsd_to_pcm, above).
-		fprintf(stderr, "audio: DoP at %d Hz refused by this output; the track cannot play\n", sample_rate);
+		fprintf(stderr, "audio: DoP at %d Hz could not open (no memory); the track cannot play\n", sample_rate);
 	}
 	if (!pcm_handle) {
 		set_dac_dop(0);
@@ -3738,7 +4204,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// audiobooks, which are AAC and so always 16-bit, and a hi-res FLAC has no
 	// business being played at 1.5x. NULL simply means the feature is not
 	// available and playback runs at 1.0.
-	speed_t *stretch = (out_bits == 16) ? speed_open(channels, sample_rate) : NULL;
+	speed_t *stretch = (out_bits == 16 || wide16) ? speed_open(channels, sample_rate) : NULL;
 	decoder_fill_t fill_ctx = {dec};
 	health_t health;
 	health_start(&health);
@@ -3947,7 +4413,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				auto_set_output();
 				{
 					snd_pcm_uframes_t new_period = period_size;
+					pcm_exact_rate = passthrough;
 					pcm_handle = open_pcm_device(channels, dev_rate, dev_bits, &new_period);
+					pcm_exact_rate = false;
 					if (!pcm_handle) {
 						fprintf(stderr, "Audio: cannot reopen the device after a pause\n");
 						audio_command = AUDIO_CMD_STOP;
@@ -3991,7 +4459,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			int now_route = alsa_output_key();
 			if (now_route != track_route) {
 				track_route = now_route;
-				if (!pcm_reroute(&pcm_handle, channels, dev_rate, dev_bits, &period_size)) {
+				pcm_exact_rate = passthrough;
+				bool rerouted = pcm_reroute(&pcm_handle, channels, dev_rate, dev_bits, &period_size);
+				pcm_exact_rate = false;
+				if (!rerouted) {
 					fprintf(stderr, "Audio: reroute failed\n");
 					pthread_mutex_lock(&audio_mutex);
 					audio_command = AUDIO_CMD_STOP;
@@ -4027,8 +4498,19 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		playback_follow(pcm_handle);
 		health_mark(&health);
 		if (out_bits == 32) {
-			frames_read = decoder_read_pcm_frames_s32(dec, chunk_frames, (int32_t *)buffer);
-			input_frames = frames_read;
+			if (wide16) {
+				// Read into the back half of the block and widened forwards:
+				// each S32 sample lands on S16 ones already widened.
+				short *narrow = (short *)buffer + chunk_frames * (snd_pcm_uframes_t)channels;
+				frames_read = read_s16_block(stretch, dec, &fill_ctx, narrow, chunk_frames, &input_frames);
+				int32_t *wide = buffer;
+				for (uint64_t i = 0; i < frames_read * (uint64_t)channels; i++) {
+					wide[i] = (int32_t)narrow[i] * 65536;
+				}
+			} else {
+				frames_read = decoder_read_pcm_frames_s32(dec, chunk_frames, (int32_t *)buffer);
+				input_frames = frames_read;
+			}
 			health_lap(&health, STAGE_READ);
 			if (frames_read != 0 && decim_factor > 1) {
 				frames_read = (uint64_t)decimate_s32(&decim, (int32_t *)buffer, (int)frames_read);
@@ -4054,18 +4536,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				balance_process_s32((int32_t *)buffer, (int)frames_read, channels);
 			}
 		} else {
-			pthread_mutex_lock(&audio_mutex);
-			double want_speed = playback_speed;
-			pthread_mutex_unlock(&audio_mutex);
-
-			if (stretch) {
-				speed_set_factor(stretch, want_speed);
-				frames_read = (uint64_t)speed_pull(stretch, (short *)buffer, (int)chunk_frames, decoder_fill, &fill_ctx,
-												   &input_frames);
-			} else {
-				frames_read = decoder_read_pcm_frames_s16(dec, chunk_frames, (short *)buffer);
-				input_frames = frames_read;
-			}
+			frames_read = read_s16_block(stretch, dec, &fill_ctx, (short *)buffer, chunk_frames, &input_frames);
 			health_lap(&health, STAGE_READ);
 			if (frames_read != 0) {
 				replaygain_process((short *)buffer, (int)frames_read, channels);
@@ -4220,6 +4691,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				bytes_played += (int64_t)input_frames * frame_bytes;
 				continue;
 			}
+		}
+		// And to 16 bits, last of all, for an output that takes no more.
+		if (dither) {
+			dither_to_s16(&dither_seed, (void *)out_block, (int)out_frames * channels);
 		}
 
 		health_lap(&health, STAGE_EFFECTS);
@@ -4482,6 +4957,47 @@ static bool playback_reader_should_abort(void) {
 	return out;
 }
 
+#ifdef HOST_BUILD
+// SONIX_TEST_EXTERNAL=<raw file>:<rate>:<bits> plays a raw stereo file (S16 or
+// S32) through audio_external_write() a few seconds after start-up, in the
+// chunks a receiver hands over, so the external path can be measured in the
+// emulator the way the file player is. Host builds only.
+static void *external_test_thread(void *arg) {
+	(void)arg;
+	char spec[600];
+	snprintf(spec, sizeof(spec), "%s", getenv("SONIX_TEST_EXTERNAL"));
+	char *colon = strrchr(spec, ':');
+	int bits = colon ? atoi(colon + 1) : 16;
+	if (colon) {
+		*colon = '\0';
+	}
+	colon = strrchr(spec, ':');
+	int rate = colon ? atoi(colon + 1) : 44100;
+	if (colon) {
+		*colon = '\0';
+	}
+	sleep(3);
+	FILE *f = fopen(spec, "rb");
+	if (!f || (bits != 16 && bits != 32) || !audio_external_begin(rate, 2, bits)) {
+		fprintf(stderr, "audio: SONIX_TEST_EXTERNAL could not start\n");
+		if (f) {
+			fclose(f);
+		}
+		return NULL;
+	}
+	const int frame = 2 * bits / 8;
+	unsigned char chunk[441 * 8];
+	size_t got;
+	while ((got = fread(chunk, (size_t)frame, 441, f)) > 0) {
+		audio_external_write(chunk, (int)got);
+	}
+	fclose(f);
+	audio_external_end();
+	fprintf(stderr, "audio: SONIX_TEST_EXTERNAL done\n");
+	return NULL;
+}
+#endif
+
 int audio_init(void) {
 	static bool initialized = false;
 	if (initialized)
@@ -4505,6 +5021,15 @@ int audio_init(void) {
 		fprintf(stderr, "Audio: Failed to create background thread\n");
 		return -1;
 	}
+
+#ifdef HOST_BUILD
+	if (getenv("SONIX_TEST_EXTERNAL")) {
+		pthread_t test;
+		if (pthread_create(&test, NULL, external_test_thread, NULL) == 0) {
+			pthread_detach(test);
+		}
+	}
+#endif
 
 	initialized = true;
 	return 0;
@@ -5001,6 +5526,22 @@ static long external_underrun_logged_ms;
 static unsigned char *external_scaled;
 static size_t external_scaled_size;
 
+// The conversion to the output's rate, when it runs at another one: the same
+// polyphase filters and doubling the file player uses (see bt_resample_t).
+// AirPlay, the game sounds and most radio are 44.1 kHz, and the headphones
+// are nearly always held at 48: without it every one of them went through
+// alsa's linear converter. What the device is opened at, with it.
+static bt_resample_t external_conv;
+static int external_dev_rate;
+static int external_dev_bits;
+
+// And the requantisation to 16 bits with dither, for an output that takes no
+// more (see dither_to_s16), on a copy of its own.
+static bool external_dither;
+static uint32_t external_dither_seed = 0x2545f491u;
+static int32_t *external_narrow;
+static size_t external_narrow_samples;
+
 // How often the check below is worth making. The jack is a sysfs read and the
 // device name a string compare under a mutex, so it is not expensive -- but at
 // 44.1 kHz a receiver hands over a chunk every eleven milliseconds, and doing
@@ -5015,9 +5556,52 @@ static bool external_open_locked(void) {
 	// has not played anything since boot, none at all.
 	auto_set_output();
 
+	// The output's rate, when the stream is converted to it here. Only the two
+	// widths the converter reads; the others are left to the plug, as before.
+	bt_resample_close(&external_conv);
+	external_dev_rate = external_rate;
+	external_dev_bits = external_bits;
+	int target = 0;
+	if (external_bits == 16 || external_bits == 32) {
+		target = bt_resample_target(external_rate, external_channels);
+		int halvings = 0;
+		if (!target) {
+			// No decimator on this path: only what the filters reach directly.
+			target = usb_rate_plan(external_rate, external_channels, &halvings);
+			if (halvings > 0 || !rate_convertible(external_rate, target)) {
+				target = 0;
+			}
+		}
+	}
+	if (target && bt_resample_open(&external_conv, external_rate, target, external_channels)) {
+		external_dev_rate = target;
+		external_dev_bits = 32;
+		fprintf(stderr, "audio: the external source's %d Hz is resampled to %d Hz here (%s), not by alsa's linear converter\n",
+				external_rate, target,
+				external_conv.poly ? (external_conv.twice ? "polyphase, half-band x2" : "polyphase") : "half-band x2");
+	} else {
+		bt_resample_close(&external_conv);
+	}
+	external_dither = external_dev_bits == 32 && !output_takes_wide();
+	if (external_dither) {
+		external_dev_bits = 16;
+		fprintf(stderr, "audio: the output takes 16 bits; the external source's 32-bit stream is dithered (TPDF) to 16 here\n");
+	}
+
 	pcm_forced_buffer_ms = external_buffer_ms;
 	snd_pcm_uframes_t period = 0;
-	external_pcm = open_pcm_device(external_channels, external_rate, external_bits, &period);
+	external_pcm = open_pcm_device(external_channels, external_dev_rate, external_dev_bits, &period);
+	if (!external_pcm && external_conv.on && last_open_err != -ENOMEM) {
+		// The output refused its own rate in S32: the stream goes as it did
+		// before, and the plug converts it.
+		fprintf(stderr, "audio: the resampled external stream would not open; alsa converts the %d Hz one instead\n",
+				external_rate);
+		bt_resample_close(&external_conv);
+		external_dither = false;
+		external_dev_rate = external_rate;
+		external_dev_bits = external_bits;
+		external_pcm = open_pcm_device(external_channels, external_dev_rate, external_dev_bits, &period);
+	}
 	pcm_forced_buffer_ms = 0;
 
 	if (!external_pcm) {
@@ -5188,14 +5772,52 @@ int audio_external_write(const void *frames, int count) {
 		frames = external_scaled;
 	}
 
+	// To the output's rate, last, as the file player does it.
+	int out_count = count;
+	int out_frame_bytes = external_frame_bytes;
+	if (external_conv.on) {
+		int made = 0;
+		const int32_t *converted =
+			bt_resample_block(&external_conv, frames, external_bits, count, external_channels, &made);
+		if (!converted) {
+			pthread_mutex_unlock(&external_lock);
+			return 0;
+		}
+		frames = converted;
+		out_count = made;
+		out_frame_bytes = external_channels * (int)sizeof(int32_t);
+		if (out_count == 0) {
+			// The filter holds it until the next chunk.
+			pthread_mutex_unlock(&external_lock);
+			return count;
+		}
+	}
+	if (external_dither) {
+		size_t samples = (size_t)out_count * (size_t)external_channels;
+		if (samples > external_narrow_samples) {
+			int32_t *grown = realloc(external_narrow, samples * sizeof(int32_t));
+			if (!grown) {
+				pthread_mutex_unlock(&external_lock);
+				return 0;
+			}
+			external_narrow = grown;
+			external_narrow_samples = samples;
+		}
+		memcpy(external_narrow, frames, samples * sizeof(int32_t));
+		dither_to_s16(&external_dither_seed, external_narrow, (int)samples);
+		frames = external_narrow;
+		out_frame_bytes = external_channels * (int)sizeof(int16_t);
+	}
+
 	int written = 0;
 	long last_progress_ms = log_ms();
-	while (written < count) {
-		const void *chunk = (const char *)frames + (size_t)written * external_frame_bytes;
-		if (pcm_takes_s24(external_pcm, external_bits)) {
-			chunk = s24_from_s32(&external_s24, chunk, (size_t)(count - written) * (size_t)external_channels);
+	while (written < out_count) {
+		const void *chunk = (const char *)frames + (size_t)written * (size_t)out_frame_bytes;
+		if (pcm_takes_s24(external_pcm, external_dev_bits)) {
+			chunk = s24_from_s32(&external_s24, chunk, (size_t)(out_count - written) * (size_t)external_channels);
 		}
-		snd_pcm_sframes_t got = chunk ? snd_pcm_writei(external_pcm, chunk, (snd_pcm_uframes_t)(count - written)) : -ENOMEM;
+		snd_pcm_sframes_t got =
+			chunk ? snd_pcm_writei(external_pcm, chunk, (snd_pcm_uframes_t)(out_count - written)) : -ENOMEM;
 		if (got > 0) {
 			written += (int)got;
 			last_progress_ms = log_ms();
@@ -5234,6 +5856,11 @@ int audio_external_write(const void *frames, int count) {
 	}
 
 	pthread_mutex_unlock(&external_lock);
+	// In the caller's frames: what it handed over, scaled by how much of the
+	// converted block went out.
+	if (out_count != count) {
+		return written >= out_count ? count : (int)((long long)written * count / out_count);
+	}
 	return written;
 }
 
@@ -5249,6 +5876,7 @@ void audio_external_end(void) {
 		external_device[0] = '\0';
 		printf("audio: external source finished; device handed back (%u underruns)\n", external_underruns);
 	}
+	bt_resample_close(&external_conv);
 
 	pthread_mutex_unlock(&external_lock);
 }
