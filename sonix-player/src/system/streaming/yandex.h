@@ -144,6 +144,37 @@ typedef struct {
 // /albums/<id>/with-tracks, the album's fields only.
 bool yandex_album_meta(const char *album_id, yandex_album_meta_t *out);
 int yandex_artist_albums(const char *artist_id, yandex_album_t *out, int max);
+// The rest of the collection. Lists of rows return how many they put in
+// `out` (at most `max`), -1 on error.
+//   likes/artists -- also fills what yandex_artist_liked() reads (`out` may
+//   be NULL to fill only that); likes/albums the same for albums.
+int yandex_liked_artists(yandex_artist_t *out, int max);
+int yandex_liked_albums(yandex_album_t *out, int max);
+// likes/playlists: the other people's playlists the account liked.
+int yandex_liked_playlists(yandex_playlist_t *out, int max);
+// /feed: the playlists the service makes for the account -- Playlist of the
+// Day, Premiere, Deja Vu, Missed Likes...
+int yandex_feed_playlists(yandex_playlist_t *out, int max);
+// landing3/chart: the chart's tracks, in order, through `each`.
+int yandex_chart(yandex_ref_cb each, void *user);
+// landing3/new-releases, then the albums (POST /albums).
+int yandex_new_releases(yandex_album_t *out, int max);
+// An artist's tracks, the most listened to first; `total` (may be NULL) gets
+// how many the artist has in all.
+int yandex_artist_tracks(const char *artist_id, yandex_track_t *out, int max, int *total);
+// All of an artist's track ids (up to 2000), through `each`.
+int yandex_artist_track_ids(const char *artist_id, yandex_ref_cb each, void *user);
+
+// Liking an artist or an album; logged. The two below answer from what the
+// lists above read and what was liked since: cheap, any thread.
+bool yandex_like_artist(const char *artist_id, bool like);
+bool yandex_like_album(const char *album_id, bool like);
+bool yandex_artist_liked(const char *artist_id);
+bool yandex_album_liked(const char *album_id);
+// Whether the liked artists, and the liked albums, have been read this session.
+bool yandex_liked_artists_known(void);
+bool yandex_liked_albums_known(void);
+
 // /search?type=all. The counts are capacities on the way in and what was
 // filled on the way out.
 bool yandex_search(const char *text, yandex_artist_t *artists, int *n_artists, yandex_album_t *albums, int *n_albums, yandex_track_t *tracks, int *n_tracks);

@@ -32,9 +32,9 @@
 #include "src/system/streaming/yandex.h"
 #include "src/system/streaming/yandexcache.h"
 #include "src/system/streaming/yandexdl.h"
-#include "src/system/streaming/yandexsaved.h"
 #include "src/system/streaming/yandexlist.h"
 #include "src/system/streaming/yandexplay.h"
+#include "src/system/streaming/yandexsaved.h"
 #include "src/system/streaming/yandexsync.h"
 #include "src/system/streaming/yandexwave.h"
 
@@ -57,10 +57,13 @@
 #define ROW_H 80
 #define ROW_PITCH (ROW_H + 10)
 
-typedef enum { ROW_TRACK, ROW_ALBUM, ROW_ARTIST, ROW_PLAYLIST } row_kind_t;
+// ROW_MORE: "All tracks" on an artist's page, the artist in `u.artist`, how
+// many in `count`.
+typedef enum { ROW_TRACK, ROW_ALBUM, ROW_ARTIST, ROW_PLAYLIST, ROW_MORE } row_kind_t;
 
 typedef struct {
 	row_kind_t kind;
+	int count;
 	union {
 		yandex_track_t track;
 		yandex_album_t album;
@@ -80,7 +83,18 @@ typedef enum {
 	JOB_ARTIST,
 	JOB_SEARCH,
 	JOB_WAVE,
+	// The rest of the collection, and what the service puts forward.
+	JOB_LIKED_ARTISTS,
+	JOB_LIKED_ALBUMS,
+	JOB_FEED,
+	JOB_CHART,
+	JOB_NEW_RELEASES,
+	JOB_ARTIST_TRACKS,
 	JOB_DISLIKE,
+	// Liking an artist or an album (`n`: 1 like, 0 remove), sent in order
+	// with the dislikes.
+	JOB_LIKE_ARTIST,
+	JOB_LIKE_ALBUM,
 	// The details of one page of the list on screen (yandexlist.h).
 	JOB_PAGE,
 	// Built on the GUI thread from the index of saved tracks, never sent to
@@ -152,6 +166,9 @@ static job_kind_t list_kind;
 // The album a JOB_ALBUM list shows, for its "Save album" button.
 static char list_album_id[YANDEX_ID_MAX];
 static char list_album_title[YANDEX_TITLE_MAX];
+// An artist's page: its Like button, and which artist.
+static lv_obj_t *artist_bar, *artist_like_label;
+static char list_artist_id[YANDEX_ID_MAX];
 static gui_config_t *list_cfg;
 // search
 static lv_obj_t *search_field;
@@ -202,7 +219,7 @@ static void job_done_async(void *user);
 
 static void submit(const job_t *job) {
 	pthread_mutex_lock(&job_lock);
-	if (job->kind == JOB_DISLIKE) {
+	if (job->kind == JOB_DISLIKE || job->kind == JOB_LIKE_ARTIST || job->kind == JOB_LIKE_ALBUM) {
 		if (events_count < EVENTS_MAX) {
 			events[events_count++] = *job;
 		}
@@ -270,11 +287,39 @@ static int list_from_refs(int got, const char *what) {
 	return got;
 }
 
+// How many of an artist's tracks its page lists before "All tracks".
+#define ARTIST_POPULAR 10
+
+static void add_playlist_rows(const yandex_playlist_t *p, int got) {
+	for (int i = 0; i < got && result_count < MAX_ROWS; i++) {
+		result[result_count].kind = ROW_PLAYLIST;
+		result[result_count++].u.playlist = p[i];
+	}
+}
+
+static void add_album_rows(const yandex_album_t *a, int got) {
+	for (int i = 0; i < got && result_count < MAX_ROWS; i++) {
+		result[result_count].kind = ROW_ALBUM;
+		result[result_count++].u.album = a[i];
+	}
+}
+
+// The liked artists and albums, read once a session: the artist page's
+// Like button and the album menus say "Remove like" from them.
+static void ensure_collection(void) {
+	if (!yandex_liked_artists_known()) {
+		yandex_liked_artists(NULL, 0);
+	}
+	if (!yandex_liked_albums_known()) {
+		yandex_liked_albums(NULL, 0);
+	}
+}
+
 static void run_list_job(const job_t *job) {
 	// Room for the answers that come whole (an album, a search...); the long
 	// lists come as ids and need none.
 	yandex_track_t *tmp = NULL;
-	if (job->kind != JOB_LIKED && job->kind != JOB_PLAYLIST) {
+	if (job->kind != JOB_LIKED && job->kind != JOB_PLAYLIST && job->kind != JOB_CHART && job->kind != JOB_ARTIST_TRACKS) {
 		tmp = calloc(MAX_ROWS * 2, sizeof(*tmp));
 		if (!tmp) {
 			snprintf(result_error, sizeof(result_error), "%s", tr("out_of_memory"));
@@ -294,29 +339,73 @@ static void run_list_job(const job_t *job) {
 		got = list_from_refs(result_list ? yandex_playlist_ids(job->a, job->b, add_ref_cb, result_list) : -1, "playlist");
 		break;
 	case JOB_ALBUM:
+		ensure_collection(); // the album's Like in its menu
 		got = list_from_tracks(tmp, yandex_album_tracks(job->a, tmp, MAX_ROWS * 2));
 		break;
 	case JOB_WAVE:
 		got = list_from_tracks(tmp, yandex_wave_start(NULL, 0, tmp, MAX_ROWS));
 		break;
+	case JOB_CHART:
+		result_list = yandexlist_new();
+		got = list_from_refs(result_list ? yandex_chart(add_ref_cb, result_list) : -1, "chart");
+		break;
+	case JOB_ARTIST_TRACKS:
+		result_list = yandexlist_new();
+		got = list_from_refs(result_list ? yandex_artist_track_ids(job->a, add_ref_cb, result_list) : -1, "artist's tracks");
+		break;
 	case JOB_PLAYLISTS: {
+		// The account's own, then those it liked.
 		yandex_playlist_t *p = (yandex_playlist_t *)tmp; // smaller than a track
 		got = yandex_playlists(p, MAX_ROWS);
+		int liked = got >= 0 ? yandex_liked_playlists(p + got, MAX_ROWS - got) : -1;
+		got += liked > 0 ? liked : 0;
+		add_playlist_rows(p, got);
+		break;
+	}
+	case JOB_FEED: {
+		yandex_playlist_t *p = (yandex_playlist_t *)tmp;
+		got = yandex_feed_playlists(p, MAX_ROWS);
+		add_playlist_rows(p, got);
+		break;
+	}
+	case JOB_LIKED_ARTISTS: {
+		yandex_artist_t *a = (yandex_artist_t *)tmp;
+		got = yandex_liked_artists(a, MAX_ROWS);
 		for (int i = 0; i < got; i++) {
-			result[i].kind = ROW_PLAYLIST;
-			result[i].u.playlist = p[i];
+			result[result_count].kind = ROW_ARTIST;
+			result[result_count++].u.artist = a[i];
 		}
-		result_count = got > 0 ? got : 0;
+		break;
+	}
+	case JOB_LIKED_ALBUMS:
+	case JOB_NEW_RELEASES: {
+		yandex_album_t *a = (yandex_album_t *)tmp;
+		got = job->kind == JOB_LIKED_ALBUMS ? yandex_liked_albums(a, MAX_ROWS) : yandex_new_releases(a, MAX_ROWS);
+		add_album_rows(a, got);
 		break;
 	}
 	case JOB_ARTIST: {
-		yandex_album_t *a = (yandex_album_t *)tmp;
-		got = yandex_artist_albums(job->a, a, MAX_ROWS);
-		for (int i = 0; i < got; i++) {
-			result[i].kind = ROW_ALBUM;
-			result[i].u.album = a[i];
+		// The artist's page: the most listened-to tracks, "All tracks" when
+		// there are more, then the albums. The liked artists are read the
+		// first time, for the page's Like button.
+		ensure_collection();
+		int total = 0;
+		int nt = yandex_artist_tracks(job->a, tmp, ARTIST_POPULAR, &total);
+		for (int i = 0; i < nt; i++) {
+			result[result_count].kind = ROW_TRACK;
+			result[result_count++].u.track = tmp[i];
 		}
-		result_count = got > 0 ? got : 0;
+		if (total > nt && nt > 0) {
+			row_t *more = &result[result_count++];
+			memset(more, 0, sizeof(*more));
+			more->kind = ROW_MORE;
+			more->count = total;
+			snprintf(more->u.artist.id, sizeof(more->u.artist.id), "%.*s", (int)sizeof(more->u.artist.id) - 1, job->a); // an id: digits
+		}
+		yandex_album_t *a = (yandex_album_t *)(tmp + ARTIST_POPULAR + 1); // past the tracks
+		int na = yandex_artist_albums(job->a, a, MAX_ROWS - result_count);
+		add_album_rows(a, na);
+		got = nt < 0 && na < 0 ? -1 : result_count;
 		break;
 	}
 	case JOB_SEARCH: {
@@ -443,6 +532,14 @@ static void *worker_main(void *arg) {
 				snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
 			}
 			break;
+		case JOB_LIKE_ARTIST:
+		case JOB_LIKE_ALBUM: {
+			bool ok = job.kind == JOB_LIKE_ARTIST ? yandex_like_artist(job.a, job.n != 0) : yandex_like_album(job.a, job.n != 0);
+			if (!ok) {
+				snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
+			}
+			break;
+		}
 		case JOB_PAGE:
 			if (yandexlist_fetch_page(job.list, job.n) < 0) {
 				result_class = streamerr_describe("yandex", yandex_last_error(), result_error, sizeof(result_error));
@@ -546,14 +643,19 @@ static void row_texts(const row_t *r, char *name, size_t ns, char *detail, size_
 		snprintf(name, ns, "%s", r->u.playlist.title);
 		snprintf(detail, ds, tr("yandex_n_tracks"), r->u.playlist.track_count);
 		break;
+	case ROW_MORE:
+		snprintf(name, ns, tr("yandex_all_tracks"), r->count);
+		detail[0] = '\0';
+		break;
 	}
 }
 
 static void row_menu_cb(lv_event_t *e);
 
 // Rows with something to offer on their own get the three dots: a track (its
-// like, saving it) and an album (saving it whole).
-static bool row_has_menu(const row_t *r) { return (r->kind == ROW_TRACK && r->u.track.id[0]) || (r->kind == ROW_ALBUM && r->u.album.id[0]); }
+// like, saving it, queueing it), an album (the same for the whole record), an
+// artist (its like).
+static bool row_has_menu(const row_t *r) { return (r->kind == ROW_TRACK && r->u.track.id[0]) || (r->kind == ROW_ALBUM && r->u.album.id[0]) || (r->kind == ROW_ARTIST && r->u.artist.id[0]); }
 
 // How many entries the list on screen has, and entry `index` as a row: from
 // the answer's rows, or from its list of tracks. False for a track whose
@@ -694,6 +796,9 @@ static void bind_slot(slot_t *slot, int index) {
 	}
 	lv_label_set_text(slot->title, name);
 	lv_label_set_text(slot->sub, detail);
+	// A row of one line ("All tracks") has it in the middle.
+	lv_obj_set_hidden(slot->sub, !detail[0]);
+	lv_obj_align(slot->title, detail[0] ? LV_ALIGN_TOP_LEFT : LV_ALIGN_LEFT_MID, 16, detail[0] ? 12 : 0);
 	bool menu = have && row_has_menu(&r);
 	bool mark = have && (r.kind == ROW_TRACK || r.kind == ROW_ALBUM) && row_saved(&r);
 	lv_obj_set_hidden(slot->menu, !menu);
@@ -883,6 +988,7 @@ static list_step_t list_current;
 static bool list_has_current;
 
 static void show_list(const list_step_t *step);
+static void artist_bar_refresh(void);
 
 static bool list_back_has_step(void) { return list_history_len > 0; }
 
@@ -970,12 +1076,18 @@ static void show_list(const list_step_t *step) {
 		snprintf(list_album_id, sizeof(list_album_id), "%.*s", (int)sizeof(list_album_id) - 1, a); // an id: digits
 		snprintf(list_album_title, sizeof(list_album_title), "%s", title);
 	}
+	bool is_artist = kind == JOB_ARTIST && a[0];
+	if (is_artist) {
+		snprintf(list_artist_id, sizeof(list_artist_id), "%.*s", (int)sizeof(list_artist_id) - 1, a);
+		artist_bar_refresh();
+	}
 	lv_obj_set_hidden(wave_bar, !list_is_wave);
 	lv_obj_set_hidden(album_bar, !is_album);
-	// The list starts under the like/dislike bar (or the album's) only when
-	// there is one.
+	lv_obj_set_hidden(artist_bar, !is_artist);
+	// The list starts under the like/dislike bar (or the album's, or the
+	// artist's) only when there is one.
 	int top = settingsrow_content_top(list_cfg);
-	int y = top + (list_is_wave || is_album ? 66 : 0);
+	int y = top + (list_is_wave || is_album || is_artist ? 66 : 0);
 	lv_obj_set_pos(list_box, list_cfg->padding, y);
 	lv_obj_set_height(list_box, list_cfg->screen_height - y - 4);
 	clear_list();
@@ -1060,6 +1172,10 @@ static void slot_clicked_cb(lv_event_t *e) {
 	case ROW_PLAYLIST:
 		open_list(r.u.playlist.title, JOB_PLAYLIST, r.u.playlist.owner, r.u.playlist.kind);
 		break;
+	case ROW_MORE:
+		// Every track of the artist, by the page; titled as the artist.
+		open_list(list_current.title, JOB_ARTIST_TRACKS, r.u.artist.id, NULL);
+		break;
 	}
 }
 
@@ -1107,6 +1223,51 @@ static void do_row_like(void *user) {
 	const yandex_track_t *t = &menu_row.u.track;
 	yandexsync_like(t->id, t->album_id, like, row_like_done, like ? (void *)1 : NULL);
 	toast_success(tr(like ? "yandex_liked_it" : "yandex_unliked_it"));
+}
+
+// ---------------------------------------------------------------------------
+// liking an artist or an album
+//
+// Sent on the worker with the dislikes; the toast says what happened once
+// the service has answered. The artist page's button shows the new state at
+// once and goes back if the service refuses.
+// ---------------------------------------------------------------------------
+
+static void artist_bar_refresh(void) {
+	if (artist_like_label) {
+		lv_label_set_text(artist_like_label, tr(yandex_artist_liked(list_artist_id) ? "yandex_unlike" : "yandex_like"));
+	}
+}
+
+static void like_object(job_kind_t kind, const char *id, bool like) {
+	run(kind, id, NULL, like ? 1 : 0);
+	if (kind == JOB_LIKE_ARTIST && strcmp(id, list_artist_id) == 0 && artist_like_label) {
+		lv_label_set_text(artist_like_label, tr(like ? "yandex_unlike" : "yandex_like"));
+	}
+}
+
+static void do_album_like(void *user) { like_object(JOB_LIKE_ALBUM, menu_row.u.album.id, user != NULL); }
+static void do_artist_like(void *user) { like_object(JOB_LIKE_ARTIST, menu_row.u.artist.id, user != NULL); }
+
+static void artist_like_cb(lv_event_t *e) {
+	(void)e;
+	if (switcher_back_drag_active() || !list_artist_id[0]) {
+		return;
+	}
+	like_object(JOB_LIKE_ARTIST, list_artist_id, !yandex_artist_liked(list_artist_id));
+}
+
+// The answer: said in a toast; the button follows what the account now says.
+static void like_object_done(const job_result_t *r) {
+	bool artist = r->kind == JOB_LIKE_ARTIST;
+	if (r->error[0]) {
+		toast_error(tr("yandex_like_failed"));
+	} else if (artist) {
+		toast_success(tr(r->page ? "yandex_artist_liked" : "yandex_artist_unliked"));
+	} else {
+		toast_success(tr(r->page ? "yandex_album_liked" : "yandex_album_unliked"));
+	}
+	artist_bar_refresh();
 }
 
 static void save_refused(void) { toast_error(tr("yandex_save_refused")); }
@@ -1178,7 +1339,7 @@ static void row_menu_cb(lv_event_t *e) {
 	if (!slot || slot->index < 0 || !view_row(slot->index, &menu_row)) {
 		return;
 	}
-	popover_item_t items[3];
+	popover_item_t items[6];
 	memset(items, 0, sizeof(items));
 	int n = 0;
 	// On the card: the save is done, said with a tick, and the way to undo it
@@ -1204,6 +1365,11 @@ static void row_menu_cb(lv_event_t *e) {
 			n++;
 		}
 	} else if (menu_row.kind == ROW_ALBUM) {
+		bool liked = yandex_album_liked(menu_row.u.album.id);
+		items[n].label = liked ? "yandex_unlike" : "yandex_like";
+		items[n].action = do_album_like;
+		items[n].user = liked ? NULL : (void *)1;
+		n++;
 		if (saved) {
 			items[n].label = "yandex_saved_on_card";
 			items[n].checked = true;
@@ -1211,6 +1377,12 @@ static void row_menu_cb(lv_event_t *e) {
 			items[n].label = "yandex_save_album";
 			items[n].action = do_row_save;
 		}
+		n++;
+	} else if (menu_row.kind == ROW_ARTIST) {
+		bool liked = yandex_artist_liked(menu_row.u.artist.id);
+		items[n].label = liked ? "yandex_unlike" : "yandex_like";
+		items[n].action = do_artist_like;
+		items[n].user = liked ? NULL : (void *)1;
 		n++;
 	}
 	if (some) {
@@ -1349,6 +1521,27 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_hidden(album_state, true);
 	lv_obj_set_hidden(album_bar, true);
 
+	// An artist's own bar: its Like.
+	artist_bar = lv_obj_create(list_screen);
+	lv_obj_set_size(artist_bar, cfg->screen_width - 2 * cfg->padding, 60);
+	lv_obj_align(artist_bar, LV_ALIGN_TOP_MID, 0, top);
+	lv_obj_set_style_bg_opa(artist_bar, 0, 0);
+	lv_obj_set_style_border_width(artist_bar, 0, 0);
+	lv_obj_set_style_pad_all(artist_bar, 0, 0);
+	lv_obj_set_flex_flow(artist_bar, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(artist_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_t *like = lv_btn_create(artist_bar);
+	lv_obj_set_size(like, LV_SIZE_CONTENT, 52);
+	lv_obj_set_style_pad_hor(like, 22, 0);
+	lv_obj_set_style_radius(like, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_shadow_width(like, 0, 0);
+	lv_obj_add_event_cb(like, artist_like_cb, LV_EVENT_CLICKED, NULL);
+	artist_like_label = lv_label_create(like);
+	lv_label_set_text(artist_like_label, tr("yandex_like"));
+	lv_obj_set_style_text_font(artist_like_label, &font_ui_20, 0);
+	lv_obj_center(artist_like_label);
+	lv_obj_set_hidden(artist_bar, true);
+
 	list_box = lv_obj_create(list_screen);
 	lv_obj_set_size(list_box, cfg->screen_width - 2 * cfg->padding, cfg->screen_height - top - 70);
 	lv_obj_set_pos(list_box, cfg->padding, top + 66);
@@ -1376,6 +1569,7 @@ static void build_list_page(gui_config_t *cfg) {
 	switcher_attach_back_gesture(list_box);
 	switcher_attach_back_gesture(wave_bar);
 	switcher_attach_back_gesture(album_bar);
+	switcher_attach_back_gesture(artist_bar);
 	switcher_set_back_guard(list_screen, list_back_guard);
 	switcher_set_back_guard_peek(list_screen, list_back_has_step);
 }
@@ -1546,6 +1740,11 @@ static void job_done_async(void *user) {
 		free_result(r);
 		return;
 	}
+	if (r->kind == JOB_LIKE_ARTIST || r->kind == JOB_LIKE_ALBUM) {
+		like_object_done(r);
+		free_result(r);
+		return;
+	}
 	if (r->kind == JOB_PAGE) {
 		// A page of the list on screen came (or failed: its rows keep saying
 		// "Loading..." and ask again when scrolled to). The rows showing it
@@ -1579,6 +1778,9 @@ static void job_done_async(void *user) {
 	free_result(shown);
 	shown = r;
 	fill_list();
+	if (r->kind == JOB_ARTIST) {
+		artist_bar_refresh(); // the liked artists may have been read just now
+	}
 	// The rows' menus say "Like" or "Remove like" from the account's list:
 	// asked for now if it is not here yet (once a session, see yandexsync).
 	yandexsync_likes_refresh(NULL);
@@ -1599,6 +1801,26 @@ static void open_liked_cb(lv_event_t *e) {
 static void open_playlists_cb(lv_event_t *e) {
 	(void)e;
 	open_list(tr("yandex_playlists"), JOB_PLAYLISTS, NULL, NULL);
+}
+static void open_artists_cb(lv_event_t *e) {
+	(void)e;
+	open_list(tr("yandex_artists"), JOB_LIKED_ARTISTS, NULL, NULL);
+}
+static void open_albums_cb(lv_event_t *e) {
+	(void)e;
+	open_list(tr("yandex_albums"), JOB_LIKED_ALBUMS, NULL, NULL);
+}
+static void open_feed_cb(lv_event_t *e) {
+	(void)e;
+	open_list(tr("yandex_made_for_you"), JOB_FEED, NULL, NULL);
+}
+static void open_chart_cb(lv_event_t *e) {
+	(void)e;
+	open_list(tr("yandex_chart"), JOB_CHART, NULL, NULL);
+}
+static void open_new_releases_cb(lv_event_t *e) {
+	(void)e;
+	open_list(tr("yandex_new_releases"), JOB_NEW_RELEASES, NULL, NULL);
 }
 static void open_search_cb(lv_event_t *e) {
 	(void)e;
@@ -1798,7 +2020,12 @@ void yandexpage_init(gui_config_t *cfg) {
 	home_signed_in = column(yandex_screen, cfg, top);
 	settingsrow_action(home_signed_in, "yandex_my_wave", open_wave_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_liked", open_liked_cb, NULL);
+	settingsrow_action(home_signed_in, "yandex_artists", open_artists_cb, NULL);
+	settingsrow_action(home_signed_in, "yandex_albums", open_albums_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_playlists", open_playlists_cb, NULL);
+	settingsrow_action(home_signed_in, "yandex_made_for_you", open_feed_cb, NULL);
+	settingsrow_action(home_signed_in, "yandex_chart", open_chart_cb, NULL);
+	settingsrow_action(home_signed_in, "yandex_new_releases", open_new_releases_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_search", open_search_cb, NULL);
 	settingsrow_action(home_signed_in, "yandex_saved_on_card", open_saved_cb, NULL);
 	// What is being saved to the library, while something is: under the

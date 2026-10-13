@@ -130,9 +130,11 @@ def gen_track(tid):
         return None
     if n < 1000:
         return None
-    kind = "Wave" if n >= 3000 and n < 10000 else "Track"
+    kind = "Wave" if 3000 <= n < 4000 else "Track"
     album = 900 + n % 7
-    return track(n, f"{kind} {n}", WAVE_ARTISTS[n % 3], album, f"Album {album}", 30, n % 12 + 1)
+    t = track(n, f"{kind} {n}", WAVE_ARTISTS[n % 3], album, f"Album {album}", 30, n % 12 + 1)
+    t["artists"][0]["id"] = 7 + n % 3
+    return t
 
 
 def any_track(tid):
@@ -177,9 +179,45 @@ LIKED_EXTRA = [str(10000 + i) for i in range(int(os.environ.get("YANDEX_MOCK_LIK
 
 # A playlist of 1200 (generated) for the paging of big playlists.
 BIG_PLAYLIST = [str(20000 + i) for i in range(1200)]
-PLAYLISTS = {"3": ["103", "101"], "4": BIG_PLAYLIST}
+PLAYLISTS = {"3": ["103", "101"], "4": BIG_PLAYLIST,
+             # someone else's, liked by the account
+             "1001": ["4001", "4002", "4003"],
+             # made for the account (/feed)
+             "777": [str(7000 + i) for i in range(25)], "778": [str(7100 + i) for i in range(30)],
+             "779": [str(7200 + i) for i in range(20)]}
 
-state = {"polls": 0, "batch": 0, "liked": ["101", "102", "103", "104", "105"] + LIKED_EXTRA,
+# The rest of the collection: liked artists and albums (ids), liked
+# playlists, the playlists made for the account, the chart, new releases.
+ARTISTS = {"7": "Mock Artist", "8": "Другой Артист", "9": "Third Voice"}
+FEED = [("playlistOfTheDay", "777", "Плейлист дня", True), ("recentTracks", "778", "Премьера", True),
+        ("neverHeard", "779", "Дежавю", True), ("missedLikes", "780", "Тайник", False)]
+CHART = [str(6000 + i) for i in range(100)]
+NEW_RELEASES = [11, 12, 903, 904]
+# Each artist's tracks, the most listened to first: the real ones, then
+# generated ones (artist 7 has 250 in all, the others 120).
+def artist_track_ids(aid):
+    real = [t for t, v in TRACKS.items() if aid == "7"]
+    count = 250 if aid == "7" else 120
+    return real + [str(i) for i in range(4000, 5000) if str(7 + i % 3) == aid][:count - len(real)]
+
+
+def album_obj(aid, host=None):
+    """An album row as the service gives one (no tracks)."""
+    a = ALBUMS.get(str(aid))
+    if a:
+        return {k: v for k, v in a.items() if k != "volumes"}
+    n = int(aid)
+    return {"id": n, "title": f"Album {n}", "year": 2020 + n % 6, "trackCount": len(album_tracks(n)),
+            "artists": [{"id": 7 + n % 3, "name": WAVE_ARTISTS[n % 3]}], "genre": "pop",
+            "coverUri": f"avatars.yandex.net/get-music-content/1/{n}/%%"}
+
+
+def album_tracks(n):
+    """The tracks of a generated album (900-906): ten of the 5000s."""
+    return [str(i) for i in range(5000, 5070) if 900 + i % 7 == int(n)]
+
+state = {"liked_artists": ["7", "8"], "liked_albums": ["11", "903"],
+         "polls": 0, "batch": 0, "liked": ["101", "102", "103", "104", "105"] + LIKED_EXTRA,
          "session": 0, "wave_next": 3000, "tracks_calls": 0, "feedback": 0}
 lock = threading.Lock()
 
@@ -273,6 +311,12 @@ class Handler(BaseHTTPRequestHandler):
                 tracks = [{"id": int(t), "track": full_track(t)} for t in ids]
             sys.stderr.write(f"mock: PLAYLIST {m.group(1)}/{m.group(2)} rich-tracks={q.get('rich-tracks')}: {len(ids)} tracks\n")
             return self.send_json({"result": {"kind": int(m.group(2)), "title": "x", "owner": {"uid": int(m.group(1))}, "trackCount": len(ids), "tracks": tracks}})
+        if p.startswith("/albums/") and p.endswith("/with-tracks") and p.split("/")[2] not in ALBUMS:
+            n = p.split("/")[2]
+            if not n.isdigit() or not 900 <= int(n) <= 906:
+                return self.send_json({"error": {"name": "not-found"}}, 404)
+            result = dict(album_obj(n), volumes=[[full_track(t) for t in album_tracks(n)]])
+            return self.send_json({"result": result})
         if p.startswith("/albums/") and p.endswith("/with-tracks"):
             album = ALBUMS.get(p.split("/")[2])
             if not album:
@@ -282,6 +326,43 @@ class Handler(BaseHTTPRequestHandler):
                           volumes=[[TRACKS[t] for t in v] for v in album["volumes"]])
             return self.send_json({"result": result})
 
+        if p == f"/users/{UID}/likes/artists":
+            with lock:
+                ids = list(state["liked_artists"])
+            # with-timestamps=false: the artists themselves
+            artists = [{"id": int(a), "name": ARTISTS.get(a, f"Artist {a}"), "cover": {"uri": "avatars.yandex.net/get-music-content/7/a/%%"}} for a in ids]
+            sys.stderr.write(f"mock: LIKED ARTISTS {ids} with-timestamps={q.get('with-timestamps')}\n")
+            return self.send_json({"result": artists})
+        if p == f"/users/{UID}/likes/albums":
+            with lock:
+                ids = list(state["liked_albums"])
+            sys.stderr.write(f"mock: LIKED ALBUMS {ids} rich={q.get('rich')}\n")
+            return self.send_json({"result": [{"id": int(a), "timestamp": "2025-01-01T00:00:00+00:00", "album": album_obj(a)} for a in ids]})
+        if p == f"/users/{UID}/likes/playlists":
+            return self.send_json({"result": [{"timestamp": "2025-01-01T00:00:00+00:00",
+                                               "playlist": {"uid": 777777, "kind": 1001, "title": "Rock Hits", "trackCount": 3,
+                                                            "owner": {"uid": 777777, "login": "someone"}}}]})
+        if p == "/feed":
+            gen = [{"type": t, "ready": ready, "notify": False,
+                    "data": {"uid": 503646255, "kind": int(k), "title": title, "trackCount": len(PLAYLISTS.get(k, [])),
+                             "owner": {"uid": 503646255, "login": "yamusic-daily"}}} for t, k, title, ready in FEED]
+            return self.send_json({"result": {"generatedPlaylists": gen, "days": [], "isWizardPassed": True}})
+        if p == "/landing3/chart":
+            tracks = [{"id": int(t), "track": full_track(t), "chart": {"position": i + 1, "progress": "same", "shift": 0}}
+                      for i, t in enumerate(CHART)]
+            return self.send_json({"result": {"type": "chart", "chart": {"uid": 414787002, "kind": 1076, "title": "Чарт", "tracks": tracks}}})
+        if p == "/landing3/new-releases":
+            return self.send_json({"result": {"type": "new-releases", "newReleases": NEW_RELEASES}})
+        m = re.match(r"^/artists/(\d+)/(tracks|track-ids)$", p)
+        if m:
+            ids = artist_track_ids(m.group(1))
+            page, size = int(q.get("page", 0)), int(q.get("page-size", 20))
+            chunk = ids[page * size:(page + 1) * size]
+            sys.stderr.write(f"mock: ARTIST {m.group(1)} {m.group(2)} page {page} size {size}: {len(chunk)} of {len(ids)}\n")
+            if m.group(2) == "track-ids":
+                return self.send_json({"result": chunk})
+            return self.send_json({"result": {"pager": {"total": len(ids), "page": page, "perPage": size},
+                                              "tracks": [full_track(t) for t in chunk]}})
         if p.startswith("/artists/") and p.endswith("/direct-albums"):
             return self.send_json({"result": {"albums": [{"id": 11, "title": "Mock Album", "year": 2024, "trackCount": 2, "artists": [{"name": "Mock Artist"}]},
                                                          {"id": 12, "title": "Second Album", "year": 2025, "trackCount": 3, "artists": [{"name": "Mock Artist"}]}]}})
@@ -433,6 +514,25 @@ class Handler(BaseHTTPRequestHandler):
             return self.send_json({"access_token": TOKEN, "refresh_token": "mock-refresh", "expires_in": 31536000})
         if not self.authorised():
             return
+        if p == "/albums":
+            ids = [i for i in body.get("album-ids", "").split(",") if i]
+            return self.send_json({"result": [album_obj(i) for i in ids]})
+        m = re.match(rf"^/users/{UID}/likes/(artists|albums)/(add-multiple|remove)$", p)
+        if m:
+            what = m.group(1)
+            ids = [i for i in body.get(what[:-1] + "-ids", "").split(",") if i]
+            if not ids:
+                sys.stderr.write(f"mock: LIKE REFUSED {p}: no {what[:-1]}-ids in {body}\n")
+                return self.send_json({"error": {"name": "validate"}}, 400)
+            with lock:
+                bag = state["liked_" + what]
+                for i in ids:
+                    if m.group(2) == "remove" and i in bag:
+                        bag.remove(i)
+                    elif m.group(2) == "add-multiple" and i not in bag:
+                        bag.insert(0, i)
+                sys.stderr.write(f"mock: LIKE {what} {m.group(2)} {ids} -> {bag}\n")
+            return self.send_json({"result": "ok"})
         if p == "/tracks":
             ids = body.get("track-ids", "").split(",")
             found = [full_track(i.split(":")[0]) for i in ids]

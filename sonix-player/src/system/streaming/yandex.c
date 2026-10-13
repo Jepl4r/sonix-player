@@ -106,6 +106,17 @@ static char (*liked_other)[YANDEX_ID_MAX];
 static int liked_other_count, liked_other_room;
 static bool liked_loaded;
 
+// Which artists and albums are liked, for the artist page's button and the
+// album menu: numbers, as the liked tracks' (any thread, under liked_lock).
+// Known once the account's list has been read (the "Artists" and "Albums"
+// rows read it, an artist or album page asks for it the first time).
+typedef struct {
+	uint32_t *ids;
+	int count, room;
+	bool known;
+} id_set_t;
+static id_set_t liked_artists, liked_albums;
+
 static void set_error(const char *fmt, ...) {
 	va_list ap;
 	va_start(ap, fmt);
@@ -224,6 +235,8 @@ void yandex_logout(void) {
 	liked_other = NULL;
 	liked_count = liked_room = liked_other_count = liked_other_room = 0;
 	liked_loaded = false;
+	liked_artists.count = liked_albums.count = 0;
+	liked_artists.known = liked_albums.known = false;
 	pthread_mutex_unlock(&liked_lock);
 }
 
@@ -903,6 +916,29 @@ void yandex_liked_mark(const char *track_id, bool liked) {
 	pthread_mutex_unlock(&liked_lock);
 }
 
+// A playlist object: owner and kind (its address), title, size, cover. False
+// when it names no playlist.
+static bool playlist_from(const json_doc_t *doc, int p, yandex_playlist_t *pl) {
+	memset(pl, 0, sizeof(*pl));
+	id_of(doc, p, "kind", pl->kind, sizeof(pl->kind));
+	id_any(doc, json_path(doc, p, "owner.uid"), pl->owner, sizeof(pl->owner));
+	if (!pl->owner[0]) {
+		id_of(doc, p, "uid", pl->owner, sizeof(pl->owner));
+	}
+	if (!pl->owner[0]) {
+		snprintf(pl->owner, sizeof(pl->owner), "%s", user_uid);
+	}
+	json_obj_str(doc, p, "title", pl->title, sizeof(pl->title));
+	pl->track_count = (int)json_obj_long(doc, p, "trackCount", 0);
+	char uri[300] = "";
+	json_str(doc, json_path(doc, p, "cover.uri"), uri, sizeof(uri));
+	if (!uri[0]) {
+		json_obj_str(doc, p, "ogImage", uri, sizeof(uri));
+	}
+	yandex_cover_url(uri, 200, pl->cover, sizeof(pl->cover));
+	return pl->kind[0] != '\0';
+}
+
 int yandex_playlists(yandex_playlist_t *out, int max) {
 	if (!ensure_uid()) {
 		return -1;
@@ -915,25 +951,9 @@ int yandex_playlists(yandex_playlist_t *out, int max) {
 		return -1;
 	}
 	int arr = json_get(&doc, json_root(&doc), "result");
-	int n = arr >= 0 ? json_len(&doc, arr) : 0;
 	int got = 0;
-	for (int i = 0; i < n && got < max; i++) {
-		int p = json_at(&doc, arr, i);
-		yandex_playlist_t *pl = &out[got];
-		memset(pl, 0, sizeof(*pl));
-		id_of(&doc, p, "kind", pl->kind, sizeof(pl->kind));
-		id_any(&doc, json_path(&doc, p, "owner.uid"), pl->owner, sizeof(pl->owner));
-		if (!pl->owner[0]) {
-			snprintf(pl->owner, sizeof(pl->owner), "%s", user_uid);
-		}
-		json_obj_str(&doc, p, "title", pl->title, sizeof(pl->title));
-		pl->track_count = (int)json_obj_long(&doc, p, "trackCount", 0);
-		char uri[300] = "";
-		json_str(&doc, json_path(&doc, p, "cover.uri"), uri, sizeof(uri));
-		yandex_cover_url(uri, 200, pl->cover, sizeof(pl->cover));
-		if (pl->kind[0]) {
-			got++;
-		}
+	for (int el = next_element(&doc, arr, -1); el >= 0 && got < max; el = next_element(&doc, arr, el)) {
+		got += playlist_from(&doc, el, &out[got]);
 	}
 	api_done(body, &doc);
 	return got;
@@ -1073,6 +1093,356 @@ int yandex_artist_albums(const char *artist_id, yandex_album_t *out, int max) {
 	}
 	api_done(body, &doc);
 	return got;
+}
+
+// ---------------------------------------------------------------------------
+// the collection beyond tracks: artists, albums, playlists; what the service
+// makes for the account; the chart and the new releases
+// ---------------------------------------------------------------------------
+
+// Call with liked_lock held.
+static void id_set_put(id_set_t *set, const char *id, bool in) {
+	char *end = NULL;
+	unsigned long v = strtoul(id ? id : "", &end, 10);
+	if (!id || !id[0] || !end || *end || v == 0 || v >= 0x80000000UL) {
+		return;
+	}
+	for (int i = 0; i < set->count; i++) {
+		if (set->ids[i] == (uint32_t)v) {
+			if (!in) {
+				set->ids[i] = set->ids[--set->count];
+			}
+			return;
+		}
+	}
+	if (!in) {
+		return;
+	}
+	if (set->count == set->room) {
+		int room = set->room ? set->room * 2 : 32;
+		uint32_t *ids = realloc(set->ids, (size_t)room * sizeof(*ids));
+		if (!ids) {
+			return;
+		}
+		set->ids = ids;
+		set->room = room;
+	}
+	set->ids[set->count++] = (uint32_t)v;
+}
+
+static bool id_set_has(id_set_t *set, const char *id) {
+	char *end = NULL;
+	unsigned long v = strtoul(id ? id : "", &end, 10);
+	pthread_mutex_lock(&liked_lock);
+	bool found = false;
+	for (int i = 0; id && id[0] && end && !*end && i < set->count && !found; i++) {
+		found = set->ids[i] == (uint32_t)v;
+	}
+	pthread_mutex_unlock(&liked_lock);
+	return found;
+}
+
+bool yandex_artist_liked(const char *artist_id) { return id_set_has(&liked_artists, artist_id); }
+bool yandex_album_liked(const char *album_id) { return id_set_has(&liked_albums, album_id); }
+
+bool yandex_liked_artists_known(void) {
+	pthread_mutex_lock(&liked_lock);
+	bool known = liked_artists.known;
+	pthread_mutex_unlock(&liked_lock);
+	return known;
+}
+
+bool yandex_liked_albums_known(void) {
+	pthread_mutex_lock(&liked_lock);
+	bool known = liked_albums.known;
+	pthread_mutex_unlock(&liked_lock);
+	return known;
+}
+
+// The element of a likes list: the object itself, or wrapped with its
+// timestamp under `key` ({"artist":{...},"timestamp":...}) -- the service
+// answers either way, depending on the parameters.
+static int liked_inner(const json_doc_t *doc, int el, const char *key) {
+	int inner = json_get(doc, el, key);
+	return inner >= 0 ? inner : el;
+}
+
+int yandex_liked_artists(yandex_artist_t *out, int max) {
+	if (!ensure_uid()) {
+		return -1;
+	}
+	char url[400];
+	snprintf(url, sizeof(url), "%s/users/%s/likes/artists?with-timestamps=false", api_url, user_uid);
+	char *body;
+	json_doc_t doc;
+	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		return -1;
+	}
+	int arr = json_get(&doc, json_root(&doc), "result");
+	int got = 0, all = 0;
+	pthread_mutex_lock(&liked_lock);
+	liked_artists.count = 0;
+	for (int el = next_element(&doc, arr, -1); el >= 0; el = next_element(&doc, arr, el)) {
+		yandex_artist_t a;
+		artist_from(&doc, liked_inner(&doc, el, "artist"), &a);
+		if (!a.id[0]) {
+			continue;
+		}
+		id_set_put(&liked_artists, a.id, true);
+		all++;
+		if (out && got < max) {
+			out[got++] = a;
+		}
+	}
+	liked_artists.known = true;
+	pthread_mutex_unlock(&liked_lock);
+	api_done(body, &doc);
+	printf("yandex: %d liked artists\n", all);
+	return got;
+}
+
+int yandex_liked_albums(yandex_album_t *out, int max) {
+	if (!ensure_uid()) {
+		return -1;
+	}
+	char url[400];
+	snprintf(url, sizeof(url), "%s/users/%s/likes/albums?rich=true", api_url, user_uid);
+	char *body;
+	json_doc_t doc;
+	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		return -1;
+	}
+	int arr = json_get(&doc, json_root(&doc), "result");
+	int got = 0, all = 0;
+	pthread_mutex_lock(&liked_lock);
+	liked_albums.count = 0;
+	for (int el = next_element(&doc, arr, -1); el >= 0; el = next_element(&doc, arr, el)) {
+		yandex_album_t a;
+		album_from(&doc, liked_inner(&doc, el, "album"), &a);
+		if (!a.id[0]) {
+			id_of(&doc, el, "id", a.id, sizeof(a.id)); // rich=false: the id alone
+		}
+		if (!a.id[0]) {
+			continue;
+		}
+		id_set_put(&liked_albums, a.id, true);
+		all++;
+		if (out && got < max && a.title[0]) {
+			out[got++] = a;
+		}
+	}
+	liked_albums.known = true;
+	pthread_mutex_unlock(&liked_lock);
+	api_done(body, &doc);
+	printf("yandex: %d liked albums\n", all);
+	return got;
+}
+
+int yandex_liked_playlists(yandex_playlist_t *out, int max) {
+	if (!ensure_uid()) {
+		return -1;
+	}
+	char url[400];
+	snprintf(url, sizeof(url), "%s/users/%s/likes/playlists", api_url, user_uid);
+	char *body;
+	json_doc_t doc;
+	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		return -1;
+	}
+	int arr = json_get(&doc, json_root(&doc), "result");
+	int got = 0;
+	for (int el = next_element(&doc, arr, -1); el >= 0 && got < max; el = next_element(&doc, arr, el)) {
+		got += playlist_from(&doc, liked_inner(&doc, el, "playlist"), &out[got]);
+	}
+	api_done(body, &doc);
+	printf("yandex: %d liked playlists\n", got);
+	return got;
+}
+
+int yandex_feed_playlists(yandex_playlist_t *out, int max) {
+	// GET /feed, "generatedPlaylists": the Playlist of the Day, Premiere,
+	// Deja Vu, Missed Likes... -- what the apps show as made for the
+	// listener, read where the Music Assistant provider reads it today (the
+	// landing3 "personalplaylists" block MarshalX documents is the older way
+	// to the same list). Those not ready yet are left out.
+	char url[400];
+	snprintf(url, sizeof(url), "%s/feed", api_url);
+	char *body;
+	json_doc_t doc;
+	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		return -1;
+	}
+	int arr = json_path(&doc, json_root(&doc), "result.generatedPlaylists");
+	int got = 0;
+	for (int el = next_element(&doc, arr, -1); el >= 0 && got < max; el = next_element(&doc, arr, el)) {
+		int data = json_get(&doc, el, "data");
+		if (data >= 0 && json_obj_bool(&doc, el, "ready", true)) {
+			got += playlist_from(&doc, data, &out[got]);
+		}
+	}
+	api_done(body, &doc);
+	printf("yandex: %d playlists made for the account\n", got);
+	return got;
+}
+
+int yandex_chart(yandex_ref_cb each, void *user) {
+	char url[400];
+	snprintf(url, sizeof(url), "%s/landing3/chart", api_url);
+	char *body;
+	json_doc_t doc;
+	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		return -1;
+	}
+	int arr = json_path(&doc, json_root(&doc), "result.chart.tracks");
+	int count = 0;
+	for (int el = next_element(&doc, arr, -1); el >= 0; el = next_element(&doc, arr, el)) {
+		count += ref_from(&doc, el, each, user);
+	}
+	api_done(body, &doc);
+	printf("yandex: chart: %d tracks\n", count);
+	return count;
+}
+
+int yandex_new_releases(yandex_album_t *out, int max) {
+	// The ids first (landing3/new-releases), then the albums themselves in
+	// one request (POST /albums).
+	char url[400];
+	snprintf(url, sizeof(url), "%s/landing3/new-releases", api_url);
+	char *body;
+	json_doc_t doc;
+	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		return -1;
+	}
+	int arr = json_path(&doc, json_root(&doc), "result.newReleases");
+	size_t room = 16 + (size_t)max * 14, used = 0;
+	char *form = malloc(room);
+	int n = 0;
+	if (form) {
+		used = (size_t)snprintf(form, room, "album-ids=");
+		for (int el = next_element(&doc, arr, -1); el >= 0 && n < max; el = next_element(&doc, arr, el)) {
+			char id[YANDEX_ID_MAX];
+			id_any(&doc, el, id, sizeof(id));
+			if (id[0] && used + strlen(id) + 4 < room) {
+				used += (size_t)snprintf(form + used, room - used, "%s%s", n ? "%2C" : "", id);
+				n++;
+			}
+		}
+	}
+	api_done(body, &doc);
+	if (!form || n == 0) {
+		free(form);
+		return form ? 0 : -1;
+	}
+	snprintf(url, sizeof(url), "%s/albums", api_url);
+	bool ok = api("POST", url, form, NULL, &body, &doc);
+	free(form);
+	if (!ok) {
+		return -1;
+	}
+	int got = 0;
+	arr = json_get(&doc, json_root(&doc), "result");
+	for (int el = next_element(&doc, arr, -1); el >= 0 && got < max; el = next_element(&doc, arr, el)) {
+		album_from(&doc, el, &out[got]);
+		got += out[got].id[0] != '\0';
+	}
+	api_done(body, &doc);
+	printf("yandex: %d new releases\n", got);
+	return got;
+}
+
+int yandex_artist_tracks(const char *artist_id, yandex_track_t *out, int max, int *total) {
+	// The artist's tracks, most listened to first: what the apps call
+	// "popular tracks". `total` gets how many there are in all.
+	char url[400];
+	snprintf(url, sizeof(url), "%s/artists/%s/tracks?page=0&page-size=%d", api_url, artist_id, max);
+	char *body;
+	json_doc_t doc;
+	if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+		return -1;
+	}
+	int result = json_get(&doc, json_root(&doc), "result");
+	int got = tracks_from_array(&doc, json_get(&doc, result, "tracks"), out, max);
+	if (total) {
+		int t = json_path(&doc, result, "pager.total");
+		*total = t >= 0 ? (int)json_long(&doc, t, got) : got;
+	}
+	api_done(body, &doc);
+	return got;
+}
+
+// How many of an artist's tracks "All tracks" lists at most.
+#define ARTIST_TRACKS_MAX 2000
+
+int yandex_artist_track_ids(const char *artist_id, yandex_ref_cb each, void *user) {
+	// /artists/{id}/track-ids, a page of ids at a time ("12345" or
+	// "12345:678"): an artist of thousands of tracks costs a few dozen bytes
+	// a track, and the details come by the page, as a liked list's do.
+	int count = 0;
+	for (int page = 0; count < ARTIST_TRACKS_MAX; page++) {
+		char url[400];
+		snprintf(url, sizeof(url), "%s/artists/%s/track-ids?page=%d&page-size=500", api_url, artist_id, page);
+		char *body;
+		json_doc_t doc;
+		if (!api(NULL, url, NULL, NULL, &body, &doc)) {
+			return count > 0 ? count : -1;
+		}
+		int result = json_get(&doc, json_root(&doc), "result");
+		int arr = result >= 0 && doc.toks[result].type == JSON_ARRAY ? result : json_get(&doc, result, "trackIds");
+		int n = 0;
+		for (int el = next_element(&doc, arr, -1); el >= 0 && count < ARTIST_TRACKS_MAX; el = next_element(&doc, arr, el)) {
+			if (ref_from(&doc, el, each, user)) {
+				n++;
+				count++;
+			}
+		}
+		api_done(body, &doc);
+		if (n < 500) {
+			break;
+		}
+	}
+	printf("yandex: artist %s: %d tracks\n", artist_id, count);
+	return count;
+}
+
+// POST /users/{uid}/likes/{artists|albums}/{add-multiple|remove} with
+// "{artist|album}-ids=<id>", as for tracks; logged with the answer.
+static bool like_object(const char *what, const char *id, bool like) {
+	if (!ensure_uid()) {
+		return false;
+	}
+	char url[400], form[96];
+	snprintf(url, sizeof(url), "%s/users/%s/likes/%ss/%s", api_url, user_uid, what, like ? "add-multiple" : "remove");
+	snprintf(form, sizeof(form), "%s-ids=%s", what, id);
+	char *body;
+	json_doc_t doc;
+	bool ok = api("POST", url, form, NULL, &body, &doc);
+	if (ok) {
+		api_done(body, &doc);
+		printf("yandex: likes/%ss/%s %s -> %d %s\n", what, like ? "add-multiple" : "remove", id, last_status, last_body);
+	} else {
+		fprintf(stderr, "yandex: likes/%ss/%s %s failed -> %d %s (%s)\n", what, like ? "add-multiple" : "remove", id, last_status, last_body, last_error);
+	}
+	return ok;
+}
+
+bool yandex_like_artist(const char *artist_id, bool like) {
+	bool ok = like_object("artist", artist_id, like);
+	if (ok) {
+		pthread_mutex_lock(&liked_lock);
+		id_set_put(&liked_artists, artist_id, like);
+		pthread_mutex_unlock(&liked_lock);
+	}
+	return ok;
+}
+
+bool yandex_like_album(const char *album_id, bool like) {
+	bool ok = like_object("album", album_id, like);
+	if (ok) {
+		pthread_mutex_lock(&liked_lock);
+		id_set_put(&liked_albums, album_id, like);
+		pthread_mutex_unlock(&liked_lock);
+	}
+	return ok;
 }
 
 // One /search call with type=all: artists, albums and tracks in one answer,
