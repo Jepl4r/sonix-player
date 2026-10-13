@@ -9,8 +9,10 @@
 #include <unistd.h>
 
 #include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/confirm.h"
 #include "src/gui/shell/settingsrow.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_styles.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
@@ -217,7 +219,9 @@ static void scan_start(int clear) {
 
 typedef struct {
 	lv_obj_t *card;
-	lv_obj_t *usage;
+	lv_obj_t *usage; // the card's subtitle: "12 MB of 1.0 GB · tracks: 1"
+	lv_obj_t *bar;	 // how full the cache is
+	lv_obj_t *clear; // "Clear cache", only while there is something to clear
 	lv_obj_t *now;
 	lv_obj_t *save;		// Yandex only: the "Save to library" queue
 	lv_obj_t *stop;		// and its stop button
@@ -248,6 +252,13 @@ static void size_text(long bytes, char *out, size_t size) {
 	}
 }
 
+// The row of buttons goes with its last button: an empty cache that is not
+// saving anything ends at its fill.
+static void actions_refresh(card_t *c) {
+	bool any = !lv_obj_is_hidden(c->clear) || (c->stop && !lv_obj_is_hidden(c->stop));
+	lv_obj_set_hidden(lv_obj_get_parent(c->clear), !any);
+}
+
 static void refresh_usage(void) {
 	usage_t now[SERVICE_COUNT];
 	pthread_mutex_lock(&usage_lock);
@@ -258,13 +269,24 @@ static void refresh_usage(void) {
 			continue;
 		}
 		if (!now[i].known) {
-			lv_label_set_text(cards[i].usage, tr("downloads_measuring"));
+			sx_card_subtitle(cards[i].card, tr("downloads_measuring"), false);
 			continue;
 		}
-		char used[32], limit[32];
+		char used[32], limit[32], line[160];
 		size_text(now[i].bytes, used, sizeof(used));
 		size_text(SERVICES[i].limit, limit, sizeof(limit));
-		lv_label_set_text_fmt(cards[i].usage, tr("downloads_cache_usage"), used, limit, now[i].tracks);
+		lv_snprintf(line, sizeof(line), tr("downloads_cache_usage"), used, limit, now[i].tracks);
+		sx_card_subtitle(cards[i].card, line, false);
+		// The fill: at least a dot when there is anything at all, so a few
+		// megabytes of a gigabyte do not read as empty.
+		int pct = SERVICES[i].limit > 0 ? (int)((long long)now[i].bytes * 100 / SERVICES[i].limit) : 0;
+		if (now[i].bytes > 0 && pct < 2) {
+			pct = 2;
+		}
+		sx_card_bar_set(cards[i].bar, pct);
+		// An empty cache has nothing to clear: no button (the handoff).
+		lv_obj_set_hidden(cards[i].clear, now[i].bytes <= 0);
+		actions_refresh(&cards[i]);
 	}
 }
 
@@ -403,6 +425,7 @@ static void refresh_live(void) {
 		}
 		lv_obj_set_hidden(y->save, !st.active);
 		lv_obj_set_hidden(y->stop, !st.active);
+		actions_refresh(y);
 	}
 }
 
@@ -425,6 +448,8 @@ static void clear_confirmed(void *user) {
 	scan_start(clearing);
 }
 
+// Irreversible -- the tracks go from the card -- so asked first, the one
+// kind of change 2.0 still confirms: the sheet with its action in red.
 static void clear_cb(lv_event_t *e) {
 	if (switcher_back_drag_active()) {
 		return;
@@ -434,11 +459,20 @@ static void clear_cb(lv_event_t *e) {
 	pthread_mutex_lock(&usage_lock);
 	u = usage[clearing];
 	pthread_mutex_unlock(&usage_lock);
-	char title[160], size[32], note[300];
+	static char title[160], note[300];
+	char size[32];
 	lv_snprintf(title, sizeof(title), tr("downloads_clear_question"), tr(SERVICES[clearing].id));
 	size_text(u.bytes, size, sizeof(size));
 	lv_snprintf(note, sizeof(note), tr("downloads_clear_note"), size);
-	confirm_show(title, note, "downloads_clear", clear_confirmed, NULL);
+	sx_sheet_t sheet = {
+		.title = title,
+		.subtitle = note,
+		.cancel_label = tr("cancel"),
+		.action_label = tr("downloads_clear"),
+		.action_destructive = true,
+		.on_action = clear_confirmed,
+	};
+	sx_sheet_open(&sheet);
 }
 
 static void stop_saving_confirmed(void *user) {
@@ -452,77 +486,57 @@ static void stop_saving_cb(lv_event_t *e) {
 	if (switcher_back_drag_active()) {
 		return;
 	}
-	confirm_show("downloads_stop_saving_question", "downloads_stop_saving_note", "downloads_stop", stop_saving_confirmed, NULL);
+	sx_sheet_t sheet = {
+		.title = tr("downloads_stop_saving_question"),
+		.subtitle = tr("downloads_stop_saving_note"),
+		.cancel_label = tr("cancel"),
+		.action_label = tr("downloads_stop"),
+		.action_destructive = true,
+		.on_action = stop_saving_confirmed,
+	};
+	sx_sheet_open(&sheet);
 }
 
 // --- building --------------------------------------------------------------
 
-static lv_obj_t *line_label(lv_obj_t *parent, bool dim) {
+// A line of the card under its fill: what is coming down now, what is
+// being saved.
+static lv_obj_t *line_label(lv_obj_t *parent) {
 	lv_obj_t *label = lv_label_create(parent);
 	lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(label, lv_pct(100));
-	lv_obj_add_style(label, dim ? &theme_style_text_dim : &theme_style_text, 0);
+	lv_obj_add_style(label, &sx_style_text, 0);
 	lv_obj_set_style_text_font(label, &font_ui_20, 0);
 	lv_label_set_text(label, "");
 	return label;
 }
 
-static lv_obj_t *small_button(lv_obj_t *parent, const char *key, lv_event_cb_t cb, void *user) {
-	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 52);
-	lv_obj_set_style_radius(btn, 12, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_pad_hor(btn, 20, 0);
-	lv_obj_add_style(btn, &theme_style_switch, 0); // the quiet neutral fill
-	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user);
-	lv_obj_t *label = lv_label_create(btn);
-	lv_label_set_text(label, tr(key));
-	lv_obj_set_style_text_font(label, &font_ui_20, 0);
-	lv_obj_set_style_text_color(label, theme()->text_primary, 0);
-	lv_obj_center(label);
-	return btn;
-}
-
+// The handoff's Downloads card: the service, how much of its ceiling is
+// used, the fill, and "Clear cache".
 static void build_card(int s) {
 	card_t *c = &cards[s];
-	c->card = lv_obj_create(page_list);
-	lv_obj_add_style(c->card, &theme_style_card, 0);
-	lv_obj_set_size(c->card, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_radius(c->card, 12, 0);
-	lv_obj_set_style_border_width(c->card, 0, 0);
-	lv_obj_set_style_pad_all(c->card, 16, 0);
-	lv_obj_set_style_pad_row(c->card, 8, 0);
-	lv_obj_set_flex_flow(c->card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_scrollable(c->card, false);
-	lv_obj_set_event_bubble(c->card, true);
-
-	lv_obj_t *name = lv_label_create(c->card);
-	lv_label_set_text(name, tr(SERVICES[s].id));
-	lv_obj_add_style(name, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name, &font_ui_24, 0);
-
-	c->usage = line_label(c->card, true);
-	lv_label_set_text(c->usage, tr("downloads_measuring"));
-	c->now = line_label(c->card, false);
+	c->card = sx_card_create(page_list);
+	sx_card_title(c->card, tr(SERVICES[s].id));
+	c->usage = sx_card_subtitle(c->card, tr("downloads_measuring"), false);
+	c->bar = sx_card_bar(c->card, 0);
+	c->now = line_label(c->card);
 	lv_obj_set_hidden(c->now, true);
-
 	if (s == YANDEX_INDEX) {
-		c->save = line_label(c->card, false);
+		c->save = line_label(c->card);
 		lv_obj_set_hidden(c->save, true);
 	}
-
-	lv_obj_t *buttons = lv_obj_create(c->card);
-	lv_obj_remove_style_all(buttons);
-	lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_style_pad_column(buttons, 10, 0);
-	lv_obj_set_style_pad_row(buttons, 10, 0);
-	lv_obj_set_style_pad_top(buttons, 4, 0);
-	lv_obj_set_event_bubble(buttons, true);
-	small_button(buttons, "downloads_clear_cache", clear_cb, (void *)(intptr_t)s);
+	c->clear = sx_card_action(c->card, tr("downloads_clear_cache"), clear_cb, (void *)(intptr_t)s);
+	lv_obj_set_hidden(c->clear, true);
+	lv_obj_set_hidden(lv_obj_get_parent(c->clear), true);
 	if (s == YANDEX_INDEX) {
-		c->stop = small_button(buttons, "downloads_stop_saving", stop_saving_cb, NULL);
+		// Beside "Clear cache", in the same row.
+		lv_obj_t *row = lv_obj_get_parent(c->clear);
+		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
+		lv_obj_set_style_pad_gap(row, 10, 0);
+		c->stop = sx_card_action(c->card, tr("downloads_stop_saving"), stop_saving_cb, NULL);
+		lv_obj_t *own_row = lv_obj_get_parent(c->stop);
+		lv_obj_set_parent(c->stop, row);
+		lv_obj_delete(own_row);
 		lv_obj_set_hidden(c->stop, true);
 	}
 }
