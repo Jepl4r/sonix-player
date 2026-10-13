@@ -22,6 +22,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "src/gui/shell/gui.h"
 #include "src/system/bluetooth/airpods.h"
 #include "src/system/audio/audio.h"
 #include "src/system/bluetooth/btlog.h"
@@ -29,6 +30,7 @@
 #include "src/system/bluetooth/btstack.h"
 #include "src/system/bluetooth/btvolume.h"
 #include "src/system/core/config.h"
+#include "src/system/core/lang.h"
 #include "src/system/core/logging.h"
 #include "src/system/device/power.h"
 #include "src/system/device/sysserver.h" // only for the notification socket now
@@ -1640,10 +1642,27 @@ static void read_sink_rate(const char *mac) {
 	pthread_mutex_unlock(&lock);
 }
 static void do_auto_codec(const char *mac);
+static void stream_rebuilt(const char *mac);
+static void codec_drift_check(const char *mac);
+static bool music_playing_out(void);
+
+// A codec choice to make again once the music has stopped for a while (see
+// stream_rebuilt()), and since when nothing has played. Worker only.
+static bool g_codec_reapply_pending;
+static uint32_t g_codec_idle_since;
 
 // The device the automatic codec choice has already been made for. Cleared when
-// the audio goes, so plugging the same headphones back in asks again.
+// the audio goes, so plugging the same headphones back in asks again -- and
+// when the stack is taken down for a park or a switch-off, and when bluealsa is
+// restarted: in both cases the next stream is a new daemon's or a new link's,
+// negotiated without this player having a say, which is where an LDAC pair
+// used to come back on AAC.
 static char codec_auto_done[BT_MAC_MAX]; // worker only
+
+// The last export of the sink stream refresh_audio_state() has seen
+// (btstack_sink_serial()), to tell a stream bluealsa built again behind the
+// same address from the one already looked at. Worker only.
+static unsigned g_sink_serial_seen;
 
 // Points the playback thread at the right ALSA device: the bluealsa PCM of
 // whatever is connected while there is an A2DP sink, the jack otherwise. Called
@@ -1760,12 +1779,27 @@ static bool device_still_connected(const char *mac) {
 // at all, and that is what "it says connected and plays nothing" is.
 static void refresh_audio_state(void) {
 	char mac[BT_MAC_MAX];
+	// Read before the sink: an export landing between the two is then seen
+	// again next time rather than missed.
+	unsigned sink_serial = btstack_sink_serial();
 	bool sink = btstack_audio_sink(mac, sizeof(mac));
+	bool rebuilt = sink && sink_serial != g_sink_serial_seen;
+	if (sink) {
+		g_sink_serial_seen = sink_serial;
+	}
 
 	if (sink) {
 		a2dp_missing_since = 0;
 		if (g_bluealsa_restarted) {
 			g_bluealsa_restarted = false;
+			rebuilt = false; // dealt with here
+			// The new daemon and the headphones have chosen a codec between
+			// them, and it need not be the one chosen by hand: the stream is
+			// back as the same address, so the connection path below never
+			// sees it as new. The choice is made again first (restart_bluealsa()
+			// cleared codec_auto_done), while nothing plays yet.
+			do_auto_codec(mac);
+			do_read_codecs();
 			// Before the player is told: it opens the stream again at once, at
 			// the rate this reads. See below.
 			read_sink_rate(mac);
@@ -1773,6 +1807,7 @@ static void refresh_audio_state(void) {
 			g_output_generation++;
 			pthread_mutex_unlock(&lock);
 			fprintf(stderr, "bluetooth: the stream is back on the new bluealsa; the player opens it again\n");
+			codec_drift_check(mac);
 		}
 	} else {
 		pthread_mutex_lock(&lock);
@@ -1813,6 +1848,9 @@ static void refresh_audio_state(void) {
 	pthread_mutex_unlock(&lock);
 
 	if (!changed) {
+		if (rebuilt) {
+			stream_rebuilt(mac);
+		}
 		return;
 	}
 	fprintf(stderr, "bluetooth: audio %s%s\n", sink ? "on " : "back on the jack", sink ? mac : "");
@@ -1854,10 +1892,14 @@ static void refresh_audio_state(void) {
 		}
 	} else {
 		codec_auto_done[0] = '\0'; // the next connection chooses again
+		g_codec_reapply_pending = false; // ...and that is the asking again
 		read_sink_rate(NULL);
 	}
 	apply_output_routing();
 	do_read_codecs();
+	if (sink) {
+		codec_drift_check(mac);
+	}
 
 	// Headphones with an LDAC rate of their own that the running daemon was
 	// not started with: queued rather than made here, so the connection is
@@ -2664,6 +2706,12 @@ static void bring_stack_down(bool deliberate) {
 	g_serial++;
 	pthread_mutex_unlock(&lock);
 
+	// The link is going, and refresh_audio_state() will not see it go -- the
+	// flags were just cleared under it -- so the codec choice is forgotten
+	// here. Otherwise the same headphones reconnecting after a wake keep the
+	// codec the new daemon picked, the one chosen by hand never asked for.
+	codec_auto_done[0] = '\0';
+
 	apply_output_routing();
 
 	if (was_on_bluealsa && !audio_suspend_quiesce(1500)) {
@@ -3074,6 +3122,116 @@ static void do_read_codecs(void) {
 	snprintf(g_codec_selected, sizeof(g_codec_selected), "%s", selected);
 	g_serial++;
 	pthread_mutex_unlock(&lock);
+}
+
+// ---------------------------------------------------------------------------
+// When the codec moves without being asked to
+//
+// A codec chosen by hand is asked for at every connection, but the stream can
+// also be built again behind the same address -- bluealsa restarted for one
+// of its options, the headphones dropping and coming straight back, a wake --
+// and then it is the headphones and the daemon that choose, which is where an
+// LDAC pair turns up on AAC. Said in the log and, when it is not the codec
+// chosen by hand, on screen, once per codec it lands on.
+// ---------------------------------------------------------------------------
+
+// Not more often than this is the choice made again on a rebuilt stream: a
+// pair that keeps refusing the codec chosen for it must not be asked in a loop.
+#define CODEC_REAPPLY_MIN_MS 30000
+
+static uint32_t g_codec_reapply_at;			 // worker only
+static char g_drift_mac[BT_MAC_MAX];		 // worker only: the device the line below is about
+static char g_drift_announced[BT_CODEC_MAX]; // worker only: the codec last said on screen, "" for none
+
+typedef struct {
+	char from[BT_CODEC_MAX];
+	char to[BT_CODEC_MAX];
+} codec_change_t;
+
+// UI thread: the sentence is put together here, where the language table is
+// read, and handed to the ordinary notice.
+static void codec_changed_cb(void *user) {
+	codec_change_t *change = user;
+	char text[160];
+	snprintf(text, sizeof(text), tr("btaudio_codec_changed"), change->from, change->to);
+	gui_notify_popup(text);
+	free(change);
+}
+
+static void codec_drift_check(const char *mac) {
+	char pinned[BT_CODEC_MAX];
+	codec_choice_get(mac, pinned, sizeof(pinned));
+	pthread_mutex_lock(&lock);
+	char selected[BT_CODEC_MAX];
+	copy_field(selected, sizeof(selected), g_codec_selected, sizeof(g_codec_selected));
+	pthread_mutex_unlock(&lock);
+
+	if (strcasecmp(g_drift_mac, mac) != 0) {
+		snprintf(g_drift_mac, sizeof(g_drift_mac), "%s", mac);
+		g_drift_announced[0] = '\0';
+	}
+	// Nothing chosen by hand, nothing read (the stream is between two
+	// transports), or back on the choice: nothing to say, and the next move
+	// away is worth saying again.
+	if (!pinned[0] || !selected[0] || codec_same(selected, pinned)) {
+		g_drift_announced[0] = '\0';
+		return;
+	}
+	if (codec_same(selected, g_drift_announced)) {
+		return; // already said
+	}
+	snprintf(g_drift_announced, sizeof(g_drift_announced), "%s", selected);
+	fprintf(stderr, "bluetooth: codec changed: %s -> %s on %s (%s was chosen by hand)\n", pinned, selected, mac,
+			pinned);
+
+	codec_change_t *change = malloc(sizeof(*change));
+	if (!change) {
+		return;
+	}
+	snprintf(change->from, sizeof(change->from), "%s", pinned);
+	snprintf(change->to, sizeof(change->to), "%s", selected);
+	if (!gui_post(codec_changed_cb, change)) {
+		free(change);
+	}
+}
+
+// The stream on the connected headphones was built again -- the same address,
+// a new export (btstack_sink_serial()). Its codec and rate are read again, and
+// if that is not what this player would have chosen, the choice is made again:
+// at once while nothing plays, since asking is a teardown of the transport,
+// and otherwise at the next connection, with a line saying so. A rebuild that
+// this player asked for itself (a codec or a rate chosen) lands on what was
+// asked and makes do_auto_codec() a no-op.
+static void stream_rebuilt(const char *mac) {
+	do_read_codecs();
+	pthread_mutex_lock(&lock);
+	char selected[BT_CODEC_MAX];
+	copy_field(selected, sizeof(selected), g_codec_selected, sizeof(g_codec_selected));
+	pthread_mutex_unlock(&lock);
+	fprintf(stderr, "bluetooth: the stream on %s was built again (%s)\n", mac, selected[0] ? selected : "codec unknown");
+
+	char pinned[BT_CODEC_MAX];
+	codec_choice_get(mac, pinned, sizeof(pinned));
+	bool off_choice = pinned[0] && selected[0] && !codec_same(selected, pinned);
+	if (off_choice) {
+		bool recent = g_codec_reapply_at != 0 && (uint32_t)(now_ms() - g_codec_reapply_at) < CODEC_REAPPLY_MIN_MS;
+		if (music_playing_out()) {
+			fprintf(stderr, "bluetooth: %s is on %s, not %s as chosen; asked for again once the music has stopped "
+							"for a while\n",
+					mac, selected, pinned);
+			g_codec_reapply_pending = true;
+			g_codec_idle_since = 0;
+		} else if (recent) {
+			fprintf(stderr, "bluetooth: %s is on %s, not %s as chosen; asked a moment ago, not again yet\n", mac,
+					selected, pinned);
+		} else {
+			g_codec_reapply_at = now_ms() | 1;
+			codec_auto_done[0] = '\0';
+			do_auto_codec(mac);
+			do_read_codecs();
+		}
+	}
+	codec_drift_check(mac);
 }
 
 // An empty codec is "Auto": the choice for this device is forgotten and the
@@ -3624,6 +3782,26 @@ static void *bluetooth_worker(void *arg) {
 			} else if ((uint32_t)(now_ms() - g_daemon_idle_since) >= DAEMON_IDLE_MS) {
 				g_daemon_idle_since = 0;
 				daemon_options_check();
+			}
+		}
+
+		// The same for a codec choice a rebuilt stream lost under music
+		// (stream_rebuilt()): asked for again once the music has stopped for
+		// as long, so a pause to answer someone is not cut into either.
+		if (g_codec_reapply_pending && have_active) {
+			if (music_playing_out()) {
+				g_codec_idle_since = 0;
+			} else if (g_codec_idle_since == 0) {
+				g_codec_idle_since = now_ms() | 1;
+			} else if ((uint32_t)(now_ms() - g_codec_idle_since) >= DAEMON_IDLE_MS) {
+				g_codec_reapply_pending = false;
+				g_codec_idle_since = 0;
+				g_codec_reapply_at = now_ms() | 1;
+				fprintf(stderr, "bluetooth: quiet for a while; asking %s for its codec again\n", active_mac);
+				codec_auto_done[0] = '\0';
+				do_auto_codec(active_mac);
+				do_read_codecs();
+				codec_drift_check(active_mac);
 			}
 		}
 

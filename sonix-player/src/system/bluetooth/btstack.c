@@ -71,6 +71,12 @@ static transport_t transports[MAX_TRANSPORTS];
 static int transport_count;
 static unsigned transport_serial;
 
+// Moves every time bluealsa exports an A2DP sink stream object: a new
+// connection, the stream coming back after a restart of the daemon or after a
+// wake, and every codec or rate change (bluealsa makes those by building a new
+// transport). Under `lock`.
+static unsigned sink_serial;
+
 // The headsets' own battery levels, as bluealsa's RFCOMM objects carry them:
 //
 //     /org/bluealsa/hci0/dev_AA_BB_CC_DD_EE_FF/rfcomm   org.bluealsa.RFCOMM1
@@ -263,6 +269,13 @@ static void transport_forget(const char *path) {
 			return;
 		}
 	}
+}
+
+unsigned btstack_sink_serial(void) {
+	pthread_mutex_lock(&lock);
+	unsigned serial = sink_serial;
+	pthread_mutex_unlock(&lock);
+	return serial;
 }
 
 int btstack_transport_sending(const char *address, unsigned *serial_out) {
@@ -641,6 +654,7 @@ static void on_signal(dbus_conn_t *c, const dbus_msg_t *m, void *user) {
 		} else if (path_is_a2dp_sink(path) && address_from_path(path, address, sizeof(address))) {
 			pthread_mutex_lock(&lock);
 			pcm_add(pcm_addr, &pcm_count, address);
+			sink_serial++;
 			pthread_mutex_unlock(&lock);
 			fprintf(stderr, "btstack: the A2DP sink on %s is ready\n", address);
 		} else if (path_is_a2dp_source(path) && address_from_path(path, address, sizeof(address))) {

@@ -179,6 +179,13 @@ bool btstack_audio_source(char *address_out, size_t size);
 // every change to any transport. From the signal cache: no call, any thread.
 int btstack_transport_sending(const char *address, unsigned *serial_out);
 
+// Moves on every export of an A2DP sink stream by bluealsa -- which is also
+// what a codec change, a rate change, a restart of the daemon and a reconnect
+// look like from here, since each builds a new stream object behind the same
+// path. Lets the caller tell "the same stream" from "a stream built again"
+// while the address stays the same. From the signal cache: any thread.
+unsigned btstack_sink_serial(void);
+
 // What bluealsa negotiated on one of the two streams, in parts rather than as
 // one line: the receiver page prints the codec and the rate on their own.
 // `receiving` picks the direction -- false for the headphones this device
