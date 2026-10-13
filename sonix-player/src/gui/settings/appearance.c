@@ -11,6 +11,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/touch.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 
@@ -24,6 +25,7 @@ static lv_obj_t *tint_toggle;
 static lv_obj_t *battery_percent_toggle;
 static lv_obj_t *statusbar_always_toggle;
 static lv_obj_t *rounded_corners_toggle;
+static lv_obj_t *large_rows_toggle;
 static lv_obj_t *text_size_pill[2]; // normal / large
 // The status bar draws the battery either way; this setting is only about the
 // number beside it, and is on by default.
@@ -41,6 +43,11 @@ static void statusbar_always_cb(lv_event_t *e) {
 	player_set_statusbar_always(on);
 	config_set_int("screen", "statusbar_always", on ? 1 : 0);
 	config_save();
+}
+
+static void large_rows_cb(lv_event_t *e) {
+	(void)e;
+	touch_set_large_rows(lv_obj_has_state(large_rows_toggle, LV_STATE_CHECKED));
 }
 
 static void rounded_corners_cb(lv_event_t *e) {
@@ -320,6 +327,19 @@ void appearance_init(gui_config_t *cfg) {
 		settingsrow_pill(text_size_pills, "appearance_text_normal", FONTS_TEXT_NORMAL, text_size_cb);
 	text_size_pill[FONTS_TEXT_LARGE] =
 		settingsrow_pill(text_size_pills, "appearance_text_large", FONTS_TEXT_LARGE, text_size_cb);
+
+	// Beside the text size, as the other half of "make it easier to hit and
+	// to read": taller rows in the library and the folder browser (touch.h).
+	settingsrow_toggle(container, "appearance_large_rows", &large_rows_toggle, large_rows_cb);
+	if (touch_large_rows()) {
+		lv_obj_add_state(large_rows_toggle, LV_STATE_CHECKED);
+	}
+	lv_obj_t *large_rows_note = lv_label_create(container);
+	lv_label_set_long_mode(large_rows_note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(large_rows_note, lv_pct(100));
+	lv_obj_add_style(large_rows_note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(large_rows_note, &font_ui_22, 0);
+	lv_label_set_text(large_rows_note, tr("appearance_large_rows_note"));
 
 	// A fifth card, and a plain switch: whether the status
 	// bar prints the charge as a number as well as drawing it.

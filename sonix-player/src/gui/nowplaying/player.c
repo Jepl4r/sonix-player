@@ -9,6 +9,7 @@
 
 #include "src/gui/library/browser.h"
 #include "src/gui/library/audiobookextras.h"
+#include "src/gui/nowplaying/btline.h"
 #include "src/gui/nowplaying/chapters.h"
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/nowplaying/coverloader.h"
@@ -24,6 +25,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/touch.h"
 #include "src/system/device/power.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/gearboy/gearboy.h"
@@ -247,6 +249,7 @@ static int cover_box_w, cover_box_h;   // the artwork spans the full screen widt
 // follows the knob on its own.
 #define PROGRESS_TRACK_HEIGHT 10 // as thick as every other slider
 #define PROGRESS_KNOB_GROW 9	 // how far the knob grows past the track
+#define PROGRESS_TOUCH_REACH 18	 // how far past the track a press still seeks
 #define PROGRESS_KNOB_RING 5
 
 // How the shape of the track is drawn, and how much room it gets. The bars are
@@ -3486,6 +3489,10 @@ static void fav_btn_event_cb(lv_event_t *e) {
 
 // The format line, the way the stock player writes it: "16/44.1 FLAC".
 static void update_format_label(const device_state_t *state) {
+	// The Bluetooth line under the artist (btline.h) is the same kind of
+	// question, asked at the same moments.
+	btline_refresh();
+
 	// The mark beside it in Studio, which is the same question asked of the
 	// stream rather than of the library. Here because this is where the format
 	// line is worked out, and the two say one thing between them.
@@ -4840,7 +4847,12 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(song_info, 0, 0);
 	lv_obj_set_style_pad_column(song_info, 10, 0);
 	lv_obj_set_flex_flow(song_info, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	// Both columns from the top: the title is lined up with the star by hand
+	// (align_title_with_star()), and with the columns centred a third line
+	// under the artist (btline.h) would push the star down by half a line and
+	// the title with it, onto the artist. With the star's column the taller,
+	// as it is without that line, the two placements are the same.
+	lv_obj_set_flex_align(song_info, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_scrollable(song_info, false);
 	// Every time the row is laid out (a new text size, the star shown or
 	// hidden, the row coming back from another arrangement) the title is lined
@@ -4881,6 +4893,10 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_ext_click_area(song_artist_label, 8);
 	lv_obj_add_event_cb(song_artist_label, artist_label_clicked_cb, LV_EVENT_CLICKED, NULL);
 
+	// Under the artist, while the sound goes to Bluetooth headphones: what the
+	// link carries and any rate conversion on the way (btline.h).
+	btline_create(song_text);
+
 	// Right side: the favourite star over the stream format.
 	lv_obj_t *song_side = lv_obj_create(song_info);
 	song_side_obj = song_side;
@@ -4896,6 +4912,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_t *fav_btn = lv_btn_create(song_side);
 	fav_btn_obj = fav_btn;
 	lv_obj_set_size(fav_btn, 48, 44);
+	touch_grow(fav_btn, 48, 44, 14); // a fingertip's worth (touch.h)
 	lv_obj_set_style_bg_opa(fav_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(fav_btn, 0, 0);
 	lv_obj_set_style_shadow_width(fav_btn, 0, 0);
@@ -4944,6 +4961,9 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_width(progress_slider, lv_pct(100));
 	lv_obj_set_height(progress_slider, PROGRESS_TRACK_HEIGHT);
 	lv_slider_set_range(progress_slider, 0, 1000);
+	// More than the 10 px track takes a press (touch.h), but only as far as
+	// the artist line above, which opens the artist, and the times below.
+	lv_obj_set_ext_click_area(progress_slider, PROGRESS_TOUCH_REACH);
 
 	lv_obj_set_style_radius(progress_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
 	lv_obj_set_style_bg_color(progress_slider, lv_color_make(255, 255, 255), LV_PART_MAIN);

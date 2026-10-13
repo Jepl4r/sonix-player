@@ -15,11 +15,14 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/touch.h"
 #include "src/gui/nowplaying/trackmenu.h"
 
 // Diameter of the round back button. Small enough to stay out of the way of
 // the artwork, big enough to still be a comfortable touch target.
 #define BACK_BTN_SIZE 56
+// From the button's right edge to the page's title (settingsrow_title()).
+#define BACK_BTN_TITLE_GAP 14
 
 static lv_obj_t *back_btn;
 static lv_obj_t *back_btn_icon;
@@ -531,6 +534,11 @@ static void load_screen(lv_obj_t *target_screen) {
 	// instead of all of them at the moment of the change.
 	theme_notify_screen_shown(target_screen);
 
+	// The buttons beside the page's title answer a fingertip and not just
+	// their glyph (touch.h). Looked for here, on the way in, so that every
+	// page's own way of building them is covered without each being told.
+	touch_header(target_screen);
+
 	lv_screen_load(target_screen);
 }
 
@@ -792,6 +800,12 @@ void back_btn_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(back_btn, 0, 0);
 	lv_obj_set_style_pad_all(back_btn, 0, 0);
 	lv_obj_add_event_cb(back_btn, back_btn_cb, LV_EVENT_CLICKED, NULL);
+	// A fingertip's worth (touch.h): out to the edge of the screen on the
+	// left, up to where the page's title starts on the right, and the margins
+	// above and below the header row. The chevron is on the top layer, above
+	// every page, so whatever its area covers it takes -- which is why it
+	// stops short of the title and of the content under the row.
+	touch_pad(back_btn, back_btn_padding, BACK_BTN_TITLE_GAP, 8, 8);
 
 	place_back_btn(true);
 

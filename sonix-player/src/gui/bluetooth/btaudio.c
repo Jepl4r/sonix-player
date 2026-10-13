@@ -12,6 +12,7 @@
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
+#include "src/gui/nowplaying/btline.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -341,6 +342,13 @@ static void battery_toggle_cb(lv_event_t *e) {
 static void volume_toggle_cb(lv_event_t *e) {
 	(void)e;
 	bluetooth_set_volume_sync(lv_obj_has_state(volume_switch, LV_STATE_CHECKED));
+}
+
+static lv_obj_t *details_switch;
+
+static void details_toggle_cb(lv_event_t *e) {
+	(void)e;
+	btline_set_enabled(lv_obj_has_state(details_switch, LV_STATE_CHECKED));
 }
 
 // ---------------------------------------------------------------------------
@@ -839,6 +847,14 @@ void btaudio_init(gui_config_t *cfg) {
 		lv_obj_add_state(battery_switch, LV_STATE_CHECKED);
 	}
 	option_note(container, "btaudio_headset_battery_note");
+
+	// The codec and any rate conversion, under the artist on Now Playing
+	// (btline.h). On by default.
+	settingsrow_toggle(container, "btaudio_nowplaying_details", &details_switch, details_toggle_cb);
+	if (btline_enabled()) {
+		lv_obj_add_state(details_switch, LV_STATE_CHECKED);
+	}
+	option_note(container, "btaudio_nowplaying_details_note");
 
 	build_encoder_options(container);
 	build_keep_on_options(container);

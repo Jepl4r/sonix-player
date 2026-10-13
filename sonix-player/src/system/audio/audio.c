@@ -582,6 +582,10 @@ static int decoder_fill(void *user, short *dst, int frames) {
 static double progress_total_secs = 0.0;
 
 static int stream_sample_rate = 0;
+// The rate the output was opened at: the track's own, or what the decimation
+// and the Bluetooth resampler made of it. For the Now Playing line that says
+// when the music is converted on its way to the headphones.
+static int stream_device_rate = 0;
 static int stream_channels = 0;
 static int stream_bits = 0; // source bit depth (16/24/32), for the format line
 // DSD, for the format line: 64/128/256, or 0 when the track is not DSD. A DSD
@@ -2827,6 +2831,7 @@ static void play_wav_file(const char *filepath) {
 	progress_current_secs = opening_position();
 	progress_floor_secs = -1.0;
 	stream_sample_rate = info.sample_rate;
+	stream_device_rate = info.sample_rate;
 	stream_channels = info.channels;
 	stream_bits = info.bits_per_sample;
 	stream_dsd_multiple = 0;
@@ -3607,6 +3612,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	progress_current_secs = opening_position();
 	progress_floor_secs = -1.0;
 	stream_sample_rate = sample_rate;
+	stream_device_rate = dev_rate;
 	stream_channels = channels;
 	stream_bits = source_bits;
 	stream_dsd_multiple = dsd_multiple;
@@ -4529,6 +4535,7 @@ int audio_play(const char *filepath) {
 	progress_floor_secs = -1.0;
 	progress_total_secs = 0.0;
 	stream_sample_rate = 0;
+	stream_device_rate = 0;
 	stream_channels = 0;
 	seek_request = false;
 	seek_target_secs = -1.0;
@@ -4837,6 +4844,13 @@ int audio_get_stream_bits(void) {
 	int bits = stream_bits;
 	pthread_mutex_unlock(&audio_mutex);
 	return bits;
+}
+
+int audio_get_device_rate(void) {
+	pthread_mutex_lock(&audio_mutex);
+	int rate = stream_device_rate;
+	pthread_mutex_unlock(&audio_mutex);
+	return rate;
 }
 
 int audio_get_stream_bitrate_kbps(void) {

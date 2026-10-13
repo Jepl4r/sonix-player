@@ -35,6 +35,17 @@ bool library_reopen_if_replaced(void);
 // How many tracks the index currently holds.
 int library_track_count(void);
 
+// What a full scan would add to the index that is open: the things read from
+// a file at scan time and nowhere else, which an index written by an older
+// firmware -- the stock one, or this one before they came in -- does not have
+// (library.c, "What the index was written with"). Nothing is rescanned on its
+// own account; the Music page offers it. 0 when the index has them all, and
+// with no index open.
+#define LIBRARY_INDEX_COMPILATIONS (1u << 0) // compilations without an album artist kept together
+#define LIBRARY_INDEX_DURATIONS (1u << 1)	  // track lengths
+#define LIBRARY_INDEX_FEATURES (LIBRARY_INDEX_COMPILATIONS | LIBRARY_INDEX_DURATIONS)
+unsigned library_index_missing(void);
+
 // ---------------------------------------------------------------------------
 // Scanning
 //

@@ -16,6 +16,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/touch.h"
 #include "src/system/core/lang.h"
 #include "src/system/net/wifi.h"
 
@@ -445,6 +446,8 @@ static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu)
 	if (with_menu) {
 		lv_obj_t *menu_btn = lv_btn_create(row);
 		lv_obj_set_size(menu_btn, 44, 56);
+		// A fingertip's worth (touch.h), kept within the row's own padding.
+		touch_grow(menu_btn, 44, 56, 14);
 		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(menu_btn, 0, 0);
 		lv_obj_set_style_shadow_width(menu_btn, 0, 0);

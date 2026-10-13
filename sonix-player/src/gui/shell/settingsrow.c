@@ -16,6 +16,7 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/touch.h"
 #include "src/system/core/lang.h"
 
 // Matches the floating back button, which the heading sits beside.
@@ -41,8 +42,17 @@
 // notches read as a dotted line, not a scale. Finer sliders (Soundfield width,
 // 0.00 to 2.00 in steps of 0.05) go without.
 #define SLIDER_TICK_MAX_STEPS 16
+// How far past the track a slider still takes a press, up and down: the
+// fingertip's 72 px (touch.h) less the 10 px track, halved, which stops short
+// of the value line above it on every slider card. The width only has to be
+// more than a fingertip.
+#define SLIDER_TOUCH_REACH 31
+#define SLIDER_TOUCH_WIDTH 400
 #define ROW_RADIUS 12 // Adwaita boxed-list corner radius
 #define ROW_GAP 8
+// Between two pills, across and down. With pills 56 px tall, a row of them
+// is one a fingertip can tell apart.
+#define PILL_GAP 12
 
 // Every page heading, row name and card name goes through this file, so the
 // tr() calls live here rather than in thirty call sites. A name that is not a
@@ -373,6 +383,9 @@ static lv_obj_t *make_slider(lv_obj_t *card, int steps, lv_event_cb_t cb) {
 	lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(slider, lv_color_black(), LV_PART_KNOB);
 	lv_obj_set_style_shadow_offset_y(slider, 1, LV_PART_KNOB);
+	// The track is 10 px and the knob 26: a fingertip's worth above and below
+	// the track (touch.h).
+	touch_grow(slider, SLIDER_TOUCH_WIDTH, SLIDER_TRACK_HEIGHT, SLIDER_TOUCH_REACH);
 
 	if (cb) {
 		lv_obj_add_event_cb(slider, cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -556,7 +569,6 @@ lv_obj_t *settingsrow_toggle_slider(lv_obj_t *parent, const char *name, int step
 
 	lv_obj_t *slider = make_slider(card, steps, slider_cb);
 	lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -10);
-	lv_obj_set_ext_click_area(slider, 20);
 
 	// Step marks as on the plain slider card; without them the control stops
 	// reading as a slider with a handful of positions. They go in a
@@ -824,7 +836,7 @@ lv_obj_t *settingsrow_toggle_pills(lv_obj_t *parent, const char *title, lv_event
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 12, 0);
+	lv_obj_set_style_pad_gap(pills, PILL_GAP, 0);
 	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_event_bubble(pills, true);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
@@ -863,7 +875,7 @@ lv_obj_t *settingsrow_pills(lv_obj_t *parent, const char *title, lv_obj_t **pill
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 12, 0);
+	lv_obj_set_style_pad_gap(pills, PILL_GAP, 0);
 	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_event_bubble(pills, true);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
@@ -881,6 +893,9 @@ static lv_obj_t *pill_make(lv_obj_t *parent, const char *label_text, int value, 
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)(intptr_t)value);
+	// Half the gap each way: the gaps between pills answer the pill beside
+	// them instead of nothing, and no two areas overlap.
+	lv_obj_set_ext_click_area(btn, PILL_GAP / 2);
 
 	lv_obj_t *label = lv_label_create(btn);
 	lv_label_set_text(label, label_text);
