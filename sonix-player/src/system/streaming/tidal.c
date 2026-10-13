@@ -9,6 +9,7 @@
 #include "src/system/core/base64.h"
 #include "src/system/core/config.h"
 #include "src/system/net/http.h"
+#include "src/system/streaming/streamerr.h"
 #include "src/system/core/json.h"
 #include "src/system/streaming/tidalsync.h"
 #include "src/system/streaming/streamkeys.h"
@@ -500,6 +501,9 @@ static bool token_refresh(void) {
 
 	if (status != 200 || !token[0]) {
 		note_api_error(&doc, status);
+		// Read before the document goes: see the refusal below.
+		char error[64] = "";
+		json_obj_str(&doc, root, "error", error, sizeof(error));
 		api_done(body, &doc);
 
 		// A rejected refresh is not a network error: the session is no longer
@@ -509,6 +513,9 @@ static bool token_refresh(void) {
 		if (status >= 400 && status < 500) {
 			printf("tidal: the refresh was refused, session closed\n");
 			tidal_logout();
+			// "invalid_client" is the firmware's application keys, not the
+			// account: signing in again with the same keys would fail too.
+			streamerr_hint(strcmp(error, "invalid_client") == 0 ? STREAM_ERR_KEYS : STREAM_ERR_SIGN_IN);
 		}
 		return false;
 	}
@@ -555,10 +562,12 @@ static bool api_call(const char *url, char **body, json_doc_t *doc) {
 
 	if (!tidal_configured()) {
 		set_error("%s", tr("api_keys_unavailable"));
+		streamerr_hint(STREAM_ERR_KEYS);
 		return false;
 	}
 	if (!tidal_logged_in()) {
 		set_error("%s", tr("tidal_not_signed_in"));
+		streamerr_hint(STREAM_ERR_SIGN_IN);
 		return false;
 	}
 
@@ -605,6 +614,7 @@ static bool api_call(const char *url, char **body, json_doc_t *doc) {
 			}
 			if (!last_error[0]) {
 				set_error("%s", tr("tidal_session_expired"));
+				streamerr_hint(STREAM_ERR_SIGN_IN);
 			}
 			return false;
 		}
@@ -636,6 +646,7 @@ static bool api_write(const char *method, const char *url, const char *form) {
 
 	if (!tidal_logged_in()) {
 		set_error("%s", tr("tidal_not_signed_in"));
+		streamerr_hint(STREAM_ERR_SIGN_IN);
 		return false;
 	}
 	if (!token_is_fresh() && !token_refresh()) {
@@ -671,6 +682,7 @@ static bool api_write(const char *method, const char *url, const char *form) {
 				continue;
 			}
 			set_error("%s", tr("tidal_session_expired"));
+			streamerr_hint(STREAM_ERR_SIGN_IN);
 			return false;
 		}
 
@@ -707,6 +719,7 @@ bool tidal_login_begin(tidal_login_t *out) {
 
 	if (!tidal_configured()) {
 		set_error("%s", tr("api_keys_unavailable"));
+		streamerr_hint(STREAM_ERR_KEYS);
 		return false;
 	}
 
@@ -1270,6 +1283,7 @@ static int favorites(const char *kind, int offset, reader_fn read, void *out, in
 	}
 	if (!tidal_logged_in()) {
 		set_error("%s", tr("tidal_not_signed_in"));
+		streamerr_hint(STREAM_ERR_SIGN_IN);
 		return -1;
 	}
 
@@ -1297,6 +1311,7 @@ int tidal_user_playlists(int offset, tidal_playlist_t *out, int max) {
 	}
 	if (!tidal_logged_in()) {
 		set_error("%s", tr("tidal_not_signed_in"));
+		streamerr_hint(STREAM_ERR_SIGN_IN);
 		return -1;
 	}
 
@@ -1690,6 +1705,7 @@ int tidal_favorite_track_ids(long *out, int max) {
 	}
 	if (!tidal_logged_in()) {
 		set_error("%s", tr("tidal_not_signed_in"));
+		streamerr_hint(STREAM_ERR_SIGN_IN);
 		return -1;
 	}
 
@@ -1741,6 +1757,7 @@ bool tidal_playlist_delete(const char *playlist_id) {
 	}
 	if (!tidal_logged_in()) {
 		set_error("%s", tr("tidal_not_signed_in"));
+		streamerr_hint(STREAM_ERR_SIGN_IN);
 		return false;
 	}
 
@@ -1759,6 +1776,7 @@ bool tidal_playlist_create(const char *name, char *out_id, size_t out_size) {
 	}
 	if (!tidal_logged_in()) {
 		set_error("%s", tr("tidal_not_signed_in"));
+		streamerr_hint(STREAM_ERR_SIGN_IN);
 		return false;
 	}
 	if (!name || !*name) {
@@ -1846,6 +1864,7 @@ bool tidal_playlist_add_track(const char *playlist_id, long track_id) {
 	}
 	if (!tidal_logged_in()) {
 		set_error("%s", tr("tidal_not_signed_in"));
+		streamerr_hint(STREAM_ERR_SIGN_IN);
 		return false;
 	}
 	if (!token_is_fresh() && !token_refresh()) {

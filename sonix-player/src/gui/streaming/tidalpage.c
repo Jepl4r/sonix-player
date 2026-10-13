@@ -14,6 +14,7 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/streaming/qobuzart.h"
+#include "src/gui/streaming/streamerror.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
@@ -30,6 +31,8 @@
 #include "src/system/streaming/tidal.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/streaming/provider.h"
+#include "src/system/streaming/streamerr.h"
+#include "src/system/net/http.h"
 #include "src/system/streaming/streamturn.h"
 #include "src/system/streaming/tidalsync.h"
 #include "src/system/core/utils.h"
@@ -135,6 +138,7 @@ static pthread_cond_t result_taken = PTHREAD_COND_INITIALIZER;
 static job_kind_t result_kind;
 static char result_error[256];
 static char result_title[160];
+static stream_err_t result_class; // what kind of failure result_error is
 
 // The showcase that came back empty, as a slot among the three featured
 // entries; -1 when it worked.
@@ -215,6 +219,8 @@ static void build_busy_layer(void) {
 static lv_obj_t *list_container;
 static lv_obj_t *list_title;
 static lv_obj_t *list_empty;
+// A list that could not be loaded: what went wrong, and "Retry" (streamerror.h).
+static lv_obj_t *list_error;
 
 static void rebuild_home(void);
 static void row_clicked_cb(lv_event_t *e);
@@ -903,6 +909,9 @@ static void job_result_taken(void) {
 	pthread_mutex_unlock(&job_lock);
 }
 
+static void retry_list(void);
+static void error_sign_in(void);
+
 static void job_done_cb(void *user) {
 	(void)user;
 	// Before reading any result_*: from here on the worker is held and nothing
@@ -918,17 +927,40 @@ static void job_done_cb(void *user) {
 			job_result_taken();
 			return;
 		}
-		// This returns without fill_list() and without switch_screen(): the
-		// previous list stays on screen, so the history must stay as it was.
-		// list_nav_commit() pushes the step, and only for a page actually
-		// shown.
+		page_loading = false;
+		if (job_is_list(result_kind) && result_from == 0) {
+			// Said where the list would have been, with a way to ask again,
+			// rather than in a popup over the previous list: the failed list
+			// is a page now (its title, no rows, the error), so it is a step
+			// in the history like any other and back leads where it would
+			// have. The worker left no rows for it (result_count 0).
+			list_nav_commit();
+			fill_list(0);
+			lv_obj_set_hidden(list_empty, true);
+			page_more = false;
+			streamerror_show(list_error, result_class, result_error, retry_list, error_sign_in);
+			if (lv_screen_active() != list_screen) {
+				switch_screen(list_screen);
+			}
+			job_result_taken();
+			return;
+		}
+		// A further page: the rows already there stay (the worker put their
+		// count back), the history does not move, and scrolling does not ask
+		// again by itself.
 		if (job_is_list(result_kind)) {
 			list_nav_drop();
+			page_more = false;
+			toast_error(result_error);
+			job_result_taken();
+			return;
 		}
 		gui_notify_popup(result_error);
-		page_loading = false;
 		job_result_taken();
 		return;
+	}
+	if (job_is_list(result_kind) && result_from == 0 && result_featured_gone < 0) {
+		streamerror_hide(list_error);
 	}
 
 	switch (result_kind) {
@@ -1320,7 +1352,8 @@ static void do_play(int index) {
 
 	if (!tidal_track_stream(track->id, stream)) {
 		const char *why = tidal_last_error();
-		snprintf(result_error, sizeof(result_error), "%s", why && why[0] ? why : tr("download_failed"));
+		result_class = streamerr_describe("tidal", why && why[0] ? why : tr("download_failed"), result_error,
+										  sizeof(result_error));
 		free(stream);
 		return;
 	}
@@ -1330,7 +1363,8 @@ static void do_play(int index) {
 		// The cache says what went wrong: no card, no network, card full. The
 		// generic "download failed" is only for when even it does not know.
 		const char *why = tidalcache_last_error();
-		snprintf(result_error, sizeof(result_error), "%s", why && why[0] ? why : tr("download_failed"));
+		result_class = streamerr_describe("tidal", why && why[0] ? why : tr("download_failed"), result_error,
+										  sizeof(result_error));
 		free(stream);
 		return;
 	}
@@ -1628,6 +1662,9 @@ static tidal_login_state_t login_result;
 
 static void *worker_main(void *arg) {
 	(void)arg;
+	// The page waits on these requests behind its spinner: a service that
+	// does not answer is said in seconds (streamerr.h).
+	http_set_thread_timeout_cap(STREAM_UI_TIMEOUT_SECS);
 
 	for (;;) {
 		pthread_mutex_lock(&job_lock);
@@ -1656,8 +1693,10 @@ static void *worker_main(void *arg) {
 		pthread_mutex_unlock(&job_lock);
 
 		result_error[0] = '\0';
+		result_class = STREAM_ERR_NONE;
 		result_kind = job.kind;
 		result_featured_gone = -1;
+		streamerr_begin();
 
 		// The length of the list currently on screen, saved before touching
 		// anything.
@@ -1700,7 +1739,12 @@ static void *worker_main(void *arg) {
 		case JOB_LOGIN_BEGIN:
 			memset(&login, 0, sizeof(login));
 			if (!tidal_login_begin(&login)) {
-				snprintf(result_error, sizeof(result_error), "%s", tidal_last_error());
+				// Tidal's own words unless the network or the service is at
+				// fault (streamerr.h).
+				result_class = streamerr_describe("tidal", tidal_last_error(), result_error, sizeof(result_error));
+				if (!streamerr_is_transport(result_class)) {
+					snprintf(result_error, sizeof(result_error), "%s", tidal_last_error());
+				}
 			}
 			break;
 		case JOB_LOGIN_POLL:
@@ -1775,7 +1819,7 @@ static void *worker_main(void *arg) {
 		}
 
 		if (n < 0) {
-			snprintf(result_error, sizeof(result_error), "%s", tidal_last_error());
+			result_class = streamerr_describe("tidal", tidal_last_error(), result_error, sizeof(result_error));
 			n = 0;
 		}
 		if (job.kind != JOB_PLAY) {
@@ -1784,12 +1828,15 @@ static void *worker_main(void *arg) {
 			// previous one, and these numbers must keep describing it. Zero
 			// results without an error is a real answer ("no results") and
 			// stands.
-			if (result_error[0] || result_featured_gone >= 0) {
+			// A first page that failed is not one of these any more: the
+			// error is shown in place of the list (streamerror.h), so the
+			// rows go and the failed list's title stands.
+			if ((result_error[0] && off > 0) || result_featured_gone >= 0) {
 				result_count = kept_count;
 				snprintf(result_title, sizeof(result_title), "%s", kept_title);
 			} else {
 				result_from = off;
-				result_count = off + n;
+				result_count = result_error[0] ? 0 : off + n;
 			}
 		}
 
@@ -1933,6 +1980,18 @@ static void run(const job_t *job, const char *waiting_text) {
 	}
 	submit(job);
 }
+
+// The error panel's button: the failed list again, from the start.
+static void retry_list(void) {
+	if (have_current_list) {
+		run(&current_list_job, "loading");
+	}
+}
+
+static void open_login_cb(lv_event_t *e);
+
+// Or, when the session was refused, the sign-in page.
+static void error_sign_in(void) { open_login_cb(NULL); }
 
 // Another page when the scroll nears the bottom, like the radio. No veil and
 // no history -- it is the same list continuing, not a new one (inflight is
@@ -2854,6 +2913,10 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
 	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
 	lv_obj_set_hidden(list_empty, true);
+
+	list_error = streamerror_create(list_screen);
+	lv_obj_set_width(list_error, cfg->screen_width - 2 * cfg->padding);
+	lv_obj_align(list_error, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 20);
 
 	lv_obj_add_event_cb(list_container, list_scrolled_cb, LV_EVENT_SCROLL, NULL);
 	switcher_attach_back_gesture(list_screen);

@@ -15,6 +15,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/core/md5.h"
 #include "src/system/net/http.h"
+#include "src/system/streaming/streamerr.h"
 #include "src/system/streaming/subsonicsync.h"
 
 #define API_VERSION "1.16.1"
@@ -257,6 +258,15 @@ static bool call_with(const session_t *s, const char *method, const char *extra,
 		long code = json_obj_long(doc, err, "code", 0);
 		if (error_code) {
 			*error_code = (int)code;
+		}
+		// The class of the failure for the page (streamerr.h): Subsonic says
+		// it in the body of a 200, where no status code can.
+		if (code >= 40 && code <= 44) {
+			streamerr_hint(STREAM_ERR_SIGN_IN); // wrong or refused credentials
+		} else if (code == 70) {
+			streamerr_hint(STREAM_ERR_NOT_FOUND);
+		} else if (code == 60) {
+			streamerr_hint(STREAM_ERR_NO_SUBSCRIPTION); // the server's trial is over
 		}
 		// 40 is the one every user meets; the server's own sentence for the
 		// rest, which is written for a human.

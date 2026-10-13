@@ -19,11 +19,13 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/streaming/streamerror.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/growfile.h"
 #include "src/system/device/system.h"
 #include "src/system/library/library.h"
 #include "src/system/playback/device_state.h"
+#include "src/system/net/http.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/streaming/provider.h"
 #include "src/system/streaming/streamturn.h"
@@ -98,6 +100,7 @@ typedef struct {
 	int index; // JOB_PLAY: the queue entry, -1 when it failed
 	char path[512];
 	char error[256];
+	stream_err_t error_class; // what kind of failure `error` is (streamerr.h)
 	yandex_login_state_t login_state;
 	yandex_login_t login; // a copy: the worker keeps polling with its own
 	int count;
@@ -143,6 +146,7 @@ static unsigned list_generation;
 static row_t *result;
 static int result_count;
 static char result_error[256];
+static stream_err_t result_class;
 
 // The queue: what was played from a list, with the track behind each path.
 static yandex_track_t *queued;
@@ -216,11 +220,11 @@ static bool fetch_queued(int index, char *path, size_t size) {
 	}
 	yandex_file_t file;
 	if (!yandex_file_info(t->id, &file)) {
-		snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
+		result_class = streamerr_describe("yandex", yandex_last_error(), result_error, sizeof(result_error));
 		return false;
 	}
 	if (!yandexcache_start(t, &file, path, size)) {
-		snprintf(result_error, sizeof(result_error), "%s", yandexcache_last_error());
+		result_class = streamerr_describe("yandex", yandexcache_last_error(), result_error, sizeof(result_error));
 		return false;
 	}
 	yandexcache_write_sidecars(t, path);
@@ -294,7 +298,7 @@ static void run_list_job(const job_t *job) {
 		break;
 	}
 	if (got < 0) {
-		snprintf(result_error, sizeof(result_error), "%s", yandex_last_error());
+		result_class = streamerr_describe("yandex", yandex_last_error(), result_error, sizeof(result_error));
 	}
 	free(tmp);
 }
@@ -335,6 +339,7 @@ static job_result_t *job_result_new(const job_t *job, int count) {
 	r->generation = job->generation;
 	r->index = -1;
 	snprintf(r->error, sizeof(r->error), "%s", result_error);
+	r->error_class = result_class;
 	r->count = count;
 	if (count > 0) {
 		memcpy(r->rows, result, (size_t)count * sizeof(row_t));
@@ -345,6 +350,8 @@ static job_result_t *job_result_new(const job_t *job, int count) {
 static void *worker_main(void *arg) {
 	(void)arg;
 	yandex_login_state_t login_state = YANDEX_LOGIN_PENDING;
+	// The page waits on these requests: a dead network is said in seconds.
+	http_set_thread_timeout_cap(STREAM_UI_TIMEOUT_SECS);
 	for (;;) {
 		pthread_mutex_lock(&job_lock);
 		running_kind = JOB_NONE;
@@ -363,6 +370,8 @@ static void *worker_main(void *arg) {
 		pthread_mutex_unlock(&job_lock);
 
 		result_error[0] = '\0';
+		result_class = STREAM_ERR_NONE;
+		streamerr_begin();
 		result_count = 0;
 		switch (job.kind) {
 		case JOB_LOGIN_BEGIN:
@@ -983,6 +992,8 @@ static void update_album_bar(void) {
 	lv_label_set_text(album_btn_label, tr(complete ? "delete" : "yandex_save_album"));
 }
 
+static void retry_list(void);
+
 static void fill_list(void) {
 	memset(row_marks, 0, sizeof(row_marks));
 	lv_obj_clean(list_box);
@@ -991,8 +1002,13 @@ static void fill_list(void) {
 	}
 	refresh_marks();
 	update_album_bar();
-	if (row_count == 0) {
+	if (row_count == 0 && shown && shown->error[0] && shown->error_class != STREAM_ERR_NONE) {
+		// What went wrong and "Retry", as on the other services' pages.
+		streamerror_show(streamerror_create(list_box), shown->error_class, shown->error, retry_list, NULL);
+	} else if (row_count == 0) {
 		lv_obj_t *empty = lv_label_create(list_box);
+		// An empty list with a word of its own (nothing saved on the card yet)
+		// says it; any other empty list the usual line.
 		lv_label_set_text(empty, shown && shown->error[0] ? shown->error : tr("yandex_empty"));
 		lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
 		lv_obj_set_width(empty, lv_pct(100));
@@ -1144,6 +1160,14 @@ static void show_list(const list_step_t *step) {
 	}
 	lv_obj_set_hidden(list_spin, false);
 	run(kind, a, b, 0);
+}
+
+// The error panel's "Retry": the list that failed, asked for again, without
+// a new step in the page's history.
+static void retry_list(void) {
+	if (list_has_current) {
+		show_list(&list_current);
+	}
 }
 
 // Queues every playable track of the list and plays the tapped one. Paths

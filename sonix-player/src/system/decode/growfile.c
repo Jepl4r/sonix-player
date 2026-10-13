@@ -106,6 +106,21 @@ void growfile_finish(const char *path, bool ok) {
 	pthread_mutex_unlock(&lock);
 }
 
+int growfile_list(growfile_info_t *out, int max) {
+	int n = 0;
+	pthread_mutex_lock(&lock);
+	for (int i = 0; i < GROWFILE_MAX && n < max; i++) {
+		if (slots[i].active) {
+			snprintf(out[n].path, sizeof(out[n].path), "%.511s", slots[i].path);
+			out[n].done = slots[i].done;
+			out[n].total = slots[i].total;
+			n++;
+		}
+	}
+	pthread_mutex_unlock(&lock);
+	return n;
+}
+
 bool growfile_prefix_is_growing(const char *prefix) {
 	if (!prefix || !*prefix) {
 		return false;

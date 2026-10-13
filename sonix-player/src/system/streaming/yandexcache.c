@@ -959,6 +959,20 @@ void yandexcache_note_played(const char *path) {
 	}
 }
 
+// What a clear the user asks for spares: only the file coming down right now.
+// Unlike the other services' caches, a Yandex AAC file grows under ".part" and
+// is renamed when whole, so removing it mid-download fails the rename and
+// with it the track being listened to; everything else goes.
+static bool is_growing_stem(const char *stem) { return growfile_prefix_is_growing(stem); }
+
+void yandexcache_clear(void) {
+	if (!yandexcache_ready()) {
+		return;
+	}
+	printf("yandexcache: clearing the cache on request\n");
+	clear_files(is_growing_stem);
+}
+
 void yandexcache_clear_on_exit(void) {
 	if (!yandexcache_ready()) {
 		return;

@@ -920,9 +920,11 @@ static bool pump_dash(download_t *d, int count, bool *finished) {
 }
 
 static void *download_thread(void *arg) {
-	// In the background like every other worker: there is only one core, and a
-	// thread writing to the card at full priority takes it from the interface.
-	thread_be_background("tidal download");
+	// Below the interface and the audio threads, but not idle class: playback
+	// reads this file as it grows, and an idle-class thread gets almost
+	// nothing while music plays (see qobuzcache.c, and yandexcache.c since
+	// 1.2.4).
+	thread_be_low_priority("tidal download");
 
 	download_t *d = arg;
 	bool finished = false;
@@ -1049,6 +1051,9 @@ static bool start_file(download_t *d, bool *consumed, int duration_secs, char *o
 		return false;
 	}
 	d->http_open = true;
+	// Reads from here on time out sooner than the open: see
+	// STREAM_READ_TIMEOUT_SECS.
+	http_stream_set_read_timeout(&d->http, STREAM_READ_TIMEOUT_SECS);
 	d->total = d->http.content_length;
 	prune(d->total > 0 ? d->total : 0);
 

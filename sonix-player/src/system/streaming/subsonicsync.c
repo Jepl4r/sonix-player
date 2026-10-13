@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <time.h>
 
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
@@ -23,6 +24,10 @@ static bool favorites_loaded;
 static subsonic_playlist_t *playlists;
 static int playlists_count;
 static bool playlists_loaded;
+
+// When a failed load of the starred songs may be retried (see
+// subsonicsync_favorites_refresh). Under `lock`.
+static long load_retry_after;
 
 // ---------------------------------------------------------------------------
 // the mirror
@@ -72,6 +77,7 @@ void subsonicsync_forget(void) {
 	favorites = NULL;
 	favorites_count = 0;
 	favorites_loaded = false;
+	load_retry_after = 0; // another account, another server: ask at once
 	free(playlists);
 	playlists = NULL;
 	playlists_count = 0;
@@ -111,6 +117,22 @@ static int queue_head;
 static int queue_len;
 static bool worker_started;
 
+// The star asks for the mirror on every redraw until it is there: one load,
+// waiting or running, is enough. Without this a server that does not answer filled the
+// queue with loads, and a full queue drops its oldest job -- which could be
+// the star the user had just tapped.
+static bool load_queued;
+
+// A load that failed is not asked for again before this (monotonic seconds),
+// for the same reason: every redraw would otherwise ask again at once.
+#define LOAD_RETRY_SECS 60
+
+static long monotonic_secs(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (long)now.tv_sec;
+}
+
 static void *worker_main(void *arg);
 
 static void submit(const job_t *job) {
@@ -125,8 +147,14 @@ static void submit(const job_t *job) {
 	if (queue_len == QUEUE_MAX) {
 		// Full: the oldest job goes. Eight pending writes means the server has
 		// stopped answering, and the newest tap is the one that matters.
+		if (queue[queue_head].kind == JOB_FAV_LOAD) {
+			load_queued = false;
+		}
 		queue_head = (queue_head + 1) % QUEUE_MAX;
 		queue_len--;
+	}
+	if (job->kind == JOB_FAV_LOAD) {
+		load_queued = true;
 	}
 	queue[(queue_head + queue_len) % QUEUE_MAX] = *job;
 	queue_len++;
@@ -151,11 +179,29 @@ static void run_job(const job_t *job) {
 			favorites = got;
 			favorites_count = n;
 			favorites_loaded = true;
+			// A star tapped while the list was on its way is still in the
+			// queue, not on the server: the list just installed does not
+			// have it, and showing that would flip the star back under the
+			// user's finger until the write goes out (and for good, since a
+			// successful write does not touch the mirror). Their taps win
+			// until they are sent -- as in yandexsync.c.
+			for (int i = 0; i < queue_len; i++) {
+				const job_t *q = &queue[(queue_head + i) % QUEUE_MAX];
+				if (q->kind == JOB_STAR) {
+					mirror_set_locked(q->id, q->flag);
+				}
+			}
 			pthread_mutex_unlock(&lock);
 			got = NULL;
 			if (job->changed) {
 				job->changed();
 			}
+		} else {
+			fprintf(stderr, "subsonicsync: the starred songs did not load (%s); next try in %d s\n",
+					subsonic_last_error(), LOAD_RETRY_SECS);
+			pthread_mutex_lock(&lock);
+			load_retry_after = monotonic_secs() + LOAD_RETRY_SECS;
+			pthread_mutex_unlock(&lock);
 		}
 		free(got);
 		break;
@@ -222,7 +268,12 @@ static void run_job(const job_t *job) {
 
 static void *worker_main(void *arg) {
 	(void)arg;
-	thread_be_background("subsonic sync");
+	// Nice ten, not SCHED_IDLE. A star is a tap waiting for its answer, and
+	// with Bluetooth encoding and a track decoding the core is 0 to 20 % idle:
+	// an idle-class thread then gets well under one percent of it, and the
+	// request -- or the starred list a star may queue behind -- took minutes.
+	// That is how Yandex's likes failed in 1.2.3 (see yandexsync.c).
+	thread_be_low_priority("subsonic sync");
 	for (;;) {
 		pthread_mutex_lock(&lock);
 		while (queue_len == 0) {
@@ -233,6 +284,13 @@ static void *worker_main(void *arg) {
 		queue_len--;
 		pthread_mutex_unlock(&lock);
 		run_job(&job);
+		// Only now: while a load runs, the redraws that ask for the mirror
+		// must not queue a second one behind it.
+		if (job.kind == JOB_FAV_LOAD) {
+			pthread_mutex_lock(&lock);
+			load_queued = false;
+			pthread_mutex_unlock(&lock);
+		}
 	}
 	return NULL;
 }
@@ -243,7 +301,7 @@ static void *worker_main(void *arg) {
 
 void subsonicsync_favorites_refresh(void (*done)(void)) {
 	pthread_mutex_lock(&lock);
-	bool known = favorites_loaded;
+	bool known = favorites_loaded || load_queued || monotonic_secs() < load_retry_after;
 	pthread_mutex_unlock(&lock);
 	if (known || !subsonic_logged_in()) {
 		return;

@@ -13,6 +13,7 @@
 #include "src/system/streaming/qobuzsync.h"
 #include "src/system/streaming/streamkeys.h"
 #include "src/system/core/lang.h"
+#include "src/system/streaming/streamerr.h"
 
 // Base address. Configurable for one reason only: pointing it at a fake server
 // exercises the whole flow without a subscription (see tools/fake_qobuz.py).
@@ -125,12 +126,34 @@ static void build_headers(char *out, size_t size, const char *extra) {
 	}
 }
 
+// True when `text` contains `word`, ignoring case (ASCII).
+static bool mentions(const char *text, const char *word) {
+	size_t n = strlen(word);
+	for (; *text; text++) {
+		size_t i = 0;
+		while (i < n && text[i] && (text[i] | 0x20) == (word[i] | 0x20)) {
+			i++;
+		}
+		if (i == n) {
+			return true;
+		}
+	}
+	return false;
+}
+
 // Qobuz reports an error as {"status":"error","message":"...","code":401}. The
 // message is written for a human and beats anything invented here.
 static bool note_api_error(const json_doc_t *doc, int status) {
 	int root = json_root(doc);
 	char message[200] = "";
 	if (json_obj_str(doc, root, "message", message, sizeof(message)) && message[0]) {
+		// "Invalid or missing app_id parameter", "Invalid Request Signature":
+		// the application keys in the firmware, not the user's account, which
+		// a status code alone (400, 401) would blame. See streamerr.h.
+		if (mentions(message, "app_id") || mentions(message, "app id") || mentions(message, "signature") ||
+			mentions(message, "app secret")) {
+			streamerr_hint(STREAM_ERR_KEYS);
+		}
 		set_error("%s", message);
 		return true;
 	}
@@ -146,6 +169,7 @@ static bool api_call(const char *url, const char *extra_headers, char **body, js
 
 	if (!qobuz_configured()) {
 		set_error("%s", tr("api_keys_unavailable"));
+		streamerr_hint(STREAM_ERR_KEYS);
 		return false;
 	}
 

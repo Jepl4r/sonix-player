@@ -797,10 +797,11 @@ static bool download_pump(download_t *d, long until, bool *finished) {
 
 // The rest of the download, after playback has started.
 static void *download_thread(void *arg) {
-	// Background priority, like every other worker: there is one core, and a
-	// thread writing to the card at full priority takes it away from the UI.
-	// That was half the reason the UI stuttered.
-	thread_be_background("subsonic dl");
+	// Below the interface and the audio threads, but not idle class: playback
+	// reads this file as it grows, and an idle-class thread gets almost
+	// nothing while music plays (see qobuzcache.c, and yandexcache.c since
+	// 1.2.4).
+	thread_be_low_priority("subsonic dl");
 
 	download_t *d = arg;
 	bool finished = false;
@@ -906,6 +907,9 @@ bool subsoniccache_start(const char *key, const char *url, const char *suffix, i
 		return false;
 	}
 
+	// Reads from here on time out sooner than the open: see
+	// STREAM_READ_TIMEOUT_SECS.
+	http_stream_set_read_timeout(&d->stream, STREAM_READ_TIMEOUT_SECS);
 	d->total = d->stream.content_length;
 	prune(d->total > 0 ? d->total : 0);
 

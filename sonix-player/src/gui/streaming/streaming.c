@@ -16,6 +16,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/streaming/downloadspage.h"
 #include "src/gui/streaming/podcastpage.h"
 #include "src/gui/streaming/qobuzpage.h"
 #include "src/gui/streaming/radiopage.h"
@@ -391,15 +392,23 @@ static void open_add_cb(lv_event_t *e) {
 	switch_screen(add_screen);
 }
 
-// The corner button, the same shape as the Music page's search and settings.
-static lv_obj_t *corner_button(gui_config_t *cfg, const lv_image_dsc_t *glyph) {
+// Downloads: every service's cache and what is coming down, in one place (see
+// downloadspage.h).
+static void open_downloads_cb(lv_event_t *e) {
+	(void)e;
+	downloadspage_open(page_cfg);
+}
+
+// The corner buttons, the same shape as the Music page's search and settings:
+// slot 0 in the corner, slot 1 to its left.
+static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph) {
 	lv_obj_t *button = lv_btn_create(streaming_screen);
 	lv_obj_set_size(button, 56, 56);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
@@ -433,10 +442,13 @@ void streaming_init(gui_config_t *cfg) {
 	tiles_load();
 	tiles_rebuild();
 
-	settingsrow_title(streaming_screen, cfg, "streaming");
+	lv_obj_t *title = settingsrow_title(streaming_screen, cfg, "streaming");
+	settingsrow_title_corner_slots(title, cfg, 2);
 
-	lv_obj_t *add_btn = corner_button(cfg, &icon_plus);
+	lv_obj_t *add_btn = corner_button(cfg, 0, &icon_plus);
 	lv_obj_add_event_cb(add_btn, open_add_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *downloads_btn = corner_button(cfg, 1, &icon_download);
+	lv_obj_add_event_cb(downloads_btn, open_downloads_cb, LV_EVENT_CLICKED, NULL);
 
 	add_screen = lv_obj_create(NULL);
 	add_list = settingsrow_page(add_screen, cfg, "streaming_add_service");
