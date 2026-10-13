@@ -2,6 +2,7 @@
 
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -1489,6 +1490,9 @@ static bool parse_moof(const mp4_file_t *m, uint64_t moof_off, const box_t *moof
 					q += 4;
 				}
 				if (flags & 0x04) {
+					if (q + 4 > plen) {
+						break;
+					}
 					q += 4;
 				}
 				size_t per = 0;
@@ -1629,10 +1633,23 @@ static bool frag_wait_for(mp4_file_t *m, uint32_t index) {
 		if (m->frag_samples == samples) {
 			// Nothing new: wait for the next box (its header, then its body).
 			uint64_t want = before + 8;
-			unsigned char head[8];
+			unsigned char head[16];
 			if (pread(m->fd, head, 8, (off_t)before) == 8) {
 				uint64_t sz = be32(head);
+				if (sz == 1) { // the size is in the 64 bits after the type
+					sz = pread(m->fd, head + 8, 8, (off_t)before + 8) == 8 ? be64(head + 8) : 16;
+				}
 				want = before + (sz >= 8 ? sz : 8) + 8; // and the header after it
+			}
+			long had = (long)current_size(m);
+			// The box is all there and still was not indexed: it is damaged, not
+			// late, and waiting would return at once, every time, for ever.
+			if (m->scan_pos == before && (uint64_t)had >= want) {
+				m->scan_done = true;
+				break;
+			}
+			if (want > (uint64_t)LONG_MAX) {
+				want = (uint64_t)LONG_MAX; // past what a long counts: never arrives
 			}
 			long have = growfile_wait_path(m->grow_path, (long)want);
 			if (have < 0) {
@@ -1645,8 +1662,13 @@ static bool frag_wait_for(mp4_file_t *m, uint32_t index) {
 				m->scan_done = true;
 				break;
 			}
-			if ((uint64_t)have <= before + 8) {
-				return false; // stalled, or a command is pending
+			// Short, and nothing arrived during the wait: the download stalled,
+			// or a command is pending -- in which case the wait returns at once
+			// and asking again would spin this thread, the one that has to
+			// carry the command out. The caller comes back once it has. Bytes
+			// that did arrive are waited on further, as growfile_read does.
+			if ((uint64_t)have < want && have <= had) {
+				return false;
 			}
 		}
 	}
