@@ -122,21 +122,29 @@ typedef struct {
 	int track, tracks, disc, discs, year;
 } tags_t;
 
-enum { SINK_FLAC, SINK_MP3 };
-enum { S_MAGIC, S_BLOCK_HEAD, S_BLOCK_BODY, S_ID3_HEAD, S_ID3_SKIP, S_PASS };
+enum { SINK_FLAC, SINK_MP3, SINK_MP4 };
+enum { S_MAGIC, S_BLOCK_HEAD, S_BLOCK_BODY, S_ID3_HEAD, S_ID3_SKIP, S_PASS, S_BOX_HEAD, S_BOX_HOLD, S_BOX_PASS };
 
 typedef struct {
 	FILE *out;
 	int kind;
 	int state;
 	const tags_t *tags;
-	uint8_t head[10];
+	uint8_t head[16];
 	size_t head_len;
-	uint8_t *keep; // FLAC: the kept blocks, headers included
+	uint8_t *keep; // FLAC: the kept blocks, headers included; MP4: the box held
 	size_t keep_len, keep_cap;
 	bool keep_this, last;
 	uint32_t left; // of the block body, or the ID3 tag, still to come
 	bool failed;
+	// MP4 (see mp4_sink_write)
+	uint64_t pos;	   // bytes of the source taken so far
+	uint64_t box_left; // of the box passing or being held
+	uint32_t box_type;
+	uint64_t moov_at; // where the source's moov began
+	int64_t delta;	  // how much the rewritten moov grew by
+	bool moov_done;
+	bool *tagged; // the caller's: set once the moov carries our tags
 } sink_t;
 
 typedef struct {
@@ -291,10 +299,401 @@ static bool keep_add(sink_t *k, const void *data, size_t len) {
 	return !b.failed;
 }
 
+// ---------------------------------------------------------------------------
+// MP4 (AAC in an .m4a): iTunes-style atoms in the movie box
+//
+// The tags of an MP4 live inside its "moov" box (moov/udta/meta/ilst), and
+// the moov holds the absolute file offsets of the audio: the chunk offset
+// tables (stco, co64) of a whole file, and in a fragmented one -- which is
+// what Yandex serves -- the base offset of every fragment (tfhd) and the
+// fragment index at the end (mfra/tfra). With the moov in front of the audio,
+// as it is in Yandex's files, tags written into it push every one of those
+// offsets along.
+//
+// So, while the file streams past (still never seeking, still one copy):
+// top-level boxes go straight through, except
+//   * the moov, held whole (it is small: no audio in it), written again
+//     without its old udta and with ours, and every chunk offset past it
+//     moved by what it grew;
+//   * after that, each moof and the mfra, held (a few hundred bytes each) and
+//     their absolute offsets moved the same way.
+// A moov after the audio (moov at the end) needs no offset moved at all: the
+// rule "move what points past the old moov" covers both. Anything that does
+// not fit the bounds below -- a moov over 4 MB, a box running to the end of
+// the file before the moov -- is written as it came, untagged, and the caller
+// falls back to the sidecar of 1.2.4 (write_sidecar), so a file is never lost
+// to its tags. The cover is not put in (covr): it would be held in memory
+// beside the moov, and the album's cover.jpg next to the files is what the
+// library and other players show anyway.
+// ---------------------------------------------------------------------------
+
+#define MP4_HOLD_MAX (4 * 1024 * 1024)
+#define BOX(a, b, c, d) ((uint32_t)(a) << 24 | (uint32_t)(b) << 16 | (uint32_t)(c) << 8 | (uint32_t)(d))
+
+static uint32_t rd32(const uint8_t *p) { return (uint32_t)p[0] << 24 | (uint32_t)p[1] << 16 | (uint32_t)p[2] << 8 | p[3]; }
+static uint64_t rd64(const uint8_t *p) { return (uint64_t)rd32(p) << 32 | rd32(p + 4); }
+static void wr32(uint8_t *p, uint32_t v) {
+	p[0] = (uint8_t)(v >> 24);
+	p[1] = (uint8_t)(v >> 16);
+	p[2] = (uint8_t)(v >> 8);
+	p[3] = (uint8_t)v;
+}
+static void wr64(uint8_t *p, uint64_t v) {
+	wr32(p, (uint32_t)(v >> 32));
+	wr32(p + 4, (uint32_t)v);
+}
+
+static void be32_add(buf_t *b, uint32_t v) {
+	uint8_t x[4];
+	wr32(x, v);
+	buf_add(b, x, 4);
+}
+
+// One ilst item: <type> { data { type indicator, locale, value } }.
+static void ilst_item(buf_t *b, uint32_t type, uint32_t indicator, const void *value, size_t len) {
+	be32_add(b, (uint32_t)(8 + 16 + len));
+	be32_add(b, type);
+	be32_add(b, (uint32_t)(16 + len));
+	be32_add(b, BOX('d', 'a', 't', 'a'));
+	be32_add(b, indicator);
+	be32_add(b, 0); // locale
+	buf_add(b, value, len);
+}
+
+static void ilst_text(buf_t *b, uint32_t type, const char *text) {
+	if (text && text[0]) {
+		ilst_item(b, type, 1, text, strlen(text)); // 1: UTF-8
+	}
+}
+
+// trkn and disk: a pad, the number, the total (and trkn one more pad).
+static void ilst_pair(buf_t *b, uint32_t type, int number, int total, size_t len) {
+	if (number <= 0) {
+		return;
+	}
+	uint8_t v[8] = {0, 0, (uint8_t)(number >> 8), (uint8_t)number, (uint8_t)(total > 0 ? total >> 8 : 0), (uint8_t)(total > 0 ? total : 0), 0, 0};
+	ilst_item(b, type, 0, v, len);
+}
+
+// udta { meta { hdlr mdir, ilst {...} } } for the tags.
+static void mp4_udta(buf_t *b, const tags_t *t) {
+	buf_t ilst = {0};
+	ilst_text(&ilst, BOX(0xA9, 'n', 'a', 'm'), t->title);
+	ilst_text(&ilst, BOX(0xA9, 'A', 'R', 'T'), t->artist);
+	ilst_text(&ilst, BOX('a', 'A', 'R', 'T'), t->album_artist);
+	ilst_text(&ilst, BOX(0xA9, 'a', 'l', 'b'), t->album);
+	ilst_pair(&ilst, BOX('t', 'r', 'k', 'n'), t->track, t->tracks, 8);
+	ilst_pair(&ilst, BOX('d', 'i', 's', 'k'), t->disc, t->discs, 6);
+	if (t->year > 0) {
+		char year[16];
+		snprintf(year, sizeof(year), "%d", t->year);
+		ilst_text(&ilst, BOX(0xA9, 'd', 'a', 'y'), year);
+	}
+	ilst_text(&ilst, BOX(0xA9, 'g', 'e', 'n'), t->genre);
+	ilst_text(&ilst, BOX(0xA9, 't', 'o', 'o'), "Sonix Player");
+	if (ilst.failed) {
+		b->failed = true;
+		free(ilst.data);
+		return;
+	}
+	// hdlr: version/flags, pre_defined, "mdir", reserved ("appl", 0, 0), an
+	// empty name -- what iTunes writes and every reader expects.
+	static const uint8_t HDLR[33] = {0, 0, 0, 33, 'h', 'd', 'l', 'r', 0, 0, 0, 0, 0, 0, 0, 0, 'm', 'd', 'i', 'r', 'a', 'p', 'p', 'l', 0, 0, 0, 0, 0, 0, 0, 0, 0};
+	uint32_t meta_len = 8 + 4 + sizeof(HDLR) + 8 + (uint32_t)ilst.len;
+	be32_add(b, 8 + meta_len);
+	be32_add(b, BOX('u', 'd', 't', 'a'));
+	be32_add(b, meta_len);
+	be32_add(b, BOX('m', 'e', 't', 'a'));
+	be32_add(b, 0); // meta is a full box
+	buf_add(b, HDLR, sizeof(HDLR));
+	be32_add(b, 8 + (uint32_t)ilst.len);
+	be32_add(b, BOX('i', 'l', 's', 't'));
+	buf_add(b, ilst.data, ilst.len);
+	free(ilst.data);
+}
+
+// A box inside [at, end): its type, header length and whole size. False when
+// it does not fit.
+static bool box_at(const uint8_t *p, size_t at, size_t end, uint32_t *type, size_t *head, size_t *size) {
+	if (at + 8 > end) {
+		return false;
+	}
+	uint64_t len = rd32(p + at);
+	*type = rd32(p + at + 4);
+	*head = 8;
+	if (len == 1) {
+		if (at + 16 > end) {
+			return false;
+		}
+		len = rd64(p + at + 8);
+		*head = 16;
+	} else if (len == 0) {
+		len = end - at;
+	}
+	if (len < *head || len > end - at) {
+		return false;
+	}
+	*size = (size_t)len;
+	return true;
+}
+
+// Moves every chunk offset in [at, end) of a moov that points past `from`.
+static bool shift_chunks(uint8_t *p, size_t at, size_t end, uint64_t from, int64_t delta) {
+	uint32_t type;
+	size_t head, size;
+	for (; box_at(p, at, end, &type, &head, &size); at += size) {
+		size_t body = at + head;
+		switch (type) {
+		case BOX('t', 'r', 'a', 'k'):
+		case BOX('m', 'd', 'i', 'a'):
+		case BOX('m', 'i', 'n', 'f'):
+		case BOX('s', 't', 'b', 'l'):
+			if (!shift_chunks(p, body, at + size, from, delta)) {
+				return false;
+			}
+			break;
+		case BOX('s', 't', 'c', 'o'):
+		case BOX('c', 'o', '6', '4'): {
+			size_t width = type == BOX('c', 'o', '6', '4') ? 8 : 4;
+			if (body + 8 > at + size) {
+				return false;
+			}
+			uint32_t count = rd32(p + body + 4);
+			if ((uint64_t)count * width > at + size - body - 8) {
+				return false;
+			}
+			for (uint32_t i = 0; i < count; i++) {
+				uint8_t *e = p + body + 8 + (size_t)i * width;
+				uint64_t v = width == 8 ? rd64(e) : rd32(e);
+				if (v < from) {
+					continue;
+				}
+				v += (uint64_t)delta;
+				if (width == 4 && v > UINT32_MAX) {
+					return false; // would need a co64: not worth it for a song
+				}
+				width == 8 ? wr64(e, v) : wr32(e, (uint32_t)v);
+			}
+			break;
+		}
+		default:
+			break;
+		}
+	}
+	return true;
+}
+
+// The moov held in k->keep, written out again with our udta in place of its
+// own and the chunk offsets moved.
+static bool mp4_moov_out(sink_t *k) {
+	const uint8_t *src = k->keep;
+	uint32_t type;
+	size_t head, size;
+	if (!box_at(src, 0, k->keep_len, &type, &head, &size)) {
+		return false;
+	}
+	buf_t b = {0};
+	be32_add(&b, 0); // the size, once known
+	be32_add(&b, BOX('m', 'o', 'o', 'v'));
+	size_t at = head;
+	uint32_t child;
+	size_t child_head, child_size;
+	for (; box_at(src, at, size, &child, &child_head, &child_size); at += child_size) {
+		if (child != BOX('u', 'd', 't', 'a')) {
+			buf_add(&b, src + at, child_size);
+		}
+	}
+	if (at != size) {
+		free(b.data);
+		return false; // a moov that does not add up: left alone
+	}
+	mp4_udta(&b, k->tags);
+	if (b.failed || b.len > UINT32_MAX) {
+		free(b.data);
+		return false;
+	}
+	wr32(b.data, (uint32_t)b.len);
+	k->delta = (int64_t)b.len - (int64_t)k->keep_len;
+	if (!shift_chunks(b.data, 8, b.len, k->moov_at, k->delta)) {
+		free(b.data);
+		return false;
+	}
+	bool ok = fwrite(b.data, 1, b.len, k->out) == b.len;
+	free(b.data);
+	if (ok && k->tagged) {
+		*k->tagged = true;
+	}
+	return ok;
+}
+
+// A moof or the mfra after a moov that grew: their absolute offsets follow.
+static bool mp4_fragment_shift(sink_t *k) {
+	uint8_t *p = k->keep;
+	uint32_t type, child, inner;
+	size_t head, size, child_head, child_size, inner_head, inner_size;
+	if (!box_at(p, 0, k->keep_len, &type, &head, &size)) {
+		return false;
+	}
+	for (size_t at = head; box_at(p, at, size, &child, &child_head, &child_size); at += child_size) {
+		size_t body = at + child_head, end = at + child_size;
+		if (type == BOX('m', 'o', 'o', 'f') && child == BOX('t', 'r', 'a', 'f')) {
+			for (size_t in = body; box_at(p, in, end, &inner, &inner_head, &inner_size); in += inner_size) {
+				size_t tf = in + inner_head;
+				// tfhd: version and flags, the track, then -- with flag 1 --
+				// the fragment's base offset in the file.
+				if (inner == BOX('t', 'f', 'h', 'd') && tf + 16 <= in + inner_size && (rd32(p + tf) & 1)) {
+					uint64_t base = rd64(p + tf + 8);
+					if (base >= k->moov_at) {
+						wr64(p + tf + 8, base + (uint64_t)k->delta);
+					}
+				}
+			}
+		} else if (type == BOX('m', 'f', 'r', 'a') && child == BOX('t', 'f', 'r', 'a') && body + 16 <= end) {
+			// tfra: each entry a time and the offset of its moof, then three
+			// numbers whose widths the header gives.
+			bool v1 = p[body] == 1;
+			uint32_t sizes = rd32(p + body + 8);
+			uint32_t count = rd32(p + body + 12);
+			size_t entry = (v1 ? 16 : 8) + ((sizes >> 4) & 3) + 1 + ((sizes >> 2) & 3) + 1 + (sizes & 3) + 1;
+			size_t first = body + 16;
+			if ((uint64_t)count * entry > end - first) {
+				return false;
+			}
+			for (uint32_t i = 0; i < count; i++) {
+				uint8_t *e = p + first + (size_t)i * entry + (v1 ? 8 : 4);
+				uint64_t off = v1 ? rd64(e) : rd32(e);
+				if (off < k->moov_at) {
+					continue;
+				}
+				off += (uint64_t)k->delta;
+				if (!v1 && off > UINT32_MAX) {
+					return false;
+				}
+				v1 ? wr64(e, off) : wr32(e, (uint32_t)off);
+			}
+		}
+	}
+	return fwrite(p, 1, k->keep_len, k->out) == k->keep_len;
+}
+
+// The MP4 half of sink_write: top-level boxes, as above.
+static void mp4_sink_write(sink_t *k, const uint8_t *p, size_t n) {
+	while (n > 0 && !k->failed) {
+		switch (k->state) {
+		case S_BOX_HEAD: {
+			size_t want = k->head_len >= 8 && rd32(k->head) == 1 ? 16 : 8;
+			size_t take = want - k->head_len < n ? want - k->head_len : n;
+			memcpy(k->head + k->head_len, p, take);
+			k->head_len += take;
+			p += take;
+			n -= take;
+			k->pos += take;
+			if (k->head_len < want || (want == 8 && rd32(k->head) == 1)) {
+				break; // a 64-bit size follows
+			}
+			uint64_t box_at_pos = k->pos - k->head_len;
+			uint32_t len32 = rd32(k->head);
+			uint64_t len = len32 == 1 ? rd64(k->head + 8) : len32;
+			k->box_type = rd32(k->head + 4);
+			size_t hl = k->head_len;
+			k->head_len = 0;
+			if (box_at_pos == 0 && k->box_type != BOX('f', 't', 'y', 'p') && k->box_type != BOX('m', 'o', 'o', 'v')) {
+				// Not an MP4 that starts the usual way: written as it came,
+				// untagged, rather than guessed at.
+				k->failed = fwrite(k->head, 1, hl, k->out) != hl;
+				k->box_left = UINT64_MAX;
+				k->state = S_BOX_PASS;
+				break;
+			}
+			if (len32 == 0) {
+				// Runs to the end of the file: passed as it is. Before the
+				// moov, that means the moov never comes, and no tags.
+				k->failed = fwrite(k->head, 1, hl, k->out) != hl;
+				k->box_left = UINT64_MAX;
+				k->state = S_BOX_PASS;
+				break;
+			}
+			if (len < hl) {
+				k->failed = true; // not an MP4 after all
+				break;
+			}
+			k->box_left = len - hl;
+			bool moov = k->box_type == BOX('m', 'o', 'o', 'v') && !k->moov_done;
+			bool shifted = k->moov_done && k->delta != 0 && (k->box_type == BOX('m', 'o', 'o', 'f') || k->box_type == BOX('m', 'f', 'r', 'a'));
+			if ((moov || shifted) && len <= MP4_HOLD_MAX) {
+				if (moov) {
+					k->moov_at = box_at_pos;
+				}
+				k->keep_len = 0;
+				k->failed = !keep_add(k, k->head, hl);
+				k->state = S_BOX_HOLD;
+			} else if (shifted) {
+				k->failed = true; // a fragment too big to hold: offsets would be wrong
+			} else {
+				if (moov) {
+					k->moov_done = true; // too big to hold: untagged
+				}
+				k->failed = fwrite(k->head, 1, hl, k->out) != hl;
+				k->state = S_BOX_PASS;
+			}
+			if (!k->failed && k->box_left == 0 && k->state == S_BOX_PASS) {
+				k->state = S_BOX_HEAD;
+			}
+			break;
+		}
+		case S_BOX_PASS: {
+			size_t take = k->box_left < n ? (size_t)k->box_left : n;
+			k->failed = fwrite(p, 1, take, k->out) != take;
+			p += take;
+			n -= take;
+			k->pos += take;
+			if (k->box_left != UINT64_MAX) {
+				k->box_left -= take;
+				if (k->box_left == 0) {
+					k->state = S_BOX_HEAD;
+				}
+			}
+			break;
+		}
+		case S_BOX_HOLD: {
+			size_t take = k->box_left < n ? (size_t)k->box_left : n;
+			k->failed = !keep_add(k, p, take);
+			p += take;
+			n -= take;
+			k->pos += take;
+			k->box_left -= take;
+			if (k->failed || k->box_left > 0) {
+				break;
+			}
+			if (k->box_type == BOX('m', 'o', 'o', 'v')) {
+				k->moov_done = true;
+				if (!mp4_moov_out(k)) {
+					// Not ours to rewrite: as it came, and no offset moves.
+					k->delta = 0;
+					k->failed = fwrite(k->keep, 1, k->keep_len, k->out) != k->keep_len;
+				}
+			} else {
+				k->failed = !mp4_fragment_shift(k);
+			}
+			k->keep_len = 0;
+			k->state = S_BOX_HEAD;
+			break;
+		}
+		default:
+			k->failed = true;
+			break;
+		}
+	}
+}
+
 static ssize_t sink_write(void *cookie, const char *data, size_t size) {
 	sink_t *k = cookie;
 	const uint8_t *p = (const uint8_t *)data;
 	size_t n = size;
+	if (k->kind == SINK_MP4) {
+		mp4_sink_write(k, p, n);
+		return k->failed ? -1 : (ssize_t)size;
+	}
 	while (n > 0 && !k->failed) {
 		switch (k->state) {
 		case S_PASS:
@@ -386,8 +785,9 @@ static ssize_t sink_write(void *cookie, const char *data, size_t size) {
 
 static int sink_close(void *cookie) {
 	sink_t *k = cookie;
-	// A source that ended inside its header is not a file.
-	bool ok = !k->failed && k->state == S_PASS;
+	// A source that ended inside its header is not a file; nor is an MP4 that
+	// ended inside a box.
+	bool ok = !k->failed && (k->state == S_PASS || (k->state == S_BOX_HEAD && k->head_len == 0) || (k->state == S_BOX_PASS && k->box_left == UINT64_MAX));
 	free(k->keep);
 	free(k);
 	return ok ? 0 : -1;
@@ -395,13 +795,16 @@ static int sink_close(void *cookie) {
 
 // A FILE that tags what goes through it into `out`, which stays the caller's.
 // NULL for an extension that is not tagged this way (the caller writes
-// straight to `out` then).
-static FILE *sink_open(FILE *out, const char *ext, const tags_t *tags) {
+// straight to `out` then). `tagged` (MP4 only, may be NULL) is set true once
+// the tags are in: an MP4 left as it came needs the sidecar.
+static FILE *sink_open(FILE *out, const char *ext, const tags_t *tags, bool *tagged) {
 	int kind;
 	if (strcmp(ext, "flac") == 0) {
 		kind = SINK_FLAC;
 	} else if (strcmp(ext, "mp3") == 0) {
 		kind = SINK_MP3;
+	} else if (strcmp(ext, "m4a") == 0) {
+		kind = SINK_MP4;
 	} else {
 		return NULL;
 	}
@@ -411,8 +814,9 @@ static FILE *sink_open(FILE *out, const char *ext, const tags_t *tags) {
 	}
 	k->out = out;
 	k->kind = kind;
-	k->state = kind == SINK_FLAC ? S_MAGIC : S_ID3_HEAD;
+	k->state = kind == SINK_FLAC ? S_MAGIC : kind == SINK_MP3 ? S_ID3_HEAD : S_BOX_HEAD;
 	k->tags = tags;
+	k->tagged = tagged;
 	cookie_io_functions_t io = {.write = sink_write, .close = sink_close};
 	FILE *f = fopencookie(k, "w", io);
 	if (!f) {
@@ -424,7 +828,8 @@ static FILE *sink_open(FILE *out, const char *ext, const tags_t *tags) {
 	return f;
 }
 
-// The m4a's tags, where the player reads them (see yandexdl.h).
+// The m4a's tags beside it, where the player reads them: what 1.2.4 wrote for
+// every .m4a, now only for one the MP4 sink could not tag (see above).
 static void write_sidecar(const char *path, const tags_t *t) {
 	char name[1350], tmp[1370];
 	snprintf(name, sizeof(name), "%.1300s.tags", path);
@@ -631,7 +1036,8 @@ static bool save_track(const yandex_track_t *t, unsigned asked, char *why, size_
 		snprintf(why, why_size, "%s", strerror(errno));
 		return false;
 	}
-	FILE *sink = sink_open(out, ext, &tags);
+	bool tagged = false;
+	FILE *sink = sink_open(out, ext, &tags, &tagged);
 	FILE *target = sink ? sink : out;
 	uint64_t samples = 0;
 	bool ok;
@@ -680,7 +1086,8 @@ static bool save_track(const yandex_track_t *t, unsigned asked, char *why, size_
 		}
 		return false;
 	}
-	if (strcmp(ext, "m4a") == 0) {
+	if (strcmp(ext, "m4a") == 0 && !tagged) {
+		fprintf(stderr, "yandexdl: %s could not be tagged inside, the tags go beside it\n", path);
 		write_sidecar(path, &tags);
 	}
 	fetch_cover(folder, have_meta && meta.cover[0] ? meta.cover : t->cover);
