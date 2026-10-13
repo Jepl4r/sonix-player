@@ -5475,6 +5475,46 @@ static bool walk_skips_folder(const char *path, const char *name, int depth) {
 	return audiobookdb_folder_matches(audiobook_folder, child);
 }
 
+// ".nomedia": Android's way of saying "nothing in here is media", which the
+// card may already carry from a phone (every app folder under Android/ has
+// one) and which a user can drop into any folder of voice notes, ringtones or
+// samples to keep it out of the library. The folder is passed over with
+// everything under it, by the scan and by Detect changes alike.
+//
+// Not at the root of the card: there it would make the whole library vanish,
+// which is never what a hidden file left by some phone app meant, and an
+// empty index looks exactly like a card that died. That one is logged and
+// ignored.
+#define NOMEDIA_NAME ".nomedia"
+
+static bool is_nomedia_name(const char *name) { return strcasecmp(name, NOMEDIA_NAME) == 0; }
+
+// The scan's test: one lookup per folder, made before the folder is read --
+// the scan indexes each file as readdir hands it over, so by the time the
+// marker came up in the listing half the folder would be in already. The
+// lookup is case-blind on FAT and exFAT, the filesystems a card comes with,
+// so ".NOMEDIA" written by Windows counts as well; and the directory it
+// reads is the one opendir() reads next, so the card is not asked twice.
+static bool folder_has_nomedia(const char *path) {
+	char marker[600];
+	if (snprintf(marker, sizeof(marker), "%s/" NOMEDIA_NAME, path) >= (int)sizeof(marker)) {
+		return false;
+	}
+	struct stat st;
+	return lstat(marker, &st) == 0;
+}
+
+// What FOLDER_TABLE keeps for a folder the marker closes: the marker alone, as
+// if it were the folder's only name. Detect changes compares a folder by its
+// names (folder_sig_t), and a dot-file is not one of them, so without this the
+// marker appearing or going away would leave the signature where it was and
+// the folder would never be looked at again.
+static void nomedia_sig(folder_sig_t *sig) {
+	sig->entries = 0;
+	sig->names = 0;
+	folder_sig_add(sig, NOMEDIA_NAME, false);
+}
+
 // Whether a directory entry is a subfolder the walk goes into, by the same
 // rules as in scan_directory() -- or, with `by_type`, as in update_folder(),
 // which believes the entry's d_type and asks the card only when it has none.
@@ -5533,6 +5573,21 @@ static void scan_directory(const char *path, int depth) {
 	struct stat dir_st;
 	if (stat(path, &dir_st) != 0) {
 		return;
+	}
+	if (folder_has_nomedia(path)) {
+		if (depth == 0) {
+			printf("library: %s has a .nomedia at the root of the card; ignored\n", path);
+		} else {
+			printf("library: %s holds a .nomedia; left out with its subfolders\n", path);
+			// Written down as the marker alone, so Detect changes finds the
+			// folder as it was left and does not open it again.
+			folder_sig_t sig;
+			nomedia_sig(&sig);
+			pthread_mutex_lock(&db_lock);
+			folder_mark(path, dir_st.st_mtime, &sig);
+			pthread_mutex_unlock(&db_lock);
+			return;
+		}
 	}
 	DIR *dir = opendir(path);
 	if (!dir) {
@@ -6215,6 +6270,7 @@ static void update_folder(const char *path, int depth, walk_t *w) {
 	bool overflow = false;		// more files than a list holds
 	bool dirs_listed = true;	// every subfolder in `dirs`
 	bool more_subdirs = false; // subfolders past the batch in `subdirs`
+	bool nomedia = false;	   // a .nomedia among the names, any spelling
 
 	for (;;) {
 		errno = 0;
@@ -6223,6 +6279,9 @@ static void update_folder(const char *path, int depth, walk_t *w) {
 			break;
 		}
 		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name)) {
+			// Here the marker costs nothing to find: this walk only collects
+			// names and decides after the folder has been read.
+			nomedia |= depth > 0 && is_nomedia_name(de->d_name);
 			continue;
 		}
 
@@ -6278,8 +6337,29 @@ static void update_folder(const char *path, int depth, walk_t *w) {
 	}
 	// A read that failed partway, or names that did not all fit, is not the
 	// folder: comparing it would take the unread names for missing files.
-	bool readable = errno == 0 && !overflow;
+	bool read_whole = errno == 0;
+	bool readable = read_whole && !overflow;
 	closedir(dir);
+
+	// A folder the marker closes holds nothing as far as the library goes:
+	// no files, no subfolders to walk. Compared like that, whatever the index
+	// still has from it -- tracks, and whole subfolders of them -- is found
+	// gone and taken out, the way a scan would have left it. Its subfolders
+	// are not walked even when the read broke off, since the marker was seen;
+	// only the comparison waits for a read that went to the end.
+	if (nomedia) {
+		namelist_free(&files);
+		namelist_free(&dirs);
+		namelist_free(&subdirs);
+		namelist_init(&files);
+		namelist_init(&dirs);
+		namelist_init(&subdirs);
+		dirs_listed = true;
+		more_subdirs = false;
+		overflow = false;
+		readable = read_whole;
+		nomedia_sig(&sig);
+	}
 
 	if (overflow) {
 		printf("library: %s holds more than %d tracks; Detect changes leaves it to a scan\n", path, SCAN_MAX_SUBDIRS);
