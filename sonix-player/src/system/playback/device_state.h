@@ -133,6 +133,33 @@ bool device_state_play_queue_index(int index);
 // if playback should stop (end of folder in normal mode / empty queue).
 bool device_state_advance_auto(char *out_path, size_t out_size);
 
+// "Stop after": a one-shot instruction for the end of what is playing, from the
+// player's menu. When it fires the queue moves on to what would have played
+// next and loads it paused -- the audiobook's "stop at the end of the chapter"
+// does the same with a book's next part -- so play carries on from there. It
+// then clears itself.
+//
+//   TRACK  fires when the playing track ends on its own.
+//   ALBUM  fires when the track that ends is the last of its album: the next
+//          one in the queue belongs to another album (by the library's album,
+//          else the tag, else the folder for an untagged file), or there is no
+//          next one, or the queue would come round again under repeat-all.
+//          Under shuffle over many albums the next track is almost always from
+//          another one, so it then stops after this track.
+//
+// At the end of the queue it simply stops there: "play albums back to back"
+// and "play by folder" do not start the next record. Repeat-one still repeats
+// (a track that comes round again has not ended) unless the instruction is
+// TRACK. Only in memory: a restart forgets it. UI thread.
+typedef enum {
+	DEVICE_STATE_STOP_AFTER_NONE = 0,
+	DEVICE_STATE_STOP_AFTER_TRACK,
+	DEVICE_STATE_STOP_AFTER_ALBUM,
+} device_state_stop_after_t;
+
+void device_state_set_stop_after(device_state_stop_after_t when);
+device_state_stop_after_t device_state_stop_after(void);
+
 // Whether consecutive album playback -- one record rolling into the next -- is
 // switched on, and the setting behind it.
 bool device_state_album_chaining(void);

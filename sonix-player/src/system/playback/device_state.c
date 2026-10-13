@@ -1259,6 +1259,85 @@ static bool chain_beside(bool forward) {
 	return false;
 }
 
+// ---------------------------------------------------------------------------
+// Stop after this track / this album (see device_state.h)
+// ---------------------------------------------------------------------------
+
+static device_state_stop_after_t stop_after;
+
+void device_state_set_stop_after(device_state_stop_after_t when) {
+	stop_after = when;
+	fprintf(stderr, "player: stop after %s\n",
+			when == DEVICE_STATE_STOP_AFTER_TRACK ? "this track" : when == DEVICE_STATE_STOP_AFTER_ALBUM ? "this album" : "nothing");
+}
+
+device_state_stop_after_t device_state_stop_after(void) { return stop_after; }
+
+// Which record a track belongs to, for telling where an album ends. The
+// library's own album value first -- the one the album pages are built on, so
+// a compilation without an album artist is one record here too -- then the
+// tag, for a file the library has not indexed (a stream reads its sidecar),
+// and the folder when there is no tag at all: an untagged rip is a folder.
+static void album_key(const char *path, const song_metadata_t *known, char *out, size_t size) {
+	out[0] = '\0';
+	if (library_track_album_value(path, out, size) && out[0]) {
+		return;
+	}
+	song_metadata_t meta;
+	if (!known) {
+		metadata_read(path, &meta);
+		known = &meta;
+	}
+	if (known->album[0]) {
+		snprintf(out, size, "\x01%s", known->album); // never equal to a library value by accident
+		return;
+	}
+	const char *slash = strrchr(path, '/');
+	snprintf(out, size, "\x02%.*s", slash ? (int)(slash - path) : 0, path);
+}
+
+// Whether the instruction fires at the end of the track that just ended. Asked
+// before the queue moves, with the queue still on that track.
+static bool stop_after_due(void) {
+	if (stop_after == DEVICE_STATE_STOP_AFTER_TRACK) {
+		return true;
+	}
+	if (stop_after != DEVICE_STATE_STOP_AFTER_ALBUM) {
+		return false;
+	}
+	if (playlist_get_mode() == PLAYBACK_MODE_REPEAT_ONE) {
+		return false; // the track comes round again: nothing has ended
+	}
+	char next[512];
+	if (playlist_at_end() || !playlist_peek_auto(next, sizeof(next))) {
+		return true; // nothing after it in this queue, or the queue comes round
+	}
+	char ended[512], coming[512];
+	album_key(current_metadata_file, &current_metadata, ended, sizeof(ended));
+	album_key(next, NULL, coming, sizeof(coming));
+	return strcmp(ended, coming) != 0;
+}
+
+// Fires the instruction: the next track loaded paused, or, when there is none
+// in this queue, playback left stopped where it is. Returns what
+// device_state_advance_auto() should return.
+static bool stop_after_fire(char *out_path, size_t out_size) {
+	device_state_stop_after_t was = stop_after;
+	stop_after = DEVICE_STATE_STOP_AFTER_NONE;
+	fprintf(stderr, "player: stopping after this %s, as asked\n", was == DEVICE_STATE_STOP_AFTER_TRACK ? "track" : "album");
+
+	char next[512];
+	if (playlist_at_end() || playlist_get_mode() == PLAYBACK_MODE_REPEAT_ONE ||
+		!playlist_advance_auto(next, sizeof(next))) {
+		return false;
+	}
+	load_paused(next);
+	if (out_path && out_size > 0) {
+		snprintf(out_path, out_size, "%s", next);
+	}
+	return true;
+}
+
 bool device_state_advance_auto(char *out_path, size_t out_size) {
 	if (radio_is_active()) {
 		return false; // a stream never finishes, so there is nothing to advance to
@@ -1275,13 +1354,20 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 	// since for a book of this shape a file is a chapter.
 	if (audiobook_is_playing()) {
 		if (!audiobook_has_next_part()) {
+			stop_after = DEVICE_STATE_STOP_AFTER_NONE; // the book stopped: that was the end asked for
 			return false;
 		}
 		char next[512];
 		if (!playlist_advance_auto(next, sizeof(next))) {
 			return false;
 		}
-		if (audiobook_stop_at_chapter_end()) {
+		// A part ending is a track ending; the book is the album, and it only
+		// ends where the branch above returns.
+		bool stop_here = stop_after == DEVICE_STATE_STOP_AFTER_TRACK;
+		if (stop_here) {
+			stop_after = DEVICE_STATE_STOP_AFTER_NONE;
+		}
+		if (stop_here || audiobook_stop_at_chapter_end()) {
 			load_paused(next);
 		} else {
 			load_and_play(next);
@@ -1294,6 +1380,12 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 
 	char path[512];
 	playlist_resync_to_current();
+
+	// "Stop after" first: it is the one thing that overrides both the queue
+	// going on and a record or folder following it.
+	if (stop_after != DEVICE_STATE_STOP_AFTER_NONE && stop_after_due()) {
+		return stop_after_fire(out_path, out_size);
+	}
 
 	// The end of a record or of a folder, asked before the queue is advanced
 	// rather than after it fails to advance.

@@ -1021,6 +1021,53 @@ void trackmenu_open_queue(void) {
 	switcher_set_player_return(queue_screen);
 }
 
+// ---------------------------------------------------------------------------
+// Stop after this track / this album
+//
+// A line of the menu that opens a second, smaller one: the menu holds seven
+// lines at most and is full, and the two belong together anyway. The line has
+// the tick while either is set, and the second menu shows which; choosing the
+// one already set clears it. One-shot: it clears itself when it fires (see
+// device_state_set_stop_after()).
+// ---------------------------------------------------------------------------
+
+static lv_obj_t *menu_anchor;
+
+static void stop_after_pick(void *user) {
+	device_state_stop_after_t want = (device_state_stop_after_t)(intptr_t)user;
+	if (device_state_stop_after() == want) {
+		want = DEVICE_STATE_STOP_AFTER_NONE;
+	}
+	device_state_set_stop_after(want);
+	toast_success(want == DEVICE_STATE_STOP_AFTER_TRACK	  ? "trackmenu_stop_after_track_set"
+				  : want == DEVICE_STATE_STOP_AFTER_ALBUM ? "trackmenu_stop_after_album_set"
+														  : "trackmenu_stop_after_cleared");
+}
+
+// On the next pass of the loop: this runs inside the click of a row of the
+// popover it is about to rebuild.
+static void stop_after_show_async(void *user) {
+	(void)user;
+	if (!menu_anchor || !gui_obj_alive(menu_anchor)) {
+		return;
+	}
+	static const popover_item_t ITEMS[] = {
+		{"trackmenu_stop_after_track", stop_after_pick, (void *)(intptr_t)DEVICE_STATE_STOP_AFTER_TRACK},
+		{"trackmenu_stop_after_album", stop_after_pick, (void *)(intptr_t)DEVICE_STATE_STOP_AFTER_ALBUM},
+	};
+	popover_item_t items[2];
+	memcpy(items, ITEMS, sizeof(items));
+	device_state_stop_after_t now = device_state_stop_after();
+	items[0].checked = now == DEVICE_STATE_STOP_AFTER_TRACK;
+	items[1].checked = now == DEVICE_STATE_STOP_AFTER_ALBUM;
+	popover_show(menu_anchor, items, 2);
+}
+
+static void stop_after_cb(void *user) {
+	(void)user;
+	lv_async_call(stop_after_show_async, NULL);
+}
+
 static void open_details_cb(void *user) {
 	(void)user;
 	details_path[0] = '\0'; // the playing track
@@ -1175,8 +1222,12 @@ void trackmenu_open(lv_obj_t *anchor) {
 	// playing file came from and decides for itself. Only the wording differs,
 	// because a podcast episode has no album and calling it one would be a
 	// borrowed term to make a menu line up.
+	//
+	// "Stop after" is the second line, next to the queue it is about, and the
+	// only one whose tick changes: the table is copied for that.
 	static const popover_item_t ITEMS[] = {
 		{"trackmenu_queue", open_queue_cb, NULL},
+		{"trackmenu_stop_after", stop_after_cb, NULL},
 		{"add_to_playlist", add_to_playlist_cb, NULL},
 		{"show_album", open_album_cb, NULL},
 		{"show_artist", open_artist_cb, NULL},
@@ -1197,10 +1248,16 @@ void trackmenu_open(lv_obj_t *anchor) {
 
 	// A podcast episode has no artist page to show, so its menu is a line
 	// shorter.
+	menu_anchor = anchor;
 	if (podcast) {
+		// Not "stop after" either: a podcast has its own "stop at the end of
+		// the episode", on its page.
 		popover_show(anchor, ITEMS_PODCAST, sizeof(ITEMS_PODCAST) / sizeof(ITEMS_PODCAST[0]));
 	} else {
-		popover_show(anchor, ITEMS, sizeof(ITEMS) / sizeof(ITEMS[0]));
+		popover_item_t items[sizeof(ITEMS) / sizeof(ITEMS[0])];
+		memcpy(items, ITEMS, sizeof(items));
+		items[1].checked = device_state_stop_after() != DEVICE_STATE_STOP_AFTER_NONE;
+		popover_show(anchor, items, sizeof(items) / sizeof(items[0]));
 	}
 }
 
