@@ -892,6 +892,30 @@ bool playlist_insert_at(const char *path, int slot) {
 	return true;
 }
 
+int playlist_replace_path(const char *old_path, const char *new_path) {
+	if (!old_path || !new_path || !new_path[0] || strcmp(old_path, new_path) == 0) {
+		return 0;
+	}
+	int changed = 0;
+	for (size_t i = 0; paths && i < appended_count(); i++) {
+		if (paths[i] && strcmp(paths[i], old_path) == 0) {
+			char *copy = strdup(new_path);
+			if (!copy) {
+				break; // the entry keeps its old name: the caller's prepare finds it
+			}
+			free(paths[i]);
+			paths[i] = copy;
+			changed++;
+		}
+	}
+	// The revision stays: the queue is the same tracks in the same order, and
+	// a new revision rewrites the whole copy on the card -- thousands of
+	// entries, at every track of a long streaming queue. The copy keeps the
+	// guessed names, which is what a restart wants anyway: the cache they
+	// point into is emptied at shutdown, and the tracks are fetched again.
+	return changed;
+}
+
 static void refresh_stale_source(void);
 
 typedef struct {

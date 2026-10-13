@@ -108,10 +108,25 @@ yandex_login_state_t yandex_login_poll(const yandex_login_t *login);
 // Library. Each returns how many it put in `out` (at most `max`), -1 on error.
 // ---------------------------------------------------------------------------
 
-int yandex_liked_tracks(yandex_track_t *out, int max);
 int yandex_playlists(yandex_playlist_t *out, int max);
-int yandex_playlist_tracks(const char *owner, const char *kind, yandex_track_t *out, int max);
 int yandex_album_tracks(const char *album_id, yandex_track_t *out, int max);
+
+// The long lists come as references first (yandexlist.h keeps them): each
+// entry is handed to `each` in order, its album id possibly empty, `track`
+// non-NULL when the answer carried the details anyway. They return how many
+// entries there were, -1 on error.
+typedef void (*yandex_ref_cb)(const char *track_id, const char *album_id, const yandex_track_t *track, void *user);
+
+// GET /users/{uid}/likes/tracks: every liked track, newest first. Fills the
+// mirror the star reads (below) on the way; `each` may be NULL.
+int yandex_liked_ids(yandex_ref_cb each, void *user);
+// GET /users/{owner}/playlists/{kind}?rich-tracks=false.
+int yandex_playlist_ids(const char *owner, const char *kind, yandex_ref_cb each, void *user);
+
+// POST /tracks, 50 ids a request: the details of tracks known by id ("id" or
+// "id:album"). Tracks the service no longer has are missing from `out`.
+// Returns how many came, -1 when the first request failed.
+int yandex_tracks(const char *const *refs, int count, yandex_track_t *out, int max);
 
 // What a saved file needs to know about its album beyond what each track
 // carries: who the record is by (not the track's artists: a compilation is
@@ -129,19 +144,52 @@ typedef struct {
 // /albums/<id>/with-tracks, the album's fields only.
 bool yandex_album_meta(const char *album_id, yandex_album_meta_t *out);
 int yandex_artist_albums(const char *artist_id, yandex_album_t *out, int max);
+// The rest of the collection. Lists of rows return how many they put in
+// `out` (at most `max`), -1 on error.
+//   likes/artists -- also fills what yandex_artist_liked() reads (`out` may
+//   be NULL to fill only that); likes/albums the same for albums.
+int yandex_liked_artists(yandex_artist_t *out, int max);
+int yandex_liked_albums(yandex_album_t *out, int max);
+// likes/playlists: the other people's playlists the account liked.
+int yandex_liked_playlists(yandex_playlist_t *out, int max);
+// /feed: the playlists the service makes for the account -- Playlist of the
+// Day, Premiere, Deja Vu, Missed Likes...
+int yandex_feed_playlists(yandex_playlist_t *out, int max);
+// landing3/chart: the chart's tracks, in order, through `each`.
+int yandex_chart(yandex_ref_cb each, void *user);
+// landing3/new-releases, then the albums (POST /albums).
+int yandex_new_releases(yandex_album_t *out, int max);
+// An artist's tracks, the most listened to first; `total` (may be NULL) gets
+// how many the artist has in all.
+int yandex_artist_tracks(const char *artist_id, yandex_track_t *out, int max, int *total);
+// All of an artist's track ids (up to 2000), through `each`.
+int yandex_artist_track_ids(const char *artist_id, yandex_ref_cb each, void *user);
+
+// Liking an artist or an album; logged. The two below answer from what the
+// lists above read and what was liked since: cheap, any thread.
+bool yandex_like_artist(const char *artist_id, bool like);
+bool yandex_like_album(const char *album_id, bool like);
+bool yandex_artist_liked(const char *artist_id);
+bool yandex_album_liked(const char *album_id);
+// Whether the liked artists, and the liked albums, have been read this session.
+bool yandex_liked_artists_known(void);
+bool yandex_liked_albums_known(void);
+
 // /search?type=all. The counts are capacities on the way in and what was
 // filled on the way out.
 bool yandex_search(const char *text, yandex_artist_t *artists, int *n_artists, yandex_album_t *albums, int *n_albums, yandex_track_t *tracks, int *n_tracks);
 
 // Likes. `like` false removes it. A like written updates the mirror below.
+// A dislike also tells a running My Wave, with how long the track was heard
+// (`played_secs`, the service wants it).
 bool yandex_like_track(const char *track_id, const char *album_id, bool like);
-bool yandex_dislike_track(const char *track_id, const char *album_id);
+bool yandex_dislike_track(const char *track_id, const char *album_id, int played_secs);
 
 // The mirror of the liked ids the player's star reads: filled by
-// yandex_liked_tracks() or yandex_liked_refresh() (ids only, one request),
-// empty until then. The three below are cheap, never touch the network and
-// may be called from any thread, the GUI's included.
-#define YANDEX_LIKED_ID_MAX 16
+// yandex_liked_ids() or yandex_liked_refresh() (ids only, one request),
+// empty until then; every id the account has, compactly. The three below are
+// cheap, never touch the network and may be called from any thread, the
+// GUI's included.
 bool yandex_liked_refresh(void);
 bool yandex_liked_known(void);
 bool yandex_is_liked(const char *track_id);
@@ -153,11 +201,15 @@ void yandex_liked_mark(const char *track_id, bool liked);
 // My Wave (rotor). One session at a time.
 // ---------------------------------------------------------------------------
 
-// Starts a new session and returns its first batch.
-int yandex_wave_start(yandex_track_t *out, int max);
-// The next batch of the running session. `played` are the tracks the session
-// already gave (the API wants them back in `queue`), newest last.
-int yandex_wave_more(const char *const *played, int played_count, yandex_track_t *out, int max);
+// Starts a new session and returns its first batch. `queue` (may be NULL):
+// tracks already received, "id" or "id:album", oldest first -- what a
+// session started again must not hand out again.
+int yandex_wave_start(const char *const *queue, int queue_count, yandex_track_t *out, int max);
+// The next batch of the running session. `queue` as above: the tracks the
+// session already gave, the newest last. A session the service has forgotten
+// or ended is replaced by a new one, told the queue; `restarted` says so.
+// Logged, request and answer. -1 with yandex_last_error() on failure.
+int yandex_wave_more(const char *const *queue, int queue_count, yandex_track_t *out, int max, bool *restarted);
 
 typedef enum {
 	YANDEX_WAVE_STARTED = 0, // radioStarted, sent by yandex_wave_start itself
@@ -168,8 +220,9 @@ typedef enum {
 	YANDEX_WAVE_DISLIKE,
 } yandex_wave_event_t;
 
-// Tells the session what happened to a track. `played_secs` matters for
-// finished and skip; ignored otherwise.
+// Tells the session what happened to a track, tagged with the batch the
+// track came in. `played_secs` matters for finished, skip and dislike;
+// ignored otherwise. Logged.
 bool yandex_wave_feedback(yandex_wave_event_t event, const char *track_id, const char *album_id, int played_secs);
 bool yandex_wave_active(void);
 
