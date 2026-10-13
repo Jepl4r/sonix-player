@@ -179,6 +179,13 @@ bool btstack_audio_source(char *address_out, size_t size);
 // every change to any transport. From the signal cache: no call, any thread.
 int btstack_transport_sending(const char *address, unsigned *serial_out);
 
+// Moves on every export of an A2DP sink stream by bluealsa -- which is also
+// what a codec change, a rate change, a restart of the daemon and a reconnect
+// look like from here, since each builds a new stream object behind the same
+// path. Lets the caller tell "the same stream" from "a stream built again"
+// while the address stays the same. From the signal cache: any thread.
+unsigned btstack_sink_serial(void);
+
 // What bluealsa negotiated on one of the two streams, in parts rather than as
 // one line: the receiver page prints the codec and the rate on their own.
 // `receiving` picks the direction -- false for the headphones this device
@@ -281,6 +288,18 @@ bool btstack_select_codec_dir(const char *address, bool receiving, const char *c
 bool btstack_pcm_volume_get(const char *address, bool receiving, int *out);
 bool btstack_pcm_volume_set(const char *address, bool receiving, int volume);
 bool btstack_select_codec(const char *address, const char *codec);
+
+// The sampling rates `codec` can run at between this player and the
+// headphones at `address` (bluealsa 4.3's SupportedSampling, already the
+// overlap of both ends), up to `max` of them. 0 when bluealsa does not say.
+int btstack_codec_rates(const char *address, const char *codec, unsigned *out, int max);
+
+// The same codec, or another, at one given rate: SelectCodec with a
+// "Sampling" property, and for LDAC also the configuration blob older daemons
+// need (btrate.h). A rebuild of the transport like any codec change, without
+// restarting bluealsa. False when bluealsa or the headphones refuse it; the
+// stream then stays as it was.
+bool btstack_select_codec_rate(const char *address, const char *codec, unsigned rate);
 
 // One line describing the audio path bluealsa has actually built: the codec it
 // negotiated, and the rate, channel count and sample width it is encoding from.

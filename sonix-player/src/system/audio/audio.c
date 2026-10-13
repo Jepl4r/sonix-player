@@ -3150,6 +3150,25 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// flips its stream to "PCM_FORMAT_PCM 32bit". Everything else stays 16.
 	int out_bits = source_bits > 16 ? 32 : 16;
 
+	// The Bluetooth link's own rate, when the "Sample rate" setting asks for
+	// one ("Follow the music", "96 kHz"; see bluetooth.c). Here and nowhere
+	// else: the track's rate is known and nothing is open on the stream yet,
+	// so moving the link costs a second of silence between two tracks instead
+	// of an open stream torn down under the music. Only when the rate really
+	// changes, so a whole album at one rate asks once. The decimation and the
+	// conversion below are then worked out against the new rate.
+	if (!passthrough && output_is_bluetooth()) {
+		unsigned link_to = bluetooth_link_rate_wanted((unsigned)sample_rate, dsd_as_pcm);
+		if (link_to) {
+			// The held PCM is the previous track's tail on the old transport,
+			// which the change is about to rebuild: played out and closed first.
+			gapless_release();
+			bool moved = bluetooth_link_rate_set(link_to);
+			fprintf(stderr, "audio[%ld]: Bluetooth link %s for the %d Hz track; it runs at %u Hz\n", log_ms(),
+					moved ? "moved" : "not moved", sample_rate, bluetooth_sink_rate());
+		}
+	}
+
 	// The rate the device is opened at. The position, the fade and every
 	// byte count below stay in the track's own frames.
 	decimator_t decim;

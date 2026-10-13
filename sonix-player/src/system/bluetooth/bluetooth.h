@@ -4,6 +4,8 @@
 #include <stdbool.h>
 #include <stdint.h>
 
+#include "src/system/bluetooth/btrate.h"
+
 // The Bluetooth radio, driven by the player itself.
 //
 // Nothing here goes through the firmware's scripts or the bluez-tools.
@@ -257,11 +259,6 @@ void bluetooth_set_ldac_quality(const char *mode);
 bool bluetooth_aac_vbr(void);
 void bluetooth_set_aac_vbr(bool on);
 
-// The rate the link is asked to run at: false (the default) lets bluealsa take
-// the highest both ends can do, nearly always 48 kHz; true passes
-// --a2dp-force-audio-cd so a 44.1 kHz track reaches the encoder without being
-// resampled. A start-up option, restarted for like the two above. Kept in
-// [wireless] bt_sample_rate = auto | 44100.
 // Wi-Fi coexistence for LDAC 990 (see bluetooth.c). The UI says whether the
 // Wi-Fi transfer server is on; with LDAC set to 990, the next connection then
 // gets 660 -- bluealsa is restarted only when no music is playing, never under it.
@@ -270,8 +267,35 @@ void bluetooth_set_wifi_busy(bool transfer_server_on);
 // True while that is in force: LDAC set to 990 and the transfer server on.
 bool bluetooth_ldac_held_back(void);
 
+// The rate the link is asked to run at, the "Sample rate" choice of the
+// Bluetooth audio page (btrate.h has what each one means). Kept in
+// [wireless] bt_sample_rate = auto | 44100 | follow | 96000.
+//
+// 44.1 kHz is a start-up option of bluealsa (--a2dp-force-audio-cd), so a
+// change to it or away from it restarts the daemon, like the two above. The
+// others move the link with SelectCodec at a rate: at a connection, at a
+// track start (bluetooth_link_rate_wanted()), and at once when the setting
+// changes with nothing playing.
+bt_rate_mode_t bluetooth_rate_mode(void);
+void bluetooth_set_rate_mode(bt_rate_mode_t mode);
+// The same for the 44.1 kHz choice alone: on is BT_RATE_44K, off BT_RATE_AUTO.
 bool bluetooth_force_44k(void);
 void bluetooth_set_force_44k(bool on);
+
+// For the playback thread, at the start of a track and before the stream is
+// opened: the rate the link should move to for a track at `track_rate` (`dsd`
+// when it is DSD sent as PCM), or 0 when it stays as it is. Cheap: settings
+// and numbers the worker keeps, no call on the bus. Also remembers the track,
+// for "Follow the music" at the next connection.
+#define BT_LINK_RATE_DEFAULT 1u // back to bluealsa's own choice
+unsigned bluetooth_link_rate_wanted(unsigned track_rate, bool dsd);
+
+// Then makes the change, on the worker, and waits for it -- the codec
+// renegotiated at that rate and the new stream up -- for up to fifteen
+// seconds. True when the link is now at `target`. Whatever was open on the
+// stream must have been closed first: the transport is built again under it.
+// bluetooth_sink_rate() gives the rate afterwards either way.
+bool bluetooth_link_rate_set(unsigned target);
 
 // The headphones' own battery level, for any headset rather than only AirPods.
 // Off by default, and an opt-in for a reason: it means starting bluealsa as a

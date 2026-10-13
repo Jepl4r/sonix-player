@@ -13,11 +13,18 @@
 #define BLUEALSA_SERVICE "org.bluealsa"
 #define PCM_INTERFACE "org.bluealsa.PCM1"
 #define PROPERTIES_INTERFACE "org.freedesktop.DBus.Properties"
+#define OBJMAN_INTERFACE "org.freedesktop.DBus.ObjectManager"
 
 #define CALL_TIMEOUT_MS 3000
 #define RETRY_MS 3000	 // between attempts to reach bluealsa on the bus
 #define TICK_MS 250		 // while waiting for the output to move over
 #define IDLE_WAIT_MS 600 // with nothing to bridge
+
+// How many more times a stream that answered nothing about its volume is
+// tried again on its own, RETRY_MS apart, before this side gives up on it
+// until the next reconnection or re-export. A backstop: the signal below
+// (InterfacesAdded) is what normally brings the stream back.
+#define BROKEN_RETRIES 3
 
 #define BT_VOLUME_MAX 127
 #define PATH_MAX_LEN 160
@@ -35,6 +42,7 @@
 // Where the worker is with the stream it has been given.
 typedef enum {
 	BTV_IDLE,  // no stream
+	BTV_WAIT,  // a stream was named but bluealsa has not exported its object (yet)
 	BTV_SETUP, // SoftVolume still to be written
 	BTV_ADOPT, // synchronised: the headphones' own level still to be read
 	BTV_READY
@@ -56,6 +64,11 @@ static int pending_remote = -1; // a 0..127 that arrived over the bus
 static int last_bt = -1;		// what the stream holds, as far as this side knows
 static bool path_live;			// a connection and a stream: writes can go over the bus
 static bool bus_broken;			// the stream is there but does not answer about its volume
+
+// Why the stream is being set up again, for the log: set by the signal handler
+// when bluealsa restarted or re-exported the stream, said once the stream has
+// actually been bound again. NULL for an ordinary first connection.
+static const char *rebind_why;
 
 // The stream whose level has already been adopted. Adoption happens once per
 // connection, not once per change on the bus: bluealsa resets SoftVolume its
@@ -80,15 +93,20 @@ static int bt_to_local(int volume) { return (clamp_int(volume, 0, BT_VOLUME_MAX)
 // The calls
 // ---------------------------------------------------------------------------
 
-static bool set_property_bool(dbus_conn_t *c, const char *path, const char *name, bool value) {
+// The error, if any, goes to `err` rather than to the log: the caller knows
+// whether "no such object" is a failure or only the stream not being back yet.
+static bool set_property_bool(dbus_conn_t *c, const char *path, const char *name, bool value, char *err,
+							  size_t err_size) {
 	dbus_writer_t *w = dbus_call_begin(c, BLUEALSA_SERVICE, path, PROPERTIES_INTERFACE, "Set", "ssv");
 	dbus_w_string(w, PCM_INTERFACE);
 	dbus_w_string(w, name);
 	dbus_w_variant_bool(w, value);
 
-	char err[DBUS_NAME_MAX];
-	if (!dbus_call_send(c, CALL_TIMEOUT_MS, err, sizeof(err))) {
-		fprintf(stderr, "btvolume: %s not written (%s)\n", name, err[0] ? err : "no reply");
+	err[0] = '\0';
+	if (!dbus_call_send(c, CALL_TIMEOUT_MS, err, err_size)) {
+		if (!err[0]) {
+			snprintf(err, err_size, "no reply");
+		}
 		return false;
 	}
 	return true;
@@ -216,7 +234,34 @@ static void on_signal(dbus_conn_t *c, const dbus_msg_t *m, void *user) {
 		bus_reset = true;
 		last_bt = -1;
 		adopted_path[0] = '\0'; // a new transport: the level has to be taken again
+		rebind_why = "a bluealsa restart";
 		pthread_cond_signal(&wake);
+		pthread_mutex_unlock(&lock);
+		return;
+	}
+	if (strcmp(m->member, "InterfacesAdded") == 0 && strcmp(m->interface, OBJMAN_INTERFACE) == 0) {
+		// bluealsa has exported a stream object. When it is the one being
+		// bridged, it is a new object behind a familiar path: after a restart
+		// of the daemon (NameOwnerChanged above came first, while the
+		// headphones were still reconnecting and there was nothing yet to
+		// talk to) or after a codec or rate change, which bluealsa makes by
+		// building a new transport. Either way it starts with bluealsa's own
+		// SoftVolume and level, so it is set up again from the start.
+		dbus_reader_t r;
+		dbus_reader_init(&r, m);
+		char path[PATH_MAX_LEN];
+		if (!dbus_r_string(&r, path, sizeof(path))) {
+			return;
+		}
+		pthread_mutex_lock(&lock);
+		if (want_path[0] && strcmp(path, want_path) == 0) {
+			bus_reset = true;
+			last_bt = -1;
+			if (!rebind_why) {
+				rebind_why = "the stream was re-created";
+			}
+			pthread_cond_signal(&wake);
+		}
 		pthread_mutex_unlock(&lock);
 	}
 }
@@ -235,6 +280,13 @@ static dbus_conn_t *open_bus(void) {
 					  "',member='PropertiesChanged'");
 	dbus_add_match(c, "type='signal',sender='org.freedesktop.DBus',interface='org.freedesktop.DBus',"
 					  "member='NameOwnerChanged',arg0='" BLUEALSA_SERVICE "'");
+	// The stream objects coming (back). Without this, a stream that was not
+	// there at the moment of a reset -- bluealsa restarted, the headphones
+	// still on their way back -- is never looked at again: nothing else on the
+	// bus says it has arrived, and the volume stays unbridged until the next
+	// disconnection.
+	dbus_add_match(c, "type='signal',sender='" BLUEALSA_SERVICE "',interface='" OBJMAN_INTERFACE
+					  "',member='InterfacesAdded'");
 	printf("btvolume: connected to the system bus\n");
 	return c;
 }
@@ -262,6 +314,13 @@ static void *btvolume_worker(void *unused) {
 	// so far.
 	uint32_t adopt_deadline = 0;
 	int adopt_seen = -1;
+
+	// Waiting for the stream object to appear (BTV_WAIT), and the backstop for
+	// one that answered nothing (BROKEN_RETRIES).
+	uint32_t wait_since = 0;
+	bool wait_logged = false;
+	uint32_t broken_since = 0;
+	int broken_retries = 0;
 
 	for (;;) {
 		char path[PATH_MAX_LEN];
@@ -296,6 +355,11 @@ static void *btvolume_worker(void *unused) {
 			state = path[0] ? BTV_SETUP : BTV_IDLE;
 			local = -1; // whatever was queued belonged to the old arrangement
 			remote = -1;
+			wait_logged = false;
+			broken_retries = 0;
+		}
+		if (!path[0]) {
+			rebind_why = NULL; // nothing to bind again: the next stream is a first connection
 		}
 		bool broken = bus_broken;
 		pthread_mutex_unlock(&lock);
@@ -333,23 +397,82 @@ static void *btvolume_worker(void *unused) {
 			// maximum.
 			wait_ms = conn ? 0 : RETRY_MS;
 		} else if (broken) {
-			// The stream is on the bus but did not answer about its volume, so
-			// this is not the interface it was taken for. Nothing more is tried
-			// here: bluetooth.c falls back to bluealsa-cli, and a reconnection
-			// or a restart of bluealsa gives this another go.
-			wait_ms = RETRY_MS;
+			// The stream is on the bus but did not answer about its volume.
+			// Usually it vanished between two calls -- a codec change rebuilds
+			// it -- and InterfacesAdded brings it back through a reset. As a
+			// backstop it is tried again a few times on its own, then left
+			// alone until a reconnection or a re-export.
+			if (broken_since == 0) {
+				broken_since = now_ms() | 1;
+			}
+			if (broken_retries < BROKEN_RETRIES && (uint32_t)(now_ms() - broken_since) >= RETRY_MS) {
+				broken_retries++;
+				broken_since = 0;
+				printf("btvolume: trying %s again (%d of %d)\n", have_path, broken_retries, BROKEN_RETRIES);
+				pthread_mutex_lock(&lock);
+				bus_broken = false;
+				pthread_mutex_unlock(&lock);
+				state = BTV_SETUP;
+				wait_ms = 0;
+			} else {
+				wait_ms = RETRY_MS;
+			}
 		} else {
+			broken_since = 0;
+			if (state == BTV_WAIT) {
+				uint32_t waited = now_ms() - wait_since;
+				if (waited >= RETRY_MS) {
+					state = BTV_SETUP;
+				} else {
+					wait_ms = RETRY_MS - waited;
+				}
+			}
+
 			if (state == BTV_SETUP) {
 				// Synchronised means bluealsa hands the level to the headphones
 				// as an AVRCP absolute volume; separate means it attenuates the
 				// stream here and they never hear about it.
-				set_property_bool(conn, have_path, "SoftVolume", !sync_on);
+				//
+				// This write is also the test of whether the stream object is
+				// there at all. After a restart of bluealsa the new daemon is on
+				// the bus well before the headphones have reconnected to it, and
+				// the reset arrives in that gap: there is nothing to write to.
+				// That is not a broken stream, it is one not back yet -- it is
+				// waited for (InterfacesAdded, or another try every RETRY_MS)
+				// rather than written off, which is what used to leave the
+				// volume unbridged after every restart until the headphones
+				// were disconnected by hand.
+				char err[DBUS_NAME_MAX];
+				if (!set_property_bool(conn, have_path, "SoftVolume", !sync_on, err, sizeof(err))) {
+					if (!wait_logged) {
+						printf("btvolume: %s is not on the bus yet (%s); waiting for bluealsa to export it\n",
+							   have_path, err);
+						wait_logged = true;
+					}
+					state = BTV_WAIT;
+					wait_since = now_ms();
+					wait_ms = RETRY_MS;
+				}
+			}
+
+			if (state == BTV_SETUP) {
+				wait_logged = false;
 				printf("btvolume: %s for %s\n", sync_on ? "native volume (synchronised)" : "software volume (separate)",
 					   have_path);
 
 				pthread_mutex_lock(&lock);
 				bool already_adopted = strcmp(adopted_path, have_path) == 0;
+				const char *why = rebind_why;
+				rebind_why = NULL;
 				pthread_mutex_unlock(&lock);
+				if (why) {
+					const char *next = "software volume";
+					if (sync_on) {
+						next = already_adopted ? "the player's level goes back to the headphones"
+											   : "taking the headphones' level again, as on a new connection";
+					}
+					printf("btvolume: rebound to %s after %s; %s\n", have_path, why, next);
+				}
 
 				if (sync_on && !already_adopted) {
 					state = BTV_ADOPT;
@@ -465,7 +588,9 @@ static void *btvolume_worker(void *unused) {
 		}
 
 		pthread_mutex_lock(&lock);
-		path_live = conn != NULL && have_path[0] && state != BTV_IDLE && !bus_broken;
+		// Not while waiting for the stream object: there is nothing to write to,
+		// and the level the player has by then is pushed once it is bound.
+		path_live = conn != NULL && have_path[0] && state != BTV_IDLE && state != BTV_WAIT && !bus_broken;
 		bool work = stopping || pending_local >= 0 || pending_remote >= 0 || bus_reset ||
 					strcmp(want_path, have_path) != 0 || want_sync != have_sync;
 		if (!work) {
