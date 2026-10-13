@@ -23,6 +23,7 @@
 #include "src/gui/shell/scrolltext.h"
 #include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_palette.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
 #include "src/gui/shell/touch.h"
@@ -3174,6 +3175,15 @@ static void refresh_now_playing(void) {
 
 	device_state_t state;
 	device_state_get(&state);
+
+	// The 2.0 palette is drawn from the cover's hue (sx_palette.h): a new
+	// album recolours the interface here, before anything below paints.
+	if (state.live) {
+		sx_palette_track_changed(NULL, state.metadata.title);
+	} else {
+		sx_palette_track_changed(state.current_file[0] ? state.current_file : NULL,
+								 state.metadata.album[0] ? state.metadata.album : NULL);
+	}
 
 	apply_live_mode(state.live);
 	apply_connecting();

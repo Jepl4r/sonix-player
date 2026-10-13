@@ -38,16 +38,22 @@
 
 extern lv_font_t font_ui_14;
 extern lv_font_t font_ui_16;
+extern lv_font_t font_ui_17; // 2.0: the mono-ish card subtitle (codec, network)
 extern lv_font_t font_ui_18;
 extern lv_font_t font_ui_20;
 extern lv_font_t font_ui_20_bold; // bold text in the release notes of the update card
+extern lv_font_t font_ui_21; // 2.0: a card's subtitle, a sheet's
 extern lv_font_t font_ui_22;
 extern lv_font_t font_ui_22_bold; // headings in the release notes of the update card
 extern lv_font_t font_ui_24;
 extern lv_font_t font_ui_24_bold;
 extern lv_font_t font_ui_26;
+extern lv_font_t font_ui_26_bold; // 2.0: a sheet's title
 extern lv_font_t font_ui_28;
+extern lv_font_t font_ui_28_bold; // 2.0: the player's and an album page's title
+extern lv_font_t font_ui_30_bold; // 2.0: a page title longer than 12 letters
 extern lv_font_t font_ui_32;
+extern lv_font_t font_ui_34_bold; // 2.0: a page title
 // The A and B letters on the Gearboy buttons, nothing else: on a 110 pixel
 // circle the regular weight is lost.
 extern lv_font_t font_ui_36_bold;

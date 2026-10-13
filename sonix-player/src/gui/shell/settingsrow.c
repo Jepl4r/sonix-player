@@ -918,7 +918,7 @@ void settingsrow_pill_active(lv_obj_t *pill, bool active) {
 		return;
 	}
 	lv_obj_set_style_bg_color(pill, active ? theme()->accent : theme()->surface_pressed, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(pill, 0), active ? lv_color_white() : theme()->text_primary, 0);
+	lv_obj_set_style_text_color(lv_obj_get_child(pill, 0), active ? theme()->on_accent : theme()->text_primary, 0);
 }
 
 // ---------------------------------------------------------------------------

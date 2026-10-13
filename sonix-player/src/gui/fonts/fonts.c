@@ -96,16 +96,22 @@ static const char *first_present(const char *const *candidates) {
 
 lv_font_t font_ui_14;
 lv_font_t font_ui_16;
+lv_font_t font_ui_17;
 lv_font_t font_ui_18;
 lv_font_t font_ui_20;
 lv_font_t font_ui_20_bold;
+lv_font_t font_ui_21;
 lv_font_t font_ui_22;
 lv_font_t font_ui_22_bold;
 lv_font_t font_ui_24;
 lv_font_t font_ui_24_bold;
 lv_font_t font_ui_26;
+lv_font_t font_ui_26_bold;
 lv_font_t font_ui_28;
+lv_font_t font_ui_28_bold;
+lv_font_t font_ui_30_bold;
 lv_font_t font_ui_32;
+lv_font_t font_ui_34_bold;
 lv_font_t font_ui_36_bold;
 lv_font_t font_ui_64_bold;
 lv_font_t font_ui_72;
@@ -122,6 +128,11 @@ static const ui_font_t ui_fonts[] = {
 	{&font_ui_26, 26, false}, {&font_ui_28, 28, false}, {&font_ui_32, 32, false},
 	{&font_ui_72, 72, false}, {&font_ui_20_bold, 20, true}, {&font_ui_22_bold, 22, true}, {&font_ui_24_bold, 24, true}, {&font_ui_36_bold, 36, true},
 	{&font_ui_64_bold, 64, true},
+	// Sonix UI 2.0 (sx_tokens.h): the card subtitle (21) and its mono form
+	// (17), the sheet's title (26 bold), the album and player titles (28 bold),
+	// and the page title at its two sizes (34 bold, 30 bold past 12 letters).
+	{&font_ui_17, 17, false}, {&font_ui_21, 21, false}, {&font_ui_26_bold, 26, true},
+	{&font_ui_28_bold, 28, true}, {&font_ui_30_bold, 30, true}, {&font_ui_34_bold, 34, true},
 };
 
 #define UI_FONT_COUNT (sizeof(ui_fonts) / sizeof(ui_fonts[0]))
@@ -140,7 +151,7 @@ typedef struct {
 } text_step_t;
 
 static const text_step_t LARGE_STEPS[] = {
-	{14, 17}, {16, 19}, {18, 21}, {20, 23}, {22, 25}, {24, 26},
+	{14, 17}, {16, 19}, {17, 19}, {18, 21}, {20, 23}, {21, 23}, {22, 25}, {24, 26},
 };
 
 static bool large_text;

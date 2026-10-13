@@ -9,6 +9,8 @@
 #include "src/gui/shell/corners.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_palette.h"
+#include "src/gui/shell/sx_styles.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
 #include "src/gui/shell/touch.h"
@@ -20,7 +22,12 @@ lv_obj_t *appearance_screen;
 static lv_obj_t *btn_dark;
 static lv_obj_t *btn_light;
 static lv_obj_t *btn_clock[4]; // left / centre / right / hidden
-static lv_obj_t *btn_accent[THEME_ACCENT_COUNT]; // the coloured circles
+// The coloured circles: the cover's own first (ACCENT_SLOT_COVER), then the
+// six presets, preset i in slot i + 1.
+#define ACCENT_SLOT_COVER 0
+#define ACCENT_SLOTS (THEME_ACCENT_COUNT + 1)
+static lv_obj_t *btn_accent[ACCENT_SLOTS];
+static lv_obj_t *cover_mark[2]; // the half moon on the cover's circle: disc, then the bite out of it
 static lv_obj_t *tint_toggle;
 static lv_obj_t *battery_percent_toggle;
 static lv_obj_t *statusbar_always_toggle;
@@ -92,21 +99,28 @@ static void refresh_buttons(void) {
 	lv_obj_t *off = dark ? btn_light : btn_dark;
 
 	lv_obj_set_style_bg_color(on, theme()->accent, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(on, 0), lv_color_white(), 0);
+	lv_obj_set_style_text_color(lv_obj_get_child(on, 0), theme()->on_accent, 0);
 
 	lv_obj_set_style_bg_color(off, theme()->surface_pressed, 0);
 	lv_obj_set_style_text_color(lv_obj_get_child(off, 0), theme()->text_primary, 0);
 }
 
-// The active circle wears a ring in the text colour; the rest sit flat.
+static int slot_accent(int slot) { return slot == ACCENT_SLOT_COVER ? THEME_ACCENT_COVER : slot - 1; }
+
+// The active circle wears a ring in the text colour; the rest sit flat. The
+// cover's circle is in the colour the cover gives now -- it changes with the
+// album -- and carries a half moon, the handoff's "from the cover" mark.
 static void refresh_accent_buttons(void) {
 	int active_accent = theme_get_accent();
-	for (int i = 0; i < THEME_ACCENT_COUNT; i++) {
+	for (int i = 0; i < ACCENT_SLOTS; i++) {
 		if (!btn_accent[i]) {
 			continue;
 		}
-		lv_obj_set_style_bg_color(btn_accent[i], theme_accent_preset(i), 0);
-		if (i == active_accent) {
+		int accent = slot_accent(i);
+		lv_obj_set_style_bg_color(btn_accent[i], accent == THEME_ACCENT_COVER ? sx_palette_cover_accent()
+																			  : theme_accent_preset(accent),
+								  0);
+		if (accent == active_accent) {
 			lv_obj_set_style_border_width(btn_accent[i], 3, 0);
 			lv_obj_set_style_border_color(btn_accent[i], theme()->text_primary, 0);
 			lv_obj_set_style_border_opa(btn_accent[i], LV_OPA_COVER, 0);
@@ -114,22 +128,41 @@ static void refresh_accent_buttons(void) {
 			lv_obj_set_style_border_width(btn_accent[i], 0, 0);
 		}
 	}
+	if (cover_mark[0]) {
+		lv_obj_set_style_bg_color(cover_mark[0], sx_palette_cover_on_accent(), 0);
+		lv_obj_set_style_bg_color(cover_mark[1], sx_palette_cover_accent(), 0);
+	}
 }
 
 static void accent_pick_cb(lv_event_t *e) {
-	int index = (int)(intptr_t)lv_event_get_user_data(e);
-	theme_set_accent(index);
+	int slot = (int)(intptr_t)lv_event_get_user_data(e);
+	theme_set_accent(slot_accent(slot));
 	refresh_accent_buttons();
 }
 
-static lv_obj_t *make_accent_circle(lv_obj_t *parent, int index) {
+static lv_obj_t *make_mark_disc(lv_obj_t *parent, int size, int x) {
+	lv_obj_t *disc = sx_box(parent);
+	lv_obj_set_size(disc, size, size);
+	lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_bg_opa(disc, LV_OPA_COVER, 0);
+	lv_obj_align(disc, LV_ALIGN_CENTER, x, 0);
+	return disc;
+}
+
+static lv_obj_t *make_accent_circle(lv_obj_t *parent, int slot) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, 48, 48);
+	lv_obj_set_size(btn, SX_SWATCH, SX_SWATCH);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_bg_color(btn, theme_accent_preset(index), 0);
+	lv_obj_set_style_pad_all(btn, 0, 0);
 	lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-	lv_obj_add_event_cb(btn, accent_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
+	lv_obj_add_event_cb(btn, accent_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)slot);
+	if (slot == ACCENT_SLOT_COVER) {
+		// A disc with a bite taken out of its right half: a half moon in two
+		// plain circles, the second in the swatch's own colour.
+		cover_mark[0] = make_mark_disc(btn, 20, 0);
+		cover_mark[1] = make_mark_disc(btn, 20, 9);
+	}
 	return btn;
 }
 
@@ -142,7 +175,7 @@ static void refresh_clock_buttons(void) {
 		}
 		if (i == active) {
 			lv_obj_set_style_bg_color(btn_clock[i], theme()->accent, 0);
-			lv_obj_set_style_text_color(lv_obj_get_child(btn_clock[i], 0), lv_color_white(), 0);
+			lv_obj_set_style_text_color(lv_obj_get_child(btn_clock[i], 0), theme()->on_accent, 0);
 		} else {
 			lv_obj_set_style_bg_color(btn_clock[i], theme()->surface_pressed, 0);
 			lv_obj_set_style_text_color(lv_obj_get_child(btn_clock[i], 0), theme()->text_primary, 0);
@@ -296,12 +329,12 @@ void appearance_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(accent_row, 0, 0);
 	lv_obj_set_style_border_width(accent_row, 0, 0);
 	lv_obj_set_style_pad_all(accent_row, 0, 0);
-	lv_obj_set_style_pad_gap(accent_row, 14, 0);
+	lv_obj_set_style_pad_gap(accent_row, 4, 0);
 	lv_obj_set_scrollable(accent_row, false);
 	lv_obj_set_flex_flow(accent_row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(accent_row, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-	for (int i = 0; i < THEME_ACCENT_COUNT; i++) {
+	for (int i = 0; i < ACCENT_SLOTS; i++) {
 		btn_accent[i] = make_accent_circle(accent_row, i);
 	}
 
