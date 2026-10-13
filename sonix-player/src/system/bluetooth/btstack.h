@@ -289,6 +289,18 @@ bool btstack_pcm_volume_get(const char *address, bool receiving, int *out);
 bool btstack_pcm_volume_set(const char *address, bool receiving, int volume);
 bool btstack_select_codec(const char *address, const char *codec);
 
+// The sampling rates `codec` can run at between this player and the
+// headphones at `address` (bluealsa 4.3's SupportedSampling, already the
+// overlap of both ends), up to `max` of them. 0 when bluealsa does not say.
+int btstack_codec_rates(const char *address, const char *codec, unsigned *out, int max);
+
+// The same codec, or another, at one given rate: SelectCodec with a
+// "Sampling" property, and for LDAC also the configuration blob older daemons
+// need (btrate.h). A rebuild of the transport like any codec change, without
+// restarting bluealsa. False when bluealsa or the headphones refuse it; the
+// stream then stays as it was.
+bool btstack_select_codec_rate(const char *address, const char *codec, unsigned rate);
+
 // One line describing the audio path bluealsa has actually built: the codec it
 // negotiated, and the rate, channel count and sample width it is encoding from.
 // For example "AAC, 44100 Hz, 2 ch, 16 bit".

@@ -26,6 +26,7 @@
 #include "src/system/bluetooth/airpods.h"
 #include "src/system/audio/audio.h"
 #include "src/system/bluetooth/btlog.h"
+#include "src/system/bluetooth/btrate.h"
 #include "src/system/bluetooth/btreceiver.h"
 #include "src/system/bluetooth/btstack.h"
 #include "src/system/bluetooth/btvolume.h"
@@ -134,6 +135,7 @@ typedef enum {
 	JOB_RX_INFO,   // re-read what a device streaming to this one is sending
 	JOB_RX_CODEC,  // text: the codec to move the incoming stream onto
 	JOB_MEDIA,	   // text: an AVRCP member to send to that device
+	JOB_LINK_RATE, // arg_int: the rate to move the link to, or BT_LINK_RATE_DEFAULT
 } job_type_t;
 
 // `text` is a codec name for JOB_SET_CODEC and an AVRCP member for JOB_MEDIA.
@@ -217,6 +219,18 @@ static char g_codecs[BT_MAX_CODECS][BT_CODEC_MAX];
 static int g_codec_count;
 static char g_codec_selected[BT_CODEC_MAX];
 static int g_pending_volume = -1; // coalesces a held volume key into one write
+
+// The link's rate as this player moves it (see "the link's rate" below). Under
+// `lock`: the playback thread reads them to decide, the worker writes them.
+#define BT_LINK_RATES_MAX 8
+static unsigned g_link_rates[BT_LINK_RATES_MAX]; // what the codec in force can run at with these headphones
+static int g_link_rate_count;
+static bool g_link_forced;		   // the link is at a rate asked for here, not bluealsa's own choice
+static unsigned g_link_refused;	   // a rate asked for on this connection and refused: not asked again
+static unsigned g_link_track_rate; // the last track's rate, for "Follow the music" at a connection
+static bool g_link_track_dsd;
+static unsigned g_link_done;	   // moves when a JOB_LINK_RATE has been answered
+static pthread_cond_t link_done_cond = PTHREAD_COND_INITIALIZER;
 
 // What bluealsa says the stream arriving from a device on the other side is
 // carrying. Filled on the worker, read by the receiver page and by the capture
@@ -1667,6 +1681,7 @@ static void read_sink_rate(const char *mac) {
 static void do_auto_codec(const char *mac);
 static void stream_rebuilt(const char *mac);
 static void codec_drift_check(const char *mac);
+static void link_rate_at_connection(const char *mac);
 static bool music_playing_out(void);
 
 // A codec choice to make again once the music has stopped for a while (see
@@ -1823,6 +1838,11 @@ static void refresh_audio_state(void) {
 			// cleared codec_auto_done), while nothing plays yet.
 			do_auto_codec(mac);
 			do_read_codecs();
+			pthread_mutex_lock(&lock);
+			g_link_forced = false; // a new daemon: the link is at its own choice again
+			g_link_refused = 0;
+			pthread_mutex_unlock(&lock);
+			link_rate_at_connection(mac);
 			// Before the player is told: it opens the stream again at once, at
 			// the rate this reads. See below.
 			read_sink_rate(mac);
@@ -1891,6 +1911,9 @@ static void refresh_audio_state(void) {
 		// Then the choice, while nothing is playing yet: making it is a
 		// teardown and a rebuild of the transport.
 		do_auto_codec(mac);
+		// And the link's rate, for the same reason and at the same moment:
+		// the routing below has not pointed the player at the headphones yet.
+		link_rate_at_connection(mac);
 
 		// And what came of it. Without this line the player only ever logs its
 		// own side -- "PCM open 96000 Hz S32_LE" -- and says nothing about the
@@ -1917,6 +1940,10 @@ static void refresh_audio_state(void) {
 		codec_auto_done[0] = '\0'; // the next connection chooses again
 		g_codec_reapply_pending = false; // ...and that is the asking again
 		read_sink_rate(NULL);
+		pthread_mutex_lock(&lock);
+		g_link_forced = false; // the next link starts at bluealsa's own choice
+		g_link_refused = 0;
+		pthread_mutex_unlock(&lock);
 	}
 	apply_output_routing();
 	do_read_codecs();
@@ -3138,8 +3165,19 @@ static void do_read_codecs(void) {
 	int count = btstack_codecs(mac, codecs, BT_MAX_CODECS, selected, sizeof(selected));
 	// A codec chosen again can come with another rate.
 	read_sink_rate(mac);
+	// And what the codec in force can run at between the two ends, for the
+	// link-rate choices: one more GetCodecs, only while the setting asks for
+	// a rate of its own.
+	unsigned rates[BT_LINK_RATES_MAX];
+	int rate_count = 0;
+	bt_rate_mode_t mode = bluetooth_rate_mode();
+	if (selected[0] && (mode == BT_RATE_FOLLOW || mode == BT_RATE_96K)) {
+		rate_count = btstack_codec_rates(mac, selected, rates, BT_LINK_RATES_MAX);
+	}
 
 	pthread_mutex_lock(&lock);
+	memcpy(g_link_rates, rates, sizeof(unsigned) * (size_t)rate_count);
+	g_link_rate_count = rate_count;
 	memcpy(g_codecs, codecs, sizeof(char) * (size_t)count * BT_CODEC_MAX);
 	g_codec_count = count;
 	snprintf(g_codec_selected, sizeof(g_codec_selected), "%s", selected);
@@ -3255,6 +3293,189 @@ static void stream_rebuilt(const char *mac) {
 		}
 	}
 	codec_drift_check(mac);
+}
+
+// ---------------------------------------------------------------------------
+// The link's rate
+//
+// What the "Sample rate" choice on the Bluetooth audio page means beyond
+// bluealsa's own pick:
+//
+//   Auto / 44.1 kHz   start-up options of the daemon (see ensure_bluealsa()):
+//                     the link stays where bluealsa put it
+//   96 kHz            LDAC is moved to 96 kHz (or the highest the pair has
+//                     below it) once per connection; other codecs as Auto
+//   Follow the music  the link takes each track's family -- 44.1 or 88.2 for
+//                     the CD family, 48 or 96 for the other -- changed only
+//                     between tracks (btrate.c decides)
+//
+// How: SelectCodec on the stream, the codec in force, with the rate in its
+// properties (btstack_select_codec_rate()). That is a rebuild of the A2DP
+// transport like any codec change -- a second or so of silence -- but not a
+// restart of bluealsa, which drops the headphones for several. It is the
+// player asking for the rate before it opens the stream, which is what
+// [bluetooth] follow_track_rate (the alsa plugin renegotiating under an open
+// stream) could not do safely and why that one stays off.
+//
+// The guards:
+//   * only from the playback thread at the start of a track, before the
+//     stream is opened (audio.c), or here at a connection and when the
+//     setting changes with nothing playing -- never under a playing stream;
+//   * one change per track start at most, and only when the rate differs;
+//   * a rate the headphones refused is not asked for again on this
+//     connection: the link stays where it is;
+//   * [bluetooth] link_rate_select = 0 turns all of it off ("Follow" and
+//     "96 kHz" then act as Auto), and [bluetooth] follow_track_rate = 1,
+//     the old way, takes precedence over it.
+// ---------------------------------------------------------------------------
+
+// How long the playback thread waits for a change of rate to be made: the
+// SelectCodec itself (btstack gives it ten seconds) and the new stream coming
+// up. Past it the track starts anyway, at whatever the link is at.
+#define LINK_RATE_WAIT_MS 15000
+// How long the worker waits for the rebuilt stream to report the new rate.
+#define LINK_RATE_SETTLE_MS 4000
+
+static bool link_rate_enabled(void) {
+	return config_get_int("bluetooth", "link_rate_select", 1) != 0 &&
+		   !config_get_int("bluetooth", "follow_track_rate", 0);
+}
+
+// The rate to move the link to, 0 for none, BT_LINK_RATE_DEFAULT for back to
+// bluealsa's own choice. Under `lock`.
+static unsigned link_target_locked(bt_rate_mode_t mode, unsigned track_rate, bool dsd) {
+	// A rate refused on this connection is struck off the list rather than
+	// asked for again: the choice falls to the next one down (88.2 refused,
+	// a 176.4 kHz track goes to 44.1), and nothing is asked twice.
+	unsigned rates[BT_LINK_RATES_MAX];
+	int count = 0;
+	for (int i = 0; i < g_link_rate_count; i++) {
+		if (g_link_rates[i] != g_link_refused) {
+			rates[count++] = g_link_rates[i];
+		}
+	}
+	unsigned wanted = btrate_wanted(mode, g_codec_selected, track_rate, dsd, rates, count);
+	if (wanted == 0) {
+		// Nothing asked for: only a link this player moved has to go back.
+		// "Follow" with no track yet keeps whatever it has.
+		return g_link_forced && mode != BT_RATE_FOLLOW ? BT_LINK_RATE_DEFAULT : 0;
+	}
+	if (wanted == g_sink_rate) {
+		return 0;
+	}
+	return wanted;
+}
+
+static unsigned link_target(unsigned track_rate, bool dsd) {
+	bt_rate_mode_t mode = link_rate_enabled() ? bluetooth_rate_mode() : BT_RATE_AUTO;
+	pthread_mutex_lock(&lock);
+	unsigned target = (g_enabled && g_a2dp_connected) ? link_target_locked(mode, track_rate, dsd) : 0;
+	pthread_mutex_unlock(&lock);
+	return target;
+}
+
+// Worker. Makes the change and waits for the rebuilt stream to say its rate.
+static void link_rate_change(unsigned target) {
+	char mac[BT_MAC_MAX];
+	pthread_mutex_lock(&lock);
+	copy_field(mac, sizeof(mac), g_a2dp_connected ? g_a2dp_mac : "", sizeof(g_a2dp_mac));
+	char codec[BT_CODEC_MAX];
+	copy_field(codec, sizeof(codec), g_codec_selected, sizeof(g_codec_selected));
+	unsigned before = g_sink_rate;
+	pthread_mutex_unlock(&lock);
+	if (!mac[0] || !codec[0]) {
+		return;
+	}
+
+	bool back = target == BT_LINK_RATE_DEFAULT;
+	if (back) {
+		fprintf(stderr, "bluetooth: link rate %u Hz -> bluealsa's own choice (%s on %s)\n", before, codec, mac);
+	} else {
+		fprintf(stderr, "bluetooth: link rate %u -> %u Hz (%s on %s)\n", before, target, codec, mac);
+	}
+	bool ok = back ? btstack_select_codec(mac, codec) : btstack_select_codec_rate(mac, codec, target);
+	if (!ok) {
+		fprintf(stderr, "bluetooth: %s refused %s at %u Hz; the link stays at %u Hz\n", mac, codec, target, before);
+		pthread_mutex_lock(&lock);
+		if (!back) {
+			g_link_refused = target;
+		}
+		pthread_mutex_unlock(&lock);
+		return;
+	}
+
+	// The old stream can still answer for a moment before it is torn down,
+	// so the wait is for the rate asked for (or, going back, for a change).
+	btstack_stream_t info;
+	unsigned now = 0;
+	for (int waited = 0; waited < LINK_RATE_SETTLE_MS; waited += 100) {
+		if (btstack_stream_info(mac, false, &info) && info.rate) {
+			now = info.rate;
+			if (back ? now != before : now == target) {
+				break;
+			}
+		}
+		sleep_ms(100);
+	}
+	read_sink_rate(mac);
+	pthread_mutex_lock(&lock);
+	g_link_forced = !back;
+	unsigned sink = g_sink_rate;
+	g_serial++;
+	pthread_mutex_unlock(&lock);
+	fprintf(stderr, "bluetooth: the link is at %u Hz now\n", sink);
+}
+
+// Worker: a JOB_LINK_RATE. 0 is "the setting changed: look again", made only
+// with nothing playing -- otherwise the next track start makes it.
+static void do_link_rate(unsigned target) {
+	if (target == 0) {
+		char mac[BT_MAC_MAX];
+		if (!connected_mac(mac, sizeof(mac))) {
+			return;
+		}
+		do_read_codecs(); // the rates, which are read only while the setting asks for them
+		pthread_mutex_lock(&lock);
+		unsigned track = g_link_track_rate;
+		bool dsd = g_link_track_dsd;
+		pthread_mutex_unlock(&lock);
+		target = link_target(track, dsd);
+		if (target && music_playing_out()) {
+			fprintf(stderr, "bluetooth: the new link rate is made at the next track, not under this one\n");
+			target = 0;
+		}
+	}
+	if (target) {
+		link_rate_change(target);
+		do_read_codecs();
+	}
+	pthread_mutex_lock(&lock);
+	g_link_done++;
+	pthread_cond_broadcast(&link_done_cond);
+	pthread_mutex_unlock(&lock);
+}
+
+// Worker, at a connection or with the stream back on a restarted bluealsa:
+// "96 kHz" goes to 96 here, and "Follow" to the last track's family, before
+// the player opens the stream.
+static void link_rate_at_connection(const char *mac) {
+	bt_rate_mode_t mode = bluetooth_rate_mode();
+	if (!link_rate_enabled() || (mode != BT_RATE_FOLLOW && mode != BT_RATE_96K)) {
+		return;
+	}
+	// The codec and the rates it can run at, which the connection path has
+	// not read yet. connected_mac() needs g_a2dp_connected, set just before.
+	(void)mac;
+	do_read_codecs();
+	pthread_mutex_lock(&lock);
+	unsigned track = g_link_track_rate;
+	bool dsd = g_link_track_dsd;
+	pthread_mutex_unlock(&lock);
+	unsigned target = link_target(track, dsd);
+	if (target) {
+		link_rate_change(target);
+		do_read_codecs();
+	}
 }
 
 // An empty codec is "Auto": the choice for this device is forgotten and the
@@ -3972,6 +4193,10 @@ static void *bluetooth_worker(void *arg) {
 				do_media_command(job.text);
 				break;
 
+			case JOB_LINK_RATE:
+				do_link_rate((unsigned)job.arg_int);
+				break;
+
 			case JOB_NONE:
 			default:
 				break;
@@ -4511,15 +4736,86 @@ void bluetooth_set_aac_vbr(bool on) {
 	restart_for_option(on ? "AAC VBR" : "AAC CBR");
 }
 
-bool bluetooth_force_44k(void) { return strcmp(config_get("wireless", "bt_sample_rate", "auto"), "44100") == 0; }
+static const char *const RATE_MODE_KEYS[] = {"auto", "44100", "follow", "96000"};
 
-void bluetooth_set_force_44k(bool on) {
-	if (on == bluetooth_force_44k()) {
+bt_rate_mode_t bluetooth_rate_mode(void) {
+	const char *value = config_get("wireless", "bt_sample_rate", "auto");
+	for (int i = 0; i < (int)(sizeof(RATE_MODE_KEYS) / sizeof(RATE_MODE_KEYS[0])); i++) {
+		if (strcmp(value, RATE_MODE_KEYS[i]) == 0) {
+			return (bt_rate_mode_t)i;
+		}
+	}
+	return BT_RATE_AUTO;
+}
+
+void bluetooth_set_rate_mode(bt_rate_mode_t mode) {
+	if ((int)mode < 0 || (int)mode >= (int)(sizeof(RATE_MODE_KEYS) / sizeof(RATE_MODE_KEYS[0]))) {
 		return;
 	}
-	config_set("wireless", "bt_sample_rate", on ? "44100" : "auto");
+	bt_rate_mode_t before = bluetooth_rate_mode();
+	if (mode == before) {
+		return;
+	}
+	config_set("wireless", "bt_sample_rate", RATE_MODE_KEYS[mode]);
 	config_save();
-	restart_for_option(on ? "44.1 kHz link" : "automatic link rate");
+	fprintf(stderr, "bluetooth: link rate setting %s -> %s\n", RATE_MODE_KEYS[before], RATE_MODE_KEYS[mode]);
+
+	// 44.1 kHz is a start-up option of the daemon (--a2dp-force-audio-cd), so
+	// going to it or away from it is a restart, as before. Between the other
+	// three the link is moved with SelectCodec, and only with nothing playing:
+	// under music the next track start does it.
+	if (mode == BT_RATE_44K || before == BT_RATE_44K) {
+		restart_for_option(mode == BT_RATE_44K ? "44.1 kHz link" : "44.1 kHz link off");
+		return;
+	}
+	pthread_mutex_lock(&lock);
+	bool running = worker_running && g_enabled && g_a2dp_connected;
+	pthread_mutex_unlock(&lock);
+	if (running) {
+		job_t job = {.type = JOB_LINK_RATE, .arg_int = 0};
+		post_job(&job);
+	}
+}
+
+bool bluetooth_force_44k(void) { return bluetooth_rate_mode() == BT_RATE_44K; }
+
+void bluetooth_set_force_44k(bool on) { bluetooth_set_rate_mode(on ? BT_RATE_44K : BT_RATE_AUTO); }
+
+unsigned bluetooth_link_rate_wanted(unsigned track_rate, bool dsd) {
+	pthread_mutex_lock(&lock);
+	g_link_track_rate = track_rate;
+	g_link_track_dsd = dsd;
+	pthread_mutex_unlock(&lock);
+	return link_target(track_rate, dsd);
+}
+
+bool bluetooth_link_rate_set(unsigned target) {
+	if (!target || !worker_running) {
+		return false;
+	}
+	pthread_mutex_lock(&lock);
+	unsigned ticket = g_link_done;
+	pthread_mutex_unlock(&lock);
+
+	job_t job = {.type = JOB_LINK_RATE, .arg_int = (int)target};
+	post_job(&job);
+
+	struct timespec deadline;
+	deadline_in_ms(&deadline, LINK_RATE_WAIT_MS);
+	pthread_mutex_lock(&lock);
+	int err = 0;
+	while (g_link_done == ticket && err == 0) {
+		err = pthread_cond_timedwait(&link_done_cond, &lock, &deadline);
+	}
+	bool answered = g_link_done != ticket;
+	unsigned now = g_sink_rate;
+	pthread_mutex_unlock(&lock);
+	if (!answered) {
+		fprintf(stderr, "bluetooth: the link rate change took more than %d ms; the track starts anyway\n",
+				LINK_RATE_WAIT_MS);
+		return false;
+	}
+	return target == BT_LINK_RATE_DEFAULT ? true : now == target;
 }
 
 bool bluetooth_headset_battery_enabled(void) { return config_get_int("wireless", "bt_headset_battery", 0) != 0; }

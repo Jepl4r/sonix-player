@@ -7,6 +7,7 @@
 #include <strings.h>
 #include <time.h>
 
+#include "src/system/bluetooth/btrate.h"
 #include "src/system/bluetooth/dbuslite.h"
 
 #define BLUEZ_SERVICE "org.bluez"
@@ -2019,6 +2020,125 @@ bool btstack_select_codec_dir(const char *address, bool receiving, const char *c
 	bool ok = dbus_call_send(c, 15000, err, sizeof(err));
 	fprintf(stderr, "btstack: codec %s on %s (%s) -> %s\n", codec, address, receiving ? "sink" : "source",
 			ok ? "ok" : (err[0] ? err : "no reply"));
+	return ok;
+}
+
+int btstack_codec_rates(const char *address, const char *codec, unsigned *out, int max) {
+	pthread_mutex_lock(&lock);
+	dbus_conn_t *c = conn;
+	pthread_mutex_unlock(&lock);
+
+	char path[OBJECT_PATH_MAX];
+	if (!c || !codec || !codec[0] || !out || max <= 0 || !pcm_path(address, path, sizeof(path))) {
+		return 0;
+	}
+
+	dbus_call_begin(c, BALSA_SERVICE, path, BALSA_PCM_IFACE, "GetCodecs", "");
+	char err[DBUS_NAME_MAX];
+	if (!dbus_call_send(c, CALL_MS, err, sizeof(err))) {
+		fprintf(stderr, "btstack: GetCodecs on %s -> %s\n", address, err[0] ? err : "no reply");
+		return 0;
+	}
+
+	dbus_reader_t r;
+	dbus_reply_reader(c, &r);
+
+	// a{sa{sv}}: this time the properties of one codec are the point. bluealsa
+	// 4.3 lists SupportedSampling there, already narrowed to what both ends
+	// can do (the headphones' capabilities against its own).
+	int count = 0;
+	dbus_array_iter_t codecs;
+	if (!dbus_r_array_begin(&r, "{sa{sv}}", &codecs)) {
+		return 0;
+	}
+	while (dbus_r_array_more(&r, &codecs)) {
+		char name[BT_CODEC_NAME_MAX];
+		if (!dbus_r_string(&r, name, sizeof(name))) {
+			return 0;
+		}
+		if (strcasecmp(name, codec) != 0) {
+			if (!dbus_r_skip(&r, "a{sv}")) {
+				return 0;
+			}
+			continue;
+		}
+		dbus_array_iter_t props;
+		if (!dbus_r_array_begin(&r, "{sv}", &props)) {
+			return 0;
+		}
+		while (dbus_r_array_more(&r, &props)) {
+			char key[64], sig[16];
+			if (!dbus_r_string(&r, key, sizeof(key)) || !dbus_r_signature(&r, sig, sizeof(sig))) {
+				return count;
+			}
+			if (strcmp(key, "SupportedSampling") == 0 && strcmp(sig, "au") == 0) {
+				dbus_array_iter_t rates;
+				if (!dbus_r_array_begin(&r, "u", &rates)) {
+					return count;
+				}
+				while (dbus_r_array_more(&r, &rates)) {
+					uint32_t rate = 0;
+					if (!dbus_r_u32(&r, &rate)) {
+						return count;
+					}
+					if (rate && count < max) {
+						out[count++] = (unsigned)rate;
+					}
+				}
+			} else if (!dbus_r_skip(&r, sig)) {
+				return count;
+			}
+		}
+		return count;
+	}
+	return 0;
+}
+
+bool btstack_select_codec_rate(const char *address, const char *codec, unsigned rate) {
+	pthread_mutex_lock(&lock);
+	dbus_conn_t *c = conn;
+	pthread_mutex_unlock(&lock);
+
+	char path[OBJECT_PATH_MAX];
+	if (!c || !codec || !codec[0] || !rate || !pcm_path(address, path, sizeof(path))) {
+		return false;
+	}
+
+	// Two ways of saying the same rate, for two generations of bluealsa.
+	// "Sampling" is the 4.3 one: bluealsa starts from its own capabilities,
+	// narrows them to the headphones' and to this rate, and picks the rest
+	// itself. Older daemons only read a whole configuration blob -- for LDAC,
+	// the one built in btrate.c -- and ignore keys they do not know. Given
+	// both, 4.3 starts from the blob instead of its own capabilities, narrows
+	// it the same way and checks the result, so the two agree. Either way a
+	// rate the headphones do not have is refused with an error rather than
+	// sent to them.
+	uint8_t blob[BTRATE_LDAC_CONFIG_SIZE];
+	size_t blob_size = strcasecmp(codec, "LDAC") == 0 ? btrate_ldac_config(rate, blob) : 0;
+
+	dbus_writer_t *w = dbus_call_begin(c, BALSA_SERVICE, path, BALSA_PCM_IFACE, "SelectCodec", "sa{sv}");
+	dbus_w_string(w, codec);
+	dbus_array_t props;
+	dbus_w_array_begin(w, "{sv}", &props);
+	dbus_w_dict_variant_begin(w, "Sampling", "u");
+	dbus_w_u32(w, (uint32_t)rate);
+	if (blob_size) {
+		dbus_w_dict_variant_begin(w, "Configuration", "ay");
+		dbus_array_t bytes;
+		dbus_w_array_begin(w, "y", &bytes);
+		for (size_t i = 0; i < blob_size; i++) {
+			dbus_w_byte(w, blob[i]);
+		}
+		dbus_w_array_end(w, &bytes);
+	}
+	dbus_w_array_end(w, &props);
+
+	char err[DBUS_NAME_MAX];
+	// The same teardown and rebuild as any codec change; a little less time
+	// is given than there, because a track is waiting on the answer.
+	bool ok = dbus_call_send(c, 10000, err, sizeof(err));
+	fprintf(stderr, "btstack: codec %s at %u Hz on %s%s -> %s\n", codec, rate, address,
+			blob_size ? " (with an LDAC configuration)" : "", ok ? "ok" : (err[0] ? err : "no reply"));
 	return ok;
 }
 

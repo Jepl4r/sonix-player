@@ -352,16 +352,17 @@ static void volume_toggle_cb(lv_event_t *e) {
 // between two named things, not something that is on or off.
 // ---------------------------------------------------------------------------
 
-static lv_obj_t *rate_auto_pill;
-static lv_obj_t *rate_cd_pill;
+// One pill per bt_rate_mode_t, in its order: the pill's value is the mode.
+static lv_obj_t *rate_pills[4];
 static lv_obj_t *aac_vbr_pill;
 static lv_obj_t *aac_cbr_pill;
 
 static void encoder_pills_refresh(void) {
-	if (rate_auto_pill) {
-		bool cd = bluetooth_force_44k();
-		settingsrow_pill_active(rate_auto_pill, !cd);
-		settingsrow_pill_active(rate_cd_pill, cd);
+	if (rate_pills[0]) {
+		bt_rate_mode_t mode = bluetooth_rate_mode();
+		for (int i = 0; i < (int)(sizeof(rate_pills) / sizeof(rate_pills[0])); i++) {
+			settingsrow_pill_active(rate_pills[i], (int)mode == i);
+		}
 	}
 	if (aac_vbr_pill) {
 		bool vbr = bluetooth_aac_vbr();
@@ -382,7 +383,7 @@ static void rate_pick_cb(lv_event_t *e) {
 	if (switcher_back_drag_active()) {
 		return;
 	}
-	bluetooth_set_force_44k((intptr_t)lv_event_get_user_data(e) != 0);
+	bluetooth_set_rate_mode((bt_rate_mode_t)(intptr_t)lv_event_get_user_data(e));
 	encoder_pills_refresh();
 }
 
@@ -399,8 +400,14 @@ static lv_obj_t *option_note(lv_obj_t *parent, const char *text) {
 static void build_encoder_options(lv_obj_t *container) {
 	lv_obj_t *pills = NULL;
 	settingsrow_pills(container, "btaudio_sample_rate", &pills);
-	rate_auto_pill = settingsrow_pill(pills, "btaudio_rate_auto", 0, rate_pick_cb);
-	rate_cd_pill = settingsrow_pill_text(pills, "44.1 kHz", 1, rate_pick_cb);
+	// Auto and 44.1 kHz are what bluealsa is started with; "Follow the music"
+	// and 96 kHz move the link between tracks without restarting it (see
+	// bluetooth.c, "the link's rate"). 96 kHz is an LDAC choice: on any other
+	// codec it is Auto, which the note says.
+	rate_pills[BT_RATE_AUTO] = settingsrow_pill(pills, "btaudio_rate_auto", BT_RATE_AUTO, rate_pick_cb);
+	rate_pills[BT_RATE_44K] = settingsrow_pill_text(pills, "44.1 kHz", BT_RATE_44K, rate_pick_cb);
+	rate_pills[BT_RATE_FOLLOW] = settingsrow_pill(pills, "btaudio_rate_follow", BT_RATE_FOLLOW, rate_pick_cb);
+	rate_pills[BT_RATE_96K] = settingsrow_pill_text(pills, "96 kHz", BT_RATE_96K, rate_pick_cb);
 	option_note(container, "btaudio_sample_rate_note");
 
 	pills = NULL;
