@@ -19,6 +19,7 @@
 #include <time.h>
 #include <unistd.h>
 
+#include "src/system/core/config.h"
 #include "src/system/core/utils.h"
 #include "src/system/db/sqlite3.h"
 #include "src/system/library/library.h" // library_collate_listorder: the shared ordering
@@ -60,6 +61,11 @@ static bool outdated;
 static unsigned card_epoch;
 
 static void position_queue_drain(void);
+
+// The audiobook folder (see "the folder" below), behind a lock of its own.
+static pthread_mutex_t folder_lock = PTHREAD_MUTEX_INITIALIZER;
+static char folder[AUDIOBOOKDB_FOLDER_MAX];
+static bool folder_loaded;
 
 // Call with db_lock held.
 static void bump_generation(void) { generation++; }
@@ -109,7 +115,16 @@ static int user_version(void) {
 	return version;
 }
 
+static void folder_load_locked(void);
+
 bool audiobookdb_open(const char *db_path) {
+	// The folder setting is read here, at startup on the main thread, so the
+	// first to ask for it later is never a scan thread reading the config
+	// while the interface writes it.
+	pthread_mutex_lock(&folder_lock);
+	folder_load_locked();
+	pthread_mutex_unlock(&folder_lock);
+
 	if (db) {
 		return true;
 	}
@@ -1031,9 +1046,102 @@ int audiobookdb_bookmarked_books_for_each(audiobook_bookmarked_book_cb cb, void 
 }
 
 // ---------------------------------------------------------------------------
+// the folder
+//
+// One folder of the card holds the audiobooks, "Audiobooks" at its root unless
+// the user picked another. It is read from the config once and then kept here,
+// behind a lock of its own, because the music scan asks for it from its thread
+// (to leave it out) while the settings page may be changing it.
+// ---------------------------------------------------------------------------
+
+bool audiobookdb_folder_normalise(const char *in, char *out, size_t size) {
+	if (!in || !out || size == 0) {
+		return false;
+	}
+	out[0] = '\0';
+	size_t used = 0;
+	const char *at = in;
+	while (*at) {
+		while (*at == '/') {
+			at++;
+		}
+		if (!*at) {
+			break;
+		}
+		const char *end = strchr(at, '/');
+		size_t len = end ? (size_t)(end - at) : strlen(at);
+		// "." and ".." would leave the card or name the same folder twice, and
+		// a hidden folder is one the player keeps for itself (.local).
+		if (at[0] == '.') {
+			out[0] = '\0';
+			return false;
+		}
+		if (used + (used ? 1 : 0) + len + 1 > size) {
+			out[0] = '\0';
+			return false;
+		}
+		if (used) {
+			out[used++] = '/';
+		}
+		memcpy(out + used, at, len);
+		used += len;
+		out[used] = '\0';
+		at += len;
+	}
+	return used > 0;
+}
+
+bool audiobookdb_folder_matches(const char *wanted, const char *rel) {
+	return wanted && rel && wanted[0] && strcasecmp(wanted, rel) == 0;
+}
+
+// Call with folder_lock held.
+static void folder_load_locked(void) {
+	if (folder_loaded) {
+		return;
+	}
+	folder_loaded = true;
+	const char *saved = config_get("audiobook", "folder", NULL);
+	if (!saved || !audiobookdb_folder_normalise(saved, folder, sizeof(folder))) {
+		// Never chosen, or something hand-written that names no folder the
+		// player could use: the folder there always was.
+		if (saved && saved[0]) {
+			fprintf(stderr, "audiobooks: [audiobook] folder = %s is not a folder on the card; using %s\n", saved,
+					AUDIOBOOKDB_FOLDER);
+		}
+		snprintf(folder, sizeof(folder), "%s", AUDIOBOOKDB_FOLDER);
+	}
+}
+
+void audiobookdb_folder(char *out, size_t size) {
+	if (!out || size == 0) {
+		return;
+	}
+	pthread_mutex_lock(&folder_lock);
+	folder_load_locked();
+	snprintf(out, size, "%s", folder);
+	pthread_mutex_unlock(&folder_lock);
+}
+
+bool audiobookdb_set_folder(const char *rel) {
+	char tidy[AUDIOBOOKDB_FOLDER_MAX];
+	if (!audiobookdb_folder_normalise(rel, tidy, sizeof(tidy))) {
+		return false;
+	}
+	pthread_mutex_lock(&folder_lock);
+	folder_load_locked();
+	snprintf(folder, sizeof(folder), "%s", tidy);
+	pthread_mutex_unlock(&folder_lock);
+	config_set("audiobook", "folder", tidy);
+	config_save();
+	printf("audiobooks: folder is now %s\n", tidy);
+	return true;
+}
+
+// ---------------------------------------------------------------------------
 // scanning
 //
-// Only the Audiobooks folder at the root of the card, walked to any depth.
+// Only the audiobook folder (above), walked to any depth.
 //
 // A folder is read whole before anything in it is indexed, and closed before
 // its subfolders are walked, so one directory is open at a time whatever the
@@ -1045,7 +1153,7 @@ int audiobookdb_bookmarked_books_for_each(audiobook_bookmarked_book_cb cb, void 
 //   the other audio files, together with those of its "CD 1" / "Disc 2"
 //   subfolders, are grouped by album tag: a group of two or more is a folder
 //   book, a group of one a book of its own. Loose files directly in the
-//   Audiobooks folder are always a book each.
+//   audiobook folder are always a book each.
 // ---------------------------------------------------------------------------
 
 typedef struct {

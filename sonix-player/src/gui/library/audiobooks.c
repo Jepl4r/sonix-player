@@ -1,9 +1,12 @@
 #include "audiobooks.h"
 
+#include <dirent.h>
 #include <stdint.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
+#include <sys/stat.h>
 
 #include "lvgl/lvgl.h"
 
@@ -18,12 +21,15 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/toast.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
 #include "src/system/library/audiobookdb.h"
+#include "src/system/library/library.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/playback/device_state.h"
+#include "src/system/playback/playlist.h"
 #include "src/system/playback/sleeptimer.h"
 
 lv_obj_t *audiobooks_screen;
@@ -1203,6 +1209,326 @@ static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value, lv_eve
 	return btn;
 }
 
+// ---------------------------------------------------------------------------
+// The audiobook folder
+//
+// Where the books are read from: "Audiobooks" at the root of the card unless
+// the user picks another here. A row on the settings page shows the folder in
+// force and opens a small folder browser: the folders of the card, a tap goes
+// into one, the back chevron or swipe comes out of it, and "Use this folder"
+// at the top of every level below the card's root takes the one on screen.
+// The card's root itself cannot be taken: the music scan leaves the audiobook
+// folder out, and leaving out the whole card would leave no music.
+//
+// Taking a new folder asks first, because it costs two scans: the audiobooks
+// are read again from the new folder, and the music library -- which passed
+// over the old folder and read the new one -- is scanned again without it.
+//
+// The browser's rows are made here rather than with settingsrow_add(), whose
+// rows keep a small record for the life of the program: right for a settings
+// page built once, a leak for a list built again at every folder entered.
+// ---------------------------------------------------------------------------
+
+// Folders listed in one level at most. A card's root holds a few dozen, an
+// author's folder a few hundred books at the very most; past this the rest
+// are left off rather than built into rows the device has no memory for.
+#define FOLDER_ROWS_MAX 200
+#define FOLDER_ROW_HEIGHT 100
+
+static const char *card_root;
+static lv_obj_t *folder_value;	// the settings row's value: the folder in force
+static lv_obj_t *folder_screen; // the browser
+static lv_obj_t *folder_list;
+
+// Where the browser is, relative to the root of the card ("" is the root), and
+// the folders in it, sorted.
+static char folder_at[AUDIOBOOKDB_FOLDER_MAX];
+static char **folder_names;
+static int folder_count;
+static bool folder_shown; // the rows on the page are those of folder_at
+
+// The folder the question is about, between the tap and the answer.
+static char folder_pending[AUDIOBOOKDB_FOLDER_MAX];
+
+static void folder_absolute(const char *rel, char *out, size_t size) {
+	snprintf(out, size, "%s%s%s", card_root ? card_root : "", rel[0] ? "/" : "", rel);
+}
+
+static bool folder_exists(const char *rel) {
+	char path[768];
+	folder_absolute(rel, path, sizeof(path));
+	struct stat st;
+	return stat(path, &st) == 0 && S_ISDIR(st.st_mode);
+}
+
+// The settings row: the folder's path, or that it is not on the card -- a
+// folder renamed on a computer would otherwise look like a scan that finds
+// nothing for no reason.
+static void folder_value_refresh(void) {
+	if (!folder_value) {
+		return;
+	}
+	char current[AUDIOBOOKDB_FOLDER_MAX];
+	audiobookdb_folder(current, sizeof(current));
+	if (folder_exists(current)) {
+		lv_label_set_text(folder_value, current);
+	} else {
+		lv_label_set_text_fmt(folder_value, tr("audiobook_folder_missing"), current);
+	}
+}
+
+static void folder_names_free(void) {
+	for (int i = 0; i < folder_count; i++) {
+		free(folder_names[i]);
+	}
+	free(folder_names);
+	folder_names = NULL;
+	folder_count = 0;
+}
+
+static int folder_name_cmp(const void *a, const void *b) {
+	return strcasecmp(*(const char *const *)a, *(const char *const *)b);
+}
+
+// The subfolders of `folder_at`: not the hidden ones (the player's own .local
+// among them) and not the ones a desktop leaves behind, as the scans skip
+// them too.
+static void folder_read(void) {
+	folder_names_free();
+	char path[768];
+	folder_absolute(folder_at, path, sizeof(path));
+	DIR *dir = opendir(path);
+	if (!dir) {
+		return;
+	}
+	int capacity = 0;
+	struct dirent *de;
+	while ((de = readdir(dir)) != NULL && folder_count < FOLDER_ROWS_MAX) {
+		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name)) {
+			continue;
+		}
+		char child[1024];
+		if (snprintf(child, sizeof(child), "%s/%s", path, de->d_name) >= (int)sizeof(child)) {
+			continue;
+		}
+		struct stat st;
+		if (stat(child, &st) != 0 || !S_ISDIR(st.st_mode)) {
+			continue;
+		}
+		if (folder_count == capacity) {
+			int grown = capacity ? capacity * 2 : 32;
+			char **names = realloc(folder_names, (size_t)grown * sizeof(*names));
+			if (!names) {
+				break;
+			}
+			folder_names = names;
+			capacity = grown;
+		}
+		folder_names[folder_count] = strdup(de->d_name);
+		if (!folder_names[folder_count]) {
+			break;
+		}
+		folder_count++;
+	}
+	closedir(dir);
+	if (folder_count > 1) {
+		qsort(folder_names, (size_t)folder_count, sizeof(folder_names[0]), folder_name_cmp);
+	}
+}
+
+static void folder_show(void);
+
+static void folder_enter_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return; // a swipe across the row, not a tap on it
+	}
+	int i = (int)(intptr_t)lv_event_get_user_data(e);
+	if (i < 0 || i >= folder_count) {
+		return;
+	}
+	char deeper[AUDIOBOOKDB_FOLDER_MAX];
+	int wrote = snprintf(deeper, sizeof(deeper), "%s%s%s", folder_at, folder_at[0] ? "/" : "", folder_names[i]);
+	if (wrote < 0 || wrote >= (int)sizeof(deeper)) {
+		toast_error("audiobook_folder_too_deep");
+		return;
+	}
+	snprintf(folder_at, sizeof(folder_at), "%s", deeper);
+	folder_read();
+	folder_show();
+}
+
+// Back out of a folder rather than out of the browser, while there is one to
+// back out of.
+static bool folder_back_has_step(void) { return folder_at[0] != '\0'; }
+
+static bool folder_back_guard(void) {
+	if (!folder_back_has_step()) {
+		return false;
+	}
+	char *slash = strrchr(folder_at, '/');
+	if (slash) {
+		*slash = '\0';
+	} else {
+		folder_at[0] = '\0';
+	}
+	folder_read();
+	folder_show();
+	return true;
+}
+
+static void folder_change_confirmed(void *user) {
+	(void)user;
+	if (!audiobookdb_set_folder(folder_pending)) {
+		return;
+	}
+	folder_value_refresh();
+
+	// The music first, in the background: it was built passing over the old
+	// folder and reading this one. Not a library that was never scanned --
+	// building it is the Scan button's job -- and not under a scan already
+	// running, which goes on with the folder it started with.
+	if (library_track_count() > 0 && card_root && card_root[0]) {
+		if (!library_scan_start(card_root)) {
+			printf("audiobooks: the music library is busy; it keeps the old folder until its next scan\n");
+		}
+	}
+	// Then the books, in front, on the page every audiobook scan shows.
+	start_scan(NULL);
+}
+
+static void folder_use_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	(void)e;
+	char current[AUDIOBOOKDB_FOLDER_MAX];
+	audiobookdb_folder(current, sizeof(current));
+	if (audiobookdb_folder_matches(current, folder_at)) {
+		// Nothing changes: no question, no scans.
+		switch_screen_return_to(audiobooksettings_screen);
+		return;
+	}
+	snprintf(folder_pending, sizeof(folder_pending), "%s", folder_at);
+	char title[AUDIOBOOKDB_FOLDER_MAX + 96];
+	lv_snprintf(title, sizeof(title), tr("audiobook_folder_change"), folder_pending);
+	confirm_show(title, "audiobook_folder_change_note", "audiobook_folder_use_short", folder_change_confirmed, NULL);
+}
+
+static lv_obj_t *folder_row(const lv_image_dsc_t *glyph, const char *text, bool accent, lv_event_cb_t cb, int index) {
+	lv_obj_t *row = lv_btn_create(folder_list);
+	lv_obj_set_size(row, lv_pct(100), FOLDER_ROW_HEIGHT);
+	lv_obj_add_style(row, &theme_style_card, 0);
+	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_shadow_width(row, 0, 0);
+	lv_obj_set_style_pad_hor(row, 20, 0);
+	lv_obj_set_style_pad_column(row, 16, 0);
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_scrollable(row, false);
+	// Presses bubble up to the list, so the swipe-back can start on a row.
+	lv_obj_set_event_bubble(row, true);
+	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
+
+	lv_obj_t *icon = lv_image_create(row);
+	lv_image_set_src(icon, glyph);
+	lv_obj_add_style(icon, &theme_style_icon, 0);
+	if (accent) {
+		lv_obj_set_style_image_recolor(icon, theme()->accent, 0);
+		lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+	}
+
+	lv_obj_t *label = lv_label_create(row);
+	lv_label_set_text(label, text);
+	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+	lv_obj_set_flex_grow(label, 1);
+	lv_obj_add_style(label, &theme_style_text, 0);
+	lv_obj_set_style_text_font(label, &font_ui_24, 0);
+	if (accent) {
+		lv_obj_set_style_text_color(label, theme()->accent, 0);
+	}
+	return row;
+}
+
+static void folder_show(void) {
+	folder_shown = true;
+	lv_obj_clean(folder_list);
+	lv_label_set_text(settingsrow_page_title(folder_screen), folder_at[0] ? folder_at : tr("audiobook_folder_card"));
+
+	char current[AUDIOBOOKDB_FOLDER_MAX];
+	audiobookdb_folder(current, sizeof(current));
+
+	if (folder_at[0]) {
+		folder_row(&icon_check, tr("audiobook_folder_use"), true, folder_use_cb, -1);
+	}
+	for (int i = 0; i < folder_count; i++) {
+		char rel[AUDIOBOOKDB_FOLDER_MAX + 256];
+		snprintf(rel, sizeof(rel), "%s%s%s", folder_at, folder_at[0] ? "/" : "", folder_names[i]);
+		// The folder in force stands out, so the way back to it is plain.
+		lv_obj_t *row =
+			folder_row(&icon_folder, folder_names[i], audiobookdb_folder_matches(current, rel), folder_enter_cb, i);
+		lv_obj_t *chev = lv_image_create(row);
+		lv_image_set_src(chev, &icon_chevron_right);
+		lv_obj_add_style(chev, &theme_style_icon, 0);
+		lv_obj_set_style_image_opa(chev, LV_OPA_60, 0);
+	}
+	if (folder_count == 0) {
+		option_note(folder_list, "audiobook_folder_none");
+	}
+	lv_obj_scroll_to_y(folder_list, 0, LV_ANIM_OFF);
+}
+
+static void folder_open_cb(lv_event_t *e) {
+	(void)e;
+	// Opened on the folder that holds the one in force, so a change is one
+	// tap away from where the user already is; at the root when that folder
+	// is gone.
+	char current[AUDIOBOOKDB_FOLDER_MAX];
+	audiobookdb_folder(current, sizeof(current));
+	folder_at[0] = '\0';
+	char *slash = strrchr(current, '/');
+	if (slash) {
+		*slash = '\0';
+		if (folder_exists(current)) {
+			snprintf(folder_at, sizeof(folder_at), "%s", current);
+		}
+	}
+	folder_read();
+	folder_show();
+	switch_screen(folder_screen);
+}
+
+static void folder_screen_unloaded_cb(lv_event_t *e) {
+	(void)e;
+	// Nothing of the browser is kept while it is not on screen.
+	lv_obj_clean(folder_list);
+	folder_names_free();
+	folder_shown = false;
+}
+
+// Back on the browser from a page opened over it (the player, say): the
+// level it was on is read and drawn again.
+static void folder_screen_loaded_cb(lv_event_t *e) {
+	(void)e;
+	if (!folder_shown) {
+		folder_read();
+		folder_show();
+	}
+}
+
+static void build_folder_page(gui_config_t *cfg) {
+	card_root = cfg->sd_root_path;
+	folder_screen = lv_obj_create(NULL);
+	folder_list = settingsrow_page(folder_screen, cfg, "audiobook_folder");
+	settingsrow_title_corner_slots(settingsrow_page_title(folder_screen), cfg, 0);
+	lv_label_set_long_mode(settingsrow_page_title(folder_screen), LV_LABEL_LONG_DOT);
+	switcher_attach_back_gesture(folder_screen);
+	switcher_set_back_guard(folder_screen, folder_back_guard);
+	switcher_set_back_guard_peek(folder_screen, folder_back_has_step);
+	lv_obj_add_event_cb(folder_screen, folder_screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+	lv_obj_add_event_cb(folder_screen, folder_screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+}
+
 // --- the three options ---
 
 #define REWIND_CHOICES 4
@@ -1219,6 +1545,7 @@ static void refresh_settings_page(void) {
 	if (!stop_chapter_switch) {
 		return;
 	}
+	folder_value_refresh();
 
 	bool per_chapter = audiobook_duration_per_chapter();
 	settingsrow_pill_active(duration_total_pill, !per_chapter);
@@ -1319,6 +1646,12 @@ static void build_settings_page(gui_config_t *cfg) {
 
 	// An action, not a page: it asks before it starts, so no chevron.
 	settingsrow_action(container, "audiobook_scan_audiobooks_2", scan_row_cb, NULL);
+
+	// Where the books are read from, and the way to change it; the note under
+	// it is about this row.
+	settingsrow_add(container, "audiobook_folder", &folder_value, folder_open_cb, NULL);
+	lv_label_set_long_mode(folder_value, LV_LABEL_LONG_DOT);
+	lv_obj_set_style_max_width(folder_value, lv_pct(55), 0);
 	// Said on the row itself: a scan that finds nothing because the books are
 	// somewhere else looks like a scan that is broken.
 	option_note(container, "audiobook_folder_note");
@@ -1472,6 +1805,7 @@ static lv_obj_t *scan_cancel_button;
 static lv_timer_t *scan_poll_timer;
 
 static char scan_root[512];
+static const char *scan_card_root = "";
 
 static void scan_show_finished(int found) {
 	lv_label_set_text_fmt(scan_count_label, "%d", found);
@@ -1513,6 +1847,11 @@ static void scan_cancel_cb(lv_event_t *e) {
 }
 
 static void scan_begin(void) {
+	// The folder in force now, which the settings may have just changed.
+	char rel[AUDIOBOOKDB_FOLDER_MAX];
+	audiobookdb_folder(rel, sizeof(rel));
+	snprintf(scan_root, sizeof(scan_root), "%s/%s", scan_card_root, rel);
+
 	lv_label_set_text(scan_count_label, "0");
 	lv_label_set_text(scan_status_label, tr("audiobook_found_count"));
 	lv_obj_set_hidden(scan_ok_button, true);
@@ -1565,10 +1904,10 @@ static lv_obj_t *scan_make_button(const char *text, lv_color_t colour, lv_event_
 }
 
 static void build_scan_page(gui_config_t *cfg) {
-	// The folder and not the whole card: see the note in audiobookdb.c. Built
-	// once here so the scan and the line under the button cannot disagree about
-	// where books live.
-	snprintf(scan_root, sizeof(scan_root), "%s/%s", cfg->sd_root_path ? cfg->sd_root_path : "", AUDIOBOOKDB_FOLDER);
+	// The folder and not the whole card: see the note in audiobookdb.c. The
+	// folder itself is looked up at each scan (scan_begin), since the settings
+	// can change it.
+	scan_card_root = cfg->sd_root_path ? cfg->sd_root_path : "";
 
 	lv_obj_add_style(audiobookscan_screen, &theme_style_screen, 0);
 
@@ -1619,6 +1958,7 @@ void audiobooks_init(gui_config_t *cfg) {
 	build_section_page(cfg);
 	build_books_page(cfg);
 	build_names_page(cfg);
+	build_folder_page(cfg);
 	build_settings_page(cfg);
 	build_controls_page(cfg);
 	build_scan_page(cfg);

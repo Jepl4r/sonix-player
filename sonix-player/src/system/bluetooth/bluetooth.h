@@ -269,7 +269,8 @@ bool bluetooth_ldac_held_back(void);
 
 // The rate the link is asked to run at, the "Sample rate" choice of the
 // Bluetooth audio page (btrate.h has what each one means). Kept in
-// [wireless] bt_sample_rate = auto | 44100 | follow | 96000.
+// [wireless] bt_sample_rate = auto | 44100 | follow | 96000; follow when the
+// key is missing.
 //
 // 44.1 kHz is a start-up option of bluealsa (--a2dp-force-audio-cd), so a
 // change to it or away from it restarts the daemon, like the two above. The

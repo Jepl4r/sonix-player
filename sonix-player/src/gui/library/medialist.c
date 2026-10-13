@@ -422,14 +422,19 @@ static bool go_to_current;
 static bool allow_delete;
 
 // "Show artist": the artist under each row's title, on the lists picked out by
-// artist_lists (MEDIALIST_ARTIST_* bits). Off by default, with all of them
-// picked so that switching it on shows something at once.
+// artist_lists (MEDIALIST_ARTIST_* bits). On by default, on all of them: a
+// title alone says little in a list of tracks from many artists, and the
+// line costs no room the row did not already have. Only a player that never
+// touched the switch gets the default; one that turned it off keeps
+// [library] show_artist = 0.
 static bool show_artist;
 static int artist_lists = MEDIALIST_ARTIST_ALL;
 
 // "Alternative album view": an album's tracks open under a head with its cover,
 // title, artist, genre and year, and the rows carry track numbers instead of
-// covers. Off by default.
+// covers. On by default since 1.2.4 -- inside an album every row's cover is
+// the same picture, so the head says it once and the rows get the numbers
+// back. A player whose config says album_head = 0 keeps the old page.
 static bool album_head;
 
 // Both are read on first use rather than in medialist_init(): the music
@@ -445,9 +450,9 @@ static void load_view_settings(void) {
 	view_settings_loaded = true;
 	album_view = config_get_int("library", "album_view", 1) != 0;
 	quality_badges = config_get_int("library", "quality_badges", 0) != 0;
-	show_artist = config_get_int("library", "show_artist", 0) != 0;
+	show_artist = config_get_int("library", "show_artist", 1) != 0;
 	go_to_current = config_get_int("library", "go_to_current", 0) != 0;
-	album_head = config_get_int("library", "album_head", 0) != 0;
+	album_head = config_get_int("library", "album_head", 1) != 0;
 	allow_delete = config_get_int("library", "allow_delete", 0) != 0;
 	artist_lists = (int)config_get_int("library", "artist_lists", artist_lists);
 }

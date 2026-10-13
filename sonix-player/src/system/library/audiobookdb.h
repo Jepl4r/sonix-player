@@ -45,9 +45,31 @@ int audiobookdb_count(void);
 bool audiobookdb_needs_rescan(void);
 
 // --- Scanning (same shape as the music library's) ---
-// The folder at the root of the card audiobooks are read from. The music
-// scan leaves it out.
+// The folder audiobooks are read from, relative to the root of the card:
+// [audiobook] folder, "Audiobooks" when it was never chosen. It may be nested
+// ("Books/Audio"); matched without regard to case, as the card's filesystem
+// does. The music scan leaves it out, wherever it is.
 #define AUDIOBOOKDB_FOLDER "Audiobooks"
+#define AUDIOBOOKDB_FOLDER_MAX 128 // the config's value length, terminator included
+
+// The folder in force, normalised (no leading, trailing or doubled slashes).
+// Copied out because the setting can change on the UI thread while a scan
+// thread asks. Any thread.
+void audiobookdb_folder(char *out, size_t size);
+
+// `in` made into a folder the setting can hold: slashes tidied, and false for
+// a path that is empty, too long, or has a "." or ".." part or a hidden one --
+// none of them a folder anybody picked. Pure; any thread.
+bool audiobookdb_folder_normalise(const char *in, char *out, size_t size);
+
+// Whether `rel` (a folder relative to the root of the card) is the audiobook
+// folder `folder`. Case-blind. Pure; any thread.
+bool audiobookdb_folder_matches(const char *folder, const char *rel);
+
+// Stores a new folder in the config and saves it. False, with nothing
+// changed, when `rel` does not normalise. Nothing is rescanned here: the
+// caller starts the scans (both libraries depend on it). UI thread.
+bool audiobookdb_set_folder(const char *rel);
 
 bool audiobookdb_scan_start(const char *root);
 bool audiobookdb_scan_running(void);
