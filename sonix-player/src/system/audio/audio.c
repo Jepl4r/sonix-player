@@ -21,6 +21,7 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <strings.h>
 #include <stdarg.h>
 #include <errno.h>
 #include <unistd.h>
@@ -3712,6 +3713,114 @@ static const int32_t *bt_resample_block(bt_resample_t *r, const void *in, int bi
 	return from;
 }
 
+// ---------------------------------------------------------------------------
+// 16-bit sources through the 32-bit chain, and the way back to 16 bits
+//
+// A 16-bit track went through the effects at 16 bits: ReplayGain, the EQ, the
+// balance, the fade and the software volume each rounded their result to 16
+// bits and the next started from there, and the last rounding was a plain
+// truncation-to-nearest with no dither -- distortion products at the 16-bit
+// floor that follow the music, worst on quiet passages, the very ones
+// ReplayGain and a low software volume make quieter still.
+//
+// So when, at the start of a track, something is switched on that changes the
+// samples, a 16-bit source runs the same S32 chain a 24-bit one does: decoded
+// at 16 bits (through the time stretcher as before), widened, processed with
+// 24 bits of precision, and handed to the device in S32 -- which the built-in
+// DAC takes as S24_LE, so the result reaches it with nothing rounded away. The
+// same happens to a 16-bit hi-res stream the decimator has to bring down, the
+// decimator being S32 only.
+//
+// Where the output takes 16 bits only -- SBC and AAC over Bluetooth, a USB DAC
+// that has nothing wider -- the S32 stream is requantised here, once, with
+// TPDF dither (two uniform values of one LSB each, summed), rather than
+// truncated by the plug. A block whose samples have nothing below bit 16 --
+// a 16-bit stream nothing changed -- is only narrowed: dither on a signal that
+// needs no requantising would be noise added to a bit-perfect stream.
+//
+// With nothing switched on, a 16-bit track stays on the 16-bit path from end
+// to end, as before: bit-perfect. The decision is made per track; switching
+// an effect on halfway through a 16-bit track takes the 16-bit chain until the
+// next one, as in 1.2.4.
+//
+// Cost: the S32 chain does the work the 16-bit one did on twice the bytes,
+// plus a widening; the dither is a xorshift and an add per sample.
+// ---------------------------------------------------------------------------
+
+// Whether something in the chain is going to change the samples.
+static bool effects_change_samples(void) {
+	return replaygain_active() || eq_get_enabled() || peq_get_enabled() || mseb_get_enabled() ||
+		   (soundfield_get_enabled() && soundfield_get_width() != 100) ||
+		   (balance_get_enabled() && balance_get_value() != BALANCE_CENTRE) || mono_get_enabled() ||
+		   crossfeed_get_enabled() || fade_enabled || swvolume_active();
+}
+
+// Whether the output in use takes more than 16 bits. True when it cannot be
+// told, which is what the player assumed until now: the plug narrows.
+static bool output_takes_wide(void) {
+	char device[sizeof(output_pcm)];
+	audio_get_output_device(device, sizeof(device));
+	if (strncmp(device, "bluealsa", 8) == 0) {
+		// bluealsa takes what the codec encodes from: S16 for SBC, AAC and
+		// aptX, more for LDAC, aptX HD and LC3plus.
+		char codecs[BT_MAX_CODECS][BT_CODEC_MAX];
+		char codec[BT_CODEC_MAX] = "";
+		bluetooth_get_codecs(codecs, BT_MAX_CODECS, codec, sizeof(codec));
+		return !codec[0] || strcasecmp(codec, "LDAC") == 0 || strncasecmp(codec, "aptX-HD", 7) == 0 ||
+			   strncasecmp(codec, "aptX HD", 7) == 0 || strncasecmp(codec, "LC3plus", 7) == 0 ||
+			   strncasecmp(codec, "LHDC", 4) == 0;
+	}
+	usb_caps_t caps;
+	return !usb_caps_for(device, &caps) || caps.wide;
+}
+
+// TPDF dither from S32 to S16, in place: `samples` S32 samples become as many
+// S16 ones at the front of the same memory. `seed` is the generator's state,
+// one per stream.
+static void dither_to_s16(uint32_t *seed, void *buf, int samples) {
+	const int32_t *in = buf;
+	int16_t *out = buf;
+	int32_t low = 0;
+	for (int i = 0; i < samples; i++) {
+		low |= in[i] & 0xffff;
+	}
+	if (low == 0) {
+		for (int i = 0; i < samples; i++) {
+			out[i] = (int16_t)(in[i] >> 16);
+		}
+		return;
+	}
+	uint32_t x = *seed ? *seed : 0x9e3779b9u;
+	for (int i = 0; i < samples; i++) {
+		// xorshift32: two 16-bit uniforms per step.
+		x ^= x << 13;
+		x ^= x >> 17;
+		x ^= x << 5;
+		int64_t tpdf = (int64_t)(x & 0xffff) + (int64_t)(x >> 16) - 65535;
+		int64_t v = ((int64_t)in[i] + tpdf + 32768) >> 16;
+		out[i] = (int16_t)(v > 32767 ? 32767 : v < -32768 ? -32768 : v);
+	}
+	*seed = x;
+}
+
+// One block of 16-bit frames from the decoder, through the time stretcher when
+// there is one. Returns the frames that came out; `*input` is how many went
+// in, which is what the position moves by.
+static uint64_t read_s16_block(speed_t *stretch, decoder_t *dec, decoder_fill_t *fill, short *dst, uint64_t frames,
+							   uint64_t *input) {
+	pthread_mutex_lock(&audio_mutex);
+	double want_speed = playback_speed;
+	pthread_mutex_unlock(&audio_mutex);
+
+	if (stretch) {
+		speed_set_factor(stretch, want_speed);
+		return (uint64_t)speed_pull(stretch, dst, (int)frames, decoder_fill, fill, input);
+	}
+	uint64_t got = decoder_read_pcm_frames_s16(dec, frames, dst);
+	*input = got;
+	return got;
+}
+
 static void play_decoded_file(const char *filepath, decode_format_t format) {
 	decoder_t *dec = decoder_open(filepath, format);
 	if (!dec) {
@@ -3778,6 +3887,14 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// as S32 (samples left-justified, bit-perfect), the way the stock player
 	// flips its stream to "PCM_FORMAT_PCM 32bit". Everything else stays 16.
 	int out_bits = source_bits > 16 ? 32 : 16;
+	// ...unless the chain is going to change a 16-bit stream: then it runs at
+	// 32 bits (see effects_change_samples). Not for DoP, which is never
+	// touched.
+	bool wide16 = false;
+	if (out_bits == 16 && !passthrough && effects_change_samples()) {
+		wide16 = true;
+		out_bits = 32;
+	}
 
 	// The Bluetooth link's own rate, when the "Sample rate" setting asks for
 	// one ("Follow the music", "96 kHz"; see bluetooth.c). Here and nowhere
@@ -3801,7 +3918,9 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// The rate the device is opened at. The position, the fade and every
 	// byte count below stay in the track's own frames.
 	decimator_t decim;
-	int decim_factor = bluetooth_decimation(sample_rate, channels, out_bits, passthrough);
+	// A 16-bit stream counts as S32 here: one the decimator takes runs the S32
+	// chain (wide16, below).
+	int decim_factor = bluetooth_decimation(sample_rate, channels, passthrough ? out_bits : 32, passthrough);
 	// 176.4 kHz is more than any Bluetooth link carries, whatever the
 	// decimation settings say.
 	if (dsd_as_pcm && decim_factor == 1) {
@@ -3811,7 +3930,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// A stream still at 88.2 or 96 kHz whose link is of the other family has
 	// no clean way there: halved once more, it takes the base-rate route below
 	// -- 88.2 kHz to a link at 96 goes to 44.1, then 48, then x2.
-	if (!passthrough && out_bits == 32 && rate_is_double(sample_rate / decim_factor) && decim_factor * 2 <= DECIMATE_MAX) {
+	if (!passthrough && rate_is_double(sample_rate / decim_factor) && decim_factor * 2 <= DECIMATE_MAX) {
 		int link = bt_resample_link(channels);
 		int half = sample_rate / decim_factor / 2;
 		if (link && !rate_convertible(sample_rate / decim_factor, link) && (half == link || rate_convertible(half, link))) {
@@ -3820,19 +3939,23 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	}
 	// A USB DAC without the track's rate: the rate it gets instead, and how
 	// often the decimator halves the stream on the way (see usb_rate_plan).
-	// The decimator works on S32 only.
 	int usb_halvings = 0;
 	int usb_target = (passthrough || decim_factor > 1) ? 0 : usb_rate_plan(sample_rate, channels, &usb_halvings);
-	if (usb_target && usb_halvings > 0 && out_bits != 32) {
-		fprintf(stderr, "audio: the 16-bit stream cannot be decimated; alsa converts it\n");
-		usb_target = 0;
-	}
 	if (usb_target) {
 		decim_factor = 1 << usb_halvings;
 	}
 	if (decim_factor > 1 && decimate_init(&decim, decim_factor, channels) != 0) {
 		decim_factor = 1;
 		usb_target = 0;
+	}
+	// The decimator works on S32 only.
+	if (decim_factor > 1 && out_bits == 16) {
+		wide16 = true;
+		out_bits = 32;
+	}
+	if (wide16) {
+		fprintf(stderr, "audio: the 16-bit stream goes through the 32-bit chain (%s)\n",
+				decim_factor > 1 ? "decimated" : "effects on");
 	}
 	int out_rate = sample_rate / decim_factor;
 	if (decim_factor > 1) {
@@ -3853,6 +3976,15 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	}
 	int dev_rate = resampler.on ? link_rate : out_rate;
 	int dev_bits = resampler.on ? 32 : out_bits;
+	// An output that takes 16 bits only gets the S32 stream requantised here,
+	// with dither, instead of truncated by the plug.
+	bool dither = false;
+	uint32_t dither_seed = 0x2545f491u;
+	if (dev_bits == 32 && !passthrough && !output_takes_wide()) {
+		dev_bits = 16;
+		dither = true;
+		fprintf(stderr, "audio: the output takes 16 bits; the 32-bit stream is dithered (TPDF) to 16 here\n");
+	}
 	if (resampler.on) {
 		char how[64];
 		if (resampler.twice && resampler.poly) {
@@ -3930,6 +4062,8 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		// DSD, it is noise.
 		fprintf(stderr, "Audio: S32 open failed, falling back to 16-bit\n");
 		out_bits = 16;
+		wide16 = false;
+		dither = false;
 		// The decimator is S32 only, and so is the resampler.
 		decim_factor = 1;
 		out_rate = sample_rate;
@@ -3994,7 +4128,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 	// audiobooks, which are AAC and so always 16-bit, and a hi-res FLAC has no
 	// business being played at 1.5x. NULL simply means the feature is not
 	// available and playback runs at 1.0.
-	speed_t *stretch = (out_bits == 16) ? speed_open(channels, sample_rate) : NULL;
+	speed_t *stretch = (out_bits == 16 || wide16) ? speed_open(channels, sample_rate) : NULL;
 	decoder_fill_t fill_ctx = {dec};
 	health_t health;
 	health_start(&health);
@@ -4283,8 +4417,19 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		playback_follow(pcm_handle);
 		health_mark(&health);
 		if (out_bits == 32) {
-			frames_read = decoder_read_pcm_frames_s32(dec, chunk_frames, (int32_t *)buffer);
-			input_frames = frames_read;
+			if (wide16) {
+				// Read into the back half of the block and widened forwards:
+				// each S32 sample lands on S16 ones already widened.
+				short *narrow = (short *)buffer + chunk_frames * (snd_pcm_uframes_t)channels;
+				frames_read = read_s16_block(stretch, dec, &fill_ctx, narrow, chunk_frames, &input_frames);
+				int32_t *wide = buffer;
+				for (uint64_t i = 0; i < frames_read * (uint64_t)channels; i++) {
+					wide[i] = (int32_t)narrow[i] * 65536;
+				}
+			} else {
+				frames_read = decoder_read_pcm_frames_s32(dec, chunk_frames, (int32_t *)buffer);
+				input_frames = frames_read;
+			}
 			health_lap(&health, STAGE_READ);
 			if (frames_read != 0 && decim_factor > 1) {
 				frames_read = (uint64_t)decimate_s32(&decim, (int32_t *)buffer, (int)frames_read);
@@ -4310,18 +4455,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				balance_process_s32((int32_t *)buffer, (int)frames_read, channels);
 			}
 		} else {
-			pthread_mutex_lock(&audio_mutex);
-			double want_speed = playback_speed;
-			pthread_mutex_unlock(&audio_mutex);
-
-			if (stretch) {
-				speed_set_factor(stretch, want_speed);
-				frames_read = (uint64_t)speed_pull(stretch, (short *)buffer, (int)chunk_frames, decoder_fill, &fill_ctx,
-												   &input_frames);
-			} else {
-				frames_read = decoder_read_pcm_frames_s16(dec, chunk_frames, (short *)buffer);
-				input_frames = frames_read;
-			}
+			frames_read = read_s16_block(stretch, dec, &fill_ctx, (short *)buffer, chunk_frames, &input_frames);
 			health_lap(&health, STAGE_READ);
 			if (frames_read != 0) {
 				replaygain_process((short *)buffer, (int)frames_read, channels);
@@ -4476,6 +4610,10 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				bytes_played += (int64_t)input_frames * frame_bytes;
 				continue;
 			}
+		}
+		// And to 16 bits, last of all, for an output that takes no more.
+		if (dither) {
+			dither_to_s16(&dither_seed, (void *)out_block, (int)out_frames * channels);
 		}
 
 		health_lap(&health, STAGE_EFFECTS);
@@ -5308,6 +5446,13 @@ static bt_resample_t external_conv;
 static int external_dev_rate;
 static int external_dev_bits;
 
+// And the requantisation to 16 bits with dither, for an output that takes no
+// more (see dither_to_s16), on a copy of its own.
+static bool external_dither;
+static uint32_t external_dither_seed = 0x2545f491u;
+static int32_t *external_narrow;
+static size_t external_narrow_samples;
+
 // How often the check below is worth making. The jack is a sysfs read and the
 // device name a string compare under a mutex, so it is not expensive -- but at
 // 44.1 kHz a receiver hands over a chunk every eleven milliseconds, and doing
@@ -5348,6 +5493,11 @@ static bool external_open_locked(void) {
 	} else {
 		bt_resample_close(&external_conv);
 	}
+	external_dither = external_dev_bits == 32 && !output_takes_wide();
+	if (external_dither) {
+		external_dev_bits = 16;
+		fprintf(stderr, "audio: the output takes 16 bits; the external source's 32-bit stream is dithered (TPDF) to 16 here\n");
+	}
 
 	pcm_forced_buffer_ms = external_buffer_ms;
 	snd_pcm_uframes_t period = 0;
@@ -5358,6 +5508,7 @@ static bool external_open_locked(void) {
 		fprintf(stderr, "audio: the resampled external stream would not open; alsa converts the %d Hz one instead\n",
 				external_rate);
 		bt_resample_close(&external_conv);
+		external_dither = false;
 		external_dev_rate = external_rate;
 		external_dev_bits = external_bits;
 		external_pcm = open_pcm_device(external_channels, external_dev_rate, external_dev_bits, &period);
@@ -5551,6 +5702,22 @@ int audio_external_write(const void *frames, int count) {
 			pthread_mutex_unlock(&external_lock);
 			return count;
 		}
+	}
+	if (external_dither) {
+		size_t samples = (size_t)out_count * (size_t)external_channels;
+		if (samples > external_narrow_samples) {
+			int32_t *grown = realloc(external_narrow, samples * sizeof(int32_t));
+			if (!grown) {
+				pthread_mutex_unlock(&external_lock);
+				return 0;
+			}
+			external_narrow = grown;
+			external_narrow_samples = samples;
+		}
+		memcpy(external_narrow, frames, samples * sizeof(int32_t));
+		dither_to_s16(&external_dither_seed, external_narrow, (int)samples);
+		frames = external_narrow;
+		out_frame_bytes = external_channels * (int)sizeof(int16_t);
 	}
 
 	int written = 0;
