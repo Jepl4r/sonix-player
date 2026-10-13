@@ -34,6 +34,7 @@
 #include "src/system/core/logging.h"
 #include "src/system/device/power.h"
 #include "src/system/device/sysserver.h" // only for the notification socket now
+#include "src/system/net/wifitransfer.h"
 #include "src/system/remote/sonixlink_bt.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/core/utils.h"
@@ -1337,6 +1338,27 @@ static bool g_hfp_started;		  // under `lock`: the running bluealsa is a hands-f
 static bool g_daemon_pending;
 static uint32_t g_daemon_idle_since;
 
+// The transfer server's switch as it is now, into g_wifi_heavy. The interface
+// tells this module about changes from a one-second timer
+// (bluetooth_set_wifi_busy()), which is right for changes and wrong for the
+// first moment: a daemon started before the first tick -- the bring-up at
+// boot, Bluetooth switched on from the quick panel with the server running --
+// would be started for the wrong LDAC rate and then restarted a second later,
+// a few seconds of no sound for nothing. So the switch is also read directly
+// where it decides something: at init, and whenever bluealsa is about to
+// start. The switch itself is a plain flag (wifitransfer_get_enabled()), so
+// reading it costs nothing and takes no lock of the transfer side.
+static void wifi_heavy_sync(void) {
+	bool on = wifitransfer_get_enabled();
+	pthread_mutex_lock(&lock);
+	bool changed = g_wifi_heavy != on;
+	g_wifi_heavy = on;
+	pthread_mutex_unlock(&lock);
+	if (changed) {
+		fprintf(stderr, "bluetooth: the Wi-Fi transfer server is %s (read at start-up)\n", on ? "on" : "off");
+	}
+}
+
 static const char *ldac_quality_effective(void) {
 	const char *quality = bluetooth_ldac_quality();
 	pthread_mutex_lock(&lock);
@@ -1378,6 +1400,7 @@ static bool ensure_bluealsa(void) {
 	pthread_mutex_unlock(&lock);
 
 	if (!process_running("bluealsa")) {
+		wifi_heavy_sync(); // before ldac_quality_effective() below reads it
 		// The source half of A2DP always, the sink half only while the receiver
 		// page is open, as on the stock firmware.
 		//
@@ -3988,6 +4011,7 @@ void bluetooth_init(void) {
 
 	g_enabled = config_get_int("wireless", "bluetooth", 0) != 0;
 	g_volume_sync = config_get_int("wireless", "bt_volume_sync", 1) != 0;
+	wifi_heavy_sync();
 
 	// Before anything asks for it. Bring-up reads it too, but the settings page
 	// shows the name with the radio off, and until this the answer was the
