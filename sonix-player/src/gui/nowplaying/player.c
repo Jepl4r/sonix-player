@@ -4680,6 +4680,10 @@ static void sheet_drag_cb(lv_event_t *e) {
 				return;
 			}
 			drag_committed = true;
+			// The page the player goes back to shows from the top as it is
+			// pulled down, status bar and all; let go short of the line, the
+			// player hides the bar again as it springs back open.
+			topbar_set_hidden(false);
 		}
 
 		sheet_move_to(dy, false);

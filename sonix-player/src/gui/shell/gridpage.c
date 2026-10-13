@@ -89,6 +89,22 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 	lv_obj_t *icon = lv_image_create(tile);
 	lv_image_set_src(icon, entry->icon);
 
+	// A short tile (the R3 Pro II's 720 px, under the 2.0 header and the mini
+	// player's slot) with a caption on two lines ("Album-Interpreten") has no
+	// room for the full picture: it is drawn smaller rather than the caption
+	// being cut off at the tile's bottom edge, as it was before.
+	if (entry->icon) {
+		lv_point_t text;
+		lv_text_get_size(&text, tr(entry->label), &font_ui_24_bold, 0, 0, width - 16, LV_TEXT_FLAG_NONE);
+		int32_t room = height - 2 * 8 - 8 - text.y;
+		int32_t ih = (int32_t)entry->icon->header.h;
+		if (room > 0 && room < ih) {
+			lv_image_set_scale(icon, (uint32_t)(room * LV_SCALE_NONE / ih));
+			lv_obj_set_size(icon, (int32_t)entry->icon->header.w * room / ih, room);
+			lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CENTER);
+		}
+	}
+
 	// The caption wraps rather than running out of the tile: a translated label
 	// such as "Album-Interpreten" does not fit on one line. Centred, because a
 	// tile is read as a block under its picture.

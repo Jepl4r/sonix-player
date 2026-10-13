@@ -330,16 +330,47 @@ static void refresh_all(void) {
 
 // The cheap repaint, for a change of hue: everything visible is redrawn from
 // the styles as they now stand, and the callbacks recolour what was set by
-// hand. Pages off screen need nothing -- they read the styles when drawn.
+// hand. Pages off screen need nothing from the styles -- they read them when
+// drawn.
+//
+// The callbacks are not run in one go. Together they cost a few milliseconds
+// on the emulator (the keyboards, which repaint every key, are most of it)
+// and several frames' worth on the device, and a change of hue comes with a
+// track change, when the player is busiest; so they are spread over a few
+// ticks of a timer, a handful at a time. The page in front of the user is
+// repainted from the shared styles at once either way. A theme switch still
+// runs them all at once (refresh_all): there the whole interface changes.
+#define LIGHT_CBS_PER_TICK 6
+#define LIGHT_TICK_MS 15
+
+static lv_timer_t *light_timer;
+static int light_next; // the next callback the spread repaint runs
+
+static void light_tick_cb(lv_timer_t *t) {
+	int end = light_next + LIGHT_CBS_PER_TICK;
+	for (; light_next < end && light_next < refresh_cb_count; light_next++) {
+		refresh_cbs[light_next]();
+	}
+	if (light_next >= refresh_cb_count) {
+		lv_timer_pause(t);
+	}
+}
+
 static void refresh_light(void) {
 	lv_obj_invalidate(lv_screen_active());
 	lv_obj_invalidate(lv_layer_top());
 	lv_obj_invalidate(lv_layer_sys());
 	lv_obj_invalidate(lv_layer_bottom());
 
-	for (int i = 0; i < refresh_cb_count; i++) {
-		refresh_cbs[i]();
+	if (!light_timer) {
+		light_timer = lv_timer_create(light_tick_cb, LIGHT_TICK_MS, NULL);
 	}
+	// A second change of hue before the first is through starts again from
+	// the top: every callback reads the palette as it is when it runs.
+	light_next = 0;
+	lv_timer_reset(light_timer);
+	lv_timer_resume(light_timer);
+	lv_timer_ready(light_timer);
 }
 
 void theme_toggle(void) {
