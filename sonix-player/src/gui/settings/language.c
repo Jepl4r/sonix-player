@@ -74,8 +74,13 @@ void language_bind_menu_row(lv_obj_t *row) {
 	if (!row) {
 		return;
 	}
-	// The row's name is the first label in it; the value and the chevron come
-	// after, and this row has neither.
+	// The name itself (the 2.0 settings card hands over its title), or a row
+	// whose name is the first label in it.
+	if (lv_obj_check_type(row, &lv_label_class)) {
+		menu_label = row;
+		refresh_titles();
+		return;
+	}
 	uint32_t count = lv_obj_get_child_count(row);
 	for (uint32_t i = 0; i < count; i++) {
 		lv_obj_t *child = lv_obj_get_child(row, (int32_t)i);
