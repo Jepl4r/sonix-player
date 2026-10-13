@@ -557,6 +557,17 @@ static bool fetch_account(void) {
 	return true;
 }
 
+// Every library address carries the uid. A session that somehow lost it (a
+// file written by hand, one cut short) would send "/users//likes/..." for
+// ever; it is asked for again instead, once, before the first such call.
+static bool ensure_uid(void) {
+	if (user_uid[0]) {
+		return true;
+	}
+	fprintf(stderr, "yandex: the session has no uid, asking for it\n");
+	return fetch_account();
+}
+
 // ---------------------------------------------------------------------------
 // JSON to structs
 // ---------------------------------------------------------------------------
@@ -711,6 +722,9 @@ static int tracks_by_id(char (*ids)[YANDEX_LIKED_ID_MAX], int count, yandex_trac
 // caller frees. -1 on error. The mirror takes a copy.
 static int fetch_liked_ids(char (**out)[YANDEX_LIKED_ID_MAX]) {
 	*out = NULL;
+	if (!ensure_uid()) {
+		return -1;
+	}
 	char url[400];
 	snprintf(url, sizeof(url), "%s/users/%s/likes/tracks", api_url, user_uid);
 	char *body;
@@ -720,6 +734,7 @@ static int fetch_liked_ids(char (**out)[YANDEX_LIKED_ID_MAX]) {
 	}
 	int arr = json_path(&doc, json_root(&doc), "result.library.tracks");
 	int n = arr >= 0 ? json_len(&doc, arr) : 0;
+	printf("yandex: %d liked tracks on the account (uid %s)%s\n", n, user_uid, arr < 0 ? ", no list in the answer" : "");
 	if (n > LIKED_MAX) {
 		n = LIKED_MAX;
 	}
@@ -821,6 +836,9 @@ void yandex_liked_mark(const char *track_id, bool liked) {
 }
 
 int yandex_playlists(yandex_playlist_t *out, int max) {
+	if (!ensure_uid()) {
+		return -1;
+	}
 	char url[400];
 	snprintf(url, sizeof(url), "%s/users/%s/playlists/list", api_url, user_uid);
 	char *body;
@@ -932,21 +950,38 @@ bool yandex_search(const char *text, yandex_artist_t *artists, int *n_artists, y
 	return true;
 }
 
+// POST /users/{uid}/{likes|dislikes}/tracks/{add-multiple|remove}, the form
+// "track-ids=<track>:<album>" -- as the service's own clients and MarshalX's
+// library send it. Every one is logged with its answer (status and the start
+// of the body; the token is in a header and never printed): a like that does
+// not stick has to be visible in the device log.
 static bool likes_write(const char *what, const char *action, const char *track_id, const char *album_id) {
-	char url[400], form[128];
-	snprintf(url, sizeof(url), "%s/users/%s/%s/tracks/%s", api_url, user_uid, what, action);
-	if (album_id && album_id[0]) {
-		snprintf(form, sizeof(form), "track-ids=%s%%3A%s", track_id, album_id);
-	} else {
-		snprintf(form, sizeof(form), "track-ids=%s", track_id);
-	}
-	char *body;
-	json_doc_t doc;
-	if (!api("POST", url, form, NULL, &body, &doc)) {
+	if (!ensure_uid()) {
+		fprintf(stderr, "yandex: %s/%s of %s not sent: %s\n", what, action, track_id, last_error);
 		return false;
 	}
-	api_done(body, &doc);
-	return true;
+	char url[400], form[128], ids[96];
+	snprintf(url, sizeof(url), "%s/users/%s/%s/tracks/%s", api_url, user_uid, what, action);
+	if (album_id && album_id[0]) {
+		snprintf(ids, sizeof(ids), "%s:%s", track_id, album_id);
+		snprintf(form, sizeof(form), "track-ids=%s%%3A%s", track_id, album_id);
+	} else {
+		snprintf(ids, sizeof(ids), "%s", track_id);
+		snprintf(form, sizeof(form), "track-ids=%s", track_id);
+	}
+	printf("yandex: %s/%s %s for uid %s\n", what, action, ids, user_uid);
+	char *body;
+	json_doc_t doc;
+	bool ok = api("POST", url, form, NULL, &body, &doc);
+	if (ok) {
+		api_done(body, &doc);
+	}
+	if (ok) {
+		printf("yandex: %s/%s %s -> %d %s\n", what, action, ids, last_status, last_body);
+	} else {
+		fprintf(stderr, "yandex: %s/%s %s failed -> %d %s (%s)\n", what, action, ids, last_status, last_body, last_error);
+	}
+	return ok;
 }
 
 bool yandex_like_track(const char *track_id, const char *album_id, bool like) {
@@ -954,8 +989,11 @@ bool yandex_like_track(const char *track_id, const char *album_id, bool like) {
 	if (ok) {
 		yandex_liked_mark(track_id, like);
 	}
-	if (ok && wave_session[0]) {
-		yandex_wave_feedback(like ? YANDEX_WAVE_LIKE : YANDEX_WAVE_SKIP, track_id, album_id, 0);
+	// My Wave hears of a like; an unlike has no event of its own, and the
+	// "skip" with no seconds 1.2.3 sent instead told the station the track
+	// had been skipped at once -- which it had not.
+	if (ok && like && wave_session[0]) {
+		yandex_wave_feedback(YANDEX_WAVE_LIKE, track_id, album_id, 0);
 	}
 	return ok;
 }

@@ -32,6 +32,13 @@ has no lossless file, gets the best lossy file among the codecs asked for
 YANDEX_MOCK_REFUSE_ENCRAW=1 to have encraw refused with a 400 (the player must
 fall back to raw), YANDEX_MOCK_NO_PLUS=1 to have the account without Plus.
 
+The likes are checked strictly, as the service would refuse them: POST only
+(a GET on add-multiple or remove is 405), the uid in the path must be the
+signed-in one, the body must be a form (application/x-www-form-urlencoded)
+whose "track-ids" is a comma list of "track" or "track:album" numbers, and the
+X-Yandex-Music-Client header must be there. Every like, accepted or not, is
+printed as "mock: LIKE ..." so a test can read what the player sent.
+
 What it checks, beside answering: the OAuth header on every API call, the
 device-flow sequence (two "pending" polls before the token), and the
 get-file-info signature -- HMAC-SHA256 of ts + trackId + quality + codecs
@@ -49,6 +56,7 @@ import hashlib
 import hmac
 import json
 import os
+import re
 import sys
 import threading
 import time
@@ -121,6 +129,31 @@ class Handler(BaseHTTPRequestHandler):
             return False
         return True
 
+    LIKE_PATH = re.compile(r"^/users/([^/]*)/(likes|dislikes)/tracks/(add-multiple|remove)$")
+    TRACK_IDS = re.compile(r"^\d+(:\d+)?(,\d+(:\d+)?)*$")
+
+    def like_refused(self, method, p, body=None):
+        """None when the like is well formed, else the answer already sent."""
+        m = self.LIKE_PATH.match(p)
+        if not m:
+            return None
+        why = None
+        if method != "POST":
+            why = (405, f"method {method}")
+        elif m.group(1) != str(UID):
+            why = (403, f"uid {m.group(1)!r} is not {UID}")
+        elif not self.headers.get("Content-Type", "").startswith("application/x-www-form-urlencoded"):
+            why = (400, f"content type {self.headers.get('Content-Type')!r}")
+        elif not self.headers.get("X-Yandex-Music-Client"):
+            why = (400, "no X-Yandex-Music-Client")
+        elif not self.TRACK_IDS.match((body or {}).get("track-ids", "")):
+            why = (400, f"track-ids {(body or {}).get('track-ids')!r}")
+        if why:
+            sys.stderr.write(f"mock: LIKE REFUSED {method} {p}: {why[1]}\n")
+            self.send_json({"error": {"name": "validate", "message": why[1]}}, why[0])
+            return True
+        return None
+
     def do_GET(self):
         url = urllib.parse.urlparse(self.path)
         q = {k: v[0] for k, v in urllib.parse.parse_qs(url.query).items()}
@@ -128,6 +161,8 @@ class Handler(BaseHTTPRequestHandler):
         if p.startswith("/files/"):
             return self.serve_file(p[len("/files/"):])
         if not self.authorised():
+            return
+        if self.like_refused("GET", p):
             return
         if p == "/account/status":
             plus = not os.environ.get("YANDEX_MOCK_NO_PLUS")
@@ -263,8 +298,10 @@ class Handler(BaseHTTPRequestHandler):
         if p == "/rotor/session/mock-wave/feedback":
             sys.stderr.write(f"mock: FEEDBACK {json.dumps(body)}\n")
             return self.send_json({"result": "ok"})
+        if self.like_refused("POST", p, body):
+            return
         if p.startswith(f"/users/{UID}/likes/tracks/") or p.startswith(f"/users/{UID}/dislikes/tracks/"):
-            sys.stderr.write(f"mock: {p} {body}\n")
+            sys.stderr.write(f"mock: LIKE {p} {body}\n")
             # The likes are remembered, so a reload shows what the player wrote.
             ids = [i.split(":")[0] for i in body.get("track-ids", "").split(",") if i]
             if "/likes/" in p:

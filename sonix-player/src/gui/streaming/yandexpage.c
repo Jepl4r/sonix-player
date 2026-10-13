@@ -12,6 +12,7 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
+#include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
@@ -672,6 +673,12 @@ static void row_texts(const row_t *r, char *name, size_t ns, char *detail, size_
 	}
 }
 
+static void row_menu_cb(lv_event_t *e);
+
+// Rows with something to offer on their own get the three dots: a track (its
+// like) and an album.
+static bool row_has_menu(const row_t *r) { return r->kind == ROW_TRACK && r->u.track.id[0]; }
+
 static void make_row(int index) {
 	char name[YANDEX_TITLE_MAX], detail[YANDEX_TITLE_MAX + 32];
 	row_texts(&rows[index], name, sizeof(name), detail, sizeof(detail));
@@ -683,27 +690,56 @@ static void make_row(int index) {
 	lv_obj_set_style_radius(row, 12, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_row(row, 4, 0);
+	lv_obj_set_style_pad_left(row, 16, 0);
+	lv_obj_set_style_pad_right(row, 6, 0);
+	lv_obj_set_style_pad_column(row, 4, 0);
 	lv_obj_set_scrollable(row, false);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_event_bubble(row, true);
 	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
 
-	lv_obj_t *label = lv_label_create(row);
+	lv_obj_t *texts = lv_obj_create(row);
+	lv_obj_set_flex_grow(texts, 1);
+	lv_obj_set_height(texts, LV_SIZE_CONTENT);
+	lv_obj_set_style_bg_opa(texts, 0, 0);
+	lv_obj_set_style_border_width(texts, 0, 0);
+	lv_obj_set_style_pad_all(texts, 0, 0);
+	lv_obj_set_style_pad_row(texts, 4, 0);
+	lv_obj_set_scrollable(texts, false);
+	lv_obj_set_event_bubble(texts, true);
+	lv_obj_set_clickable(texts, false);
+	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
+
+	lv_obj_t *label = lv_label_create(texts);
 	lv_label_set_text(label, name);
 	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 	lv_obj_set_width(label, lv_pct(100));
 	lv_obj_add_style(label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(label, &font_ui_22, 0);
 
-	lv_obj_t *sub = lv_label_create(row);
+	lv_obj_t *sub = lv_label_create(texts);
 	lv_label_set_text(sub, detail);
 	lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
 	lv_obj_set_width(sub, lv_pct(100));
 	lv_obj_add_style(sub, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(sub, &font_ui_18, 0);
+
+	if (row_has_menu(&rows[index])) {
+		lv_obj_t *menu_btn = lv_btn_create(row);
+		lv_obj_set_size(menu_btn, 48, 48);
+		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
+		lv_obj_set_style_border_width(menu_btn, 0, 0);
+		lv_obj_set_style_shadow_width(menu_btn, 0, 0);
+		lv_obj_set_style_pad_all(menu_btn, 0, 0);
+		lv_obj_set_ext_click_area(menu_btn, 12);
+		lv_obj_add_event_cb(menu_btn, row_menu_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
+		lv_obj_t *dots = lv_image_create(menu_btn);
+		lv_image_set_src(dots, &icon_ellipsis_vertical);
+		lv_obj_add_style(dots, &theme_style_icon, 0);
+		lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
+		lv_obj_center(dots);
+	}
 }
 
 static void fill_list(void) {
@@ -803,6 +839,65 @@ static void like_done(bool ok, const char *error, void *user) {
 	(void)user;
 	if (!ok) {
 		gui_post(like_failed_async, strdup(error ? error : ""));
+	}
+}
+
+// ---------------------------------------------------------------------------
+// the per-row menu
+//
+// A track's like from any list, not only from what is playing: liking what a
+// search or a playlist shows used to mean playing it first. The menu is
+// modal, so one remembered row is enough; the row itself is copied, because
+// the list may be replaced by an answer arriving while the menu is open.
+// ---------------------------------------------------------------------------
+
+static row_t menu_row;
+
+static void row_like_done_async(void *user) {
+	char *why = user; // NULL on success
+	if (why) {
+		toast_error(why[0] ? why : tr("yandex_like_failed"));
+		free(why);
+	}
+}
+
+static void row_like_done(bool ok, const char *error, void *user) {
+	(void)user;
+	gui_post(row_like_done_async, ok ? NULL : strdup(error ? error : ""));
+}
+
+static void do_row_like(void *user) {
+	bool like = user != NULL;
+	const yandex_track_t *t = &menu_row.u.track;
+	yandexsync_like(t->id, t->album_id, like, row_like_done, like ? (void *)1 : NULL);
+	toast_success(tr(like ? "yandex_liked_it" : "yandex_unliked_it"));
+}
+
+static void row_menu_cb(lv_event_t *e) {
+	lv_event_stop_bubbling(e); // the tap belongs to the menu, not the row
+	if (switcher_back_drag_active() || player_sheet_drag_active()) {
+		return;
+	}
+	int index = (int)(intptr_t)lv_event_get_user_data(e);
+	if (index < 0 || index >= row_count) {
+		return;
+	}
+	menu_row = rows[index];
+	popover_item_t items[2];
+	memset(items, 0, sizeof(items));
+	int n = 0;
+	if (menu_row.kind == ROW_TRACK) {
+		// Until the account's list has arrived nothing is known to be
+		// liked, and "Like" on a liked track is harmless: adding twice
+		// changes nothing on the account.
+		bool liked = yandex_is_liked(menu_row.u.track.id);
+		items[n].label = liked ? "yandex_unlike" : "yandex_like";
+		items[n].action = do_row_like;
+		items[n].user = liked ? NULL : (void *)1;
+		n++;
+	}
+	if (n > 0) {
+		popover_show(lv_event_get_current_target(e), items, n);
 	}
 }
 
@@ -1069,6 +1164,9 @@ static void job_done_async(void *user) {
 	rows = r->rows;
 	row_count = r->count;
 	fill_list();
+	// The rows' menus say "Like" or "Remove like" from the account's list:
+	// asked for now if it is not here yet (once a session, see yandexsync).
+	yandexsync_likes_refresh(NULL);
 	// My Wave plays as soon as it has something: that is what the button means.
 	if (r->kind == JOB_WAVE && row_count > 0) {
 		play_rows(0);

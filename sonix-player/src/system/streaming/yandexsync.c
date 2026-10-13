@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
+#include <time.h>
 
 #include "src/system/core/utils.h"
 #include "src/system/streaming/provider.h"
@@ -10,6 +11,12 @@
 #include "src/system/streaming/yandexcache.h"
 
 // See yandexsync.h.
+
+static long monotonic_secs(void) {
+	struct timespec now;
+	clock_gettime(CLOCK_MONOTONIC, &now);
+	return (long)now.tv_sec;
+}
 
 // ---------------------------------------------------------------------------
 // the worker and its queue
@@ -41,6 +48,11 @@ static int queue_head;
 static int queue_len;
 static bool worker_started;
 static bool load_queued; // the star asks on every redraw: one load in the queue is enough
+// A load that failed is not asked for again before this (monotonic seconds):
+// the star asks on every redraw, and a list that cannot be had right now
+// (no network, the rate limit) would otherwise be asked for on every one.
+static long load_retry_after;
+#define LOAD_RETRY_SECS 60
 
 static void *worker_main(void *arg);
 
@@ -79,11 +91,36 @@ static void submit(const job_t *job) {
 static void run_job(const job_t *job) {
 	switch (job->kind) {
 	case JOB_LOAD:
-		if (!yandex_liked_known() && yandex_logged_in() && yandex_liked_refresh() && job->changed) {
-			job->changed();
+		if (yandex_liked_known() || !yandex_logged_in()) {
+			break;
+		}
+		if (yandex_liked_refresh()) {
+			// A star tapped while the list was on its way is in the queue,
+			// not on the account yet: the list just installed does not have
+			// it, and showing that would flip the star back under the
+			// user's finger. Their taps win until they are sent.
+			pthread_mutex_lock(&lock);
+			for (int i = 0; i < queue_len; i++) {
+				const job_t *q = &queue[(queue_head + i) % QUEUE_MAX];
+				if (q->kind == JOB_LIKE) {
+					yandex_liked_mark(q->track_id, q->want);
+				}
+			}
+			pthread_mutex_unlock(&lock);
+			if (job->changed) {
+				job->changed();
+			}
+		} else {
+			// Without the list the star reads every track as not liked, and
+			// a tap on a liked one adds it again instead of removing it.
+			fprintf(stderr, "yandexsync: the liked tracks did not load (%s); next try in %d s\n", yandex_last_error(), LOAD_RETRY_SECS);
+			pthread_mutex_lock(&lock);
+			load_retry_after = monotonic_secs() + LOAD_RETRY_SECS;
+			pthread_mutex_unlock(&lock);
 		}
 		break;
 	case JOB_LIKE: {
+		printf("yandexsync: %s %s (album %s)\n", job->want ? "like" : "unlike", job->track_id, job->album_id[0] ? job->album_id : "none");
 		bool ok = yandex_like_track(job->track_id, job->album_id, job->want);
 		if (!ok) {
 			yandex_liked_mark(job->track_id, !job->want); // refused: put it back
@@ -99,7 +136,17 @@ static void run_job(const job_t *job) {
 
 static void *worker_main(void *arg) {
 	(void)arg;
-	thread_be_background("yandex sync");
+	// Nice ten, not SCHED_IDLE (which the other services' sync threads use).
+	// The likes are the one thing here, and a like is a tap waiting for its
+	// answer. With Bluetooth LDAC encoding and a track decoding, the device
+	// log shows the core 0 to 20 % idle; an idle-class thread then gets well
+	// under one percent of it (see thread_be_low_priority), and the TLS
+	// handshake plus the liked list a like may queue behind took minutes --
+	// long enough for the star to flip back, for the player to sleep, for
+	// the like never to leave. The lists, on the page's own worker, were at
+	// normal priority all along, which is why everything but the likes
+	// worked.
+	thread_be_low_priority("yandex sync");
 	for (;;) {
 		pthread_mutex_lock(&lock);
 		while (queue_len == 0) {
@@ -139,7 +186,7 @@ void yandexsync_likes_refresh(void (*done)(void)) {
 		return;
 	}
 	pthread_mutex_lock(&lock);
-	bool queued = load_queued;
+	bool queued = load_queued || monotonic_secs() < load_retry_after;
 	pthread_mutex_unlock(&lock);
 	if (queued) {
 		return;
