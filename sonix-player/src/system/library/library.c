@@ -20,7 +20,9 @@
 
 #include "src/system/core/config.h"
 #include "src/system/db/sqlite3.h"
+#include "src/system/library/covertone.h"
 #include "src/system/library/cue.h"
+#include "src/system/library/librarycovers.h"
 #include "src/system/decode/mp4.h"
 #include "src/system/decode/apedec.h"
 #include "src/system/library/metadata.h"
@@ -162,6 +164,25 @@ static const char *const SCHEMA[] = {
 	// one row. A database without it was filed with nothing split or joined.
 	"CREATE TABLE IF NOT EXISTS ORGANIZE_STATE(id INT PRIMARY KEY, rules TEXT)",
 
+	// Local: each album's colour and thumbnails for the UI 2.0 screens
+	// (covertone.h). Keyed by covertone_album_id(), a hash of the album's name
+	// and key, and NOT emptied by a scan, unlike the tables above: a rescan
+	// that finds the same picture behind the same track keeps the row and
+	// decodes nothing. The rows of albums that went away are pruned after the
+	// scan (library_covers_prune).
+	//
+	// cover_h is the hue in degrees, cover_c and cover_l the OKLCH chroma and
+	// lightness scaled to a byte (* 510, * 255), cover_mtime the picture's
+	// file's modification time. `track` and `track_mtime` are the track the
+	// picture was looked up from, `src`, `src_size` and `dir_mtime` the file it
+	// was read from and its folder, which is what tells a rescan whether
+	// anything changed. `thumbs` says which of the two thumbnails the album's
+	// `slot` holds in the files beside the index, `version` which analysis
+	// made the row.
+	"CREATE TABLE IF NOT EXISTS ALBUM_COVER(id INTEGER PRIMARY KEY, album TEXT COLLATE NOCASE, album_key TEXT,"
+	" cover_h INT, cover_c INT, cover_l INT, cover_mtime INT, kind INT, version INT, thumbs INT, slot INT,"
+	" track TEXT, track_mtime INT, src TEXT, src_size INT, dir_mtime INT)",
+
 	"CREATE TABLE IF NOT EXISTS VERSION_TABLE( version_id INT,PRIMARY KEY(version_id))",
 	"CREATE TABLE IF NOT EXISTS COUNT_TABLE( cn INT)",
 };
@@ -227,6 +248,9 @@ static const char *const SCHEMA_INDEXES[] = {
 	// then a seek into an empty index rather than a walk of the table. The scan
 	// writes the key with the row, so it never touches this index at all.
 	"CREATE INDEX IF NOT EXISTS media_searchkey_missing_idx ON MEDIA_TABLE(searchkey) WHERE searchkey IS NULL",
+	// An album whose key changed (the index filed again) finds the row its
+	// picture already has by the track it was taken from.
+	"CREATE INDEX IF NOT EXISTS album_cover_track_idx ON ALBUM_COVER(track)",
 };
 
 // Built only once every row has a key: an index on a column that is still half
@@ -999,6 +1023,14 @@ static void albumkey_sql(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
 	sqlite3_result_text(ctx, key, -1, SQLITE_TRANSIENT);
 }
 
+// covertone_album_id_parts() as SQL, so ALBUM_COVER can be joined to the
+// album it belongs to by its primary key.
+static void albumid_sql(sqlite3_context *ctx, int argc, sqlite3_value **argv) {
+	const char *album = argc > 0 ? (const char *)sqlite3_value_text(argv[0]) : NULL;
+	const char *key = argc > 1 ? (const char *)sqlite3_value_text(argv[1]) : NULL;
+	sqlite3_result_int64(ctx, covertone_album_id_parts(album, key));
+}
+
 // A track row that belongs to the album value bound as ?1: its name, and its key
 // when the value has one. A value saved before albums had keys is a name alone
 // and still matches every album of that name. Constant in the row, so the
@@ -1514,6 +1546,9 @@ static bool db_open_file(const char *db_path) {
 	// And whose an album is, for telling apart two records with one name.
 	sqlite3_create_function(db, "albumkey", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, albumkey_sql, NULL, NULL);
 
+	// And which album a row of ALBUM_COVER is (covertone.h).
+	sqlite3_create_function(db, "albumid", 2, SQLITE_UTF8 | SQLITE_DETERMINISTIC, NULL, albumid_sql, NULL, NULL);
+
 	// Where SQLite spills a sort it cannot hold in memory.
 	//
 	// The lists themselves read the sortkey index in order, but the queries
@@ -1632,7 +1667,9 @@ static unsigned index_features_guess(void) {
 	bool current = files == 0 || timed * 10 >= files * 9;
 	printf("library: index from before its features were recorded; %d of %d sampled tracks have a length, %s\n",
 		   timed, files, current ? "taken as current" : "taken as an older scan");
-	return INDEX_FEATURES_KNOWN | (current ? LIBRARY_INDEX_FEATURES : 0);
+	// Only the two features that came before the number was kept: anything
+	// added since (the covers) is missing from such an index by definition.
+	return INDEX_FEATURES_KNOWN | (current ? (LIBRARY_INDEX_COMPILATIONS | LIBRARY_INDEX_DURATIONS) : 0);
 }
 
 // Reads (or, the first time, works out and writes) what the open index has.
@@ -1650,6 +1687,305 @@ static void index_features_check(void) {
 }
 
 unsigned library_index_missing(void) { return db ? index_missing : 0; }
+
+// ---------------------------------------------------------------------------
+// The albums' colours and thumbnails (librarycovers.h, for covertone.c)
+// ---------------------------------------------------------------------------
+
+// The album rows the covers' walk reads: the album, its first track (by disc
+// and number, the track the Albums list takes its cover from) with that
+// track's mtime, and the row kept for it, if any. ALBUM_COVER is joined by its
+// primary key through albumid(), so a kept row costs a lookup and not a scan.
+#define COVER_ALBUM_COLUMNS                                                                                           \
+	"SELECT g.rowid, g.album, g.album_key, f.path, f.mtime, c.id IS NOT NULL, c.cover_h, c.cover_c, c.cover_l,"     \
+	" c.kind, c.thumbs, c.slot, c.version, c.track, c.track_mtime, c.src, c.cover_mtime, c.src_size, c.dir_mtime"   \
+	" FROM ALBUM_GROUP_TABLE g"                                                                                     \
+	" JOIN MEDIA_TABLE f ON f.rowid = (SELECT m.rowid FROM MEDIA_TABLE m WHERE m.album = g.album"                    \
+	" AND m.album_key = g.album_key ORDER BY COALESCE(m.disc,1), m.dis_id LIMIT 1)"                                \
+	" LEFT JOIN ALBUM_COVER c ON c.id = albumid(g.album, g.album_key)"
+
+static void copy_column(sqlite3_stmt *stmt, int col, char *out, size_t size) {
+	const char *text = (const char *)sqlite3_column_text(stmt, col);
+	snprintf(out, size, "%s", text ? text : "");
+}
+
+static void cover_album_from_row(sqlite3_stmt *stmt, library_cover_album_t *out) {
+	memset(out, 0, sizeof(*out));
+	out->group_rowid = sqlite3_column_int64(stmt, 0);
+	copy_column(stmt, 1, out->album, sizeof(out->album));
+	copy_column(stmt, 2, out->album_key, sizeof(out->album_key));
+	copy_column(stmt, 3, out->track, sizeof(out->track));
+	out->track_mtime = sqlite3_column_int64(stmt, 4);
+	out->id = covertone_album_id_parts(out->album, out->album_key);
+	out->kept = sqlite3_column_int(stmt, 5) != 0;
+	out->brief.id = out->id;
+	out->brief.slot = -1;
+	if (!out->kept) {
+		return;
+	}
+	out->brief.hue = (uint16_t)sqlite3_column_int(stmt, 6);
+	out->brief.chroma = (uint8_t)sqlite3_column_int(stmt, 7);
+	out->brief.light = (uint8_t)sqlite3_column_int(stmt, 8);
+	out->brief.kind = (uint8_t)sqlite3_column_int(stmt, 9);
+	out->brief.thumbs = (uint8_t)sqlite3_column_int(stmt, 10);
+	out->brief.slot = sqlite3_column_type(stmt, 11) == SQLITE_NULL ? -1 : sqlite3_column_int(stmt, 11);
+	out->brief.version = sqlite3_column_int(stmt, 12);
+	copy_column(stmt, 13, out->kept_track, sizeof(out->kept_track));
+	out->kept_track_mtime = sqlite3_column_int64(stmt, 14);
+	copy_column(stmt, 15, out->kept_src, sizeof(out->kept_src));
+	out->kept_src_mtime = sqlite3_column_int64(stmt, 16);
+	out->kept_src_size = sqlite3_column_int64(stmt, 17);
+	out->kept_dir_mtime = sqlite3_column_int64(stmt, 18);
+}
+
+int library_covers_albums(library_covers_select_t which, int version, int64_t after, int id_base,
+						  library_cover_album_t *out, int max) {
+	if (!out || max <= 0) {
+		return 0;
+	}
+	char sql[2048];
+	const char *only = "";
+	if (which == LIBRARY_COVERS_STALE) {
+		// No row, a row from another analysis or another first track, or
+		// one a scan left for the worker.
+		only = " AND (c.id IS NULL OR c.version <> ?3 OR c.kind = 4 OR c.track <> f.path"
+			   " OR c.track_mtime IS NOT IFNULL(f.mtime, 0))";
+	} else if (which == LIBRARY_COVERS_THUMBS) {
+		only = " AND c.id IS NOT NULL AND c.kind IN (1, 2) AND c.version = ?3 AND c.track = f.path"
+			   " AND c.track_mtime IS IFNULL(f.mtime, 0) AND (IFNULL(c.thumbs, 0) & 3) <> 3";
+	}
+	snprintf(sql, sizeof(sql),
+			 COVER_ALBUM_COLUMNS " WHERE g.rowid > ?1 AND g.album <> ''%s%s ORDER BY g.rowid LIMIT ?2", only,
+			 id_base > 0 ? " AND EXISTS (SELECT 1 FROM MEDIA_TABLE n WHERE n.album = g.album"
+						   " AND n.album_key = g.album_key AND n.id > ?4)"
+						 : "");
+	int count = 0;
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, after);
+		sqlite3_bind_int(stmt, 2, max);
+		if (which != LIBRARY_COVERS_ALL) {
+			sqlite3_bind_int(stmt, 3, version);
+		}
+		if (id_base > 0) {
+			sqlite3_bind_int(stmt, 4, id_base);
+		}
+		while (count < max && sqlite3_step(stmt) == SQLITE_ROW) {
+			cover_album_from_row(stmt, &out[count++]);
+		}
+	}
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&db_lock);
+	return count;
+}
+
+bool library_covers_album(int64_t id, int version, library_cover_album_t *out) {
+	(void)version;
+	if (!out || !id) {
+		return false;
+	}
+	bool found = false;
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	// The kept row says which album it is; one never seen is looked for among
+	// all of them by its hash, a walk of a few thousand short rows.
+	if (db && sqlite3_prepare_v2(db,
+								 COVER_ALBUM_COLUMNS
+								 " WHERE g.album <> '' AND ((g.album, g.album_key) IN (SELECT album, album_key"
+								 " FROM ALBUM_COVER WHERE id = ?1) OR (NOT EXISTS (SELECT 1 FROM ALBUM_COVER"
+								 " WHERE id = ?1) AND albumid(g.album, g.album_key) = ?1)) LIMIT 1",
+								 -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, id);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			cover_album_from_row(stmt, out);
+			found = out->id == id;
+		}
+	}
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&db_lock);
+	return found;
+}
+
+int library_covers_load(void (*cb)(const library_cover_brief_t *row, void *user), void *user) {
+	int count = 0;
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && cb &&
+		sqlite3_prepare_v2(db, "SELECT id, cover_h, cover_c, cover_l, kind, thumbs, slot, version FROM ALBUM_COVER", -1,
+						   &stmt, NULL) == SQLITE_OK) {
+		while (sqlite3_step(stmt) == SQLITE_ROW) {
+			library_cover_brief_t row = {
+				.id = sqlite3_column_int64(stmt, 0),
+				.hue = (uint16_t)sqlite3_column_int(stmt, 1),
+				.chroma = (uint8_t)sqlite3_column_int(stmt, 2),
+				.light = (uint8_t)sqlite3_column_int(stmt, 3),
+				.kind = (uint8_t)sqlite3_column_int(stmt, 4),
+				.thumbs = (uint8_t)sqlite3_column_int(stmt, 5),
+				.slot = sqlite3_column_type(stmt, 6) == SQLITE_NULL ? -1 : sqlite3_column_int(stmt, 6),
+				.version = sqlite3_column_int(stmt, 7),
+			};
+			cb(&row, user);
+			count++;
+		}
+	}
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&db_lock);
+	return count;
+}
+
+bool library_cover_store(const library_cover_album_t *album, const library_cover_brief_t *row, const char *src,
+						 int64_t src_mtime, int64_t src_size, int64_t dir_mtime) {
+	if (!album || !row || !row->id) {
+		return false;
+	}
+	bool ok = false;
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db,
+								 "INSERT OR REPLACE INTO ALBUM_COVER(id, album, album_key, cover_h, cover_c, cover_l,"
+								 " cover_mtime, kind, version, thumbs, slot, track, track_mtime, src, src_size,"
+								 " dir_mtime) VALUES(?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13, ?14,"
+								 " ?15, ?16)",
+								 -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, row->id);
+		sqlite3_bind_text(stmt, 2, album->album, -1, SQLITE_STATIC);
+		sqlite3_bind_text(stmt, 3, album->album_key, -1, SQLITE_STATIC);
+		sqlite3_bind_int(stmt, 4, row->hue);
+		sqlite3_bind_int(stmt, 5, row->chroma);
+		sqlite3_bind_int(stmt, 6, row->light);
+		sqlite3_bind_int64(stmt, 7, src_mtime);
+		sqlite3_bind_int(stmt, 8, row->kind);
+		sqlite3_bind_int(stmt, 9, row->version);
+		sqlite3_bind_int(stmt, 10, row->thumbs);
+		if (row->slot >= 0) {
+			sqlite3_bind_int(stmt, 11, row->slot);
+		} else {
+			sqlite3_bind_null(stmt, 11);
+		}
+		sqlite3_bind_text(stmt, 12, album->track, -1, SQLITE_STATIC);
+		sqlite3_bind_int64(stmt, 13, album->track_mtime);
+		sqlite3_bind_text(stmt, 14, src ? src : "", -1, SQLITE_STATIC);
+		sqlite3_bind_int64(stmt, 15, src_size);
+		sqlite3_bind_int64(stmt, 16, dir_mtime);
+		int rc = sqlite3_step(stmt);
+		ok = rc == SQLITE_DONE;
+		if (!ok) {
+			note_damage(rc);
+		}
+	}
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&db_lock);
+	return ok;
+}
+
+void library_cover_set_thumbs(int64_t id, int thumbs, int32_t slot) {
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "UPDATE ALBUM_COVER SET thumbs = ?2, slot = ?3 WHERE id = ?1", -1, &stmt, NULL) ==
+				  SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, id);
+		sqlite3_bind_int(stmt, 2, thumbs);
+		if (slot >= 0) {
+			sqlite3_bind_int(stmt, 3, slot);
+		} else {
+			sqlite3_bind_null(stmt, 3);
+		}
+		sqlite3_step(stmt);
+	}
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&db_lock);
+}
+
+int64_t library_cover_find_by_track(const char *track, int64_t track_mtime, int version) {
+	int64_t id = 0;
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && track && sqlite3_prepare_v2(db,
+										  "SELECT id FROM ALBUM_COVER WHERE track = ?1 AND track_mtime = ?2 AND"
+										  " version = ?3 AND kind <> 4 LIMIT 1",
+										  -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, track, -1, SQLITE_STATIC);
+		sqlite3_bind_int64(stmt, 2, track_mtime);
+		sqlite3_bind_int(stmt, 3, version);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			id = sqlite3_column_int64(stmt, 0);
+		}
+	}
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&db_lock);
+	return id;
+}
+
+bool library_cover_rekey(int64_t old_id, int64_t new_id, const char *album, const char *album_key) {
+	bool ok = false;
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "UPDATE OR REPLACE ALBUM_COVER SET id = ?2, album = ?3, album_key = ?4 WHERE id = ?1",
+								 -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int64(stmt, 1, old_id);
+		sqlite3_bind_int64(stmt, 2, new_id);
+		sqlite3_bind_text(stmt, 3, album ? album : "", -1, SQLITE_STATIC);
+		sqlite3_bind_text(stmt, 4, album_key ? album_key : "", -1, SQLITE_STATIC);
+		ok = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db) > 0;
+	}
+	sqlite3_finalize(stmt);
+	pthread_mutex_unlock(&db_lock);
+	return ok;
+}
+
+int library_covers_prune(void) {
+	int gone = 0;
+	pthread_mutex_lock(&db_lock);
+	if (db && exec("DELETE FROM ALBUM_COVER WHERE NOT EXISTS (SELECT 1 FROM ALBUM_GROUP_TABLE g"
+				   " WHERE g.album = ALBUM_COVER.album AND g.album_key = ALBUM_COVER.album_key)")) {
+		gone = sqlite3_changes(db);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return gone;
+}
+
+void library_covers_forget_thumbs(int bit) {
+	char sql[96];
+	snprintf(sql, sizeof(sql), "UPDATE ALBUM_COVER SET thumbs = IFNULL(thumbs, 0) & %d", ~bit & 0xff);
+	pthread_mutex_lock(&db_lock);
+	if (db) {
+		exec(sql);
+	}
+	pthread_mutex_unlock(&db_lock);
+}
+
+void library_covers_complete(void) {
+	pthread_mutex_lock(&db_lock);
+	if (db) {
+		unsigned stored = user_version_read();
+		if ((stored & INDEX_FEATURES_KNOWN) && !(stored & LIBRARY_INDEX_COVERS)) {
+			user_version_write(stored | LIBRARY_INDEX_COVERS);
+			printf("library: every album has its colour; the index no longer lacks them\n");
+		}
+		index_missing &= ~LIBRARY_INDEX_COVERS;
+	}
+	pthread_mutex_unlock(&db_lock);
+}
+
+bool library_db_dir(char *out, size_t size) {
+	if (!out || size == 0) {
+		return false;
+	}
+	pthread_mutex_lock(&db_lock);
+	bool ok = db && db_file[0];
+	if (ok) {
+		snprintf(out, size, "%s", db_file);
+		char *slash = strrchr(out, '/');
+		if (slash) {
+			*slash = '\0';
+		} else {
+			snprintf(out, size, ".");
+		}
+	}
+	pthread_mutex_unlock(&db_lock);
+	return ok;
+}
 
 bool library_open(const char *db_path) {
 	if (db) {
@@ -1673,6 +2009,11 @@ bool library_open(const char *db_path) {
 	printf("library: %s open, %d tracks indexed\n", db_path, library_track_count());
 
 	sortkeys_start_backfill();
+
+	// The albums' colours and thumbnails, read into memory now so the first
+	// screen is painted in them, and whatever is missing made in the
+	// background.
+	covertone_attach(db_path);
 	return true;
 }
 
@@ -1690,6 +2031,9 @@ void library_close(void) {
 	// would be writing to a handle that had just been closed.
 	backfill_stop_and_wait();
 	sortkeys_ready = false;
+	// And the covers' worker, which reads the index and writes files beside
+	// it: an open file on the card is an unmount that fails.
+	covertone_detach();
 
 	pthread_mutex_lock(&db_lock);
 	if (db) {
@@ -6837,6 +7181,9 @@ int library_forget_deleted(const char *const *paths, int count) {
 
 	if (removed > 0) {
 		printf("library: %d deleted track(s) taken out of the index\n", removed);
+		// An album deleted from the file manager takes its colour and its
+		// thumbnail slots with it; another may now have a new first track.
+		covertone_library_changed();
 	}
 	return removed;
 }
@@ -7040,6 +7387,18 @@ static int update_index(const namelist_t *files, bool replace) {
 // word (see scan_thread_func).
 static library_update_event_t update_outcome;
 static int update_added, update_removed, update_replaced;
+// The highest MEDIA_TABLE id before the run: every track it read in is above
+// it, which is how the covers' pass after it finds the albums to look at.
+static int update_id_base;
+
+// How long the covers' pass at the end of a run may take, given how long the
+// run itself took: a seventh, so the whole grows by no more than ~15%. Never
+// less than two seconds, which on a small card or a Detect changes run that
+// brought in a record or two is every album and on a large one is a start.
+static uint32_t cover_pass_budget(uint32_t run_ms) {
+	uint32_t budget = run_ms / 7;
+	return budget < 2000 ? 2000 : budget;
+}
 
 static void update_run(void) {
 	uint32_t started_ms = now_ms();
@@ -7052,6 +7411,7 @@ static void update_run(void) {
 		scan_cancel = true;
 	}
 	scan_id_base = count_rows("SELECT MAX(id) FROM MEDIA_TABLE");
+	update_id_base = scan_id_base;
 	// Room for the path index, which every folder looked into is compared
 	// against. Given back below.
 	exec("PRAGMA cache_size=-2048");
@@ -7296,6 +7656,7 @@ static void *scan_thread_func(void *arg) {
 		thread_be_low_priority("library update");
 	}
 
+	uint32_t run_started_ms = now_ms();
 	switch (scan_mode) {
 	case SCAN_FULL:
 		full_scan_run();
@@ -7308,6 +7669,12 @@ static void *scan_thread_func(void *arg) {
 			full_scan_run();
 		}
 		if (!scan_cancel && !scan_db_failed) {
+			// The albums' colours and small thumbnails, while the pictures'
+			// folders are still in the kernel's cache: every album, the ones
+			// whose picture has not changed since the last scan costing a
+			// stat and no decode. Within a seventh of the time the walk took,
+			// so a scan grows by no more than ~15%; the rest is the worker's.
+			covertone_scan_pass(0, cover_pass_budget(now_ms() - run_started_ms), &scan_cancel, set_scan_folder);
 			playlists_follow_library();
 			if (update_listener) {
 				update_listener(LIBRARY_UPDATE_SCANNED, 0, 0, 0);
@@ -7317,6 +7684,13 @@ static void *scan_thread_func(void *arg) {
 	case SCAN_UPDATE:
 		update_run();
 		if (update_outcome == LIBRARY_UPDATE_FINISHED && !scan_cancel && !scan_db_failed) {
+			// The same for the albums this run brought in, and only those: an
+			// index from before the covers is the worker's, at idle priority,
+			// not this run's at nice 10 on every boot.
+			if (update_added + update_replaced > 0) {
+				covertone_scan_pass(update_id_base, cover_pass_budget(now_ms() - run_started_ms), &scan_cancel,
+									set_scan_folder);
+			}
 			playlists_follow_library();
 		}
 		break;
@@ -7362,6 +7736,10 @@ static void *scan_thread_func(void *arg) {
 		attempted = true;
 		done = reorganize_run();
 	}
+	// Albums may have come, gone or changed their keys: the colours of the
+	// ones that went are pruned and the new ones queued, now that nothing is
+	// rewriting the album tables underneath.
+	covertone_library_changed();
 	return NULL;
 }
 

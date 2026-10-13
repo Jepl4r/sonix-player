@@ -30,6 +30,7 @@
 #include "src/system/audio/usbaudio.h"
 #include "src/system/audio/audio.h"
 #include "src/system/library/audiobookdb.h"
+#include "src/system/library/covertone.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/bluetooth/btlog.h"
 #include "src/system/bluetooth/btplayer.h"
@@ -2432,6 +2433,11 @@ int main(int argc, char **argv) {
 	if (config_get_int("screen", "rotate_180", 0)) {
 		display_set_rotated(true);
 	}
+
+	// The covers' worker keeps off the card while a finger is down, a list is
+	// still moving or a screen is sliding in: a watcher on the UI thread tells
+	// it so (covertone.h).
+	covertone_ui_init();
 
 	// The home screen up now, and the rest of the interface built behind it.
 	// Building every page was most of the wait for the first frame, and none of

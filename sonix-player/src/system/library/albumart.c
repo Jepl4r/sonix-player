@@ -1157,6 +1157,8 @@ bool albumart_load_dir_candidate(const char *dirpath, int index, albumart_t *out
 	return read_embedded(track_path, out);
 }
 
+static bool folder_cover_path(const char *filepath, char *out, size_t out_size);
+
 bool albumart_load_for_file(const char *filepath, albumart_t *out) {
 	for (int i = 0; i < ALBUMART_CANDIDATES; i++) {
 		if (albumart_load_candidate(filepath, i, out))
@@ -1200,6 +1202,38 @@ bool albumart_load_candidate(const char *filepath, int index, albumart_t *out) {
 		return read_embedded(filepath, out);
 	}
 
+	char cover_path[1300];
+	if (folder_cover_path(filepath, cover_path, sizeof(cover_path)))
+		return read_whole_file(cover_path, out);
+
+	return false;
+}
+
+bool albumart_cover_file(const char *filepath, char *out, size_t out_size) {
+	if (!filepath || !out || out_size == 0) {
+		return false;
+	}
+	out[0] = '\0';
+	// The same way to the folder as albumart_load_candidate(): a track of a CUE
+	// sheet looks beside the file the sheet cuts up.
+	char sheet_path[512];
+	if (cue_split_path(filepath, sheet_path, sizeof(sheet_path)) > 0) {
+		cue_sheet_t *cue = malloc(sizeof(*cue));
+		if (!cue) {
+			return false;
+		}
+		bool ok = cue_parse(sheet_path, cue) && albumart_cover_file(cue->audio_path, out, out_size);
+		free(cue);
+		return ok;
+	}
+	if (has_extension(filepath, ".jpg") || has_extension(filepath, ".jpeg") || has_extension(filepath, ".png")) {
+		return false;
+	}
+	return folder_cover_path(filepath, out, out_size);
+}
+
+// The cover file in the folder of `filepath` that candidate 1 reads.
+static bool folder_cover_path(const char *filepath, char *out, size_t out_size) {
 	// A cover image file sitting next to the track.
 	char dirpath[1024];
 	strncpy(dirpath, filepath, sizeof(dirpath) - 1);
@@ -1224,9 +1258,5 @@ bool albumart_load_candidate(const char *filepath, int index, albumart_t *out) {
 	if (dirpath[0] == '\0')
 		strncpy(dirpath, "/", sizeof(dirpath) - 1);
 
-	char cover_path[1300];
-	if (find_cover_file(dirpath, stem, cover_path, sizeof(cover_path)))
-		return read_whole_file(cover_path, out);
-
-	return false;
+	return find_cover_file(dirpath, stem, out, out_size);
 }
