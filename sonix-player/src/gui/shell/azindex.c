@@ -3,6 +3,9 @@
 #include <stdlib.h>
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/sx_frame.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -226,11 +229,14 @@ static void timer_cb(lv_timer_t *t) {
 	}
 }
 
-// The two hand-set colours; the letters follow their shared style on their own.
-static void theme_refresh(void) {
+// The lane ends where the bottom slot starts while the mini player is up
+// (the 2.0 look, the same as the library lists' strip).
+static int strip_top;
+static gui_config_t *strip_cfg;
+
+static void fit_slot(void) {
 	for (int i = 0; i < strip_count; i++) {
-		lv_obj_set_style_bg_color(strips[i]->bar, theme()->surface, 0);
-		lv_obj_set_style_bg_color(strips[i]->hint, theme()->accent, 0);
+		lv_obj_set_height(strips[i]->bar, (int)strip_cfg->screen_height - strip_top - 8 - sx_frame_body_bottom());
 	}
 }
 
@@ -248,15 +254,17 @@ azindex_t *azindex_create(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t *list, i
 	ix->jumped = jumped;
 
 	int content_top = settingsrow_content_top(cfg);
+	strip_top = content_top;
+	strip_cfg = cfg;
 
+	// The 2.0 lane (SX_AZ_LANE_W): the letters on the page itself, no
+	// half-transparent backing -- the same strip as the library lists'.
 	ix->bar = lv_obj_create(screen);
 	lv_obj_remove_style_all(ix->bar);
-	lv_obj_set_size(ix->bar, BAR_WIDTH, cfg->screen_height - content_top - 8);
+	lv_obj_set_size(ix->bar, BAR_WIDTH, cfg->screen_height - content_top - 8 - sx_frame_body_bottom());
 	lv_obj_align(ix->bar, LV_ALIGN_TOP_RIGHT, -2, content_top + 4);
-	lv_obj_set_style_bg_color(ix->bar, theme()->surface, 0);
-	lv_obj_set_style_bg_opa(ix->bar, LV_OPA_60, 0);
-	lv_obj_set_style_radius(ix->bar, BAR_WIDTH / 2, 0);
 	lv_obj_set_scrollable(ix->bar, false);
+	sx_frame_exempt(ix->bar);
 	lv_obj_set_hidden(ix->bar, true);
 	lv_obj_set_flex_flow(ix->bar, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(ix->bar, LV_FLEX_ALIGN_SPACE_AROUND, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -275,20 +283,21 @@ azindex_t *azindex_create(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t *list, i
 	for (int i = 0; i < BUCKETS; i++) {
 		ix->letters[i] = lv_label_create(ix->bar);
 		lv_label_set_text(ix->letters[i], TEXT[i]);
-		lv_obj_add_style(ix->letters[i], &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(ix->letters[i], &font_ui_14, 0);
+		lv_obj_add_style(ix->letters[i], &sx_style_text2, 0);
+		lv_obj_set_style_text_font(ix->letters[i], &font_ui_17, 0);
 		lv_obj_set_clickable(ix->letters[i], false);
 	}
 
 	// The letter under the finger, in the middle of the screen where the hand
-	// is not, in the accent colour so it stands off the cards under it.
+	// is not: the handoff's bubble, SX_AZ_BUBBLE across, in the accent.
 	ix->hint = lv_obj_create(screen);
 	lv_obj_remove_style_all(ix->hint);
-	lv_obj_set_size(ix->hint, 132, 124);
+	lv_obj_set_size(ix->hint, SX_AZ_BUBBLE, SX_AZ_BUBBLE);
 	lv_obj_align(ix->hint, LV_ALIGN_CENTER, 0, 0);
-	lv_obj_set_style_bg_color(ix->hint, theme()->accent, 0);
-	lv_obj_set_style_bg_opa(ix->hint, LV_OPA_90, 0);
+	lv_obj_add_style(ix->hint, &sx_style_accent, 0);
+	lv_obj_set_style_bg_opa(ix->hint, LV_OPA_COVER, 0);
 	lv_obj_set_style_radius(ix->hint, 26, 0);
+	sx_frame_exempt(ix->hint);
 	lv_obj_set_scrollable(ix->hint, false);
 	lv_obj_set_clickable(ix->hint, false);
 	lv_obj_set_hidden(ix->hint, true);
@@ -296,14 +305,13 @@ azindex_t *azindex_create(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t *list, i
 	ix->hint_label = lv_label_create(ix->hint);
 	lv_label_set_text(ix->hint_label, "");
 	lv_obj_set_style_text_font(ix->hint_label, &font_ui_64_bold, 0);
-	lv_obj_set_style_text_color(ix->hint_label, lv_color_white(), 0);
 	lv_obj_center(ix->hint_label);
 
 	strips[strip_count++] = ix;
 	if (!timer) {
 		timer = lv_timer_create(timer_cb, 200, NULL);
 		power_pause_in_standby(timer);
-		theme_register_refresh(theme_refresh);
+		sx_frame_on_body_change(fit_slot);
 	}
 	return ix;
 }
