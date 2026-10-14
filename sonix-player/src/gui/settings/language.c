@@ -4,6 +4,8 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/settings/timeset.h"
 #include "src/system/core/config.h"
@@ -11,6 +13,7 @@
 #include "src/system/device/power.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 lv_obj_t *language_screen;
@@ -18,8 +21,6 @@ lv_obj_t *language_screen;
 // However many .ini files the folder holds, up to the 16 lang_list() reads.
 #define MAX_LANGUAGES 16
 
-// The same green the settings rows use to mark a page whose feature is on.
-#define CHECK_GREEN lv_color_make(46, 194, 126)
 
 // One entry, drawn twice: once in the settings page and once in the first-boot
 // panel. Both lists exist from startup, so both have to be repainted when the
@@ -133,10 +134,10 @@ static void pick_cb(lv_event_t *e) {
 static lv_obj_t *make_row(lv_obj_t *parent, const char *name, int index) {
 	lv_obj_t *row = settingsrow_action(parent, name, pick_cb, (void *)(intptr_t)index);
 
+	// The chosen one's tick in the accent, as a sheet marks its choice.
 	lv_obj_t *mark = lv_image_create(row);
 	lv_image_set_src(mark, &icon_check);
-	lv_obj_set_style_image_recolor(mark, CHECK_GREEN, 0);
-	lv_obj_set_style_image_recolor_opa(mark, LV_OPA_COVER, 0);
+	lv_obj_add_style(mark, &sx_style_icon_accent, 0);
 	lv_obj_align(mark, LV_ALIGN_RIGHT_MID, 0, 0);
 	lv_obj_set_hidden(mark, true);
 	return mark;
@@ -168,47 +169,48 @@ static void confirm_cb(lv_event_t *e) {
 
 static void build_panel(gui_config_t *cfg) {
 	panel = lv_obj_create(lv_layer_top());
+	lv_obj_remove_style_all(panel);
 	lv_obj_set_size(panel, cfg->screen_width, cfg->screen_height);
 	lv_obj_align(panel, LV_ALIGN_TOP_LEFT, 0, 0);
-	lv_obj_add_style(panel, &theme_style_screen, 0);
-	lv_obj_set_style_border_width(panel, 0, 0);
-	lv_obj_set_style_radius(panel, 0, 0);
-	lv_obj_set_style_pad_all(panel, cfg->padding, 0);
+	lv_obj_add_style(panel, &sx_style_page, 0);
+	lv_obj_set_style_pad_hor(panel, cfg->padding, 0);
+	lv_obj_set_style_pad_bottom(panel, cfg->padding + 8, 0);
 	lv_obj_set_scrollable(panel, false);
+	lv_obj_set_clickable(panel, true);
 	lv_obj_set_hidden(panel, true);
 	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
-	// Down from the top rather than centred: with five languages the column is
-	// tall enough that centring would slide it up over the heading. The date
-	// panel can centre because two cards and a button leave room to; this one
-	// does not.
+	// Down from the top rather than centred: the list is tall enough that
+	// centring would slide it up over the heading.
 	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-	lv_obj_set_style_pad_gap(panel, 18, 0);
+	lv_obj_set_style_pad_row(panel, 16, 0);
 
-	// Where the status bar would be, if this panel did not cover it.
-	lv_obj_set_style_pad_top(panel, cfg->top_bar_height + 10, 0);
+	// Where the status bar and the header would be: the heading sits where
+	// every page's title does, at its size.
+	lv_obj_set_style_pad_top(panel, SX_STATUSBAR_H + (SX_HEADER_H - lv_font_get_line_height(&font_ui_34_bold)) / 2, 0);
 
-	// The heading is the first item in the column rather than pinned out of it,
-	// the way the date panel does it: a pinned label is positioned from inside
-	// the panel's padding, so it would slide down with the very padding meant
-	// to clear the status bar and end up behind the list.
+	// The heading is the first item in the column rather than pinned out of it:
+	// a pinned label is positioned from inside the panel's padding, so it would
+	// slide down with the very padding meant to clear the status bar and end up
+	// behind the list.
 	panel_title = lv_label_create(panel);
 	lv_label_set_text(panel_title, "Lingua/Language"); // replaced by refresh_titles()
-	lv_obj_add_style(panel_title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(panel_title, &font_ui_32, 0);
+	lv_obj_set_width(panel_title, lv_pct(100));
+	lv_obj_set_style_pad_left(panel_title, 6, 0);
+	lv_obj_add_style(panel_title, &sx_style_text, 0);
+	lv_obj_set_style_text_font(panel_title, &font_ui_34_bold, 0);
 
 	// The list takes whatever is left between the heading and the button, and
-	// scrolls inside it. Sized to its content instead, five languages already
-	// push the button off the bottom of a 720 px panel -- and the point of
-	// reading the folder rather than a table in here is that there is no fixed
-	// number of them.
+	// scrolls inside it. Sized to its content instead, the languages push the
+	// button off the bottom of a 720 px panel -- and the point of reading the
+	// folder rather than a table in here is that there is no fixed number of
+	// them.
 	lv_obj_t *list = lv_obj_create(panel);
+	lv_obj_remove_style_all(list);
 	lv_obj_set_width(list, lv_pct(100));
 	lv_obj_set_flex_grow(list, 1);
-	lv_obj_set_style_bg_opa(list, 0, 0);
-	lv_obj_set_style_border_width(list, 0, 0);
-	lv_obj_set_style_pad_all(list, 0, 0);
-	lv_obj_set_style_pad_row(list, 8, 0);
-	lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_set_style_pad_row(list, SX_CARD_GAP, 0);
+	lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
+	lv_obj_set_scroll_dir(list, LV_DIR_VER);
 	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(list, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
@@ -216,19 +218,25 @@ static void build_panel(gui_config_t *cfg) {
 		entries[i].panel_check = make_row(list, entries[i].label, i);
 	}
 
+	// The accent pill, 68 tall.
 	lv_obj_t *confirm = lv_btn_create(panel);
-	lv_obj_set_size(confirm, 228, 64);
+	lv_obj_remove_style_all(confirm);
+	lv_obj_set_size(confirm, LV_SIZE_CONTENT, SX_SHEET_BTN_H);
+	lv_obj_set_style_min_width(confirm, 240, 0);
+	lv_obj_set_style_pad_hor(confirm, 40, 0);
 	lv_obj_set_style_radius(confirm, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_bg_color(confirm, theme()->accent, 0);
-	lv_obj_set_style_shadow_width(confirm, 0, 0);
-	lv_obj_set_style_border_width(confirm, 0, 0);
+	lv_obj_add_style(confirm, &sx_style_accent, 0);
+	lv_obj_add_style(confirm, &sx_style_press, LV_STATE_PRESSED);
 	lv_obj_add_event_cb(confirm, confirm_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *confirm_label = lv_label_create(confirm);
 	lv_label_set_text(confirm_label, tr("confirm"));
-	lv_obj_set_style_text_font(confirm_label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(confirm_label, lv_color_white(), 0);
+	lv_obj_set_style_text_font(confirm_label, &font_ui_26_bold, 0);
 	lv_obj_center(confirm_label);
+}
+
+static int entry_cmp(const void *a, const void *b) {
+	return strcmp(((const entry_t *)a)->label, ((const entry_t *)b)->label);
 }
 
 bool language_needed(void) {
@@ -264,6 +272,10 @@ void language_init(gui_config_t *cfg) {
 		lang_display_name(entries[i].name, entries[i].label, sizeof(entries[0].label));
 		entry_count = i + 1;
 	}
+	// In the order of their names as shown -- Latin, then Cyrillic, then the
+	// CJK ones, which is what byte order gives -- rather than the folder's,
+	// which put Chinese first and English somewhere in the middle.
+	qsort(entries, (size_t)entry_count, sizeof(entries[0]), entry_cmp);
 
 	lv_obj_t *container = settingsrow_page(language_screen, cfg, "language");
 	page_title = settingsrow_page_title(language_screen);

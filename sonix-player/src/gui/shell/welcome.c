@@ -7,6 +7,8 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/settings/language.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
@@ -49,11 +51,14 @@ static const char *const WELCOME_WORDS[] = {
 #define WELCOME_HOLD_MS 1500
 #define WELCOME_SLIDE_MS 380
 
-// Travel of the slide in and out. Deliberately small: it accompanies the fade
-// rather than being a carousel.
-#define WELCOME_SLIDE_PX 46
+// 2.0 moves things and never fades them (the platform has no cheap way to
+// blend): the word slides the whole width of its strip, out to the left and
+// the next in from the right, and the strip clips it, so it leaves and enters
+// at the edges of the page's margins.
+static int slide_px;
 
 static lv_obj_t *panel;
+static lv_obj_t *word_strip; // clips the word as it slides
 static lv_obj_t *word_label;
 static lv_obj_t *start_btn;
 static lv_obj_t *start_label;
@@ -82,53 +87,32 @@ static void start_hold(void);
 
 static void set_x(void *obj, int32_t value) { lv_obj_set_style_translate_x((lv_obj_t *)obj, value, 0); }
 
-static void set_opa(void *obj, int32_t value) { lv_obj_set_style_opa((lv_obj_t *)obj, (lv_opa_t)value, 0); }
-
-// Slides in from the right while fading up.
+// Slides in from the right edge of the strip.
 static void slide_in(void) {
 	lv_anim_t move;
 	lv_anim_init(&move);
 	lv_anim_set_var(&move, word_label);
 	lv_anim_set_exec_cb(&move, set_x);
-	lv_anim_set_values(&move, WELCOME_SLIDE_PX, 0);
+	lv_anim_set_values(&move, slide_px, 0);
 	lv_anim_set_duration(&move, WELCOME_SLIDE_MS);
 	lv_anim_set_path_cb(&move, lv_anim_path_ease_out);
 	lv_anim_start(&move);
 
-	lv_anim_t fade;
-	lv_anim_init(&fade);
-	lv_anim_set_var(&fade, word_label);
-	lv_anim_set_exec_cb(&fade, set_opa);
-	lv_anim_set_values(&fade, LV_OPA_TRANSP, LV_OPA_COVER);
-	lv_anim_set_duration(&fade, WELCOME_SLIDE_MS);
-	lv_anim_start(&fade);
-
 	start_hold();
 }
 
-// Slides out to the left while fading down, then swaps the word and slides the
-// next one in from the other side.
+// Slides out past the left edge, then swaps the word -- out of sight, clipped
+// by the strip -- and slides the next one in from the other side.
 static void slide_out(void) {
 	lv_anim_t move;
 	lv_anim_init(&move);
 	lv_anim_set_var(&move, word_label);
 	lv_anim_set_exec_cb(&move, set_x);
-	lv_anim_set_values(&move, 0, -WELCOME_SLIDE_PX);
+	lv_anim_set_values(&move, 0, -slide_px);
 	lv_anim_set_duration(&move, WELCOME_SLIDE_MS);
 	lv_anim_set_path_cb(&move, lv_anim_path_ease_in);
+	lv_anim_set_completed_cb(&move, slide_out_done);
 	lv_anim_start(&move);
-
-	lv_anim_t fade;
-	lv_anim_init(&fade);
-	lv_anim_set_var(&fade, word_label);
-	lv_anim_set_exec_cb(&fade, set_opa);
-	lv_anim_set_values(&fade, LV_OPA_COVER, LV_OPA_TRANSP);
-	lv_anim_set_duration(&fade, WELCOME_SLIDE_MS);
-	// The continuation hangs off the fade, not the slide: both last the same,
-	// but opacity is what decides when the old word is no longer visible, which
-	// is the moment it can be swapped unseen.
-	lv_anim_set_completed_cb(&fade, slide_out_done);
-	lv_anim_start(&fade);
 }
 
 static void slide_out_done(lv_anim_t *a) {
@@ -178,11 +162,6 @@ static void start_cb(lv_event_t *e) {
 	language_show_first_boot();
 }
 
-static void refresh_theme(void) {
-	if (start_btn) {
-		lv_obj_set_style_bg_color(start_btn, theme()->accent, 0);
-	}
-}
 
 void welcome_init(gui_config_t *cfg) {
 	// The cycle is random and needs a seed: without one, rand() returns the
@@ -191,13 +170,13 @@ void welcome_init(gui_config_t *cfg) {
 	srand((unsigned int)time(NULL));
 
 	panel = lv_obj_create(lv_layer_top());
+	lv_obj_remove_style_all(panel);
 	lv_obj_set_size(panel, cfg->screen_width, cfg->screen_height);
 	lv_obj_align(panel, LV_ALIGN_TOP_LEFT, 0, 0);
-	lv_obj_add_style(panel, &theme_style_screen, 0);
-	lv_obj_set_style_border_width(panel, 0, 0);
-	lv_obj_set_style_radius(panel, 0, 0);
+	lv_obj_add_style(panel, &sx_style_page, 0);
 	lv_obj_set_style_pad_all(panel, cfg->padding, 0);
 	lv_obj_set_scrollable(panel, false);
+	lv_obj_set_clickable(panel, true);
 	lv_obj_set_hidden(panel, true);
 
 	// The word and the button below it are the only two elements, so they are
@@ -205,32 +184,39 @@ void welcome_init(gui_config_t *cfg) {
 	// page, which holds more.
 	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(panel, 64, 0);
+	lv_obj_set_style_pad_row(panel, 64, 0);
 
-	word_label = lv_label_create(panel);
+	// "Добро пожаловать" is the wide one: one centred line, the panel's width
+	// less its padding, and the strip it slides in clips it there.
+	int strip_w = cfg->screen_width - 2 * cfg->padding;
+	slide_px = strip_w;
+	word_strip = lv_obj_create(panel);
+	lv_obj_remove_style_all(word_strip);
+	lv_obj_set_size(word_strip, strip_w, lv_font_get_line_height(&font_ui_34_bold));
+	lv_obj_set_scrollable(word_strip, false);
+
+	word_label = lv_label_create(word_strip);
 	lv_label_set_text(word_label, WELCOME_WORDS[0]);
-	lv_obj_add_style(word_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(word_label, &font_ui_32, 0);
-	// "Добро пожаловать" is the wide one at 32 px: one centred line, sized to
-	// the panel less its padding so the longest word does not reach the edges.
-	lv_obj_set_width(word_label, cfg->screen_width - 4 * cfg->padding);
+	lv_obj_add_style(word_label, &sx_style_text, 0);
+	lv_obj_set_style_text_font(word_label, &font_ui_34_bold, 0);
+	lv_obj_set_width(word_label, strip_w);
 	lv_obj_set_style_text_align(word_label, LV_TEXT_ALIGN_CENTER, 0);
 
+	// The accent pill, 68 tall: the one thing to do here.
 	start_btn = lv_btn_create(panel);
-	lv_obj_set_size(start_btn, 228, 64);
+	lv_obj_remove_style_all(start_btn);
+	lv_obj_set_size(start_btn, LV_SIZE_CONTENT, SX_SHEET_BTN_H);
+	lv_obj_set_style_min_width(start_btn, 240, 0);
+	lv_obj_set_style_pad_hor(start_btn, 40, 0);
 	lv_obj_set_style_radius(start_btn, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_bg_color(start_btn, theme()->accent, 0);
-	lv_obj_set_style_shadow_width(start_btn, 0, 0);
-	lv_obj_set_style_border_width(start_btn, 0, 0);
+	lv_obj_add_style(start_btn, &sx_style_accent, 0);
+	lv_obj_add_style(start_btn, &sx_style_press, LV_STATE_PRESSED);
 	lv_obj_add_event_cb(start_btn, start_cb, LV_EVENT_CLICKED, NULL);
 
 	start_label = lv_label_create(start_btn);
 	lv_label_set_text(start_label, tr("welcome_start"));
-	lv_obj_set_style_text_font(start_label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(start_label, lv_color_white(), 0);
+	lv_obj_set_style_text_font(start_label, &font_ui_26_bold, 0);
 	lv_obj_center(start_label);
-
-	theme_register_refresh(refresh_theme);
 }
 
 void welcome_show_first_boot(void) {
@@ -243,7 +229,6 @@ void welcome_show_first_boot(void) {
 	current_word = 0;
 	lv_label_set_text(word_label, WELCOME_WORDS[current_word]);
 	lv_obj_set_style_translate_x(word_label, 0, 0);
-	lv_obj_set_style_opa(word_label, LV_OPA_COVER, 0);
 
 	lv_obj_set_hidden(panel, false);
 	lv_obj_move_foreground(panel);
