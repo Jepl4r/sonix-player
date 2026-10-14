@@ -5,6 +5,7 @@
 #include <dirent.h>
 #include <link.h>
 #include <malloc.h>
+#include <signal.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
@@ -63,6 +64,10 @@ static uint64_t frame_cpu_us;  // UI thread CPU over the drawn frames
 static uint64_t frame_flush_us; // ... of which in the flush callback (on the emulator: SDL)
 static uint64_t frame_layout_us; // ... of which before rendering (layout, invalidation joins)
 static uint32_t draw_max;		 // the worst frame without its flush
+#define PERF_DRAWS_MAX 1024
+static uint32_t draws[PERF_DRAWS_MAX]; // each frame's cost without its flush, for the percentiles
+static uint32_t draw_count;
+static volatile sig_atomic_t report_now; // SIGUSR2: report at the end of this pass
 static uint32_t frame_cpu_max; // the worst one
 static uint64_t frame_px;	   // pixels repainted
 static uint32_t frame_px_max;
@@ -126,6 +131,8 @@ static bool is_ignored(const lv_timer_t *timer) {
 	}
 	return false;
 }
+
+static void report_cb(lv_timer_t *timer);
 
 void perfstat_pass_begin(void) {
 	if (!enabled) {
@@ -200,6 +207,10 @@ void perfstat_pass_end(void) {
 	} else {
 		ignored_cpu_us += pass_cpu;
 	}
+	if (report_now) {
+		report_now = 0;
+		report_cb(NULL);
+	}
 }
 
 void perfstat_woke(bool by_post, bool by_touch) {
@@ -262,6 +273,9 @@ static void refr_event_cb(lv_event_t *e) {
 		}
 		if (cpu - refr_flush > draw_max) {
 			draw_max = cpu - refr_flush;
+		}
+		if (draw_count < PERF_DRAWS_MAX) {
+			draws[draw_count++] = cpu - refr_flush;
 		}
 		if (cpu > 16000) {
 			frames_over_16++;
@@ -421,6 +435,16 @@ static void report_threads(char *out, size_t size, double secs) {
 	}
 }
 
+static int cmp_u32(const void *a, const void *b) {
+	uint32_t x = *(const uint32_t *)a, y = *(const uint32_t *)b;
+	return x < y ? -1 : x > y;
+}
+
+static void sigusr2_cb(int sig) {
+	(void)sig;
+	report_now = 1;
+}
+
 static void report_cb(lv_timer_t *timer) {
 	(void)timer;
 	uint64_t now = clock_us(CLOCK_MONOTONIC);
@@ -438,13 +462,19 @@ static void report_cb(lv_timer_t *timer) {
 #pragma GCC diagnostic ignored "-Wdeprecated-declarations"
 	struct mallinfo mi = mallinfo();
 #pragma GCC diagnostic pop
+	uint32_t p50 = 0, p95 = 0;
+	if (draw_count) {
+		qsort(draws, draw_count, sizeof(draws[0]), cmp_u32);
+		p50 = draws[draw_count / 2];
+		p95 = draws[(draw_count * 95) / 100 < draw_count ? (draw_count * 95) / 100 : draw_count - 1];
+	}
 	fprintf(stderr,
 			"perf: %.1f s: loop %.1f/s (timers %.1f/s; woke: due %.1f post %.1f touch %.1f/s) handler cpu %.2f ms/s (+%.2f emulator-only); "
-			"frames %u (%.1f/s), cpu avg %.2f max %.2f ms (without flush avg %.3f max %.3f, layout avg %.3f), >16 ms %u, px avg %u max %u, empty %u; "
+			"frames %u (%.1f/s), cpu avg %.2f max %.2f ms (without flush avg %.3f p50 %.3f p95 %.3f max %.3f, layout avg %.3f), >16 ms %u, px avg %u max %u, empty %u; "
 			"process cpu %.1f %%, rss %ld kB (peak %ld), heap %d kB in use, %d kB free\n",
 			secs, passes / secs, busy_passes / secs, woke_timeout / secs, woke_post / secs, woke_touch / secs,
 			(handler_cpu_us - ignored_cpu_us) / 1000.0 / secs, ignored_cpu_us / 1000.0 / secs, frames, frames / secs, frames ? frame_cpu_us / 1000.0 / frames : 0.0,
-			frame_cpu_max / 1000.0, frames ? (frame_cpu_us - frame_flush_us) / 1000.0 / frames : 0.0, draw_max / 1000.0,
+			frame_cpu_max / 1000.0, frames ? (frame_cpu_us - frame_flush_us) / 1000.0 / frames : 0.0, p50 / 1000.0, p95 / 1000.0, draw_max / 1000.0,
 			frames ? frame_layout_us / 1000.0 / frames : 0.0, frames_over_16, frames ? (unsigned)(frame_px / frames) : 0u, frame_px_max,
 			empty_refr, cpu_pct, status_kb("VmRSS"), status_kb("VmHWM"), mi.uordblks / 1024, mi.fordblks / 1024);
 
@@ -497,6 +527,7 @@ static void report_cb(lv_timer_t *timer) {
 	frame_cpu_us = frame_px = handler_cpu_us = ignored_cpu_us = 0;
 	frame_flush_us = frame_layout_us = 0;
 	draw_max = 0;
+	draw_count = 0;
 	callback_count = 0;
 	last_wall_us = now;
 	last_proc_ticks = ticks;
@@ -519,6 +550,10 @@ void perfstat_init(lv_display_t *disp) {
 	lv_display_add_event_cb(disp, refr_event_cb, LV_EVENT_REFR_READY, NULL);
 	lv_display_add_event_cb(disp, refr_event_cb, LV_EVENT_FLUSH_START, NULL);
 	lv_display_add_event_cb(disp, refr_event_cb, LV_EVENT_FLUSH_FINISH, NULL);
+
+	// kill -USR2 <pid>: a report at once, which also starts a new window --
+	// two of them around something done on the screen measure just that.
+	signal(SIGUSR2, sigusr2_cb);
 
 	lv_timer_t *t = lv_timer_create(report_cb, report_ms, NULL);
 	perfstat_ignore_timer(t); // its own runs are not the player's
