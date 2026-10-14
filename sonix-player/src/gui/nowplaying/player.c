@@ -5097,8 +5097,10 @@ static void np_paint_backgrounds(void) {
 	lv_obj_set_style_bg_color(player_menu, want[3], 0);
 	lv_obj_set_style_bg_image_src(player_screen, page_strip, 0);
 	lv_obj_set_style_bg_image_tiled(player_screen, true, 0);
-	lv_obj_set_style_bg_image_src(player_menu, panel_strip, 0);
-	lv_obj_set_style_bg_image_tiled(player_menu, true, 0);
+	// The panel's strip is drawn by sx_gradient_paint() (attached where the
+	// panel is made), which reads np_panel_strip: rounded corners make LVGL's
+	// own tiled background far too dear for the panel (sx_palette.h).
+	lv_obj_invalidate(player_menu);
 	// The old strips only once nothing points at them.
 	sx_gradient_destroy(np_page_strip);
 	sx_gradient_destroy(np_panel_strip);
@@ -6336,6 +6338,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(player_menu, 0, 0);
 	lv_obj_set_style_radius(player_menu, SX_NP_PANEL_R, 0);
 	lv_obj_set_style_pad_hor(player_menu, NP_PANEL_PAD_H, 0);
+	sx_gradient_paint(player_menu, &np_panel_strip);
 	menu_style_for_layout();
 	lv_obj_set_scrollable(player_menu, false);
 	// Pulled down, the panel takes the player with it, as the artwork does.

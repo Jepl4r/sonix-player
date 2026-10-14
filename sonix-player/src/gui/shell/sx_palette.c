@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 
+#include "lvgl/src/misc/lv_area_private.h"
 #include "src/system/playback/device_state.h"
 
 // The hue the interface wears before anything has played, and after the queue
@@ -407,5 +408,84 @@ lv_draw_buf_t *sx_gradient_create(int32_t w, int32_t h, const sx_grad_stop_t *st
 void sx_gradient_destroy(lv_draw_buf_t *strip) {
 	if (strip) {
 		lv_draw_buf_destroy(strip);
+	}
+}
+
+// One tiled draw of the strip over `part` of the object, the tiles laid from
+// the object's top left whatever part is drawn (image_area), so the bands
+// meet without a seam. Both the area and the layer's clip are narrowed to the
+// part: LVGL walks every line of every tile of the area it is given before it
+// clips (the masked path), and blends whole tiles up to the clip and no
+// further (the plain one), so either alone would draw too much -- the second
+// would paint the strip square over the corners.
+static void gradient_draw_part(lv_layer_t *layer, const lv_draw_buf_t *strip, const lv_area_t *obj_area,
+							   const lv_area_t *part, int32_t radius, lv_opa_t opa) {
+	lv_area_t clipped;
+	if (!lv_area_intersect(&clipped, part, &layer->_clip_area)) {
+		return;
+	}
+	lv_draw_image_dsc_t dsc;
+	lv_draw_image_dsc_init(&dsc);
+	dsc.src = strip;
+	dsc.tile = 1;
+	dsc.opa = opa;
+	dsc.image_area = *obj_area;
+	dsc.clip_radius = radius;
+	lv_area_t saved_clip = layer->_clip_area; // a task takes the clip it is made with
+	layer->_clip_area = clipped;
+	lv_draw_image(layer, &dsc, &clipped);
+	layer->_clip_area = saved_clip;
+}
+
+static void gradient_paint_cb(lv_event_t *e) {
+	lv_draw_buf_t *const *slot = lv_event_get_user_data(e);
+	const lv_draw_buf_t *strip = slot ? *slot : NULL;
+	if (!strip) {
+		return;
+	}
+	lv_obj_t *obj = lv_event_get_current_target_obj(e);
+	lv_opa_t opa = lv_obj_get_style_bg_image_opa(obj, LV_PART_MAIN);
+	if (opa <= LV_OPA_MIN || lv_obj_get_style_bg_opa(obj, LV_PART_MAIN) <= LV_OPA_MIN) {
+		return;
+	}
+	// As LVGL's own background would be: faded with the object and its parents.
+	lv_opa_t whole = lv_obj_get_style_opa_recursive(obj, LV_PART_MAIN);
+	if (whole < LV_OPA_MAX) {
+		opa = LV_OPA_MIX2(opa, whole);
+	}
+	lv_layer_t *layer = lv_event_get_layer(e);
+	lv_area_t area;
+	lv_obj_get_coords(obj, &area);
+
+	// The bands that hold the corners go through the radius mask, the middle
+	// as plain copies.
+	int32_t h = lv_area_get_height(&area);
+	int32_t w = lv_area_get_width(&area);
+	int32_t r = lv_obj_get_style_radius(obj, LV_PART_MAIN);
+	if (r > w / 2) {
+		r = w / 2;
+	}
+	if (r > h / 2) {
+		r = h / 2;
+	}
+	if (r <= 0) {
+		gradient_draw_part(layer, strip, &area, &area, 0, opa);
+		return;
+	}
+	lv_area_t top = area, mid = area, bottom = area;
+	top.y2 = area.y1 + r - 1;
+	mid.y1 = top.y2 + 1;
+	mid.y2 = area.y2 - r;
+	bottom.y1 = mid.y2 + 1;
+	gradient_draw_part(layer, strip, &area, &top, r, opa);
+	if (mid.y1 <= mid.y2) {
+		gradient_draw_part(layer, strip, &area, &mid, 0, opa);
+	}
+	gradient_draw_part(layer, strip, &area, &bottom, r, opa);
+}
+
+void sx_gradient_paint(lv_obj_t *obj, lv_draw_buf_t *const *slot) {
+	if (obj) {
+		lv_obj_add_event_cb(obj, gradient_paint_cb, LV_EVENT_DRAW_MAIN, (void *)slot);
 	}
 }
