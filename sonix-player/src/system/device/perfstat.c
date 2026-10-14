@@ -26,6 +26,7 @@
 #define PERF_IGNORED_MAX 4
 
 static bool enabled;
+static bool log_areas; // SONIX_PERF_AREAS=1: every frame's areas in the log, to find who repaints
 static lv_display_t *display;
 static uint32_t report_ms;
 
@@ -45,6 +46,7 @@ typedef struct {
 	lv_timer_cb_t cb;
 	uint32_t runs;
 	uint32_t period; // as last seen, to tell two users of one callback apart by eye
+	uint64_t cpu_us; // the passes it ran in, shared out evenly among the timers that ran in each
 } cb_count_t;
 static cb_count_t callbacks[PERF_CALLBACKS_MAX];
 static int callback_count;
@@ -138,20 +140,22 @@ void perfstat_pass_begin(void) {
 	pass_t0 = thread_cpu_us();
 }
 
-static void count_callback(lv_timer_t *t) {
+static int count_callback(lv_timer_t *t) {
 	for (int i = 0; i < callback_count; i++) {
 		if (callbacks[i].cb == t->timer_cb) {
 			callbacks[i].runs++;
 			callbacks[i].period = t->period;
-			return;
+			return i;
 		}
 	}
 	if (callback_count < PERF_CALLBACKS_MAX) {
 		callbacks[callback_count].cb = t->timer_cb;
 		callbacks[callback_count].runs = 1;
 		callbacks[callback_count].period = t->period;
-		callback_count++;
+		callbacks[callback_count].cpu_us = 0;
+		return callback_count++;
 	}
+	return -1;
 }
 
 void perfstat_pass_end(void) {
@@ -162,6 +166,8 @@ void perfstat_pass_end(void) {
 	handler_cpu_us += pass_cpu;
 	passes++;
 	bool counted = false;
+	int ran[PERF_TIMERS_MAX];
+	int ran_count = 0;
 	// Only timers that existed before the pass and still do: one deleted in
 	// the pass is no longer in the list, one created in it is not in the
 	// snapshot. Both orders are the list's own, so one walk does.
@@ -179,9 +185,15 @@ void perfstat_pass_end(void) {
 		}
 		s = found + 1;
 		if (snap[found].last_run != t->last_run && !is_ignored(t)) {
-			count_callback(t);
+			int k = count_callback(t);
+			if (k >= 0 && ran_count < PERF_TIMERS_MAX) {
+				ran[ran_count++] = k;
+			}
 			counted = true;
 		}
+	}
+	for (int i = 0; i < ran_count; i++) {
+		callbacks[ran[i]].cpu_us += pass_cpu / (uint64_t)ran_count;
 	}
 	if (counted) {
 		busy_passes++;
@@ -220,10 +232,21 @@ static void refr_event_cb(lv_event_t *e) {
 		refr_rendering = true;
 		frame_layout_us += thread_cpu_us() - refr_t0;
 		lv_display_t *d = lv_event_get_target(e);
+		char areas[256];
+		size_t used = 0;
+		areas[0] = '\0';
 		for (uint32_t i = 0; i < d->inv_p; i++) {
 			if (!d->inv_area_joined[i]) {
-				refr_px += (uint32_t)lv_area_get_size(&d->inv_areas[i]);
+				const lv_area_t *a = &d->inv_areas[i];
+				refr_px += (uint32_t)lv_area_get_size(a);
+				if (log_areas && used < sizeof(areas)) {
+					used += (size_t)snprintf(areas + used, sizeof(areas) - used, " %d,%d-%d,%d", (int)a->x1, (int)a->y1,
+											 (int)a->x2, (int)a->y2);
+				}
 			}
+		}
+		if (log_areas) {
+			fprintf(stderr, "perf: frame areas%s\n", areas);
 		}
 	} else if (code == LV_EVENT_REFR_READY) {
 		if (!refr_rendering) {
@@ -435,12 +458,12 @@ static void report_cb(lv_timer_t *timer) {
 			}
 		}
 	}
-	char line[1024];
-	size_t used = (size_t)snprintf(line, sizeof(line), "perf: timers/s");
+	char line[2048];
+	size_t used = (size_t)snprintf(line, sizeof(line), "perf: timers/s (runs/s / cpu per s)");
 	for (int i = 0; i < callback_count && used < sizeof(line); i++) {
-		used += (size_t)snprintf(line + used, sizeof(line) - used, " %#lx(%u):%.1f",
+		used += (size_t)snprintf(line + used, sizeof(line) - used, " %#lx(%u):%.1f/%.0fus",
 								 (unsigned long)((uintptr_t)callbacks[i].cb - load_bias), (unsigned)callbacks[i].period,
-								 callbacks[i].runs / secs);
+								 callbacks[i].runs / secs, callbacks[i].cpu_us / secs);
 	}
 	fprintf(stderr, "%s\n", line);
 
@@ -486,6 +509,8 @@ void perfstat_init(lv_display_t *disp) {
 		return;
 	}
 	report_ms = (uint32_t)(seconds > 3600 ? 3600 : seconds) * 1000u;
+	const char *areas = getenv("SONIX_PERF_AREAS");
+	log_areas = areas && areas[0] == '1';
 	display = disp;
 	dl_iterate_phdr(find_bias, &load_bias);
 
