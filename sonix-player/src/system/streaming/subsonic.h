@@ -149,6 +149,13 @@ int subsonic_search_artists(const char *query, int offset, subsonic_artist_t *ou
 int subsonic_playlists(int offset, subsonic_playlist_t *out, int max);
 int subsonic_playlist_tracks(const char *playlist_id, int offset, subsonic_track_t *out, int max);
 
+// getRandomSongs: `max` tracks the server picks at random (no paging: each
+// call is a new draw).
+int subsonic_random_tracks(subsonic_track_t *out, int max);
+// Is the server there: a timed ping (`ms`) and, when the server says it, how
+// many tracks it holds (`tracks`, -1 when not said). False when the ping
+// fails. Blocking: a worker thread's.
+bool subsonic_status(int *tracks, int *ms);
 int subsonic_starred_tracks(int offset, subsonic_track_t *out, int max);
 int subsonic_starred_albums(int offset, subsonic_album_t *out, int max);
 

@@ -20,6 +20,13 @@
 #include "src/gui/streaming/podcastcard.h"
 #include "src/gui/streaming/podcastopml.h"
 #include "src/gui/streaming/qobuzart.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_row.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_toast.h"
+#include "src/gui/shell/sx_tokens.h"
+#include "src/gui/streaming/svcui.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
@@ -93,8 +100,6 @@ lv_obj_t *podcast_list_screen; // the same object: see podcastpage.h
 static lv_obj_t *search_screen;
 static lv_obj_t *settings_screen;
 
-static lv_obj_t *busy_layer;
-static lv_obj_t *busy_label;
 static lv_obj_t *search_btn;
 static lv_obj_t *settings_btn;
 
@@ -216,7 +221,7 @@ static bool refresh_notes(void);
 static void refresh_corner_buttons(void);
 static bool network_up(void);
 static void paint_pill(lv_obj_t *btn, bool on);
-static void row_clicked_cb(lv_event_t *e);
+
 static bool job_is_list(job_kind_t kind);
 static void list_nav_drop(void);
 static void list_nav_commit(void);
@@ -249,59 +254,30 @@ static void job_result_taken(void) {
 }
 
 // ---------------------------------------------------------------------------
-// the waiting veil
+// waiting
+//
+// 2.0 has no veils (the handoff: no full-screen dimming). The wait is the busy
+// toast: "Loading..." with its spinner over the bottom of the page. It still
+// holds the page while it is up, as the veil did -- the worker is refilling
+// the arrays the rows read, and a tap on a row meanwhile would open the wrong
+// podcast.
 // ---------------------------------------------------------------------------
 
+static bool busy_up;
+
 static void busy_show_text(bool with_text) {
-	if (!busy_layer) {
-		return;
-	}
-	if (busy_label) {
-		if (with_text) {
-			lv_obj_set_hidden(busy_label, false);
-		} else {
-			lv_obj_set_hidden(busy_label, true);
-		}
-	}
-	lv_obj_set_hidden(busy_layer, false);
-	lv_obj_move_foreground(busy_layer);
+	(void)with_text; // the toast always says it: a spinner alone reads as stuck
+	busy_up = true;
+	sx_toast_busy(tr("loading"), false);
 }
 
-// Waiting for a list: the spinner says enough, and the list being replaced is
-// what the user is looking at anyway.
 static void busy_show(void) { busy_show_text(false); }
 
 static void busy_hide(void) {
-	if (busy_layer) {
-		lv_obj_set_hidden(busy_layer, true);
+	if (busy_up) {
+		busy_up = false;
+		sx_toast_busy_end();
 	}
-}
-
-static void build_busy_layer(void) {
-	busy_layer = lv_obj_create(lv_layer_sys());
-	lv_obj_set_size(busy_layer, lv_pct(100), lv_pct(100));
-	lv_obj_set_pos(busy_layer, 0, 0);
-	lv_obj_set_style_bg_color(busy_layer, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(busy_layer, LV_OPA_50, 0);
-	lv_obj_set_style_border_width(busy_layer, 0, 0);
-	lv_obj_set_style_radius(busy_layer, 0, 0);
-	lv_obj_set_scrollable(busy_layer, false);
-	lv_obj_set_hidden(busy_layer, true);
-	lv_obj_set_flex_flow(busy_layer, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(busy_layer, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-	lv_obj_t *spin = spinner_create(busy_layer, &icon_loader_big);
-	lv_obj_set_style_image_recolor(spin, lv_color_white(), 0);
-	lv_obj_set_style_image_recolor_opa(spin, LV_OPA_COVER, 0);
-
-	// Under the spinner, because a spinner alone over a list that is still
-	// there reads as "the page is stuck" rather than "your episode is coming".
-	busy_label = lv_label_create(busy_layer);
-	lv_label_set_text(busy_label, tr("loading"));
-	lv_obj_set_style_text_color(busy_label, lv_color_white(), 0);
-	lv_obj_set_style_text_font(busy_label, &font_ui_22, 0);
-	lv_obj_set_style_margin_top(busy_label, 16, 0);
-	lv_obj_set_hidden(busy_label, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -348,18 +324,17 @@ static int list_count;
 // Everything ABOUT an entry -- its cover, whether that cover failed, which row
 // lent it -- stays indexed by the entry, not by the widget. The widget is only
 // what draws it this second.
-#define ROW_HEIGHT 88
-#define ROW_GAP 12
-#define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
+//
+// 2.0: each pooled widget is the 2.0 row (sx_row.h) -- the cover (a plaque in
+// the podcast's tone with the microphone until it comes), the name, the line
+// under it, and the star that follows a podcast of the catalogue (a chevron
+// for the podcasts on the card). Its height follows Appearance > Large rows.
+#define ROW_PITCH (sx_row_height(false) + SX_ROW_GAP)
 #define ROW_POOL 12
 
 typedef struct {
-	lv_obj_t *button;
-	lv_obj_t *thumb;
-	lv_obj_t *title;
-	lv_obj_t *detail;
-	lv_obj_t *menu_btn;
-	lv_obj_t *badge;	  // on the cover of a podcast on the card: where it came from
+	lv_obj_t *button; // the sx_row
+	lv_obj_t *badge;  // on the cover of a podcast on the card: where it came from
 	lv_obj_t *badge_icon;
 	// The entry drawn on it: -1 for a row with nothing to show, and -2 for one
 	// that must be redrawn even though its number has not changed -- the list
@@ -470,32 +445,28 @@ static void listen_art_poll(void);
 static lv_obj_t *thumb_showing(int index) {
 	for (int i = 0; i < ROW_POOL; i++) {
 		if (rows[i].index == index) {
-			return rows[i].thumb;
+			return rows[i].button;
 		}
 	}
 	return NULL;
 }
 
-// Puts the picture, or the microphone when there is none, on one pooled widget.
-static void paint_thumb(lv_obj_t *thumb, int index) {
-	if (!thumb) {
+static const char *entry_title(int index);
+
+// Puts the picture, or the microphone when there is none, on one pooled row:
+// the plaque in the podcast's own tone under it either way.
+static void paint_thumb(lv_obj_t *row, int index) {
+	if (!row) {
 		return;
 	}
+	lv_color_t tone = svcui_tone(index >= 0 ? entry_title(index) : "");
 	if (index >= 0 && row_has_image[index]) {
-		lv_obj_remove_style(thumb, &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor_opa(thumb, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_radius(thumb, 6, 0);
-		lv_obj_set_style_clip_corner(thumb, true, 0);
-		lv_image_set_src(thumb, &row_images[row_image_source[index]].dsc);
+		sx_row_set_thumb(row, &row_images[row_image_source[index]].dsc, tone);
 		return;
 	}
 	// The microphone, not the musical note: a podcast row without a cover is
-	// not a track. The icon is the one supplied by the user (podcast-list.svg).
-	lv_image_set_src(thumb, &icon_podcast_list);
-	lv_obj_add_style(thumb, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(thumb, LV_OPA_COVER, 0);
-	lv_obj_set_style_clip_corner(thumb, false, 0);
-	lv_obj_set_style_radius(thumb, 0, 0);
+	// not a track.
+	sx_row_set_thumb(row, &icon_podcast_list, tone);
 }
 
 // Records that the picture belonging to `owner` is the one for `row`, and draws
@@ -657,7 +628,7 @@ static void card_art_request_visible(void) {
 			row_images[row] = image;
 			row_has_image[row] = true;
 			row_image_source[row] = row;
-			paint_thumb(rows[i].thumb, row);
+			paint_thumb(rows[i].button, row);
 			continue;
 		}
 		coverloader_request(PODCASTCARD_SLOT_ROWS + i, first, ROW_THUMB);
@@ -747,10 +718,8 @@ static void row_bind(row_t *row, int index) {
 
 	lv_obj_set_hidden(row->button, false);
 	lv_obj_set_y(row->button, index * ROW_PITCH);
-
-	const char *title =
-		list_kind == JOB_CARD ? podcastcard_show_name(&card_shows[index]) : result_feeds[index].title;
-	lv_label_set_text(row->title, title);
+	sx_row_set_user(row->button, (void *)(intptr_t)index);
+	sx_row_set_title(row->button, entry_title(index));
 
 	// Where a podcast on the card came from: downloaded here, or copied in.
 	if (list_kind == JOB_CARD) {
@@ -762,23 +731,18 @@ static void row_bind(row_t *row, int index) {
 
 	char detail[200];
 	row_detail(index, detail, sizeof(detail));
-	if (detail[0]) {
-		lv_label_set_text(row->detail, detail);
-		lv_obj_set_hidden(row->detail, false);
-	} else {
-		lv_obj_set_hidden(row->detail, true);
-	}
+	sx_row_set_subtitle(row->button, detail, NULL, NULL);
 
-	// The three dots belong to a podcast, not to an episode, and the same pool
-	// serves both: built on every row, shown on the lists that have something
-	// to put in it.
+	// The star follows a podcast of the catalogue; a podcast on the card has
+	// nothing to follow and opens like a folder.
 	if (kind_has_row_menu(list_kind)) {
-		lv_obj_set_hidden(row->menu_btn, false);
+		sx_row_set_trail(row->button, SX_ROW_TRAIL_STAR);
+		sx_row_set_starred(row->button, podcastsubs_is_followed(result_feeds[index].id));
 	} else {
-		lv_obj_set_hidden(row->menu_btn, true);
+		sx_row_set_trail(row->button, SX_ROW_TRAIL_CHEVRON);
 	}
 
-	paint_thumb(row->thumb, index);
+	paint_thumb(row->button, index);
 }
 
 // Slides the pool to wherever the list has been scrolled to.
@@ -832,7 +796,7 @@ static void art_forget_rows(void) {
 	for (int i = 0; i < ROW_POOL; i++) {
 		if (rows[i].button) {
 			lv_obj_set_hidden(rows[i].button, true);
-			paint_thumb(rows[i].thumb, -1);
+			paint_thumb(rows[i].button, -1);
 		}
 		rows[i].index = -1;
 	}
@@ -869,7 +833,7 @@ static void art_drop_pictures(void) {
 	// Back to the microphone, after the state says there is no picture and
 	// before anything can draw the freed pixels.
 	for (int i = 0; i < ROW_POOL; i++) {
-		paint_thumb(rows[i].thumb, rows[i].index);
+		paint_thumb(rows[i].button, rows[i].index);
 	}
 }
 
@@ -919,129 +883,68 @@ static void list_unloaded_cb(lv_event_t *e) {
 // the rows
 // ---------------------------------------------------------------------------
 
-// The three-dot menu is where following a podcast of the catalogue is chosen;
-// the podcasts on the card have none.
+// The podcasts of the catalogue have something of their own on the row and
+// in the sheet: following them. The podcasts on the card have none.
 static bool kind_has_row_menu(job_kind_t kind) {
 	return kind == JOB_SEARCH || kind == JOB_TRENDING || kind == JOB_FOLLOWED;
 }
 
-static void row_menu_cb(lv_event_t *e);
+static void row_tap(lv_obj_t *row, void *user);
+static void row_hold(lv_obj_t *row, void *user);
+static void row_star(lv_obj_t *row, void *user);
 
-// The twelve rows, built once. Everything that can differ between one entry and
-// the next is created here and shown or hidden at bind time: a recycled widget
-// cannot grow a subtitle it was not born with.
+static const char *entry_title(int index) {
+	if (index < 0 || index >= list_count) {
+		return "";
+	}
+	return list_kind == JOB_CARD ? podcastcard_show_name(&card_shows[index]) : result_feeds[index].title;
+}
+
+// The twelve rows, built once. A podcast is opened, not queued: no swipes
+// (the handoff's matrix, as for an artist or a station); a hold brings up its
+// sheet, the star follows it.
 static void build_rows(int width) {
+	(void)width;
+	static const sx_row_handlers_t handlers = {
+		.on_tap = row_tap,
+		.on_long_press = row_hold,
+		.on_star = row_star,
+	};
 	for (int i = 0; i < ROW_POOL; i++) {
 		row_t *row = &rows[i];
-
-		row->button = lv_btn_create(list_body);
-		lv_obj_set_size(row->button, width, ROW_HEIGHT);
+		row->button = sx_row_create(list_body, &handlers, false);
 		lv_obj_set_x(row->button, 0);
-		lv_obj_add_style(row->button, &theme_style_card, 0);
-		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row->button, 12, 0);
-		lv_obj_set_style_border_width(row->button, 0, 0);
-		lv_obj_set_style_shadow_width(row->button, 0, 0);
-		lv_obj_set_style_pad_hor(row->button, 16, 0);
-		lv_obj_set_style_pad_ver(row->button, 0, 0);
-		lv_obj_set_style_pad_column(row->button, 8, 0);
-		lv_obj_set_scrollable(row->button, false);
+		// The pool places its rows itself.
+		lv_obj_set_style_margin_bottom(row->button, 0, 0);
 		lv_obj_set_hidden(row->button, true);
-		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
-		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-		// Gestures (back, and pulling the player in) often start on a row, and a
-		// button keeps the press to itself.
-		lv_obj_set_event_bubble(row->button, true);
-		lv_obj_add_event_cb(row->button, row_clicked_cb, LV_EVENT_CLICKED, NULL);
+		paint_thumb(row->button, -1);
 
-		// The thumbnail is always there, even when the catalogue gives no
-		// address: a row without it comes up with nothing on the left, text
-		// against the edge and out of line with every other row. With no
-		// address the grey microphone stays, which is the honest answer --
-		// there is no cover.
-		row->thumb = lv_image_create(row->button);
-		lv_obj_set_size(row->thumb, ROW_THUMB, ROW_THUMB);
-		lv_image_set_inner_align(row->thumb, LV_IMAGE_ALIGN_CENTER);
-		lv_obj_set_event_bubble(row->thumb, true);
-		paint_thumb(row->thumb, -1);
-
-		// Over the cover's corner, out of the row's layout.
+		// Over the cover's corner, out of the row's layout: where a podcast on
+		// the card came from (downloaded here, or copied in).
 		row->badge = lv_obj_create(row->button);
 		lv_obj_remove_style_all(row->badge);
-		lv_obj_set_ignore_layout(row->badge, true);
 		lv_obj_set_size(row->badge, 24, 24);
 		lv_obj_set_style_radius(row->badge, LV_RADIUS_CIRCLE, 0);
 		lv_obj_set_style_bg_opa(row->badge, LV_OPA_COVER, 0);
-		lv_obj_set_style_bg_color(row->badge, theme()->screen_bg, 0);
-		lv_obj_set_pos(row->badge, ROW_THUMB - 10, (ROW_HEIGHT + ROW_THUMB) / 2 - 18);
-		lv_obj_set_event_bubble(row->badge, true);
+		lv_obj_add_style(row->badge, &sx_style_page, 0);
+		lv_obj_set_pos(row->badge, SX_ROW_PAD_L + SX_ROW_THUMB - 16, (sx_row_height(false) + SX_ROW_THUMB) / 2 - 18);
+		lv_obj_set_clickable(row->badge, false);
 		lv_obj_set_hidden(row->badge, true);
 		row->badge_icon = lv_image_create(row->badge);
 		lv_image_set_src(row->badge_icon, &icon_sd_card_badge);
-		lv_obj_add_style(row->badge_icon, &theme_style_icon, 0);
+		lv_obj_add_style(row->badge_icon, &sx_style_icon, 0);
 		lv_obj_center(row->badge_icon);
-		lv_obj_set_event_bubble(row->badge_icon, true);
-
-		lv_obj_t *texts = lv_obj_create(row->button);
-		lv_obj_set_flex_grow(texts, 1);
-		lv_obj_set_height(texts, LV_SIZE_CONTENT);
-		lv_obj_set_style_bg_opa(texts, 0, 0);
-		lv_obj_set_style_border_width(texts, 0, 0);
-		lv_obj_set_style_pad_all(texts, 0, 0);
-		lv_obj_set_style_pad_row(texts, 6, 0);
-		lv_obj_set_scrollable(texts, false);
-		lv_obj_set_event_bubble(texts, true);
-		lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
-		lv_obj_set_flex_align(texts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-		row->title = lv_label_create(texts);
-		lv_label_set_long_mode(row->title, LV_LABEL_LONG_DOT);
-		lv_obj_set_width(row->title, lv_pct(100));
-		lv_obj_set_height(row->title, lv_font_get_line_height(&font_ui_22));
-		lv_obj_add_style(row->title, &theme_style_text, 0);
-		lv_obj_set_style_text_font(row->title, &font_ui_22, 0);
-
-		row->detail = lv_label_create(texts);
-		lv_label_set_long_mode(row->detail, LV_LABEL_LONG_DOT);
-		lv_obj_set_width(row->detail, lv_pct(100));
-		lv_obj_set_height(row->detail, lv_font_get_line_height(&font_ui_18));
-		lv_obj_add_style(row->detail, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(row->detail, &font_ui_18, 0);
-
-		row->menu_btn = lv_btn_create(row->button);
-		lv_obj_set_size(row->menu_btn, 44, 44);
-		lv_obj_set_style_bg_opa(row->menu_btn, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_border_width(row->menu_btn, 0, 0);
-		lv_obj_set_style_shadow_width(row->menu_btn, 0, 0);
-		lv_obj_set_style_pad_all(row->menu_btn, 0, 0);
-		lv_obj_set_hidden(row->menu_btn, true);
-		lv_obj_add_event_cb(row->menu_btn, row_menu_cb, LV_EVENT_CLICKED, NULL);
-
-		lv_obj_t *dots = lv_image_create(row->menu_btn);
-		lv_image_set_src(dots, &icon_ellipsis_vertical);
-		lv_obj_add_style(dots, &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
-		lv_obj_center(dots);
 
 		row->index = -1;
 	}
 }
 
 // Which entry a pressed widget is showing. The number cannot be carried in the
-// callback's user data: the widget that is entry 3 one moment is entry 51 the
-// next.
+// callback's user data at build time: the widget that is entry 3 one moment is
+// entry 51 the next -- it is set at bind time instead (sx_row_set_user).
 static int row_index_of(const lv_obj_t *button) {
 	for (int i = 0; i < ROW_POOL; i++) {
 		if (rows[i].button == button) {
-			return rows[i].index;
-		}
-	}
-	return -1;
-}
-
-static int menu_index_of(const lv_obj_t *menu_btn) {
-	for (int i = 0; i < ROW_POOL; i++) {
-		if (rows[i].menu_btn == menu_btn) {
 			return rows[i].index;
 		}
 	}
@@ -1139,6 +1042,10 @@ static void fill_list(int from) {
 		rows[i].index = -2;
 	}
 	lv_obj_set_height(list_body, list_count > 0 ? list_count * ROW_PITCH : ROW_PITCH);
+	// Large rows may have changed since the rows were made.
+	for (int i = 0; i < ROW_POOL; i++) {
+		sx_row_set_compact(rows[i].button, false);
+	}
 
 	if (from == 0) {
 		lv_obj_scroll_to_y(list_container, 0, LV_ANIM_OFF);
@@ -1623,10 +1530,11 @@ static void fetch_start_thread(void) {
 // results coming back, on the GUI thread
 // ---------------------------------------------------------------------------
 
+// 2.0: the page stays where it is, and the mini player comes up with the
+// episode (the player is a tap on it away).
 static void play_started_async(void *user) {
 	(void)user;
 	player_refresh_now_playing();
-	switch_screen(player_screen);
 }
 
 static void job_done_cb(void *user) {
@@ -2059,11 +1967,9 @@ static void *worker_main(void *arg) {
 // tapping a row
 // ---------------------------------------------------------------------------
 
-static void row_clicked_cb(lv_event_t *e) {
-	if (switcher_back_drag_active() || player_sheet_drag_active()) {
-		return;
-	}
-	int index = row_index_of(lv_event_get_current_target(e));
+static void row_tap(lv_obj_t *row, void *user) {
+	(void)user;
+	int index = row_index_of(row);
 	if (index < 0 || index >= list_count) {
 		return;
 	}
@@ -2078,51 +1984,93 @@ static void row_clicked_cb(lv_event_t *e) {
 }
 
 // ---------------------------------------------------------------------------
-// the three-dot menu: follow, or stop
+// following: the star, and the sheet
+//
+// At once, with Undo in the toast (the handoff's principle 6), rather than a
+// line in a menu and a notice after it. The podcast is copied: the toast
+// outlives the row it was raised on.
 // ---------------------------------------------------------------------------
 
-static int menu_row_index;
+static podcast_feed_t follow_feed;
+static bool follow_on;
 
-static void follow_cb(void *user) {
-	(void)user;
-	if (menu_row_index < 0 || menu_row_index >= list_count) {
-		return;
-	}
-	podcastsubs_follow(&result_feeds[menu_row_index]);
-	gui_notify_popup(tr("podcast_now_following"));
-}
-
-static void unfollow_cb(void *user) {
-	(void)user;
-	if (menu_row_index < 0 || menu_row_index >= list_count) {
-		return;
-	}
-	podcastsubs_unfollow(result_feeds[menu_row_index].id);
-	gui_notify_popup(tr("podcast_no_longer_following"));
-
-	// If the followed list itself is on screen, the row has to go at once:
-	// leaving it there would mean a list that is no longer true.
+// The followed list on screen loses or gains the row at once: leaving it there
+// would mean a list that is no longer true.
+static void follow_refresh(void) {
 	if (list_kind == JOB_FOLLOWED) {
 		result_kind = JOB_FOLLOWED;
 		result_count = podcastsubs_list(result_feeds, PODCAST_MAX_HELD);
 		fill_list(0);
+	} else {
+		for (int i = 0; i < ROW_POOL; i++) {
+			rows[i].index = -2;
+		}
+		window_update();
 	}
 }
 
-static void row_menu_cb(lv_event_t *e) {
-	menu_row_index = menu_index_of(lv_event_get_current_target(e));
-	if (menu_row_index < 0 || menu_row_index >= list_count) {
+static void follow_apply(bool on) {
+	follow_on = on;
+	if (on) {
+		podcastsubs_follow(&follow_feed);
+	} else {
+		podcastsubs_unfollow(follow_feed.id);
+	}
+	follow_refresh();
+}
+
+static void follow_undo(void *user) {
+	(void)user;
+	follow_apply(!follow_on);
+}
+
+static void follow_set(const podcast_feed_t *feed, bool on) {
+	follow_feed = *feed;
+	follow_apply(on);
+	svcui_star_toast(on, "podcast_following_x", "podcast_unfollowed_x", feed->title, follow_undo, NULL);
+}
+
+static void row_star(lv_obj_t *row, void *user) {
+	(void)user;
+	int index = row_index_of(row);
+	if (index >= 0 && index < list_count && kind_has_row_menu(list_kind)) {
+		follow_set(&result_feeds[index], !podcastsubs_is_followed(result_feeds[index].id));
+	}
+}
+
+static int menu_row_index;
+
+static void follow_cb(void *user) {
+	if (menu_row_index >= 0 && menu_row_index < list_count) {
+		follow_set(&result_feeds[menu_row_index], user != NULL);
+	}
+}
+
+static void open_cb(void *user) {
+	(void)user;
+	if (menu_row_index >= 0 && menu_row_index < list_count) {
+		podcastcard_open_feed(&result_feeds[menu_row_index]);
+	}
+}
+
+static void row_hold(lv_obj_t *row, void *user) {
+	(void)user;
+	menu_row_index = row_index_of(row);
+	if (menu_row_index < 0 || menu_row_index >= list_count || !kind_has_row_menu(list_kind)) {
 		return;
 	}
-
-	// Two one-entry tables instead of one label picked with a ternary: the tool
-	// that collects the strings to translate reads popover_item_t INITIALISERS,
-	// not assignments.
-	static const popover_item_t FOLLOW[] = {{"podcast_follow", follow_cb, NULL}};
-	static const popover_item_t UNFOLLOW[] = {{"podcast_unfollow", unfollow_cb, NULL}};
-
-	bool followed = podcastsubs_is_followed(result_feeds[menu_row_index].id);
-	popover_show(lv_event_get_current_target(e), followed ? UNFOLLOW : FOLLOW, 1);
+	const podcast_feed_t *f = &result_feeds[menu_row_index];
+	bool followed = podcastsubs_is_followed(f->id);
+	sx_sheet_item_t items[2] = {
+		{.label = tr("podcast_open"), .icon = &icon_chevron_right, .action = open_cb},
+		{.label = tr(followed ? "podcast_unfollow" : "podcast_follow"),
+		 .icon = followed ? &icon_star_filled : &icon_star,
+		 .action = follow_cb,
+		 .user = followed ? NULL : (void *)1},
+	};
+	static char subtitle[200];
+	row_detail(menu_row_index, subtitle, sizeof(subtitle));
+	sx_sheet_menu(f->title, subtitle, items, 2);
 }
 
 // ---------------------------------------------------------------------------
@@ -2253,65 +2201,60 @@ static void dl_cancel_cb(lv_event_t *e) {
 }
 
 static void dl_build(gui_config_t *cfg) {
+	// The layer still holds the page while an episode comes down (one
+	// download at a time, and the list must not change under it), but it is
+	// no veil any more: transparent, the page seen whole around the card.
 	dl_veil = lv_obj_create(lv_layer_top());
 	lv_obj_set_size(dl_veil, lv_pct(100), lv_pct(100));
-	lv_obj_set_style_bg_color(dl_veil, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(dl_veil, LV_OPA_60, 0);
+	lv_obj_set_style_bg_opa(dl_veil, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(dl_veil, 0, 0);
 	lv_obj_set_style_radius(dl_veil, 0, 0);
 	lv_obj_set_scrollable(dl_veil, false);
 	lv_obj_set_clickable(dl_veil, true);
 	lv_obj_set_hidden(dl_veil, true);
 
+	// The card stands at the bottom like the sheet: the surface, over the mini
+	// player's place.
 	lv_obj_t *card = lv_obj_create(dl_veil);
-	lv_obj_set_size(card, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
-	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 16, 0);
+	lv_obj_set_size(card, cfg->screen_width - 2 * SX_BODY_PAD_L, LV_SIZE_CONTENT);
+	lv_obj_add_style(card, &sx_style_surface, 0);
+	lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
+	lv_obj_set_style_radius(card, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 20, 0);
 	lv_obj_set_style_pad_row(card, 14, 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_align(card, LV_ALIGN_CENTER, 0, cfg->top_bar_height / 2);
+	lv_obj_align(card, LV_ALIGN_BOTTOM_MID, 0, -12);
 
 	dl_title = lv_label_create(card);
 	lv_label_set_text(dl_title, tr("podcast_downloading"));
-	lv_obj_add_style(dl_title, &theme_style_text, 0);
+	lv_obj_add_style(dl_title, &sx_style_text, 0);
 	lv_obj_set_style_text_font(dl_title, &font_ui_24, 0);
 
 	dl_name = lv_label_create(card);
 	lv_label_set_long_mode(dl_name, LV_LABEL_LONG_DOT);
 	lv_obj_set_width(dl_name, lv_pct(100));
 	lv_obj_set_style_max_height(dl_name, 2 * lv_font_get_line_height(&font_ui_20), 0);
-	lv_obj_add_style(dl_name, &theme_style_text_dim, 0);
+	lv_obj_add_style(dl_name, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(dl_name, &font_ui_20, 0);
 
 	dl_bar = lv_bar_create(card);
 	lv_obj_set_size(dl_bar, lv_pct(100), 12);
 	lv_bar_set_range(dl_bar, 0, 1000);
-	lv_obj_set_style_bg_color(dl_bar, theme()->surface_pressed, LV_PART_MAIN);
+	lv_obj_add_style(dl_bar, &sx_style_press, LV_PART_MAIN);
 	lv_obj_set_style_bg_opa(dl_bar, LV_OPA_COVER, LV_PART_MAIN);
-	lv_obj_set_style_bg_color(dl_bar, theme()->accent, LV_PART_INDICATOR);
+	lv_obj_add_style(dl_bar, &sx_style_accent, LV_PART_INDICATOR);
 	lv_obj_set_style_radius(dl_bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
 	lv_obj_set_style_radius(dl_bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
 
 	dl_amount = lv_label_create(card);
-	lv_obj_add_style(dl_amount, &theme_style_text_dim, 0);
+	lv_obj_add_style(dl_amount, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(dl_amount, &font_ui_18, 0);
 
-	lv_obj_t *cancel = lv_btn_create(card);
-	lv_obj_set_size(cancel, lv_pct(100), 56);
-	lv_obj_set_style_radius(cancel, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_shadow_width(cancel, 0, 0);
-	lv_obj_set_style_border_width(cancel, 0, 0);
-	lv_obj_set_style_bg_color(cancel, theme()->surface_pressed, 0);
-	lv_obj_add_event_cb(cancel, dl_cancel_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_t *cancel_label = lv_label_create(cancel);
-	lv_label_set_text(cancel_label, tr("cancel"));
-	lv_obj_set_style_text_font(cancel_label, &font_ui_22, 0);
-	lv_obj_set_style_text_color(cancel_label, theme()->text_primary, 0);
-	lv_obj_center(cancel_label);
+	lv_obj_t *cancel = sx_pill(card, tr("cancel"), 0, dl_cancel_cb);
+	lv_obj_set_width(cancel, lv_pct(100));
 
 	dl_timer = lv_timer_create(dl_poll_cb, DL_POLL_MS, NULL);
 	lv_timer_pause(dl_timer);
@@ -2461,20 +2404,12 @@ void podcastpage_hero_release(void) { qobuzart_release(&podcast_art_owner, HERO_
 
 static void pill_clicked_cb(lv_event_t *e);
 
+// The 2.0 pill (sx_card.h): the surface, the accent when it is the list on
+// screen. 20 px type rather than the pill's 22: three of them share the width.
 static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, job_kind_t kind) {
-	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 52);
+	lv_obj_t *btn = sx_pill(parent, tr(text), (intptr_t)kind, pill_clicked_cb);
 	lv_obj_set_style_pad_hor(btn, 18, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita-style pill
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_add_event_cb(btn, pill_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)kind);
-
-	lv_obj_t *label = lv_label_create(btn);
-	lv_label_set_text(label, tr(text));
-	lv_obj_set_style_text_font(label, &font_ui_20, 0);
-	lv_obj_center(label);
-
+	lv_obj_set_style_text_font(lv_obj_get_child(btn, 0), &font_ui_20, 0);
 	return btn;
 }
 
@@ -2482,8 +2417,7 @@ static void paint_pill(lv_obj_t *btn, bool on) {
 	if (!btn) {
 		return;
 	}
-	lv_obj_set_style_bg_color(btn, on ? theme()->accent : theme()->surface_pressed, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(btn, 0), on ? lv_color_white() : theme()->text_primary, 0);
+	sx_pill_set_active(btn, on);
 	// Greyed while it cannot be used: the two pills that need the network.
 	lv_obj_set_style_opa(btn, lv_obj_has_state(btn, LV_STATE_DISABLED) ? LV_OPA_40 : LV_OPA_COVER, 0);
 }
@@ -2587,14 +2521,14 @@ static bool listen_home(void) {
 
 static void listen_thumb(listen_row_t *row, bool pictured) {
 	if (pictured) {
-		lv_obj_remove_style(row->thumb, &theme_style_icon, 0);
+		lv_obj_remove_style(row->thumb, &sx_style_icon2, 0);
 		lv_obj_set_style_image_recolor_opa(row->thumb, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_radius(row->thumb, 6, 0);
+		lv_obj_set_style_radius(row->thumb, SX_ROW_THUMB_R, 0);
 		lv_obj_set_style_clip_corner(row->thumb, true, 0);
 		lv_image_set_src(row->thumb, &row->image.dsc);
 	} else {
 		lv_image_set_src(row->thumb, &icon_podcast_list);
-		lv_obj_add_style(row->thumb, &theme_style_icon, 0);
+		lv_obj_add_style(row->thumb, &sx_style_icon2, 0);
 		lv_obj_set_style_image_recolor_opa(row->thumb, LV_OPA_COVER, 0);
 		lv_obj_set_style_clip_corner(row->thumb, false, 0);
 	}
@@ -2684,7 +2618,7 @@ static void place_list_body(void) {
 	int y = 0;
 	if (any) {
 		lv_obj_update_layout(top_block);
-		y = lv_obj_get_height(top_block) + ROW_GAP;
+		y = lv_obj_get_height(top_block) + SX_ROW_GAP;
 	}
 	if (lv_obj_get_y(list_body) != y) {
 		lv_obj_set_y(list_body, y);
@@ -2834,23 +2768,20 @@ static void listen_action_cb(lv_event_t *e) {
 	continue_play(&row->state);
 }
 
+// The handoff's group heading, as the other streaming pages have it.
 static lv_obj_t *make_header(lv_obj_t *parent, const char *text) {
-	lv_obj_t *label = lv_label_create(parent);
-	lv_label_set_text(label, tr(text));
-	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_22_bold, 0);
+	lv_obj_t *label = svcui_group(parent, tr(text));
 	lv_obj_set_hidden(label, true);
 	return label;
 }
 
 static void build_listen_row(listen_row_t *row, lv_obj_t *parent) {
+	// The 2.0 card's look (sx_card.h): the surface, its radius, the pressed
+	// fill.
 	row->button = lv_btn_create(parent);
+	sx_card_style(row->button);
 	lv_obj_set_size(row->button, lv_pct(100), LISTEN_ROW_HEIGHT);
-	lv_obj_add_style(row->button, &theme_style_card, 0);
-	lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row->button, 12, 0);
-	lv_obj_set_style_border_width(row->button, 0, 0);
-	lv_obj_set_style_shadow_width(row->button, 0, 0);
+	lv_obj_set_style_pad_ver(row->button, 0, 0);
 	lv_obj_set_style_pad_hor(row->button, 14, 0);
 	lv_obj_set_style_pad_column(row->button, 12, 0);
 	lv_obj_set_scrollable(row->button, false);
@@ -2876,23 +2807,24 @@ static void build_listen_row(listen_row_t *row, lv_obj_t *parent) {
 	row->title = lv_label_create(texts);
 	lv_label_set_long_mode(row->title, LV_LABEL_LONG_DOT);
 	lv_obj_set_width(row->title, lv_pct(100));
-	lv_obj_set_height(row->title, lv_font_get_line_height(&font_ui_20));
-	lv_obj_add_style(row->title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(row->title, &font_ui_20, 0);
+	lv_obj_set_height(row->title, lv_font_get_line_height(&font_ui_22));
+	lv_obj_add_style(row->title, &sx_style_text, 0);
+	lv_obj_set_style_text_font(row->title, &font_ui_22, 0);
 
 	row->detail = lv_label_create(texts);
 	lv_label_set_long_mode(row->detail, LV_LABEL_LONG_DOT);
 	lv_obj_set_width(row->detail, lv_pct(100));
-	lv_obj_set_height(row->detail, lv_font_get_line_height(&font_ui_16));
-	lv_obj_add_style(row->detail, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(row->detail, &font_ui_16, 0);
+	lv_obj_set_height(row->detail, lv_font_get_line_height(&font_ui_18));
+	lv_obj_add_style(row->detail, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(row->detail, &font_ui_18, 0);
 
 	row->bar = lv_bar_create(texts);
 	lv_obj_set_size(row->bar, lv_pct(100), 5);
 	lv_bar_set_range(row->bar, 0, 1000);
-	lv_obj_set_style_bg_color(row->bar, theme()->surface_pressed, LV_PART_MAIN);
+	// The palette's own colours, so the bar follows the cover's tint.
+	lv_obj_add_style(row->bar, &sx_style_press, LV_PART_MAIN);
 	lv_obj_set_style_bg_opa(row->bar, LV_OPA_COVER, LV_PART_MAIN);
-	lv_obj_set_style_bg_color(row->bar, theme()->accent, LV_PART_INDICATOR);
+	lv_obj_add_style(row->bar, &sx_style_accent, LV_PART_INDICATOR);
 	lv_obj_set_style_radius(row->bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
 	lv_obj_set_style_radius(row->bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
 	lv_obj_set_event_bubble(row->bar, true);
@@ -2902,14 +2834,15 @@ static void build_listen_row(listen_row_t *row, lv_obj_t *parent) {
 	lv_obj_remove_style_all(row->action);
 	lv_obj_set_size(row->action, 52, 52);
 	lv_obj_set_style_radius(row->action, LV_RADIUS_CIRCLE, 0);
-	lv_obj_add_style(row->action, &theme_style_accent_bg, 0);
+	lv_obj_add_style(row->action, &sx_style_accent, 0);
 	lv_obj_set_style_bg_opa(row->action, LV_OPA_COVER, 0);
 	lv_obj_set_event_bubble(row->action, true);
 	lv_obj_add_event_cb(row->action, listen_action_cb, LV_EVENT_CLICKED, row);
 	row->action_icon = lv_image_create(row->action);
 	lv_image_set_src(row->action_icon, &icon_play_small);
-	lv_obj_set_style_image_recolor(row->action_icon, lv_color_white(), 0);
-	lv_obj_set_style_image_recolor_opa(row->action_icon, LV_OPA_COVER, 0);
+	// The glyph in the accent's own ink (dark on the yellow accent).
+	lv_obj_add_style(row->action_icon, &sx_style_accent, 0);
+	lv_obj_set_style_bg_opa(row->action_icon, LV_OPA_TRANSP, 0);
 	lv_obj_center(row->action_icon);
 	lv_obj_set_event_bubble(row->action_icon, true);
 
@@ -3049,7 +2982,7 @@ static void build_page(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(pill_row, 0, 0);
 	lv_obj_set_style_border_width(pill_row, 0, 0);
 	lv_obj_set_style_pad_ver(pill_row, 0, 0);
-	lv_obj_set_style_pad_hor(pill_row, cfg->padding, 0);
+	lv_obj_set_style_pad_hor(pill_row, SX_BODY_PAD_L, 0);
 	lv_obj_set_style_pad_gap(pill_row, 10, 0);
 	// Sideways when a language's three names do not fit the width.
 	lv_obj_set_scroll_dir(pill_row, LV_DIR_HOR);
@@ -3073,7 +3006,7 @@ static void build_page(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(list_container, 0, 0);
 	lv_obj_set_style_border_width(list_container, 0, 0);
 	lv_obj_set_style_radius(list_container, 0, 0);
-	lv_obj_set_style_pad_hor(list_container, cfg->padding, 0);
+	lv_obj_set_style_pad_hor(list_container, SX_BODY_PAD_L, 0);
 	lv_obj_set_style_pad_ver(list_container, 0, 0);
 	lv_obj_set_scroll_dir(list_container, LV_DIR_VER);
 
@@ -3081,7 +3014,7 @@ static void build_page(gui_config_t *cfg) {
 	// It is the only child the container has, and the twelve rows are placed
 	// inside it by hand -- flex and lv_obj_set_y() cannot both decide where a
 	// row goes.
-	int row_width = cfg->screen_width - 2 * cfg->padding;
+	int row_width = cfg->screen_width - 2 * SX_BODY_PAD_L;
 	list_body = lv_obj_create(list_container);
 	lv_obj_set_width(list_body, row_width);
 	lv_obj_set_height(list_body, ROW_PITCH);
@@ -3109,7 +3042,7 @@ static void build_page(gui_config_t *cfg) {
 	lv_label_set_long_mode(list_empty, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(list_empty, cfg->screen_width - 4 * cfg->padding);
 	lv_obj_set_style_text_align(list_empty, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
+	lv_obj_add_style(list_empty, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
 	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, content_top + 140);
 	lv_obj_set_hidden(list_empty, true);
@@ -3119,7 +3052,7 @@ static void build_page(gui_config_t *cfg) {
 	lv_label_set_text(note_label, "");
 	lv_label_set_long_mode(note_label, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(note_label, cfg->screen_width - 2 * cfg->padding);
-	lv_obj_add_style(note_label, &theme_style_text_dim, 0);
+	lv_obj_add_style(note_label, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(note_label, &font_ui_22, 0);
 	lv_obj_set_style_text_align(note_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_align(note_label, LV_ALIGN_TOP_LEFT, cfg->padding, content_top + 14);
@@ -3496,7 +3429,13 @@ static void refresh_page_state(void) {
 	refresh_listening();
 }
 
+// The network watch, awake only while the page is up (wifi_watch_cb).
+static lv_timer_t *wifi_watch_timer;
+
 static void page_loaded_cb(lv_event_t *e) {
+	if (wifi_watch_timer) {
+		lv_timer_resume(wifi_watch_timer);
+	}
 	(void)e;
 	states_seen = podcaststate_revision();
 	refresh_page_state();
@@ -3542,8 +3481,10 @@ static void states_follow(void) {
 // follows it once a second, as the radio hub does; otherwise the notice stays
 // up until the section is left and entered again.
 static void wifi_watch_cb(lv_timer_t *timer) {
-	(void)timer;
 	if (lv_screen_active() != podcast_screen) {
+		// Off the page there is nothing to follow: asleep until the page is
+		// loaded again (page_loaded_cb), instead of a wake-up a second.
+		lv_timer_pause(timer);
 		return;
 	}
 	states_follow();
@@ -3967,14 +3908,13 @@ void podcastpage_init(gui_config_t *cfg) {
 	podcastcard_init(cfg);
 	podcastopml_init(cfg);
 	dl_build(cfg);
-	build_busy_layer();
 	podcastcache_set_slow_start_cb(NULL);
 
 	device_state_add_prepare_cb(podcastpage_prepare_track);
 	fetch_start_thread();
 
 	lv_timer_create(queue_watch_cb, 1000, NULL);
-	lv_timer_create(wifi_watch_cb, 1000, NULL);
+	wifi_watch_timer = lv_timer_create(wifi_watch_cb, 1000, NULL);
 	art_drop_timer = lv_timer_create(art_drop_cb, ART_DROP_DELAY_MS, NULL);
 	lv_timer_pause(art_drop_timer);
 	art_timer = lv_timer_create(art_poll_cb, 120, NULL);

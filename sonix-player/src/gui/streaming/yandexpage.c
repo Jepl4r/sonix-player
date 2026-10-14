@@ -10,17 +10,22 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/player.h"
-#include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
-#include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_row.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/streaming/streamerror.h"
+#include "src/gui/streaming/svclist.h"
+#include "src/gui/streaming/svcui.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/growfile.h"
 #include "src/system/device/system.h"
@@ -50,13 +55,11 @@
 #define MAX_ROWS 150
 #define LOGIN_QR_SIZE 220
 
-// The list is drawn as a window over it: SLOT_COUNT rows exist and are given
-// whichever entries are on screen as it scrolls, so a liked list of five
-// thousand costs the same two dozen rows as a list of ten (1.2.5 built every
-// row, seven objects each). Rows are ROW_H tall, ROW_PITCH apart.
+// The list is drawn by svclist (svclist.h): SLOT_COUNT 2.0 rows ride the
+// scroll and are given whichever entries come into view, so a liked list of
+// five thousand costs the same two dozen rows as a list of ten (1.2.5 built
+// every row, seven objects each).
 #define SLOT_COUNT 24
-#define ROW_H 80
-#define ROW_PITCH (ROW_H + 10)
 
 // ROW_MORE: "All tracks" on an artist's page, the artist in `u.artist`, how
 // many in `count`.
@@ -144,7 +147,7 @@ lv_obj_t *yandex_screen;
 static lv_obj_t *login_screen, *list_screen, *search_screen;
 
 // home
-static lv_obj_t *home_signed_in, *home_signed_out, *home_user;
+static lv_obj_t *home_signed_in, *home_signed_out;
 // login
 static lv_obj_t *login_qr, *login_code, *login_message, *login_spin;
 static lv_timer_t *login_timer;
@@ -154,17 +157,11 @@ static time_t login_deadline;
 static lv_obj_t *list_title, *list_box, *list_spin, *wave_bar, *album_bar;
 // The album bar: what of the record is on the card, and Save or Delete.
 static lv_obj_t *album_state, *album_state_label, *album_btn_label, *album_tick;
-// The rows drawn (see SLOT_COUNT): each shows entry `index` of the list, -1
-// none. A slot is the entry's index modulo SLOT_COUNT, so a scroll rebinds
-// only the rows that came into view.
-typedef struct {
-	lv_obj_t *row, *title, *sub, *mark, *menu;
-	int index;
-} slot_t;
-static slot_t slots[SLOT_COUNT];
-// What gives the list its height (an invisible point at the bottom), and an
-// empty or error message in place of rows.
-static lv_obj_t *list_end, *list_message;
+// The rows (svclist.h); list_box is its scroller.
+static svclist_t *list;
+// In place of rows: a sentence for an empty list, or the error panel
+// (streamerror.h) for one that failed. Built once, shown as needed.
+static lv_obj_t *list_message, *list_error;
 // What the list on screen is (JOB_LIKED, JOB_ALBUM, JOB_SAVED...).
 static job_kind_t list_kind;
 // The album a JOB_ALBUM list shows, for its "Save album" button.
@@ -615,12 +612,18 @@ static void run(job_kind_t kind, const char *a, const char *b, int n) {
 // playback (yandexplay.c does it; the page hears how it went)
 // ---------------------------------------------------------------------------
 
+static bool playing_update(void);
+
 static void playback_event(yandexplay_event_t event, const char *text) {
 	lv_obj_set_hidden(list_spin, true);
 	switch (event) {
 	case YANDEXPLAY_STARTED:
+		// 2.0: the page stays, the mini player comes up with the track (the
+		// player is a tap on it away), and the playing row is marked.
 		player_refresh_now_playing();
-		switch_screen(player_screen);
+		if (list && playing_update()) {
+			svclist_rebind(list);
+		}
 		break;
 	case YANDEXPLAY_FAILED:
 		toast_error(text[0] ? text : tr("download_failed"));
@@ -638,6 +641,11 @@ static void playback_event(yandexplay_event_t event, const char *text) {
 static void queue_watch_cb(lv_timer_t *timer) {
 	(void)timer;
 	yandexplay_watch();
+	// The playing row follows the track, which moves on by itself; only
+	// while the list is on screen.
+	if (list && lv_screen_active() == list_screen && playing_update()) {
+		svclist_rebind(list);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -673,12 +681,6 @@ static void row_texts(const row_t *r, char *name, size_t ns, char *detail, size_
 	}
 }
 
-static void row_menu_cb(lv_event_t *e);
-
-// Rows with something to offer on their own get the three dots: a track (its
-// like, saving it, queueing it), an album (the same for the whole record), an
-// artist (its like).
-static bool row_has_menu(const row_t *r) { return (r->kind == ROW_TRACK && r->u.track.id[0]) || (r->kind == ROW_ALBUM && r->u.album.id[0]) || (r->kind == ROW_ARTIST && r->u.artist.id[0]); }
 
 // How many entries the list on screen has, and entry `index` as a row: from
 // the answer's rows, or from its list of tracks. False for a track whose
@@ -727,151 +729,164 @@ static bool row_saved(const row_t *r) {
 	return false;
 }
 
-// The ticks are the accent colour, set by hand on an image: a new accent
-// reaches them through the theme's refresh.
+// The album bar's tick is the accent colour, set by hand on an image: a new
+// accent reaches it through the theme's refresh.
 static void marks_recolor(void) {
 	lv_color_t accent = theme()->accent;
 	if (album_tick) {
 		lv_obj_set_style_image_recolor(album_tick, accent, 0);
 	}
-	for (int i = 0; i < SLOT_COUNT; i++) {
-		if (slots[i].mark) {
-			lv_obj_set_style_image_recolor(slots[i].mark, accent, 0);
+}
+
+// ---------------------------------------------------------------------------
+// the rows: 2.0 rows over the list (svclist.h)
+//
+// A track is a row with a plaque in its album's tone (the lists carry no
+// artwork: the cover comes with the file), the title, the artist with
+// "· on the card" in the accent when it is saved, the length at the right and
+// the star -- the like, at once, with Undo. An album has the same plaque and a
+// chevron; an artist a round plaque with its letter; a playlist a plaque with
+// its letter. The gestures are the handoff's matrix: a tap plays a track or
+// opens the rest, a swipe right puts a track or an album next, a swipe left
+// at the end, a hold brings up the object's sheet.
+// ---------------------------------------------------------------------------
+
+// The track playing now, for the playing row: its id, from the path the
+// queue is on (re-read only when that path changes).
+static char playing_path[512];
+static char playing_id[YANDEX_ID_MAX];
+
+static bool playing_update(void) {
+	char path[512] = "";
+	if (!playlist_current_path(path, sizeof(path))) {
+		path[0] = '\0';
+	}
+	if (strcmp(path, playing_path) == 0) {
+		return false;
+	}
+	snprintf(playing_path, sizeof(playing_path), "%s", path);
+	char id[YANDEX_ID_MAX] = "";
+	if (path[0]) {
+		yandexcache_track_id(path, id, sizeof(id));
+		if (!id[0]) {
+			yandexsaved_track_for_path(path, id, sizeof(id), NULL, 0);
 		}
 	}
+	if (strcmp(id, playing_id) == 0) {
+		return false;
+	}
+	snprintf(playing_id, sizeof(playing_id), "%s", id);
+	return true;
 }
 
-// ---------------------------------------------------------------------------
-// the rows: a window over the list
-// ---------------------------------------------------------------------------
-
-static void slot_clicked_cb(lv_event_t *e);
-
-static void make_slot(slot_t *slot) {
-	lv_obj_t *row = lv_btn_create(list_box);
-	lv_obj_set_size(row, lv_pct(100), ROW_H);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_scrollable(row, false);
-	lv_obj_set_event_bubble(row, true);
-	lv_obj_add_event_cb(row, slot_clicked_cb, LV_EVENT_CLICKED, slot);
-
-	// The two lines sit on the row itself, left of the mark and the dots: no
-	// flex container between, two objects fewer a row.
-	slot->title = lv_label_create(row);
-	lv_label_set_long_mode(slot->title, LV_LABEL_LONG_DOT);
-	lv_obj_add_style(slot->title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(slot->title, &font_ui_22, 0);
-	lv_obj_align(slot->title, LV_ALIGN_TOP_LEFT, 16, 12);
-
-	slot->sub = lv_label_create(row);
-	lv_label_set_long_mode(slot->sub, LV_LABEL_LONG_DOT);
-	lv_obj_add_style(slot->sub, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(slot->sub, &font_ui_18, 0);
-	lv_obj_align(slot->sub, LV_ALIGN_TOP_LEFT, 16, 44);
-
-	// The mark: a small tick for a track on the card, or an album all of
-	// whose tracks are.
-	slot->mark = lv_image_create(row);
-	lv_image_set_src(slot->mark, &icon_check_small);
-	lv_obj_add_style(slot->mark, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor(slot->mark, theme()->accent, 0);
-	lv_obj_set_style_image_recolor_opa(slot->mark, LV_OPA_COVER, 0);
-	lv_obj_align(slot->mark, LV_ALIGN_RIGHT_MID, -58, 0);
-	lv_obj_set_hidden(slot->mark, true);
-
-	lv_obj_t *menu_btn = lv_btn_create(row);
-	lv_obj_set_size(menu_btn, 48, 48);
-	lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_border_width(menu_btn, 0, 0);
-	lv_obj_set_style_shadow_width(menu_btn, 0, 0);
-	lv_obj_set_style_pad_all(menu_btn, 0, 0);
-	lv_obj_set_ext_click_area(menu_btn, 12);
-	lv_obj_align(menu_btn, LV_ALIGN_RIGHT_MID, -6, 0);
-	lv_obj_add_event_cb(menu_btn, row_menu_cb, LV_EVENT_CLICKED, slot);
-	lv_obj_t *dots = lv_image_create(menu_btn);
-	lv_image_set_src(dots, &icon_ellipsis_vertical);
-	lv_obj_add_style(dots, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
-	lv_obj_center(dots);
-	slot->menu = menu_btn;
-
-	slot->row = row;
-	slot->index = -1;
-	lv_obj_set_hidden(row, true);
+// "3:42"
+static void length_text(int seconds, char *out, size_t size) {
+	if (seconds <= 0) {
+		out[0] = '\0';
+		return;
+	}
+	snprintf(out, size, "%d:%02d", seconds / 60, seconds % 60);
 }
 
-// Puts entry `index` on the slot: its texts, its mark, its dots.
-static void bind_slot(slot_t *slot, int index) {
-	slot->index = index;
+// The first character of `text` (a whole UTF-8 one), for a letter plaque.
+static void first_char(const char *text, char *out, size_t size) {
+	unsigned char c = (unsigned char)(text ? text[0] : 0);
+	size_t n = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+	if (!c || n >= size || strlen(text) < n) {
+		snprintf(out, size, "#");
+		return;
+	}
+	memcpy(out, text, n);
+	out[n] = '\0';
+	if (n == 1 && out[0] >= 'a' && out[0] <= 'z') {
+		out[0] = (char)(out[0] - 'a' + 'A');
+	}
+}
+
+static void list_bind(lv_obj_t *row, int index) {
 	row_t r;
 	bool have = view_row(index, &r);
-	char name[YANDEX_TITLE_MAX], detail[YANDEX_TITLE_MAX + 32];
-	if (have) {
-		row_texts(&r, name, sizeof(name), detail, sizeof(detail));
-	} else {
-		snprintf(name, sizeof(name), "%s", tr("loading"));
-		detail[0] = '\0';
+	lv_obj_set_style_opa(row, LV_OPA_COVER, 0);
+	sx_row_set_playing(row, false);
+	if (!have) {
+		// A track whose details have not come yet: it plays all the same.
+		sx_row_set_title(row, tr("loading"));
+		sx_row_set_subtitle(row, "", NULL, NULL);
+		sx_row_set_thumb(row, NULL, svcui_tone(r.u.track.album_id[0] ? r.u.track.album_id : r.u.track.id));
+		sx_row_set_trail(row, SX_ROW_TRAIL_NONE);
+		sx_row_set_swipes(row, true, true);
+		return;
 	}
-	lv_label_set_text(slot->title, name);
-	lv_label_set_text(slot->sub, detail);
-	// A row of one line ("All tracks") has it in the middle.
-	lv_obj_set_hidden(slot->sub, !detail[0]);
-	lv_obj_align(slot->title, detail[0] ? LV_ALIGN_TOP_LEFT : LV_ALIGN_LEFT_MID, 16, detail[0] ? 12 : 0);
-	bool menu = have && row_has_menu(&r);
-	bool mark = have && (r.kind == ROW_TRACK || r.kind == ROW_ALBUM) && row_saved(&r);
-	lv_obj_set_hidden(slot->menu, !menu);
-	lv_obj_set_hidden(slot->mark, !mark);
-	// The texts stop short of whatever is on their right.
-	int right = menu ? 66 : 16;
-	right += mark ? 30 : 0;
-	int width = lv_obj_get_content_width(list_box) - 16 - right;
-	lv_obj_set_width(slot->title, width);
-	lv_obj_set_width(slot->sub, width);
-	lv_obj_set_pos(slot->row, 0, index * ROW_PITCH);
-	lv_obj_set_hidden(slot->row, false);
+	char name[YANDEX_TITLE_MAX], detail[YANDEX_TITLE_MAX + 32];
+	row_texts(&r, name, sizeof(name), detail, sizeof(detail));
+	sx_row_set_title(row, name);
+	char letter[8];
+	switch (r.kind) {
+	case ROW_TRACK: {
+		char length[16];
+		length_text(r.u.track.duration, length, sizeof(length));
+		sx_row_set_subtitle(row, r.u.track.artist, row_saved(&r) ? tr("svc_badge_saved") : NULL, length);
+		// On an album's page its tracks are numbered, as the Library's album
+		// page; elsewhere the plaque in the album's tone.
+		if ((list_kind == JOB_ALBUM || list_kind == JOB_SAVED_ALBUM) && r.u.track.track_number > 0) {
+			sx_row_set_number(row, r.u.track.track_number);
+		} else {
+			sx_row_set_thumb(row, NULL, svcui_tone(r.u.track.album_id[0] ? r.u.track.album_id : r.u.track.title));
+		}
+		sx_row_set_trail(row, SX_ROW_TRAIL_STAR);
+		sx_row_set_starred(row, yandex_is_liked(r.u.track.id));
+		sx_row_set_playing(row, playing_id[0] && strcmp(playing_id, r.u.track.id) == 0);
+		sx_row_set_swipes(row, r.u.track.available, r.u.track.available);
+		// A track the service cannot give here stays in its place, faint.
+		if (!r.u.track.available) {
+			lv_obj_set_style_opa(row, LV_OPA_50, 0);
+		}
+		break;
+	}
+	case ROW_ALBUM:
+		sx_row_set_subtitle(row, detail, row_saved(&r) ? tr("svc_badge_saved") : NULL, NULL);
+		sx_row_set_thumb(row, NULL, svcui_tone(r.u.album.id[0] ? r.u.album.id : r.u.album.title));
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, true, true);
+		break;
+	case ROW_ARTIST:
+		first_char(r.u.artist.name, letter, sizeof(letter));
+		sx_row_set_subtitle(row, detail, NULL, NULL);
+		sx_row_set_letter(row, letter, svcui_tone(r.u.artist.name), true);
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, false, false);
+		break;
+	case ROW_PLAYLIST:
+		first_char(r.u.playlist.title, letter, sizeof(letter));
+		sx_row_set_subtitle(row, detail, NULL, NULL);
+		sx_row_set_letter(row, letter, svcui_tone(r.u.playlist.title), false);
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, false, false);
+		break;
+	case ROW_MORE:
+		sx_row_set_subtitle(row, "", NULL, NULL);
+		sx_row_set_no_lead(row);
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, false, false);
+		break;
+	}
 }
 
 static void request_page(int page);
 
-// Gives the rows in view (and a few either side) their entries, and asks for
-// the details of the pages they show -- the next page too once the view nears
-// its end, so scrolling on finds it there. Cheap when nothing moved: a slot
-// already showing its entry is left alone.
-static void bind_view(bool force) {
-	if (!slots[0].row) {
-		return; // no list shown yet
-	}
+// Entries `first`..`last` came into view: the details of the pages they show
+// are asked for -- the next page too once the view nears its end, so
+// scrolling on finds it there.
+static void list_visible(int first, int last) {
 	int count = view_count();
-	int first = (int)(lv_obj_get_scroll_y(list_box) / ROW_PITCH) - 4;
-	if (first > count - SLOT_COUNT) {
-		first = count - SLOT_COUNT;
+	if (!shown || !shown->list || count <= 0) {
+		return;
 	}
-	if (first < 0) {
-		first = 0;
-	}
-	for (int k = 0; k < SLOT_COUNT; k++) {
-		int index = first + k;
-		slot_t *slot = &slots[index % SLOT_COUNT];
-		if (index >= count) {
-			slot->index = -1;
-			lv_obj_set_hidden(slot->row, true);
-		} else if (force || slot->index != index) {
-			bind_slot(slot, index);
-		}
-	}
-	if (shown && shown->list && count > 0) {
-		int last = first + SLOT_COUNT - 1 < count - 1 ? first + SLOT_COUNT - 1 : count - 1;
-		int pages[3] = {first / YANDEXLIST_PAGE, last / YANDEXLIST_PAGE, (last + YANDEXLIST_PAGE / 2) / YANDEXLIST_PAGE};
-		for (int i = 0; i < 3; i++) {
-			if (pages[i] * YANDEXLIST_PAGE < count && !yandexlist_page_ready(shown->list, pages[i])) {
-				request_page(pages[i]);
-				break;
-			}
+	int pages[3] = {first / YANDEXLIST_PAGE, last / YANDEXLIST_PAGE, (last + YANDEXLIST_PAGE / 2) / YANDEXLIST_PAGE};
+	for (int i = 0; i < 3; i++) {
+		if (pages[i] * YANDEXLIST_PAGE < count && !yandexlist_page_ready(shown->list, pages[i])) {
+			request_page(pages[i]);
+			break;
 		}
 	}
 }
@@ -886,20 +901,8 @@ static void request_page(int page) {
 	submit(&job);
 }
 
-static void list_scrolled_cb(lv_event_t *e) {
-	(void)e;
-	bind_view(false);
-}
-
-static void refresh_marks(void) {
-	for (int i = 0; i < SLOT_COUNT; i++) {
-		if (slots[i].row && slots[i].index >= 0) {
-			row_t r;
-			bool have = view_row(slots[i].index, &r);
-			lv_obj_set_hidden(slots[i].mark, !(have && (r.kind == ROW_TRACK || r.kind == ROW_ALBUM) && row_saved(&r)));
-		}
-	}
-}
+// A mark changed (saved, deleted, liked elsewhere): the rows in view again.
+static void refresh_marks(void) { svclist_rebind(list); }
 
 // The album page's own tracks are the measure: how many of the playable ones
 // are on the card.
@@ -933,49 +936,36 @@ static void update_album_bar(void) {
 
 static void retry_list(void);
 
+static void ensure_list(void);
+
 // Empties the page: no rows bound, no message. The rows themselves are made
-// here the first time a list is shown: a player that never opens a Yandex
-// list never has them.
+// the first time a list is shown (ensure_list): a player that never opens a
+// Yandex list never has them.
 static void clear_list(void) {
-	if (!slots[0].row) {
-		for (int i = 0; i < SLOT_COUNT; i++) {
-			make_slot(&slots[i]);
-		}
-	}
-	for (int i = 0; i < SLOT_COUNT; i++) {
-		slots[i].index = -1;
-		lv_obj_set_hidden(slots[i].row, true);
-	}
-	if (list_message) {
-		lv_obj_delete(list_message);
-		list_message = NULL;
-	}
-	lv_obj_set_pos(list_end, 0, 0);
+	ensure_list();
+	svclist_set_count(list, 0, false);
+	lv_obj_set_hidden(list_message, true);
 	page_asked = -1;
 }
 
 static void fill_list(void) {
-	clear_list();
 	int count = view_count();
-	lv_obj_scroll_to_y(list_box, 0, LV_ANIM_OFF);
-	// The bottom of the list, for the scroll to know its height.
-	lv_obj_set_pos(list_end, 0, count > 0 ? count * ROW_PITCH - 10 : 0);
-	bind_view(true);
+	playing_update();
+	svclist_set_count(list, count, false);
+	lv_obj_set_hidden(list_message, true);
 	update_album_bar();
 	if (count == 0 && shown && shown->error[0] && shown->error_class != STREAM_ERR_NONE) {
-		// What went wrong and "Retry", as on the other services' pages.
-		list_message = streamerror_create(list_box);
-		lv_obj_set_width(list_message, lv_pct(100));
-		streamerror_show(list_message, shown->error_class, shown->error, retry_list, NULL);
-	} else if (count == 0) {
-		list_message = lv_label_create(list_box);
+		// What went wrong and "Retry", as on the other services' pages; the
+		// panel stays one object, so a retry that fails again counts.
+		streamerror_show(list_error, shown->error_class, shown->error, retry_list, NULL);
+		return;
+	}
+	streamerror_hide(list_error);
+	if (count == 0) {
 		// An empty list with a word of its own (nothing saved on the card yet)
 		// says it; any other empty list the usual line.
 		lv_label_set_text(list_message, shown && shown->error[0] ? shown->error : tr("yandex_empty"));
-		lv_label_set_long_mode(list_message, LV_LABEL_LONG_WRAP);
-		lv_obj_set_width(list_message, lv_pct(100));
-		lv_obj_add_style(list_message, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(list_message, &font_ui_20, 0);
+		lv_obj_set_hidden(list_message, false);
 	}
 }
 
@@ -1089,6 +1079,7 @@ static job_result_t *saved_result(job_kind_t kind, const char *album_id) {
 }
 
 static void show_list(const list_step_t *step) {
+	ensure_list();
 	job_kind_t kind = step->kind;
 	const char *title = step->title, *a = step->a, *b = step->b;
 	list_kind = kind;
@@ -1110,9 +1101,9 @@ static void show_list(const list_step_t *step) {
 	// The list starts under the like/dislike bar (or the album's, or the
 	// artist's) only when there is one.
 	int top = settingsrow_content_top(list_cfg);
-	int y = top + (list_is_wave || is_album || is_artist ? 66 : 0);
-	lv_obj_set_pos(list_box, list_cfg->padding, y);
-	lv_obj_set_height(list_box, list_cfg->screen_height - y - 4);
+	int y = top + (list_is_wave || is_album || is_artist ? 72 : 0);
+	lv_obj_set_pos(list_box, SX_BODY_PAD_L, y);
+	lv_obj_set_height(list_box, list_cfg->screen_height - y);
 	clear_list();
 	switch_screen(list_screen);
 	list_generation++;
@@ -1167,23 +1158,24 @@ static void play_rows(int tapped) {
 	yandexlist_free(tracks);
 }
 
-static void slot_clicked_cb(lv_event_t *e) {
-	const slot_t *slot = lv_event_get_user_data(e);
+static void list_tap(lv_obj_t *row, void *user) {
+	(void)row;
+	int index = (int)(intptr_t)user;
 	row_t r;
-	if (!slot || slot->index < 0) {
+	if (index < 0 || index >= view_count()) {
 		return;
 	}
-	if (!view_row(slot->index, &r)) {
+	if (!view_row(index, &r)) {
 		// A track still loading: it plays all the same, its details come
 		// with its file.
 		if (shown && shown->list) {
-			play_rows(slot->index);
+			play_rows(index);
 		}
 		return;
 	}
 	switch (r.kind) {
 	case ROW_TRACK:
-		play_rows(slot->index);
+		play_rows(index);
 		break;
 	case ROW_ALBUM:
 		// In the Saved list an album opens from the card, network or not.
@@ -1218,12 +1210,14 @@ static void like_done(bool ok, const char *error, void *user) {
 }
 
 // ---------------------------------------------------------------------------
-// the per-row menu
+// the per-row sheet, the star and the swipes
 //
 // A track's like from any list, not only from what is playing: liking what a
-// search or a playlist shows used to mean playing it first. The menu is
-// modal, so one remembered row is enough; the row itself is copied, because
-// the list may be replaced by an answer arriving while the menu is open.
+// search or a playlist shows used to mean playing it first. The star in the
+// row does it at once, with Undo in the toast; the hold brings up the object's
+// whole sheet. The sheet is modal, so one remembered row is enough; the row
+// itself is copied, because the list may be replaced by an answer arriving
+// while the sheet is up.
 // ---------------------------------------------------------------------------
 
 static row_t menu_row;
@@ -1234,6 +1228,8 @@ static void row_like_done_async(void *user) {
 		toast_error(why[0] ? why : tr("yandex_like_failed"));
 		free(why);
 	}
+	// The mirror was put back on a refusal: the stars say so.
+	refresh_marks();
 }
 
 static void row_like_done(bool ok, const char *error, void *user) {
@@ -1241,11 +1237,36 @@ static void row_like_done(bool ok, const char *error, void *user) {
 	gui_post(row_like_done_async, ok ? NULL : strdup(error ? error : ""));
 }
 
-static void do_row_like(void *user) {
-	bool like = user != NULL;
-	const yandex_track_t *t = &menu_row.u.track;
-	yandexsync_like(t->id, t->album_id, like, row_like_done, like ? (void *)1 : NULL);
-	toast_success(tr(like ? "yandex_liked_it" : "yandex_unliked_it"));
+// The like of a track, from its star or its sheet: the mirror flips at once
+// (yandexsync.h), the rows follow, and the toast offers it back.
+static yandex_track_t star_track;
+static bool star_on;
+
+static void star_apply(bool like) {
+	star_on = like;
+	yandexsync_like(star_track.id, star_track.album_id, like, row_like_done, NULL);
+	refresh_marks();
+}
+
+static void star_undo(void *user) {
+	(void)user;
+	star_apply(!star_on);
+}
+
+static void track_like(const yandex_track_t *t, bool like) {
+	star_track = *t;
+	star_apply(like);
+	svcui_star_toast(like, "svc_liked", "svc_unliked", t->title, star_undo, NULL);
+}
+
+static void do_row_like(void *user) { track_like(&menu_row.u.track, user != NULL); }
+
+static void list_star(lv_obj_t *row, void *user) {
+	(void)row;
+	row_t r;
+	if (view_row((int)(intptr_t)user, &r) && r.kind == ROW_TRACK && r.u.track.id[0]) {
+		track_like(&r.u.track, !yandex_is_liked(r.u.track.id));
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1296,44 +1317,74 @@ static void like_object_done(const job_result_t *r) {
 // ---------------------------------------------------------------------------
 // "Play next" and "Add to end of queue"
 //
-// The same two lines as on the Library's rows, through the same door
-// (trackmenu_queue_paths: the queue written down once, the toast). A Yandex
+// The swipes and the sheet's two lines, through the streaming pages' door
+// (svcui_queue: the queue written down once, the toast with Undo). A Yandex
 // track goes in by its file -- the saved one, or the cache's, fetched when
 // playback reaches it (yandexplay.c knows the track from here on, whatever
-// queue it lands in). An album's tracks are asked for first, unless the
-// album is on the card.
+// queue it lands in). An album's tracks are asked for first, unless the album
+// is on the card.
 // ---------------------------------------------------------------------------
 
-static void queue_tracks(const yandex_track_t *tracks, int count, playlist_queue_where_t where) {
+static void queue_tracks(const yandex_track_t *tracks, int count, playlist_queue_where_t where, const char *what) {
 	char **paths = NULL;
 	int n = yandexplay_paths_for(tracks, count, &paths);
 	if (n > 0) {
-		trackmenu_queue_paths((const char *const *)paths, n, where);
+		svcui_queue((const char *const *)paths, n, where, what);
 	} else {
 		gui_notify_popup("playlist_cannot_add_the_tracks");
 	}
-	free(paths);
+	free(paths); // one allocation, strings and all (yandexplay.h)
 }
 
-static void do_row_queue(void *user) {
-	playlist_queue_where_t where = (playlist_queue_where_t)(intptr_t)user;
-	if (menu_row.kind == ROW_TRACK) {
-		queue_tracks(&menu_row.u.track, 1, where);
+// The album being queued, for the toast once its tracks have come.
+static char queue_album_title[YANDEX_TITLE_MAX];
+
+static void queue_row(const row_t *r, playlist_queue_where_t where) {
+	if (r->kind == ROW_TRACK) {
+		if (!r->u.track.available) {
+			toast_error(tr("yandex_no_file"));
+			return;
+		}
+		queue_tracks(&r->u.track, 1, where, r->u.track.title);
 		return;
 	}
-	if (menu_row.kind != ROW_ALBUM) {
+	if (r->kind != ROW_ALBUM) {
 		return;
 	}
 	// In the Saved list, or saved whole: from the card, network or not.
-	int saved = yandexsaved_album_count(menu_row.u.album.id);
-	if (saved > 0 && (list_kind == JOB_SAVED || row_saved(&menu_row))) {
+	int saved = yandexsaved_album_count(r->u.album.id);
+	if (saved > 0 && (list_kind == JOB_SAVED || row_saved(r))) {
 		yandex_track_t *tracks = calloc((size_t)saved, sizeof(*tracks));
-		int n = tracks ? yandexsaved_tracks(menu_row.u.album.id, tracks, saved) : 0;
-		queue_tracks(tracks, n, where);
+		int n = tracks ? yandexsaved_tracks(r->u.album.id, tracks, saved) : 0;
+		queue_tracks(tracks, n, where, r->u.album.title);
 		free(tracks);
 		return;
 	}
-	run(JOB_QUEUE_ALBUM, menu_row.u.album.id, NULL, (int)where);
+	snprintf(queue_album_title, sizeof(queue_album_title), "%s", r->u.album.title);
+	run(JOB_QUEUE_ALBUM, r->u.album.id, NULL, (int)where);
+}
+
+static void do_row_queue(void *user) { queue_row(&menu_row, (playlist_queue_where_t)(intptr_t)user); }
+
+static void list_swipe(int index, playlist_queue_where_t where) {
+	row_t r;
+	if (view_row(index, &r)) {
+		queue_row(&r, where);
+	} else if (shown && shown->list && r.u.track.id[0]) {
+		// Not loaded yet: queued by its ids, its details come with its file.
+		r.u.track.available = true;
+		queue_tracks(&r.u.track, 1, where, tr("loading"));
+	}
+}
+
+static void list_swipe_next(lv_obj_t *row, void *user) {
+	(void)row;
+	list_swipe((int)(intptr_t)user, PLAYLIST_QUEUE_NEXT);
+}
+
+static void list_swipe_end(lv_obj_t *row, void *user) {
+	(void)row;
+	list_swipe((int)(intptr_t)user, PLAYLIST_QUEUE_END);
 }
 
 // The album's tracks have come: queued now.
@@ -1350,15 +1401,8 @@ static void queue_album_done(job_result_t *r) {
 	for (int i = 0; i < r->count; i++) {
 		tracks[i] = r->rows[i].u.track;
 	}
-	queue_tracks(tracks, r->count, (playlist_queue_where_t)r->page);
+	queue_tracks(tracks, r->count, (playlist_queue_where_t)r->page, queue_album_title);
 	free(tracks);
-}
-
-// The two lines, into `items` (room for two). Labels are the Library's keys.
-static int queue_items(popover_item_t *items) {
-	items[0] = (popover_item_t){"queue_play_next", do_row_queue, (void *)(intptr_t)PLAYLIST_QUEUE_NEXT, false};
-	items[1] = (popover_item_t){"queue_add_to_end", do_row_queue, (void *)(intptr_t)PLAYLIST_QUEUE_END, false};
-	return 2;
 }
 
 static void save_refused(void) { toast_error(tr("yandex_save_refused")); }
@@ -1377,9 +1421,10 @@ static void do_row_save(void *user) {
 // ---------------------------------------------------------------------------
 // deleting from the card
 //
-// Asked first: it removes files. The files, any 1.2.4 sidecar beside them, the
-// index entries and the folders left empty go (yandexsaved_delete); the
-// library then looks for what changed, as after a save.
+// Asked first: it removes files -- the one change 2.0 still confirms. The
+// files, any 1.2.4 sidecar beside them, the index entries and the folders
+// left empty go (yandexsaved_delete); the library then looks for what
+// changed, as after a save.
 // ---------------------------------------------------------------------------
 
 static void library_look_after_delete(void) {
@@ -1421,75 +1466,60 @@ static void do_row_delete(void *user) {
 	confirm_show(menu_row.kind == ROW_ALBUM ? "yandex_delete_album_question" : "yandex_delete_track_question", name, "delete", delete_confirmed, NULL);
 }
 
-static void row_menu_cb(lv_event_t *e) {
-	lv_event_stop_bubbling(e); // the tap belongs to the menu, not the row
-	if (switcher_back_drag_active() || player_sheet_drag_active()) {
+// The hold: the object's sheet. Its title is the object, its subtitle the
+// line under it in the row.
+static void list_hold(lv_obj_t *row, void *user) {
+	(void)row;
+	int index = (int)(intptr_t)user;
+	if (index < 0 || !view_row(index, &menu_row)) {
 		return;
 	}
-	const slot_t *slot = lv_event_get_user_data(e);
-	if (!slot || slot->index < 0 || !view_row(slot->index, &menu_row)) {
-		return;
-	}
-	popover_item_t items[6];
+	sx_sheet_item_t items[7];
 	memset(items, 0, sizeof(items));
 	int n = 0;
 	// On the card: the save is done, said with a tick, and the way to undo it
 	// is offered instead. Part of an album on the card: both.
 	bool saved = row_saved(&menu_row);
 	bool some = saved || (menu_row.kind == ROW_ALBUM && yandexsaved_album_count(menu_row.u.album.id) > 0);
+	bool queueable = (menu_row.kind == ROW_TRACK && menu_row.u.track.available) || menu_row.kind == ROW_ALBUM;
+	if (queueable) {
+		items[n++] = (sx_sheet_item_t){.label = tr("queue_play_next"), .icon = &icon_list_start, .action = do_row_queue, .user = (void *)(intptr_t)PLAYLIST_QUEUE_NEXT};
+		items[n++] = (sx_sheet_item_t){.label = tr("queue_add_to_end"), .icon = &icon_list_plus_small, .action = do_row_queue, .user = (void *)(intptr_t)PLAYLIST_QUEUE_END};
+	}
 	if (menu_row.kind == ROW_TRACK) {
-		// Until the account's list has arrived nothing is known to be
-		// liked, and "Like" on a liked track is harmless: adding twice
-		// changes nothing on the account.
+		// Until the account's list has arrived nothing is known to be liked,
+		// and "Like" on a liked track is harmless: adding twice changes
+		// nothing on the account.
 		bool liked = yandex_is_liked(menu_row.u.track.id);
-		items[n].label = liked ? "yandex_unlike" : "yandex_like";
-		items[n].action = do_row_like;
-		items[n].user = liked ? NULL : (void *)1;
-		n++;
-		// The two "add to" lines next to each other, as on the Library's
-		// rows. Not for a track the service cannot give.
-		if (menu_row.u.track.available) {
-			n += queue_items(&items[n]);
-		}
+		items[n++] = (sx_sheet_item_t){.label = tr(liked ? "yandex_unlike" : "yandex_like"), .icon = liked ? &icon_star_filled : &icon_star, .action = do_row_like, .user = liked ? NULL : (void *)1};
 		if (saved) {
-			items[n].label = "yandex_saved_on_card";
-			items[n].checked = true;
-			n++;
+			items[n++] = (sx_sheet_item_t){.label = tr("yandex_saved_on_card"), .checked = true};
 		} else if (menu_row.u.track.available) {
-			items[n].label = "yandex_save";
-			items[n].action = do_row_save;
-			n++;
+			items[n++] = (sx_sheet_item_t){.label = tr("yandex_save"), .icon = &icon_download, .action = do_row_save};
 		}
 	} else if (menu_row.kind == ROW_ALBUM) {
 		bool liked = yandex_album_liked(menu_row.u.album.id);
-		items[n].label = liked ? "yandex_unlike" : "yandex_like";
-		items[n].action = do_album_like;
-		items[n].user = liked ? NULL : (void *)1;
-		n++;
-		n += queue_items(&items[n]);
+		items[n++] = (sx_sheet_item_t){.label = tr(liked ? "yandex_unlike" : "yandex_like"), .icon = liked ? &icon_star_filled : &icon_star, .action = do_album_like, .user = liked ? NULL : (void *)1};
 		if (saved) {
-			items[n].label = "yandex_saved_on_card";
-			items[n].checked = true;
+			items[n++] = (sx_sheet_item_t){.label = tr("yandex_saved_on_card"), .checked = true};
 		} else {
-			items[n].label = "yandex_save_album";
-			items[n].action = do_row_save;
+			items[n++] = (sx_sheet_item_t){.label = tr("yandex_save_album"), .icon = &icon_download, .action = do_row_save};
 		}
-		n++;
 	} else if (menu_row.kind == ROW_ARTIST) {
 		bool liked = yandex_artist_liked(menu_row.u.artist.id);
-		items[n].label = liked ? "yandex_unlike" : "yandex_like";
-		items[n].action = do_artist_like;
-		items[n].user = liked ? NULL : (void *)1;
-		n++;
+		items[n++] = (sx_sheet_item_t){.label = tr(liked ? "yandex_unlike" : "yandex_like"), .icon = liked ? &icon_star_filled : &icon_star, .action = do_artist_like, .user = liked ? NULL : (void *)1};
 	}
 	if (some) {
-		items[n].label = "yandex_delete_from_card";
-		items[n].action = do_row_delete;
-		n++;
+		items[n++] = (sx_sheet_item_t){.label = tr("yandex_delete_from_card"), .icon = &icon_trash, .destructive = true, .action = do_row_delete};
 	}
-	if (n > 0) {
-		popover_show(lv_event_get_current_target(e), items, n);
+	if (n == 0) {
+		return;
 	}
+	// The sheet copies the items, not the strings: the title and the line
+	// under it are kept here until the next sheet.
+	static char title[YANDEX_TITLE_MAX], subtitle[YANDEX_TITLE_MAX + 32];
+	row_texts(&menu_row, title, sizeof(title), subtitle, sizeof(subtitle));
+	sx_sheet_menu(title, subtitle, items, n);
 }
 
 // Like and dislike act on what is playing now, from My Wave. The like goes
@@ -1514,18 +1544,24 @@ static void wave_rate_cb(lv_event_t *e) {
 	}
 }
 
-static lv_obj_t *wave_button(lv_obj_t *parent, const char *key, bool like) {
+// The bars' buttons are the 2.0 pill: the surface, round, SX_PILL_H tall.
+static lv_obj_t *bar_button(lv_obj_t *parent, const char *key, lv_event_cb_t cb, void *user, lv_obj_t **label_out) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 52);
-	lv_obj_set_style_pad_hor(btn, 22, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_add_event_cb(btn, wave_rate_cb, LV_EVENT_CLICKED, like ? (void *)1 : NULL);
+	sx_pill_style(btn);
+	lv_obj_set_style_pad_hor(btn, 24, 0);
+	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, user);
 	lv_obj_t *label = lv_label_create(btn);
 	lv_label_set_text(label, tr(key));
-	lv_obj_set_style_text_font(label, &font_ui_20, 0);
+	lv_obj_set_style_text_font(label, &font_ui_22, 0);
 	lv_obj_center(label);
+	if (label_out) {
+		*label_out = label;
+	}
 	return btn;
+}
+
+static lv_obj_t *wave_button(lv_obj_t *parent, const char *key, bool like) {
+	return bar_button(parent, key, wave_rate_cb, like ? (void *)1 : NULL, NULL);
 }
 
 static void album_save_cb(lv_event_t *e) {
@@ -1555,6 +1591,34 @@ static void album_save_cb(lv_event_t *e) {
 // and the screen heard "press lost". Locked, the margin keeps the press.
 static void hold_press(lv_obj_t *screen) { lv_obj_set_press_lock(screen, true); }
 
+// The error panel's second button: what is on the card plays without the
+// service.
+static void open_saved(void) { open_list(tr("yandex_saved_on_card"), JOB_SAVED, NULL, NULL); }
+
+// The rows, made the first time a list is shown. The scroller fills the page
+// under the title; show_list() moves its top down under a bar when there is
+// one.
+static void ensure_list(void) {
+	if (list) {
+		return;
+	}
+	static const sx_row_handlers_t handlers = {
+		.on_tap = list_tap,
+		.on_long_press = list_hold,
+		.on_swipe_next = list_swipe_next,
+		.on_swipe_end = list_swipe_end,
+		.on_star = list_star,
+	};
+	static const svclist_cbs_t cbs = {.bind = list_bind, .visible = list_visible};
+	list = svclist_create(list_screen, &handlers, &cbs, SLOT_COUNT, false);
+	list_box = svclist_obj(list);
+	int top = settingsrow_content_top(list_cfg);
+	lv_obj_set_size(list_box, list_cfg->screen_width - 2 * SX_BODY_PAD_L, list_cfg->screen_height - top);
+	lv_obj_set_pos(list_box, SX_BODY_PAD_L, top);
+	// Under the panels that stand in for it.
+	lv_obj_move_to_index(list_box, 1);
+}
+
 static void build_list_page(gui_config_t *cfg) {
 	list_cfg = cfg;
 	list_screen = lv_obj_create(NULL);
@@ -1583,16 +1647,7 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(album_bar, 0, 0);
 	lv_obj_set_flex_flow(album_bar, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(album_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_t *save = lv_btn_create(album_bar);
-	lv_obj_set_size(save, LV_SIZE_CONTENT, 52);
-	lv_obj_set_style_pad_hor(save, 22, 0);
-	lv_obj_set_style_radius(save, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_shadow_width(save, 0, 0);
-	lv_obj_add_event_cb(save, album_save_cb, LV_EVENT_CLICKED, NULL);
-	album_btn_label = lv_label_create(save);
-	lv_label_set_text(album_btn_label, tr("yandex_save_album"));
-	lv_obj_set_style_text_font(album_btn_label, &font_ui_20, 0);
-	lv_obj_center(album_btn_label);
+	bar_button(album_bar, "yandex_save_album", album_save_cb, NULL, &album_btn_label);
 	// Left of the button: a tick and how much of the record is on the card.
 	album_state = lv_obj_create(album_bar);
 	lv_obj_move_to_index(album_state, 0);
@@ -1613,7 +1668,7 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_image_recolor_opa(album_tick, LV_OPA_COVER, 0);
 	theme_register_refresh(marks_recolor);
 	album_state_label = lv_label_create(album_state);
-	lv_obj_add_style(album_state_label, &theme_style_text_dim, 0);
+	lv_obj_add_style(album_state_label, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(album_state_label, &font_ui_20, 0);
 	lv_obj_set_hidden(album_state, true);
 	lv_obj_set_hidden(album_bar, true);
@@ -1627,43 +1682,28 @@ static void build_list_page(gui_config_t *cfg) {
 	lv_obj_set_style_pad_all(artist_bar, 0, 0);
 	lv_obj_set_flex_flow(artist_bar, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(artist_bar, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_t *like = lv_btn_create(artist_bar);
-	lv_obj_set_size(like, LV_SIZE_CONTENT, 52);
-	lv_obj_set_style_pad_hor(like, 22, 0);
-	lv_obj_set_style_radius(like, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_shadow_width(like, 0, 0);
-	lv_obj_add_event_cb(like, artist_like_cb, LV_EVENT_CLICKED, NULL);
-	artist_like_label = lv_label_create(like);
-	lv_label_set_text(artist_like_label, tr("yandex_like"));
-	lv_obj_set_style_text_font(artist_like_label, &font_ui_20, 0);
-	lv_obj_center(artist_like_label);
+	bar_button(artist_bar, "yandex_like", artist_like_cb, NULL, &artist_like_label);
 	lv_obj_set_hidden(artist_bar, true);
 
-	list_box = lv_obj_create(list_screen);
-	lv_obj_set_size(list_box, cfg->screen_width - 2 * cfg->padding, cfg->screen_height - top - 70);
-	lv_obj_set_pos(list_box, cfg->padding, top + 66);
-	lv_obj_set_style_bg_opa(list_box, 0, 0);
-	lv_obj_set_style_border_width(list_box, 0, 0);
-	lv_obj_set_style_pad_all(list_box, 0, 0);
-	lv_obj_set_scroll_dir(list_box, LV_DIR_VER);
-	// No layout: the rows are placed by hand, a window over the list (see
-	// SLOT_COUNT), and this point at the bottom gives the scroll its height.
-	list_end = lv_obj_create(list_box);
-	lv_obj_set_size(list_end, 1, 1);
-	lv_obj_set_style_bg_opa(list_end, 0, 0);
-	lv_obj_set_style_border_width(list_end, 0, 0);
-	lv_obj_set_clickable(list_end, false);
-	lv_obj_add_event_cb(list_box, list_scrolled_cb, LV_EVENT_SCROLL, NULL);
+	// In place of rows: the sentence of an empty list, and the error panel.
+	list_message = lv_label_create(list_screen);
+	lv_label_set_long_mode(list_message, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(list_message, cfg->screen_width - 2 * SX_BODY_PAD_L - 12);
+	lv_obj_align(list_message, LV_ALIGN_TOP_MID, 0, top + 20);
+	lv_obj_add_style(list_message, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(list_message, &font_ui_22, 0);
+	lv_obj_set_hidden(list_message, true);
+	list_error = streamerror_create(list_screen);
+	lv_obj_set_width(list_error, cfg->screen_width - 2 * SX_BODY_PAD_L);
+	lv_obj_align(list_error, LV_ALIGN_TOP_MID, 0, top);
+	streamerror_set_service(list_error, tr("yandex"));
+	streamerror_set_offline(list_error, open_saved);
 
-	list_spin = spinner_create(list_screen, &icon_loader_big);
-	lv_obj_center(list_spin);
-	lv_obj_set_hidden(list_spin, true);
+	list_spin = svcui_spinner(list_screen);
 	switcher_attach_back_gesture(list_screen);
 	hold_press(list_screen);
-	// The swipe back has to start somewhere: the list and the bars cover
-	// most of the page, and a press on them never reached the screen (the
-	// rows pass theirs up to the list).
-	switcher_attach_back_gesture(list_box);
+	// The swipe back has to start somewhere: the bars cover the top of the
+	// page, and a press on them never reached the screen.
 	switcher_attach_back_gesture(wave_bar);
 	switcher_attach_back_gesture(album_bar);
 	switcher_attach_back_gesture(artist_bar);
@@ -1777,7 +1817,7 @@ static void build_login_page(gui_config_t *cfg) {
 	lv_label_set_long_mode(login_message, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(login_message, lv_pct(100));
 	lv_obj_set_style_text_align(login_message, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_add_style(login_message, &theme_style_text_dim, 0);
+	lv_obj_add_style(login_message, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(login_message, &font_ui_20, 0);
 	lv_label_set_text(login_message, "");
 
@@ -1807,12 +1847,17 @@ static void build_search_page(gui_config_t *cfg) {
 	search_field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(search_field, true);
 	lv_textarea_set_placeholder_text(search_field, tr("artist_album_or_track"));
-	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, 62);
-	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
-	lv_obj_add_style(search_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(search_field, 12, 0);
+	// The handoff's text field: 60 px, the surface of a card, its radius.
+	lv_obj_set_size(search_field, cfg->screen_width - 2 * SX_BODY_PAD_L, 60);
+	lv_obj_set_scrollbar_mode(search_field, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, SX_BODY_PAD_L, top);
+	lv_obj_add_style(search_field, &sx_style_surface, 0);
+	lv_obj_add_style(search_field, &sx_style_text, 0);
+	lv_obj_set_style_radius(search_field, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(search_field, 0, 0);
-	lv_obj_set_style_pad_all(search_field, 14, 0);
+	lv_obj_set_style_shadow_width(search_field, 0, 0);
+	lv_obj_set_style_pad_ver(search_field, 14, 0);
+	lv_obj_set_style_pad_hor(search_field, SX_CARD_PAD_H, 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 	keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok", search_accept_cb, NULL);
@@ -1858,12 +1903,10 @@ static void job_done_async(void *user) {
 			page_failed_at = time(NULL);
 		}
 		if (here && !r->error[0]) {
-			for (int i = 0; i < SLOT_COUNT; i++) {
-				if (slots[i].row && slots[i].index >= 0 && slots[i].index / YANDEXLIST_PAGE == r->page) {
-					bind_slot(&slots[i], slots[i].index);
-				}
-			}
-			bind_view(false);
+			int first, last;
+			svclist_visible(list, &first, &last);
+			svclist_rebind(list);
+			list_visible(first, last); // the next page in view, if any
 			update_album_bar();
 		}
 		free_result(r);
@@ -1934,7 +1977,7 @@ static void open_saved_cb(lv_event_t *e) {
 	(void)e;
 	open_list(tr("yandex_saved_on_card"), JOB_SAVED, NULL, NULL);
 }
-static lv_obj_t *saved_signed_out;
+static lv_obj_t *saved_signed_out, *saved_card, *account_card;
 static void logout_cb(lv_event_t *e) {
 	(void)e;
 	yandexdl_cancel_all(); // the account's files are not to be fetched any more
@@ -1955,7 +1998,7 @@ static void quality_refresh(void) {
 	yandex_quality_t current = yandex_get_quality();
 	for (int i = 0; i < 3; i++) {
 		if (quality_pills[i]) {
-			settingsrow_pill_active(quality_pills[i], (int)current == i);
+			sx_pill_set_active(quality_pills[i], (int)current == i);
 		}
 	}
 	char format[48];
@@ -2070,28 +2113,24 @@ static void paint_home(void) {
 	bool in = yandex_logged_in();
 	lv_obj_set_hidden(home_signed_in, !in);
 	lv_obj_set_hidden(home_signed_out, in);
+	int saved = yandexsaved_count();
 	if (!in) {
-		lv_obj_set_hidden(saved_signed_out, yandexsaved_count() == 0);
+		lv_obj_set_hidden(saved_signed_out, saved == 0);
 	}
-	lv_label_set_text(home_user, yandex_display_name());
+	// How much is on the card, under its card; nothing when nothing is.
+	char line[64] = "";
+	if (saved > 0) {
+		lv_snprintf(line, sizeof(line), tr("yandex_n_tracks"), saved);
+	}
+	sx_card_subtitle(saved_card, line, false);
+	sx_card_subtitle(saved_signed_out, line, false);
+	sx_card_title(account_card, yandex_display_name());
 	quality_refresh();
 }
 
 static void home_loaded_cb(lv_event_t *e) {
 	(void)e;
 	paint_home();
-}
-
-static lv_obj_t *column(lv_obj_t *parent, gui_config_t *cfg, int top) {
-	lv_obj_t *c = lv_obj_create(parent);
-	lv_obj_set_size(c, cfg->screen_width - 2 * cfg->padding, cfg->screen_height - top - 10);
-	lv_obj_align(c, LV_ALIGN_TOP_MID, 0, top);
-	lv_obj_set_style_bg_opa(c, 0, 0);
-	lv_obj_set_style_border_width(c, 0, 0);
-	lv_obj_set_style_pad_all(c, 0, 0);
-	lv_obj_set_style_pad_row(c, 12, 0);
-	lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
-	return c;
 }
 
 bool yandexpage_available(void) { return yandex_configured(); }
@@ -2117,47 +2156,55 @@ void yandexpage_init(gui_config_t *cfg) {
 	yandex_screen = lv_obj_create(NULL);
 	lv_obj_add_style(yandex_screen, &theme_style_screen, 0);
 	settingsrow_title(yandex_screen, cfg, "yandex");
-	int top = settingsrow_content_top(cfg);
 
-	home_signed_in = column(yandex_screen, cfg, top);
-	settingsrow_action(home_signed_in, "yandex_my_wave", open_wave_cb, NULL);
-	settingsrow_action(home_signed_in, "yandex_liked", open_liked_cb, NULL);
-	settingsrow_action(home_signed_in, "yandex_artists", open_artists_cb, NULL);
-	settingsrow_action(home_signed_in, "yandex_albums", open_albums_cb, NULL);
-	settingsrow_action(home_signed_in, "yandex_playlists", open_playlists_cb, NULL);
-	settingsrow_action(home_signed_in, "yandex_made_for_you", open_feed_cb, NULL);
-	settingsrow_action(home_signed_in, "yandex_chart", open_chart_cb, NULL);
-	settingsrow_action(home_signed_in, "yandex_new_releases", open_new_releases_cb, NULL);
-	settingsrow_action(home_signed_in, "yandex_search", open_search_cb, NULL);
-	settingsrow_action(home_signed_in, "yandex_saved_on_card", open_saved_cb, NULL);
+	// The handoff's page: a column of cards, the sections first -- the
+	// prototype's five (My Wave, Liked, Playlists, Search, Saved on the card)
+	// with the rest of the collection (artists, albums) beside Liked, then
+	// what the service puts forward under its own heading, the sound
+	// quality and the account.
+	home_signed_in = svcui_column(yandex_screen, cfg);
+	svcui_nav_card(home_signed_in, tr("yandex_my_wave"), NULL, open_wave_cb, NULL);
+	svcui_nav_card(home_signed_in, tr("yandex_liked"), NULL, open_liked_cb, NULL);
+	svcui_nav_card(home_signed_in, tr("yandex_artists"), NULL, open_artists_cb, NULL);
+	svcui_nav_card(home_signed_in, tr("yandex_albums"), NULL, open_albums_cb, NULL);
+	svcui_nav_card(home_signed_in, tr("yandex_playlists"), NULL, open_playlists_cb, NULL);
+	svcui_nav_card(home_signed_in, tr("yandex_search"), NULL, open_search_cb, NULL);
+	saved_card = svcui_nav_card(home_signed_in, tr("yandex_saved_on_card"), NULL, open_saved_cb, NULL);
 	// What is being saved to the library, while something is: under the
-	// rows, where it is seen without scrolling.
-	save_status = lv_label_create(home_signed_in);
+	// saved tracks, where it is seen without scrolling.
+	save_status = svcui_note(home_signed_in, "");
 	lv_label_set_long_mode(save_status, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(save_status, lv_pct(100));
-	lv_obj_add_style(save_status, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(save_status, &font_ui_18, 0);
 	lv_obj_set_hidden(save_status, true);
 	yandexdl_set_listener(save_listener);
-	lv_obj_t *pills;
-	lv_obj_t *quality_card = settingsrow_pills(home_signed_in, "audio_quality", &pills);
-	quality_pills[YANDEX_QUALITY_LOSSLESS] = settingsrow_pill(pills, "yandex_quality_lossless", YANDEX_QUALITY_LOSSLESS, quality_pick_cb);
-	quality_pills[YANDEX_QUALITY_HIGH] = settingsrow_pill(pills, "yandex_quality_high", YANDEX_QUALITY_HIGH, quality_pick_cb);
-	quality_pills[YANDEX_QUALITY_NORMAL] = settingsrow_pill(pills, "yandex_quality_normal", YANDEX_QUALITY_NORMAL, quality_pick_cb);
+	svcui_group(home_signed_in, tr("yandex_picks"));
+	svcui_nav_card(home_signed_in, tr("yandex_made_for_you"), NULL, open_feed_cb, NULL);
+	svcui_nav_card(home_signed_in, tr("yandex_chart"), NULL, open_chart_cb, NULL);
+	svcui_nav_card(home_signed_in, tr("yandex_new_releases"), NULL, open_new_releases_cb, NULL);
+
+	lv_obj_t *quality_card = sx_card_create(home_signed_in);
+	sx_card_title(quality_card, tr("audio_quality"));
+	lv_obj_t *pills = sx_card_pills(quality_card);
+	quality_pills[YANDEX_QUALITY_LOSSLESS] = sx_pill(pills, tr("yandex_quality_lossless"), YANDEX_QUALITY_LOSSLESS, quality_pick_cb);
+	quality_pills[YANDEX_QUALITY_HIGH] = sx_pill(pills, tr("yandex_quality_high"), YANDEX_QUALITY_HIGH, quality_pick_cb);
+	quality_pills[YANDEX_QUALITY_NORMAL] = sx_pill(pills, tr("yandex_quality_normal"), YANDEX_QUALITY_NORMAL, quality_pick_cb);
+	// What the last track really came as, under the pills.
 	quality_format = lv_label_create(quality_card);
 	lv_label_set_long_mode(quality_format, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(quality_format, lv_pct(100));
-	lv_obj_add_style(quality_format, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(quality_format, &font_ui_18, 0);
+	lv_obj_add_style(quality_format, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(quality_format, &font_ui_20, 0);
+	lv_obj_set_style_pad_bottom(quality_format, 8, 0);
 	theme_register_refresh(quality_refresh);
-	settingsrow_action(home_signed_in, "yandex_sign_out", logout_cb, NULL);
-	home_user = lv_label_create(home_signed_in);
-	lv_obj_add_style(home_user, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(home_user, &font_ui_18, 0);
 
-	home_signed_out = column(yandex_screen, cfg, top);
-	settingsrow_action(home_signed_out, "yandex_sign_in", open_login_cb, NULL);
-	saved_signed_out = settingsrow_action(home_signed_out, "yandex_saved_on_card", open_saved_cb, NULL);
+	// The account: who is signed in, and the way out.
+	account_card = sx_card_create(home_signed_in);
+	sx_card_title(account_card, "");
+	sx_card_subtitle(account_card, tr("yandex"), false);
+	sx_card_action(account_card, tr("yandex_sign_out"), logout_cb, NULL);
+
+	home_signed_out = svcui_column(yandex_screen, cfg);
+	svcui_nav_card(home_signed_out, tr("yandex_sign_in"), NULL, open_login_cb, NULL);
+	saved_signed_out = svcui_nav_card(home_signed_out, tr("yandex_saved_on_card"), NULL, open_saved_cb, NULL);
 	// As on the list page: the columns cover the page, the swipe starts there.
 	switcher_attach_back_gesture(home_signed_in);
 	switcher_attach_back_gesture(home_signed_out);

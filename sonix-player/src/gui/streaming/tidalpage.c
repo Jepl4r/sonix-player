@@ -14,7 +14,15 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/streaming/qobuzart.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_row.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_toast.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/streaming/streamerror.h"
+#include "src/gui/streaming/svclist.h"
+#include "src/gui/streaming/svcui.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
@@ -89,6 +97,8 @@ typedef enum {
 	JOB_USER_PLAYLISTS,
 	JOB_FEATURED,
 	JOB_PLAY,
+	// Not a list: it leaves the list on screen alone.
+	JOB_QUEUE_ALBUM, // an album's tracks for the queue (`index`: where)
 } job_kind_t;
 
 typedef struct {
@@ -102,6 +112,7 @@ typedef struct {
 	long id;   // numeric identifier: artists only
 	int index; // which track playback starts from; which showcase for the featured lists
 	int offset; // which entry this page starts at: 0 = new list
+	unsigned list_serial; // list jobs: list_serial when asked
 } job_t;
 
 static pthread_mutex_t job_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -147,6 +158,18 @@ static int result_featured_gone = -1;
 // What the list currently shows, so a tap on a row knows what to do.
 static job_kind_t list_kind;
 
+// Raised by each new list asked for (GUI thread): an answer carrying an older
+// number belongs to a list the user has since left, and is dropped. The
+// worker hands the number of the answer it posts in result_list_serial.
+static unsigned list_serial;
+static unsigned result_list_serial;
+// JOB_QUEUE_ALBUM's answer: the album's tracks (owned by whoever takes them),
+// where they go and the album's title.
+static tidal_track_t *result_queue_tracks;
+static int result_queue_count;
+static int result_queue_where;
+static char result_queue_what[256];
+
 // Pagination, like the radio: the last page came back full, so another one may
 // exist -- and only one request at a time.
 static bool page_more;
@@ -162,74 +185,61 @@ static void submit(const job_t *job) {
 }
 
 // ---------------------------------------------------------------------------
-// the busy veil
+// waiting
 //
-// Only for requests that lead to a list, and only because it stops a second
-// entry being tapped while the first is arriving. It lasts as long as one HTTP
-// request.
-//
-// Neither playback (the track starts while it downloads, see tidalcache_start)
-// nor login raises it; login has its own spinner on the code page, which the
-// veil would hide.
+// 2.0 has no veils (the handoff: no full-screen dimming). While a list is on
+// its way the rows of the one before come off -- they would read the arrays
+// being refilled -- and the wait shows: on the list page as the spinner where
+// the rows will be, from the main or the search page as the busy toast, which
+// a pull puts away (the page stays usable). The list page opens when the list
+// has come, as before: that is when the history moves. Neither playback (the
+// track starts while it downloads, see tidalcache_start) nor login waits
+// here; login has its own spinner on the code page.
 // ---------------------------------------------------------------------------
 
-// A spinner in the middle of the screen, no text: understood without reading
-// and needing no translation. The string callers pass is ignored.
-static lv_obj_t *busy_layer;
-
-static void busy_hide(void) {
-	if (busy_layer) {
-		lv_obj_set_hidden(busy_layer, true);
-	}
-}
-
-static void busy_show(const char *text) {
-	(void)text;
-	if (!busy_layer) {
-		return;
-	}
-	lv_obj_set_hidden(busy_layer, false);
-	lv_obj_move_foreground(busy_layer);
-}
-
-static void build_busy_layer(void) {
-	busy_layer = lv_obj_create(lv_layer_sys());
-	lv_obj_set_size(busy_layer, lv_pct(100), lv_pct(100));
-	lv_obj_set_pos(busy_layer, 0, 0);
-	lv_obj_set_style_bg_color(busy_layer, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(busy_layer, LV_OPA_50, 0);
-	lv_obj_set_style_border_width(busy_layer, 0, 0);
-	lv_obj_set_style_radius(busy_layer, 0, 0);
-	lv_obj_set_scrollable(busy_layer, false);
-	lv_obj_set_hidden(busy_layer, true);
-	lv_obj_set_flex_flow(busy_layer, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(busy_layer, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-	// White rather than the theme colour: the veil under it is 50% black over
-	// any page, so the background here is dark in both themes.
-	lv_obj_t *spin = spinner_create(busy_layer, &icon_loader_big);
-	lv_obj_set_style_image_recolor(spin, lv_color_white(), 0);
-	lv_obj_set_style_image_recolor_opa(spin, LV_OPA_COVER, 0);
-}
+static void wait_begin(void);
+static void wait_end(void);
 
 // ---------------------------------------------------------------------------
 // the result list
+//
+// 2.0 rows over the list (svclist.h): a pool of rows rides the scroll, so two
+// hundred entries cost the rows of a screen and a half, not two hundred
+// widgets of seven objects. A track: its cover (a plaque in the album's tone
+// until it comes), the artist, "· 24/96" in the accent for a hi-res one, its
+// length, the star; one the subscription does not cover stays in its place,
+// faint, saying so. An album: the cover, "artist · year", the chevron. An
+// artist or a playlist: its picture, the chevron.
+//
+// The gestures are the handoff's matrix: a tap plays a track (the page stays,
+// the mini player comes up) or opens the rest; a swipe right puts a track or a
+// whole album next, left at the end of the queue; the star adds a track to
+// the favourites or takes it out at once, with Undo; a hold brings up the
+// sheet of a track, an album or a playlist.
 // ---------------------------------------------------------------------------
 
-static lv_obj_t *list_container;
+#define ROW_POOL 14
+
+static svclist_t *list;
 static lv_obj_t *list_title;
 static lv_obj_t *list_empty;
 // A list that could not be loaded: what went wrong, and "Retry" (streamerror.h).
 static lv_obj_t *list_error;
+// The spinner while a list is on its way: where the rows will be.
+static lv_obj_t *list_spin;
+
+// The entries the rows show: what the worker last put in the result arrays
+// for the list on screen. Its own count, not result_count -- the worker
+// writes the next page's tail while the rows are read.
+static int shown_count;
 
 static void rebuild_home(void);
-static void row_clicked_cb(lv_event_t *e);
 static void login_code_arrived(void);
 static void login_poll_result(void);
 static void login_failed(const char *why);
 static void featured_gone(int slot);
 
-// The list history lives at the end of the file, but job_done_cb() above
+// The list history lives at the end of the file, but job_done_cb() below
 // decides whether to move it: the arrival of the result is what says whether
 // the page actually opened.
 static bool job_is_list(job_kind_t kind);
@@ -245,264 +255,324 @@ static void duration_text(int seconds, char *out, size_t size) {
 	snprintf(out, size, "%d:%02d", seconds / 60, seconds % 60);
 }
 
-// ---------------------------------------------------------------------------
-// the per-row menu
-//
-// Not every list has something to offer on a row, and those that do offer
-// different things: search results add to favourites, the favourites list
-// removes, "My playlists" deletes. Three actions, two of them irreversible and
-// therefore behind a confirmation.
-// ---------------------------------------------------------------------------
+static bool kind_is_tracks(job_kind_t kind) {
+	return kind == JOB_SEARCH_TRACKS || kind == JOB_ALBUM_TRACKS || kind == JOB_PLAYLIST_TRACKS ||
+		   kind == JOB_FAV_TRACKS;
+}
+
+static bool kind_is_albums(job_kind_t kind) {
+	return kind == JOB_SEARCH_ALBUMS || kind == JOB_FAV_ALBUMS || kind == JOB_ARTIST_ALBUMS || kind == JOB_FEATURED;
+}
 
 static void run(const job_t *job, const char *waiting_text);
 
-// A short notice when something is added to favourites: the list on screen
-// does not change, so without a word nothing would be visible.
-static void added_toast_async(void *user) {
+// ---------------------------------------------------------------------------
+// favourites: the star, and the sheet's line
+//
+// Changed at once and offered back in the toast (the handoff's principle 6):
+// nothing asks first any more -- a star taken off by mistake is one tap on
+// Undo away. The mirror of favourite tracks flips before Tidal answers
+// (tidalsync.h); a refusal is said, and the rows follow the mirror again.
+// ---------------------------------------------------------------------------
+
+static void list_refresh_async(void *user) {
 	(void)user;
-	toast_success("added_to_favourites");
+	svclist_rebind(list);
 }
 
-typedef enum {
-	ROW_MENU_NONE = 0,
-	ROW_MENU_TRACK_ADD,	   // "add to favourites" on a track
-	ROW_MENU_TRACK_REMOVE, // "remove from favourites" on a track
-	ROW_MENU_ALBUM_ADD,
-	ROW_MENU_ALBUM_REMOVE,
-	ROW_MENU_PLAYLIST_DELETE,
-} row_menu_t;
+static void refused_async(void *user) {
+	char *why = user;
+	toast_error(why && why[0] ? why : tr("tidal_change_refused"));
+	free(why);
+	svclist_rebind(list);
+}
 
-static row_menu_t row_menu_kind(job_kind_t kind) {
-	switch (kind) {
-	case JOB_SEARCH_TRACKS:
-	case JOB_ALBUM_TRACKS:
-	case JOB_PLAYLIST_TRACKS:
-		return ROW_MENU_TRACK_ADD;
-	case JOB_FAV_TRACKS:
-		return ROW_MENU_TRACK_REMOVE;
-	case JOB_SEARCH_ALBUMS:
-	case JOB_ARTIST_ALBUMS:
-	case JOB_FEATURED:
-		return ROW_MENU_ALBUM_ADD;
-	case JOB_FAV_ALBUMS:
-		return ROW_MENU_ALBUM_REMOVE;
-	case JOB_USER_PLAYLISTS:
-		return ROW_MENU_PLAYLIST_DELETE;
-	default:
-		return ROW_MENU_NONE;
+static void sync_done(bool ok, const char *error, void *user) {
+	(void)user;
+	if (!ok) {
+		gui_post(refused_async, strdup(error ? error : ""));
 	}
 }
 
-// The row the menu was opened on. Only one: the menu is modal.
-static int menu_index = -1;
+// The star of a track, or of an album from its sheet. Copied: the toast
+// outlives the rows it was raised on.
+static long star_track_id;
+static char star_album_id[40];
+static bool star_on;
 
-static char sync_message[192];
+static void star_apply(bool on) {
+	star_on = on;
+	if (star_album_id[0]) {
+		tidalsync_album_favorite(star_album_id, on, sync_done, NULL);
+	} else {
+		tidalsync_favorite_toggle(star_track_id, on, sync_done, NULL);
+	}
+	svclist_rebind(list);
+}
 
-// Re-reads the list on screen: after removing a favourite or deleting a
-// playlist, what is displayed is no longer true.
-static void reload_current_list(void) {
+static void star_undo(void *user) {
+	(void)user;
+	star_apply(!star_on);
+}
+
+static void star_set(long track_id, const char *album_id, bool on, const char *what) {
+	star_track_id = track_id;
+	snprintf(star_album_id, sizeof(star_album_id), "%s", album_id ? album_id : "");
+	star_apply(on);
+	svcui_star_toast(on, "svc_fav_added", "svc_fav_removed", what, star_undo, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// "Play next" and "Add to end of queue"
+//
+// A Tidal track goes into the queue by its cache path -- the file when it is
+// on the card, the name it will have otherwise -- and becomes known to the
+// prefetch, which fetches it when playback nears it as it does for a list
+// played from here (tidalpage_prepare_track()). An album's tracks are asked for
+// first.
+// ---------------------------------------------------------------------------
+
+// The whole queued list: needed by the prefetch thread, and needed by
+// on-demand requests -- when playback reaches a track that has not downloaded
+// yet, this is where what to ask Tidal for is found. The list played, and
+// what was queued from the lists since. Under its lock: the prefetch thread
+// reads it.
+static tidal_track_t queued_tracks[TIDAL_MAX_HELD];
+static int queued_count;
+static pthread_mutex_t queued_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// Makes `t` known to the prefetch (the oldest known track gives way when the
+// list is full), and writes its tags beside the cache name, so the queue
+// shows its title. Its path into `path`.
+static void queued_add(const tidal_track_t *t, char *path, size_t size) {
+	const char *expected = tidal_expected_mime();
+	if (!tidalcache_find(t->id, path, size)) {
+		tidalcache_path(t->id, expected, path, size);
+	}
+	tidalcache_write_sidecars(t->id, expected, t->title, t->artist, t->album, t->album_id, t->track_number, NULL);
+	pthread_mutex_lock(&queued_lock);
+	bool known = false;
+	for (int i = 0; i < queued_count && !known; i++) {
+		known = queued_tracks[i].id == t->id;
+	}
+	if (!known) {
+		if (queued_count == TIDAL_MAX_HELD) {
+			memmove(queued_tracks, queued_tracks + 1, (TIDAL_MAX_HELD - 1) * sizeof(*queued_tracks));
+			queued_count--;
+		}
+		queued_tracks[queued_count++] = *t;
+	}
+	pthread_mutex_unlock(&queued_lock);
+}
+
+static void queue_tracks(const tidal_track_t *tracks, int count, playlist_queue_where_t where, const char *what) {
+	char *block = count > 0 ? malloc((size_t)count * 512) : NULL;
+	const char **paths = count > 0 ? malloc((size_t)count * sizeof(*paths)) : NULL;
+	if (!block || !paths) {
+		free(block);
+		free(paths);
+		gui_notify_popup("playlist_cannot_add_the_tracks");
+		return;
+	}
+	int n = 0;
+	for (int i = 0; i < count; i++) {
+		if (!tracks[i].streamable) {
+			continue; // not on this subscription: it does not go in the queue
+		}
+		queued_add(&tracks[i], block + (size_t)n * 512, 512);
+		paths[n] = block + (size_t)n * 512;
+		n++;
+	}
+	if (n > 0) {
+		svcui_queue(paths, n, where, what);
+	} else {
+		toast_error(tr("stream_not_in_subscription"));
+	}
+	free(paths);
+	free(block);
+}
+
+static void queue_album(const tidal_album_t *a, playlist_queue_where_t where) {
 	job_t job = {0};
-	job.kind = list_kind;
-	switch (list_kind) {
-	case JOB_FAV_TRACKS:
-	case JOB_FAV_ALBUMS:
-	case JOB_USER_PLAYLISTS:
+	job.kind = JOB_QUEUE_ALBUM;
+	job.index = (int)where;
+	snprintf(job.id_text, sizeof(job.id_text), "%s", a->id_text);
+	snprintf(job.text, sizeof(job.text), "%s", a->title);
+	run(&job, NULL);
+}
+
+static void queue_entry(int index, playlist_queue_where_t where) {
+	if (index < 0 || index >= shown_count) {
+		return;
+	}
+	if (kind_is_tracks(list_kind)) {
+		queue_tracks(&result_tracks[index], 1, where, result_tracks[index].title);
+	} else if (kind_is_albums(list_kind)) {
+		queue_album(&result_albums[index], where);
+	}
+}
+
+// ---------------------------------------------------------------------------
+// the sheet
+// ---------------------------------------------------------------------------
+
+static int menu_index = -1;
+static job_kind_t menu_kind;
+
+static bool menu_valid(void) { return menu_index >= 0 && menu_index < shown_count && menu_kind == list_kind; }
+
+static void sheet_queue(void *user) {
+	if (menu_valid()) {
+		queue_entry(menu_index, (playlist_queue_where_t)(intptr_t)user);
+	}
+}
+
+static void sheet_star(void *user) {
+	if (!menu_valid()) {
+		return;
+	}
+	bool on = user != NULL;
+	if (kind_is_tracks(list_kind)) {
+		star_set(result_tracks[menu_index].id, NULL, on, result_tracks[menu_index].title);
+	} else {
+		star_set(0, result_albums[menu_index].id_text, on, result_albums[menu_index].title);
+	}
+}
+
+static void sheet_album(void *user) {
+	(void)user;
+	if (!menu_valid() || !kind_is_tracks(list_kind)) {
+		return;
+	}
+	const tidal_track_t *t = &result_tracks[menu_index];
+	job_t job = {0};
+	job.kind = JOB_ALBUM_TRACKS;
+	snprintf(job.id_text, sizeof(job.id_text), "%s", t->album_id);
+	snprintf(job.text, sizeof(job.text), "%s", t->album[0] ? t->album : tr("tidal"));
+	run(&job, "loading");
+}
+
+// Deleting a playlist on Tidal cannot be undone: asked first, in red. Tidal
+// names its playlists by UUID.
+static char delete_playlist_id[TIDAL_ID_MAX];
+
+static void reload_list_async(void *user) {
+	(void)user;
+	if (list_kind == JOB_USER_PLAYLISTS) {
+		job_t job = {0};
+		job.kind = JOB_USER_PLAYLISTS;
 		run(&job, "loading");
-		break;
-	default:
-		break;
 	}
 }
 
-static void sync_result_async(void *user) {
-	bool reload = (bool)(intptr_t)user;
-	if (sync_message[0]) {
-		gui_notify_popup(sync_message);
-		return;
-	}
-	if (reload) {
-		reload_current_list();
-	}
-}
-
-static void row_sync_done(bool ok, const char *error, void *user) {
-	snprintf(sync_message, sizeof(sync_message), "%s",
-			 ok ? "" : (error && error[0] ? error : tr("tidal_change_refused")));
-	gui_post(sync_result_async, user);
-}
-
-// Adding to favourites does not change the list on screen (this happens from
-// search results), so only success is reported.
-static void row_added_done(bool ok, const char *error, void *user) {
+static void playlist_deleted(bool ok, const char *error, void *user) {
 	(void)user;
-	snprintf(sync_message, sizeof(sync_message), "%s",
-			 ok ? "" : (error && error[0] ? error : tr("tidal_change_refused")));
-	gui_post(sync_result_async, (void *)(intptr_t)0);
-	if (ok) {
-		gui_post(added_toast_async, NULL);
+	if (!ok) {
+		gui_post(refused_async, strdup(error ? error : ""));
+	} else {
+		gui_post(reload_list_async, NULL);
 	}
-}
-
-static void do_track_add(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	long id = result_tracks[menu_index].id;
-	tidalsync_favorite_toggle(id, true, row_added_done, NULL);
-}
-
-static void do_track_remove(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	tidalsync_favorite_toggle(result_tracks[menu_index].id, false, row_sync_done, (void *)(intptr_t)1);
-}
-
-static void do_album_add(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	tidalsync_album_favorite(result_albums[menu_index].id_text, true, row_added_done, NULL);
-}
-
-static void do_album_remove(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	tidalsync_album_favorite(result_albums[menu_index].id_text, false, row_sync_done, (void *)(intptr_t)1);
 }
 
 static void do_playlist_delete(void *user) {
 	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	tidalsync_playlist_remove(result_playlists[menu_index].id, row_sync_done, (void *)(intptr_t)1);
+	tidalsync_playlist_remove(delete_playlist_id, playlist_deleted, NULL);
 }
 
-// The two destructive actions ask first: an accidental tap on the three dots
-// must not delete a playlist.
-static void ask_track_remove(void *user) {
+static void sheet_playlist_delete(void *user) {
 	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
+	if (!menu_valid() || list_kind != JOB_USER_PLAYLISTS) {
 		return;
 	}
+	snprintf(delete_playlist_id, sizeof(delete_playlist_id), "%s", result_playlists[menu_index].id);
 	char message[TIDAL_TITLE_MAX + 64];
-	snprintf(message, sizeof(message), tr("will_no_longer_be_one_of"),
-			 result_tracks[menu_index].title);
-	confirm_show("remove_from_favourites_2", message, "remove", do_track_remove, NULL);
-}
-
-static void ask_album_remove(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	char message[TIDAL_TITLE_MAX + 64];
-	snprintf(message, sizeof(message), tr("will_no_longer_be_one_of_2"),
-			 result_albums[menu_index].title);
-	confirm_show("remove_from_favourites_2", message, "remove", do_album_remove, NULL);
-}
-
-static void ask_playlist_delete(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	char message[TIDAL_TITLE_MAX + 64];
-	snprintf(message, sizeof(message), tr("tidal_delete_playlist_confirm_note"),
-			 result_playlists[menu_index].name);
+	snprintf(message, sizeof(message), tr("tidal_delete_playlist_confirm_note"), result_playlists[menu_index].name);
 	confirm_show("delete_the_playlist", message, "delete", do_playlist_delete, NULL);
 }
 
-static void row_menu_cb(lv_event_t *e) {
-	lv_event_stop_bubbling(e); // the tap belongs to the menu, not the row
-	if (switcher_back_drag_active() || player_sheet_drag_active()) {
-		return;
-	}
+static void row_detail(int index, char *out, size_t size);
 
-	int index = (int)(intptr_t)lv_event_get_user_data(e);
-	if (index < 0 || index >= result_count) {
+static void list_hold(lv_obj_t *row, void *user) {
+	(void)row;
+	int index = (int)(intptr_t)user;
+	if (index < 0 || index >= shown_count) {
 		return;
 	}
 	menu_index = index;
-
-	popover_item_t item;
-	memset(&item, 0, sizeof(item));
-
-	switch (row_menu_kind(list_kind)) {
-	case ROW_MENU_TRACK_ADD:
-		// A track already in favourites is offered for removal, not for
-		// adding again.
-		if (tidalsync_is_favorite(result_tracks[index].id)) {
-			item.label = "remove_from_favourites";
-			item.action = ask_track_remove;
-		} else {
-			item.label = "medialist_add_to_favourites";
-			item.action = do_track_add;
-		}
-		break;
-	case ROW_MENU_TRACK_REMOVE:
-		item.label = "remove_from_favourites";
-		item.action = ask_track_remove;
-		break;
-	case ROW_MENU_ALBUM_ADD:
-		item.label = "medialist_add_to_favourites";
-		item.action = do_album_add;
-		break;
-	case ROW_MENU_ALBUM_REMOVE:
-		item.label = "remove_from_favourites";
-		item.action = ask_album_remove;
-		break;
-	case ROW_MENU_PLAYLIST_DELETE:
-		item.label = "delete_playlist";
-		item.action = ask_playlist_delete;
-		break;
-	default:
-		return;
+	menu_kind = list_kind;
+	sx_sheet_item_t items[5];
+	memset(items, 0, sizeof(items));
+	int n = 0;
+	static char title[TIDAL_TITLE_MAX];
+	if (kind_is_tracks(list_kind) || kind_is_albums(list_kind)) {
+		items[n++] = (sx_sheet_item_t){.label = tr("queue_play_next"), .icon = &icon_list_start, .action = sheet_queue,
+									   .user = (void *)(intptr_t)PLAYLIST_QUEUE_NEXT};
+		items[n++] = (sx_sheet_item_t){.label = tr("queue_add_to_end"), .icon = &icon_list_plus_small,
+									   .action = sheet_queue, .user = (void *)(intptr_t)PLAYLIST_QUEUE_END};
 	}
-
-	popover_show(lv_event_get_current_target(e), &item, 1);
+	if (kind_is_tracks(list_kind)) {
+		const tidal_track_t *t = &result_tracks[index];
+		if (!t->streamable) {
+			n = 0; // nothing of the queue for a track that will not play
+		}
+		bool fav = tidalsync_is_favorite(t->id);
+		items[n++] = (sx_sheet_item_t){.label = tr(fav ? "remove_from_favourites" : "medialist_add_to_favourites"),
+									   .icon = fav ? &icon_star_filled : &icon_star,
+									   .action = sheet_star,
+									   .user = fav ? NULL : (void *)1};
+		if (t->album_id[0] && list_kind != JOB_ALBUM_TRACKS) {
+			items[n++] = (sx_sheet_item_t){.label = tr("show_album"), .icon = &icon_chevron_right, .action = sheet_album};
+		}
+		snprintf(title, sizeof(title), "%s", t->title);
+	} else if (kind_is_albums(list_kind)) {
+		// Tidal says whether an album is a favourite only in the list of
+		// favourites: there it is offered for removal, elsewhere for adding.
+		bool fav = list_kind == JOB_FAV_ALBUMS;
+		items[n++] = (sx_sheet_item_t){.label = tr(fav ? "remove_from_favourites" : "medialist_add_to_favourites"),
+									   .icon = fav ? &icon_star_filled : &icon_star,
+									   .action = sheet_star,
+									   .user = fav ? NULL : (void *)1};
+		snprintf(title, sizeof(title), "%s", result_albums[index].title);
+	} else if (list_kind == JOB_USER_PLAYLISTS) {
+		items[n++] = (sx_sheet_item_t){
+			.label = tr("delete_playlist"), .icon = &icon_trash, .destructive = true, .action = sheet_playlist_delete};
+		snprintf(title, sizeof(title), "%s", result_playlists[index].name);
+	} else {
+		return; // an artist: nothing but opening it
+	}
+	static char subtitle[400];
+	row_detail(index, subtitle, sizeof(subtitle));
+	sx_sheet_menu(title, subtitle, items, n);
 }
 
-// Side length of a row thumbnail.
-#define ROW_THUMB 60
+// Side of a row's cover as fetched: the lead's own, so nothing is scaled.
+static int thumb_px(void) { return sx_row_height(false) > SX_ROW_H ? SX_ROW_THUMB_BIG : SX_ROW_THUMB; }
 
 // Row cover art.
 //
-// The loader has twelve slots and a list can hold up to TIDAL_MAX_HELD rows, so
-// slots are a shared pool, not an assigned seat: they go to the rows that are
-// visible and move to new ones on scroll.
-//
-// The loader is the Qobuz one, which is fine: it names cached images by the
-// MD5 of the URL, so the two services cannot collide even by accident (see
-// qobuzart.h). The URLs here are built by tidal.c from a UUID and are short,
-// well within QOBUZART_URL_MAX.
-static lv_obj_t *row_thumbs[TIDAL_MAX_HELD];
-static char row_cover_url[TIDAL_MAX_HELD][QOBUZART_URL_MAX];
+// The loader has twelve slots and a list can hold far more entries than that,
+// so slots are a shared pool and not assigned seats: they go to the entries in
+// view and move to new ones as the list scrolls. The pictures are kept by
+// entry, so a row scrolled away and back finds its cover still there.
 static cover_image_t row_images[TIDAL_MAX_HELD];
 static bool row_has_image[TIDAL_MAX_HELD];
 
-// This row already asked for its cover and did not get one: dead URL, image
-// that will not decode, host that does not answer. The reload pass restarts
-// every time a slot frees up, so without this one broken row would be asked for
-// forever and keep a slot from the rows that can be served.
+// This entry already asked for its cover and did not get one: dead URL, image
+// that fails to decode, host that does not answer. Without this one broken
+// entry would be asked for forever and keep a slot from those that can be
+// served.
 static bool row_art_failed[TIDAL_MAX_HELD];
 
-// The token claiming the art slots for this page: only its address matters,
-// never its value. See qobuzart.h.
+// The token that claims the cover slots: only its address matters, never its
+// value. See qobuzart.h.
 static const char tidal_art_owner;
 
-// Which row owns each slot right now, -1 = free.
+// Which entry occupies each slot right now, -1 = free.
 static int slot_owner[QOBUZART_SLOTS];
 
-// Timer that collects covers as they arrive. It lives exactly as long as the
-// requests do: resumed when a slot is taken (art_wake()) and pausing itself
-// when the last one frees, so it costs nothing when no art is in flight.
+// The timer that collects covers as they arrive. It lives exactly as long as
+// the requests do: started when a slot is taken (art_wake()) and pausing itself
+// when the last one frees up, so it costs nothing when no art is in flight.
 static lv_timer_t *art_timer;
 
 static bool art_any_pending(void) {
@@ -528,167 +598,142 @@ static void art_release_slot(int slot) {
 	slot_owner[slot] = -1;
 }
 
-// Finished thumbnails are collected here periodically, in the same shape as
-// the local cover loader: the thread works, the list draws, and whatever is
-// ready appears on the next pass.
-static void art_request_visible(void);
+// The cover URL of entry `index` of the list on screen, "" for none.
+static const char *entry_cover(int index) {
+	if (index < 0 || index >= shown_count) {
+		return "";
+	}
+	if (kind_is_tracks(list_kind)) {
+		return result_tracks[index].cover;
+	}
+	if (kind_is_albums(list_kind)) {
+		return result_albums[index].cover;
+	}
+	if (list_kind == JOB_SEARCH_ARTISTS) {
+		return result_artists[index].image;
+	}
+	if (list_kind == JOB_USER_PLAYLISTS) {
+		return result_playlists[index].image;
+	}
+	return "";
+}
 
+static void art_request_range(int first, int last);
+static int art_first = 0, art_last = -1; // the entries in view, last told
+
+// Finished thumbnails are collected here periodically: same shape as the local
+// cover loader -- the thread works, the list draws, and whatever is ready shows
+// up on the next pass.
 static void art_poll_cb(lv_timer_t *timer) {
 	bool freed = false;
 	if (!art_any_pending()) {
-		lv_timer_pause(timer); // nothing in flight: art_wake() resumes it
+		lv_timer_pause(timer); // nothing in flight: art_wake() restarts it
 		return;
 	}
-
 	for (int slot = 0; slot < QOBUZART_SLOTS; slot++) {
-		int row = slot_owner[slot];
-		if (row < 0 || row >= TIDAL_MAX_HELD || !row_thumbs[row]) {
+		int entry = slot_owner[slot];
+		if (entry < 0 || entry >= TIDAL_MAX_HELD) {
 			continue;
 		}
 		cover_image_t image;
 		bool finished = false;
 		if (!qobuzart_take(&tidal_art_owner, slot, &image, &finished)) {
 			if (finished) {
-				row_art_failed[row] = true; // failed: never ask again
+				row_art_failed[entry] = true; // failed: never requested again
 				freed = true;
-				slot_owner[slot] = -1; // nothing to show: slot back to the pool
+				slot_owner[slot] = -1;
 			}
 			continue;
 		}
-
-		cover_free(&row_images[row]);
-		row_images[row] = image;
-		row_has_image[row] = true;
-		// The grey note placeholder was recoloured by the theme; a real cover
-		// must keep its own colours or it becomes a solid square.
-		lv_obj_remove_style(row_thumbs[row], &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor_opa(row_thumbs[row], LV_OPA_TRANSP, 0);
-		lv_obj_set_style_radius(row_thumbs[row], 6, 0);
-		lv_obj_set_style_clip_corner(row_thumbs[row], true, 0);
-		lv_image_set_src(row_thumbs[row], &row_images[row].dsc);
-
-		// Served: the slot returns to the pool for the next row.
+		cover_free(&row_images[entry]);
+		row_images[entry] = image;
+		row_has_image[entry] = true;
+		svclist_rebind_index(list, entry);
+		// Served: the slot goes back to the pool for the next entry.
 		slot_owner[slot] = -1;
 		freed = true;
 	}
-
-	// A freed slot must be handed out again immediately. There are more rows
-	// than slots, so art_request_visible() serves what it can and returns;
-	// without this pass the rows beyond the twelfth would only be asked for
-	// again on the next scroll, and never at all if the last scroll happened
-	// while every slot was busy.
+	// A slot that just freed up is handed out at once: there are more entries
+	// than slots, and without this pass the ones beyond the twelfth would wait
+	// for the next scroll.
 	if (freed) {
-		art_request_visible();
+		art_request_range(art_first, art_last);
 	}
-
 }
 
-// Requests covers for the visible rows plus a margin above and below, so slow
-// scrolling finds them already there. Called on fill and on every scroll.
-static void art_request_visible(void) {
-	if (!list_container) {
-		return;
-	}
-
-	int32_t view_top = lv_obj_get_scroll_y(list_container);
-	int32_t view_height = lv_obj_get_height(list_container);
-	int32_t margin = view_height / 2;
-
-	uint32_t children = lv_obj_get_child_count(list_container);
-	for (uint32_t c = 0; c < children && c < TIDAL_MAX_HELD; c++) {
-		int row = (int)c;
-		if (!row_thumbs[row] || row_has_image[row] || row_art_failed[row] || !row_cover_url[row][0]) {
+// Requests covers for the entries in view, plus half a screen either side so
+// slow scrolling finds them already there.
+static void art_request_range(int first, int last) {
+	art_first = first;
+	art_last = last;
+	int margin = (last - first) / 2 + 1;
+	int from = first - margin < 0 ? 0 : first - margin;
+	int to = last + margin >= shown_count ? shown_count - 1 : last + margin;
+	for (int entry = from; entry <= to && entry < TIDAL_MAX_HELD; entry++) {
+		const char *url = entry_cover(entry);
+		if (!url[0] || row_has_image[entry] || row_art_failed[entry]) {
 			continue;
 		}
-
-		lv_obj_t *widget = lv_obj_get_child(list_container, (int32_t)c);
-		int32_t y = lv_obj_get_y(widget);
-		int32_t h = lv_obj_get_height(widget);
-		if (y + h < view_top - margin || y > view_top + view_height + margin) {
-			continue; // too far away to be worth a request
-		}
-
-		// Already queued for this row?
 		bool queued = false;
-		for (int slot = 0; slot < QOBUZART_SLOTS && !queued; slot++) {
-			queued = slot_owner[slot] == row;
+		int free_slot = -1;
+		for (int slot = 0; slot < QOBUZART_SLOTS; slot++) {
+			queued |= slot_owner[slot] == entry;
+			if (slot_owner[slot] < 0 && free_slot < 0) {
+				free_slot = slot;
+			}
 		}
 		if (queued) {
 			continue;
 		}
-
-		int free_slot = -1;
-		for (int slot = 0; slot < QOBUZART_SLOTS && free_slot < 0; slot++) {
-			if (slot_owner[slot] < 0) {
-				free_slot = slot;
-			}
-		}
 		if (free_slot < 0) {
 			return; // all busy: the rest on the next pass
 		}
-
-		slot_owner[free_slot] = row;
+		slot_owner[free_slot] = entry;
 		art_wake();
-		qobuzart_request(&tidal_art_owner, free_slot, row_cover_url[row], ROW_THUMB);
+		qobuzart_request(&tidal_art_owner, free_slot, url, thumb_px());
 	}
 }
 
 static void maybe_load_more(void);
 
-static void list_scrolled_cb(lv_event_t *e) {
-	(void)e;
-	art_request_visible();
-	maybe_load_more();
-}
-
-// The rows all go at once (lv_obj_clean): the pointers have to be forgotten
-// first, or the thumbnail pass writes to dead objects.
+// A new list is coming: the rows show nothing (they would read the arrays the
+// worker is about to fill), and the pictures go.
 static void art_forget_rows(void) {
+	svclist_set_count(list, 0, false);
+	shown_count = 0;
 	for (int slot = 0; slot < QOBUZART_SLOTS; slot++) {
 		art_release_slot(slot);
 	}
-	for (int row = 0; row < TIDAL_MAX_HELD; row++) {
-		row_thumbs[row] = NULL;
-		row_cover_url[row][0] = '\0';
-		row_has_image[row] = false;
-		row_art_failed[row] = false;
-		cover_free(&row_images[row]);
+	for (int entry = 0; entry < TIDAL_MAX_HELD; entry++) {
+		row_has_image[entry] = false;
+		row_art_failed[entry] = false;
+		cover_free(&row_images[entry]);
 	}
+	art_first = 0;
+	art_last = -1;
 }
 
-// Gives the decoded thumbnails back without taking the list apart.
-//
-// Not art_forget_rows(): that one is only safe because an lv_obj_clean()
-// follows it immediately, so the widgets pointing at the freed pixels are
-// destroyed before anything can draw them. Here the rows survive -- coming back
-// to the page finds the list where it was left -- so every widget goes back to
-// the grey note first, with the note's styles on and the photograph's off.
-//
-// row_art_failed is deliberately NOT cleared: a cover that would not download
-// still will not, and clearing it would send the same failing requests again at
-// every visit.
+// Gives the decoded thumbnails back without taking the list apart: the rows
+// go back to their plaques. row_art_failed is deliberately NOT cleared: a
+// cover that would not download still will not.
 static void art_drop_pictures(void) {
 	for (int slot = 0; slot < QOBUZART_SLOTS; slot++) {
 		art_release_slot(slot);
 	}
-	for (int row = 0; row < TIDAL_MAX_HELD; row++) {
-		if (row_thumbs[row] && row_has_image[row]) {
-			lv_image_set_src(row_thumbs[row], &icon_music2);
-			lv_obj_add_style(row_thumbs[row], &theme_style_icon, 0);
-			lv_obj_set_style_image_recolor_opa(row_thumbs[row], LV_OPA_COVER, 0);
-			lv_obj_set_style_clip_corner(row_thumbs[row], false, 0);
-			lv_obj_set_style_radius(row_thumbs[row], 0, 0);
-		}
-		row_has_image[row] = false;
-		cover_free(&row_images[row]);
+	for (int entry = 0; entry < TIDAL_MAX_HELD; entry++) {
+		row_has_image[entry] = false;
+	}
+	// The rows let go of the pictures before they are freed.
+	svclist_rebind(list);
+	for (int entry = 0; entry < TIDAL_MAX_HELD; entry++) {
+		cover_free(&row_images[entry]);
 	}
 }
 
-// Two hundred rows of 60x60 is 1.4 MB, held until the list is rebuilt, so the
-// pictures are given back a while after the page is left. Not the moment it is
-// left: tapping a track goes to the player and coming straight back is the
-// ordinary way to use this page, and freeing on the way out would re-read and
-// re-decode a dozen pictures every time a track is played.
+// Two hundred thumbnails of 56 px are 1.2 MB, held until the list is rebuilt,
+// so the pictures are given back a while after the page is left. Not the
+// moment it is left: coming straight back is the ordinary way to use this
+// page.
 #define ART_DROP_DELAY_MS 20000
 
 static lv_timer_t *art_drop_timer;
@@ -696,11 +741,9 @@ static lv_timer_t *art_drop_timer;
 static void art_drop_cb(lv_timer_t *timer) {
 	lv_timer_pause(timer);
 	art_drop_pictures();
-
-	// And back to the kernel, not merely back to the arena. A thumbnail is
-	// 7200 bytes, well under the 96 kB mmap threshold main.c sets, so the
-	// thumbnails come out of the heap rather than out of their own mappings
-	// and freeing them alone leaves the arena holding the space.
+	// And back to the kernel, not merely back to the arena: a thumbnail is
+	// under the mmap threshold main.c sets, so freeing them alone leaves the
+	// arena holding the space.
 	malloc_trim(0);
 }
 
@@ -709,14 +752,13 @@ static void list_loaded_cb(lv_event_t *e) {
 	if (art_drop_timer) {
 		lv_timer_pause(art_drop_timer); // back before the wait ran out
 	}
-	if (!list_container) {
-		return; // the screen exists before the page inside it does
+	if (list) {
+		// Whatever was given back while the page was away is asked for
+		// again; free when nothing was dropped.
+		int first, last;
+		svclist_visible(list, &first, &last);
+		art_request_range(first, last);
 	}
-	// Whatever was given back while the page was away is asked for again. Free
-	// when nothing was dropped: every row still holding its picture is skipped.
-	art_wake();
-	lv_obj_update_layout(list_container);
-	art_request_visible();
 }
 
 static void list_unloaded_cb(lv_event_t *e) {
@@ -727,175 +769,159 @@ static void list_unloaded_cb(lv_event_t *e) {
 	}
 }
 
-// A list row: name on top, detail below, and where needed the three dots on
-// the right.
-//
-// The two labels form a flex column with a declared gap, each exactly one line
-// high: that is what forces an ellipsis as the only outcome for text that is
-// too long, instead of letting it wrap over the subtitle.
-static lv_obj_t *make_row(const char *name, const char *detail, const char *cover_url, bool dimmed, int index) {
-	lv_obj_t *row = lv_btn_create(list_container);
-	lv_obj_set_size(row, lv_pct(100), 88);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_ver(row, 0, 0);
-	lv_obj_set_style_pad_column(row, 8, 0);
-	lv_obj_set_scrollable(row, false);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	// The gestures (back, and pulling in the player) often start on a row, and
-	// a button keeps the press to itself: without this neither drag works on
-	// the lists.
-	lv_obj_set_event_bubble(row, true);
-	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
-
-	// The cover, where there is a URL for it. Starts as the grey note and
-	// becomes the real image once the thread has downloaded it, so the list is
-	// readable at once without waiting for the network.
-	if (cover_url && cover_url[0] && index < TIDAL_MAX_HELD) {
-		lv_obj_t *thumb = lv_image_create(row);
-		lv_obj_set_size(thumb, ROW_THUMB, ROW_THUMB);
-		lv_image_set_inner_align(thumb, LV_IMAGE_ALIGN_CENTER);
-		lv_image_set_src(thumb, &icon_music2);
-		lv_obj_add_style(thumb, &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor_opa(thumb, LV_OPA_COVER, 0);
-		lv_obj_set_event_bubble(thumb, true);
-		row_thumbs[index] = thumb;
-		snprintf(row_cover_url[index], sizeof(row_cover_url[0]), "%s", cover_url);
+// The line under an entry's title.
+static void row_detail(int index, char *out, size_t size) {
+	out[0] = '\0';
+	if (kind_is_tracks(list_kind)) {
+		const tidal_track_t *t = &result_tracks[index];
+		if (!t->streamable) {
+			snprintf(out, size, "%s \xC2\xB7 %s", t->artist, tr("not_included"));
+		} else {
+			snprintf(out, size, "%s", t->artist);
+		}
+	} else if (kind_is_albums(list_kind)) {
+		const tidal_album_t *a = &result_albums[index];
+		snprintf(out, size, "%s%s%s", a->artist, a->released[0] ? " \xC2\xB7 " : "", a->released);
+	} else if (list_kind == JOB_SEARCH_ARTISTS) {
+		const tidal_artist_t *a = &result_artists[index];
+		if (a->album_count > 0) {
+			snprintf(out, size, tr(a->album_count == 1 ? "subsonic_one_album" : "subsonic_albums_n"), a->album_count);
+		}
+	} else if (list_kind == JOB_USER_PLAYLISTS) {
+		const tidal_playlist_t *p = &result_playlists[index];
+		snprintf(out, size, "%s \xC2\xB7 %d", p->owner, p->track_count);
 	}
-
-	lv_obj_t *texts = lv_obj_create(row);
-	lv_obj_set_flex_grow(texts, 1);
-	lv_obj_set_height(texts, LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(texts, 0, 0);
-	lv_obj_set_style_border_width(texts, 0, 0);
-	lv_obj_set_style_pad_all(texts, 0, 0);
-	lv_obj_set_style_pad_row(texts, 6, 0); // breathing room between title and subtitle
-	lv_obj_set_scrollable(texts, false);
-	lv_obj_set_event_bubble(texts, true);
-	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(texts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-	lv_obj_t *label = lv_label_create(texts);
-	lv_label_set_text(label, name);
-	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(label, lv_pct(100));
-	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_22));
-	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-
-	// A track the subscription does not cover stays in the list but reads as
-	// unplayable: hiding it would leave a gap in the album with no explanation.
-	if (dimmed) {
-		lv_obj_set_style_text_color(label, theme()->text_secondary, 0);
-	}
-
-	if (detail && detail[0]) {
-		lv_obj_t *sub = lv_label_create(texts);
-		lv_label_set_text(sub, detail);
-		lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
-		lv_obj_set_width(sub, lv_pct(100));
-		lv_obj_set_height(sub, lv_font_get_line_height(&font_ui_18));
-		lv_obj_add_style(sub, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(sub, &font_ui_18, 0);
-	}
-
-	// The three dots, where the list has something to offer on a single entry.
-	if (row_menu_kind(result_kind) != ROW_MENU_NONE) {
-		lv_obj_t *menu_btn = lv_btn_create(row);
-		lv_obj_set_size(menu_btn, 44, 44);
-		// A fingertip's worth (touch.h), kept within the row's own padding.
-		touch_grow(menu_btn, 44, 44, 14);
-		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_border_width(menu_btn, 0, 0);
-		lv_obj_set_style_shadow_width(menu_btn, 0, 0);
-		lv_obj_set_style_pad_all(menu_btn, 0, 0);
-		lv_obj_add_event_cb(menu_btn, row_menu_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
-
-		lv_obj_t *dots = lv_image_create(menu_btn);
-		lv_image_set_src(dots, &icon_ellipsis_vertical);
-		lv_obj_add_style(dots, &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
-		lv_obj_center(dots);
-	}
-
-	return row;
 }
 
-// `from` is the first row to create: 0 rebuilds everything, a higher value
-// appends the new rows at the bottom without touching the others -- which is
-// what keeps the scroll position steady when the next page arrives.
-static void fill_list(int from) {
+// The track playing now, as a Tidal id, for the playing row.
+static long playing_id;
+
+static bool playing_update(void) {
+	char path[512];
+	long id = 0;
+	if (playlist_current_path(path, sizeof(path)) && tidalcache_owns(path)) {
+		id = tidalcache_track_id(path);
+	}
+	if (id == playing_id) {
+		return false;
+	}
+	playing_id = id;
+	return true;
+}
+
+// "· 24/96", "· 24/44.1": a hi-res track's resolution, the handoff's accent
+// badge.
+static void hires_badge(const tidal_track_t *t, char *out, size_t size) {
+	out[0] = '\0';
+	if (!t->hires || t->sample_rate <= 0 || t->bit_depth <= 0) {
+		return;
+	}
+	int khz = t->sample_rate / 1000, tenth = (t->sample_rate % 1000) / 100;
+	if (tenth) {
+		snprintf(out, size, "\xC2\xB7 %d/%d.%d", t->bit_depth, khz, tenth);
+	} else {
+		snprintf(out, size, "\xC2\xB7 %d/%d", t->bit_depth, khz);
+	}
+}
+
+static void list_bind(lv_obj_t *row, int index) {
+	if (index < 0 || index >= shown_count) {
+		return;
+	}
+	char detail[400];
+	row_detail(index, detail, sizeof(detail));
+	const lv_image_dsc_t *image = index < TIDAL_MAX_HELD && row_has_image[index] ? &row_images[index].dsc : NULL;
+	sx_row_set_playing(row, false);
+	lv_obj_set_style_opa(row, LV_OPA_COVER, 0);
+	if (kind_is_tracks(list_kind)) {
+		const tidal_track_t *t = &result_tracks[index];
+		char length[16], badge[24];
+		duration_text(t->duration, length, sizeof(length));
+		hires_badge(t, badge, sizeof(badge));
+		sx_row_set_title(row, t->title);
+		sx_row_set_subtitle(row, detail, badge[0] ? badge : NULL, length);
+		if (list_kind == JOB_ALBUM_TRACKS && t->track_number > 0) {
+			sx_row_set_number(row, t->track_number);
+		} else {
+			sx_row_set_thumb(row, image, svcui_tone(t->album_id[0] ? t->album_id : t->title));
+		}
+		sx_row_set_trail(row, SX_ROW_TRAIL_STAR);
+		sx_row_set_starred(row, tidalsync_is_favorite(t->id));
+		sx_row_set_swipes(row, t->streamable, t->streamable);
+		sx_row_set_playing(row, playing_id != 0 && playing_id == t->id);
+		// A track the subscription does not cover stays in the list, faint:
+		// hiding it would leave a gap in the album with no explanation.
+		if (!t->streamable) {
+			lv_obj_set_style_opa(row, LV_OPA_50, 0);
+		}
+	} else if (kind_is_albums(list_kind)) {
+		const tidal_album_t *a = &result_albums[index];
+		sx_row_set_title(row, a->title);
+		sx_row_set_subtitle(row, detail, NULL, NULL);
+		sx_row_set_thumb(row, image, svcui_tone(a->id_text));
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, true, true);
+	} else if (list_kind == JOB_SEARCH_ARTISTS) {
+		const tidal_artist_t *a = &result_artists[index];
+		sx_row_set_title(row, a->name);
+		sx_row_set_subtitle(row, detail, NULL, NULL);
+		sx_row_set_thumb(row, image, svcui_tone(a->name));
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, false, false);
+	} else if (list_kind == JOB_USER_PLAYLISTS) {
+		const tidal_playlist_t *p = &result_playlists[index];
+		sx_row_set_title(row, p->name);
+		sx_row_set_subtitle(row, detail, NULL, NULL);
+		sx_row_set_thumb(row, image, svcui_tone(p->id));
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, false, false);
+	}
+}
+
+static void list_visible_cb(int first, int last) { art_request_range(first, last); }
+
+static void favourites_known(void) { gui_post(list_refresh_async, NULL); }
+
+// `from` is the first entry new: 0 a new list, a higher value a page added at
+// the bottom -- the rows already there and the scroll stay.
+static void fill_list(job_kind_t kind, int from, int count, const char *title) {
 	if (from == 0) {
 		art_forget_rows();
-		lv_obj_clean(list_container);
 	}
-	list_kind = result_kind;
-
-	for (int i = from; i < result_count; i++) {
-		char detail[400];
-
-		switch (result_kind) {
-		case JOB_SEARCH_TRACKS:
-		case JOB_ALBUM_TRACKS:
-		case JOB_PLAYLIST_TRACKS:
-		case JOB_FAV_TRACKS: {
-			const tidal_track_t *t = &result_tracks[i];
-			char length[16];
-			duration_text(t->duration, length, sizeof(length));
-			if (!t->streamable) {
-				snprintf(detail, sizeof(detail), "%s \xC2\xB7 %s", t->artist, tr("not_included"));
-			} else if (t->hires && t->sample_rate > 0) {
-				snprintf(detail, sizeof(detail), "%s \xC2\xB7 %d bit %d kHz \xC2\xB7 %s", t->artist, t->bit_depth,
-						 t->sample_rate / 1000, length);
-			} else {
-				snprintf(detail, sizeof(detail), "%s \xC2\xB7 %s", t->artist, length);
-			}
-			make_row(t->title, detail, t->cover, !t->streamable, i);
-			break;
-		}
-		case JOB_SEARCH_ALBUMS:
-		case JOB_FAV_ALBUMS:
-		case JOB_ARTIST_ALBUMS:
-		case JOB_FEATURED: {
-			const tidal_album_t *a = &result_albums[i];
-			snprintf(detail, sizeof(detail), "%s%s%s", a->artist, a->released[0] ? " \xC2\xB7 " : "", a->released);
-			make_row(a->title, detail, a->cover, false, i);
-			break;
-		}
-		case JOB_SEARCH_ARTISTS: {
-			const tidal_artist_t *a = &result_artists[i];
-			snprintf(detail, sizeof(detail), "%d album", a->album_count);
-			make_row(a->name, a->album_count > 0 ? detail : "", a->image, false, i);
-			break;
-		}
-		case JOB_USER_PLAYLISTS: {
-			const tidal_playlist_t *p = &result_playlists[i];
-			snprintf(detail, sizeof(detail), "%s \xC2\xB7 %d", p->owner, p->track_count);
-			make_row(p->name, detail, p->image, false, i);
-			break;
-		}
-		default:
-			break;
-		}
+	list_kind = kind;
+	shown_count = count;
+	lv_obj_set_hidden(list_spin, true);
+	playing_update();
+	svclist_set_count(list, shown_count, from > 0);
+	lv_obj_set_hidden(list_empty, shown_count != 0);
+	lv_label_set_text(list_title, title);
+	// The stars read the mirror of favourite tracks: asked for when not known
+	// yet, the rows told when it comes.
+	if (kind_is_tracks(list_kind)) {
+		tidalsync_favorites_refresh(favourites_known);
 	}
+}
 
-	// Covers for the visible rows. Must run once the rows exist and LVGL has
-	// computed the layout, because this reads coordinates.
-	lv_obj_update_layout(list_container);
-	art_request_visible();
+// The toast is ours to end only if we raised it.
+static bool wait_toast;
 
-	if (result_count == 0) {
-		lv_obj_set_hidden(list_empty, false);
+static void wait_begin(void) {
+	art_forget_rows();
+	lv_obj_set_hidden(list_empty, true);
+	if (lv_screen_active() == list_screen) {
+		lv_obj_set_hidden(list_spin, false);
 	} else {
-		lv_obj_set_hidden(list_empty, true);
+		sx_toast_busy(tr("loading"), true);
+		wait_toast = true;
 	}
+}
 
-	lv_label_set_text(list_title, result_title);
+static void wait_end(void) {
+	lv_obj_set_hidden(list_spin, true);
+	if (wait_toast) {
+		wait_toast = false;
+		sx_toast_busy_end();
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -916,7 +942,28 @@ static void job_done_cb(void *user) {
 	(void)user;
 	// Before reading any result_*: from here on the worker is held and nothing
 	// writes underneath. It is released on the way out, in job_result_taken().
-	busy_hide();
+	if (result_kind == JOB_QUEUE_ALBUM) {
+		if (result_error[0] || result_queue_count <= 0) {
+			toast_error(result_error[0] ? result_error : tr("playlist_cannot_add_the_tracks"));
+		} else {
+			queue_tracks(result_queue_tracks, result_queue_count, (playlist_queue_where_t)result_queue_where,
+						 result_queue_what);
+		}
+		free(result_queue_tracks);
+		result_queue_tracks = NULL;
+		job_result_taken();
+		return;
+	}
+	// A list the user has since left (or asked for again): another answer is
+	// on its way, and this one would only flash past. Its navigation is the
+	// newer job's, and stays.
+	if (job_is_list(result_kind) && result_list_serial != list_serial) {
+		job_result_taken();
+		return;
+	}
+	if (job_is_list(result_kind)) {
+		wait_end();
+	}
 
 	if (result_error[0]) {
 		// Login has its own page to report on. A transient popup would leave
@@ -935,7 +982,7 @@ static void job_done_cb(void *user) {
 			// in the history like any other and back leads where it would
 			// have. The worker left no rows for it (result_count 0).
 			list_nav_commit();
-			fill_list(0);
+			fill_list(result_kind, 0, 0, result_title);
 			lv_obj_set_hidden(list_empty, true);
 			page_more = false;
 			streamerror_show(list_error, result_class, result_error, retry_list, error_sign_in);
@@ -973,10 +1020,9 @@ static void job_done_cb(void *user) {
 		break;
 
 	case JOB_PLAY:
-		// Nothing: the worker already opened the player the moment the music
-		// started. This runs much later -- after the next track has also been
-		// prefetched, which is minutes -- and reopening it now would tear away
-		// whatever page the user has since opened.
+		// Nothing: the music started long ago (play_started_async). This runs
+		// much later -- after the next track has also been prefetched, which is
+		// minutes.
 		break;
 
 	case JOB_FEATURED:
@@ -989,7 +1035,7 @@ static void job_done_cb(void *user) {
 			job_result_taken();
 			return;
 		}
-		fill_list(result_from);
+		fill_list(result_kind, result_from, result_count, result_title);
 		page_loading = false;
 		page_more = (result_count - result_from == TIDAL_PAGE_LIMIT) && result_count < TIDAL_MAX_HELD;
 		// Before switch_screen(): to tell whether the page is being entered
@@ -1002,7 +1048,7 @@ static void job_done_cb(void *user) {
 		break;
 
 	default:
-		fill_list(result_from);
+		fill_list(result_kind, result_from, result_count, result_title);
 		// A full last page probably means another one follows; a short one
 		// means the list really ended and nothing more is requested.
 		page_loading = false;
@@ -1158,10 +1204,14 @@ static void cover_ready_async(void *user) {
 	free(path);
 }
 
+// 2.0: the page stays where it is, the mini player comes up with the track
+// (the player is a tap on it away), and the row playing is marked.
 static void play_started_async(void *user) {
 	(void)user;
 	player_refresh_now_playing();
-	switch_screen(player_screen);
+	if (playing_update()) {
+		svclist_rebind(list);
+	}
 }
 
 
@@ -1215,11 +1265,7 @@ static void prefetch_submit(int index) {
 	pthread_mutex_unlock(&prefetch_lock);
 }
 
-// The whole queued list: used by the prefetch thread, and used for on-demand
-// fetches -- when playback reaches a track that has not downloaded yet, this
-// is where to find what to ask Tidal for.
-static tidal_track_t queued_tracks[TIDAL_MAX_HELD];
-static int queued_count;
+// The tracks the prefetch knows: queued_tracks, with the lists' code above.
 
 // The track needed right now -- prev was pressed, or the queue reached one
 // that was never prefetched.
@@ -1400,6 +1446,7 @@ static void do_play(int index) {
 	static const char *path_ptr[TIDAL_MAX_HELD];
 	const char *expected = tidal_expected_mime();
 
+	pthread_mutex_lock(&queued_lock);
 	queued_count = 0;
 	int start = 0;
 	for (int i = 0; i < result_count && queued_count < TIDAL_MAX_HELD; i++) {
@@ -1417,6 +1464,7 @@ static void do_play(int index) {
 		queued_tracks[queued_count] = result_tracks[i];
 		queued_count++;
 	}
+	pthread_mutex_unlock(&queued_lock);
 
 	if (queued_count == 0) {
 		return;
@@ -1462,6 +1510,16 @@ static void do_play(int index) {
 //      missing one between the playing track and the two after it.
 static void queue_watch_cb(lv_timer_t *timer) {
 	(void)timer;
+	// The playing row follows the track, which moves on by itself; only
+	// while the list is on screen.
+	if (list && shown_count > 0 && lv_screen_active() == list_screen && playing_update()) {
+		svclist_rebind(list);
+	}
+	// Never signed in and nothing of ours ever queued: nothing to watch, and
+	// this tick costs one comparison (as on the Subsonic page).
+	if (queued_count == 0 && !waiting_for_track && !tidal_logged_in()) {
+		return;
+	}
 	// A queue that is a library list holds no cache files, and walking it here
 	// would be a database read per entry, once a second, for nothing. The
 	// bookkeeping below still has to run: something was very likely being
@@ -1575,11 +1633,15 @@ static void *prefetch_main(void *arg) {
 		// From id to track: the data (title, duration, cover) is looked up by
 		// searching the queued list, never by trusting a position.
 		int index = -1;
+		tidal_track_t track = {0};
+		pthread_mutex_lock(&queued_lock);
 		for (int i = 0; i < queued_count && index < 0; i++) {
 			if (queued_tracks[i].id == id) {
 				index = i;
+				track = queued_tracks[i];
 			}
 		}
+		pthread_mutex_unlock(&queued_lock);
 
 		if (index < 0) {
 			// Not in the queue being played: wait for the watchdog to
@@ -1595,7 +1657,6 @@ static void *prefetch_main(void *arg) {
 			continue;
 		}
 
-		tidal_track_t track = queued_tracks[index];
 		tidalcache_wait_idle();
 
 		// The request may have changed while waiting for a turn: prev is
@@ -1702,7 +1763,7 @@ static void *worker_main(void *arg) {
 		// anything.
 		//
 		// The result_* buffers back the visible list: fill_list() draws the
-		// rows from them, and row_clicked_cb() looks up what to do when one is
+		// rows from them, and list_tap() looks up what to do when one is
 		// tapped. A failing job never calls fill_list() -- job_done_cb() shows
 		// the error and returns -- so the previous rows stay on screen and the
 		// count has to be put back, or `index >= result_count` would reject
@@ -1729,10 +1790,11 @@ static void *worker_main(void *arg) {
 		// makes do_play() a no-op: it finds an empty list and returns
 		// silently.) Nor does an extra page clear it: the old rows stay on
 		// screen and usable while the new ones download.
-		if (job.kind != JOB_PLAY && off == 0) {
+		if (job_is_list(job.kind) && off == 0) {
 			result_count = 0;
 			result_title[0] = '\0';
 		}
+		result_list_serial = job.list_serial;
 
 		int n = 0;
 		switch (job.kind) {
@@ -1814,6 +1876,16 @@ static void *worker_main(void *arg) {
 			do_play(job.index);
 			break;
 
+		case JOB_QUEUE_ALBUM:
+			// Into a buffer of its own, handed over with the answer: the list
+			// on screen stays as it is.
+			result_queue_tracks = malloc(TIDAL_MAX_HELD * sizeof(*result_queue_tracks));
+			n = result_queue_tracks ? tidal_album_tracks(job.id_text, 0, result_queue_tracks, TIDAL_MAX_HELD) : -1;
+			result_queue_count = n > 0 ? n : 0;
+			result_queue_where = job.index;
+			snprintf(result_queue_what, sizeof(result_queue_what), "%s", job.text);
+			break;
+
 		default:
 			break;
 		}
@@ -1822,7 +1894,7 @@ static void *worker_main(void *arg) {
 			result_class = streamerr_describe("tidal", tidal_last_error(), result_error, sizeof(result_error));
 			n = 0;
 		}
-		if (job.kind != JOB_PLAY) {
+		if (job_is_list(job.kind)) {
 			// A job that will draw nothing -- an error, or a vanished showcase
 			// -- restores what it saved: the list on screen is still the
 			// previous one, and these numbers must keep describing it. Zero
@@ -1890,7 +1962,8 @@ static bool inflight_valid;
 static bool inflight_is_back; // going back consumes a step instead of adding one
 
 static bool job_is_list(job_kind_t kind) {
-	return kind != JOB_PLAY && kind != JOB_LOGIN_BEGIN && kind != JOB_LOGIN_POLL && kind != JOB_NONE;
+	return kind != JOB_PLAY && kind != JOB_LOGIN_BEGIN && kind != JOB_LOGIN_POLL && kind != JOB_NONE &&
+		   kind != JOB_QUEUE_ALBUM;
 }
 
 // The job put nothing on screen: navigation stays exactly as it was, and the
@@ -1945,39 +2018,37 @@ static bool list_back_guard(void) {
 	// that list has actually come back. Removing it here and then failing to
 	// reload would lose that step back forever.
 	job_t previous = list_history[list_history_len - 1];
+	previous.list_serial = ++list_serial;
 	inflight_job = previous;
 	inflight_valid = true;
 	inflight_is_back = true;
 	page_more = false;
 	page_loading = false;
+	wait_begin();
 	start_worker();
-	busy_show("loading");
 	submit(&previous);
 	return true;
 }
 
-static void run(const job_t *job, const char *waiting_text) {
+static void run(const job_t *job_in, const char *waiting_text) {
+	(void)waiting_text;
+	job_t copy = *job_in;
+	job_t *job = &copy;
 	// A job opening another list while one is already open: the previous one
 	// has to be remembered -- but when the new one is visible, not now.
 	if (job_is_list(job->kind)) {
+		job->list_serial = ++list_serial;
 		inflight_job = *job;
 		inflight_valid = true;
 		inflight_is_back = false;
-	}
-
-	// A new list is starting: the old one's pagination must not fire while
-	// waiting.
-	if (job_is_list(job->kind)) {
+		// A new list is starting: the old one's pagination must not fire
+		// while waiting.
 		page_more = false;
 		page_loading = false;
+		wait_begin();
 	}
 
 	start_worker();
-	// No veil for playback (it starts immediately) or for login, which has its
-	// own spinner on the code page.
-	if (job->kind != JOB_PLAY && job->kind != JOB_LOGIN_BEGIN && job->kind != JOB_LOGIN_POLL) {
-		busy_show(waiting_text);
-	}
 	submit(job);
 }
 
@@ -2004,20 +2075,13 @@ static void maybe_load_more(void) {
 	if (lv_screen_active() != list_screen || !have_current_list || !job_is_list(current_list_job.kind)) {
 		return;
 	}
-	// A sideways drag (back, or pulling in the player) moves this list too:
-	// that is not a request for more rows.
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
-		return;
-	}
-	// Less than one screen from the bottom is enough: the request takes a
-	// moment, and reaching the last row only to find the list stops there is
-	// exactly what this replaces.
-	if (lv_obj_get_scroll_bottom(list_container) > lv_obj_get_height(list_container)) {
-		return;
-	}
+	// Less than one screen from the bottom is enough (svclist says when): the
+	// request takes a moment, and reaching the last row only to find the list
+	// stops there is exactly what this replaces.
 	page_loading = true;
 	job_t job = current_list_job;
-	job.offset = result_count;
+	job.offset = shown_count;
+	job.list_serial = list_serial;
 	start_worker();
 	submit(&job);
 }
@@ -2026,55 +2090,63 @@ static void maybe_load_more(void) {
 // taps
 // ---------------------------------------------------------------------------
 
-static void row_clicked_cb(lv_event_t *e) {
-	// A gesture that ends over a row is not a tap on the row: events bubble, so
-	// the click that closes a drag arrives here too.
-	if (switcher_back_drag_active() || player_sheet_drag_active()) {
-		return;
-	}
-	int index = (int)(intptr_t)lv_event_get_user_data(e);
-	if (index < 0 || index >= result_count) {
+static void list_tap(lv_obj_t *row, void *user) {
+	(void)row;
+	int index = (int)(intptr_t)user;
+	if (index < 0 || index >= shown_count) {
 		return;
 	}
 
 	job_t job = {0};
 
-	switch (list_kind) {
-	case JOB_SEARCH_TRACKS:
-	case JOB_ALBUM_TRACKS:
-	case JOB_PLAYLIST_TRACKS:
-	case JOB_FAV_TRACKS:
+	if (kind_is_tracks(list_kind)) {
+		if (!result_tracks[index].streamable) {
+			toast_error(tr("stream_not_in_subscription"));
+			return;
+		}
 		job.kind = JOB_PLAY;
 		job.index = index;
 		run(&job, NULL);
 		return;
-
-	case JOB_SEARCH_ALBUMS:
-	case JOB_FAV_ALBUMS:
-	case JOB_ARTIST_ALBUMS:
-	case JOB_FEATURED:
+	}
+	if (kind_is_albums(list_kind)) {
 		job.kind = JOB_ALBUM_TRACKS;
 		snprintf(job.id_text, sizeof(job.id_text), "%s", result_albums[index].id_text);
 		snprintf(job.text, sizeof(job.text), "%s", result_albums[index].title);
 		run(&job, "loading");
 		return;
-
-	case JOB_SEARCH_ARTISTS:
+	}
+	if (list_kind == JOB_SEARCH_ARTISTS) {
 		job.kind = JOB_ARTIST_ALBUMS;
 		job.id = result_artists[index].id;
 		snprintf(job.text, sizeof(job.text), "%s", result_artists[index].name);
 		run(&job, "loading");
 		return;
-
-	case JOB_USER_PLAYLISTS:
+	}
+	if (list_kind == JOB_USER_PLAYLISTS) {
 		job.kind = JOB_PLAYLIST_TRACKS;
 		snprintf(job.id_text, sizeof(job.id_text), "%s", result_playlists[index].id);
 		snprintf(job.text, sizeof(job.text), "%s", result_playlists[index].name);
 		run(&job, "loading");
-		return;
+	}
+}
 
-	default:
-		return;
+static void list_swipe_next(lv_obj_t *row, void *user) {
+	(void)row;
+	queue_entry((int)(intptr_t)user, PLAYLIST_QUEUE_NEXT);
+}
+
+static void list_swipe_end(lv_obj_t *row, void *user) {
+	(void)row;
+	queue_entry((int)(intptr_t)user, PLAYLIST_QUEUE_END);
+}
+
+static void list_star(lv_obj_t *row, void *user) {
+	(void)row;
+	int index = (int)(intptr_t)user;
+	if (index >= 0 && index < shown_count && kind_is_tracks(list_kind)) {
+		const tidal_track_t *t = &result_tracks[index];
+		star_set(t->id, NULL, !tidalsync_is_favorite(t->id), t->title);
 	}
 }
 
@@ -2090,10 +2162,7 @@ static lv_obj_t *search_pills[3];
 
 static void paint_search_pills(void) {
 	for (int i = 0; i < 3; i++) {
-		bool on = i == search_kind_index;
-		lv_obj_set_style_bg_color(search_pills[i], on ? theme()->accent : theme()->surface_pressed, 0);
-		lv_obj_set_style_text_color(lv_obj_get_child(search_pills[i], 0), on ? lv_color_white() : theme()->text_primary,
-									0);
+		sx_pill_set_active(search_pills[i], i == search_kind_index);
 	}
 }
 
@@ -2163,14 +2232,17 @@ static void build_search_page(gui_config_t *cfg) {
 	search_field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(search_field, true);
 	lv_textarea_set_placeholder_text(search_field, tr("artist_album_or_track"));
-	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, 62);
+	// The handoff's text field: 60 px, the surface of a card, its radius.
+	lv_obj_set_size(search_field, cfg->screen_width - 2 * SX_BODY_PAD_L, 60);
 	lv_obj_set_scrollbar_mode(search_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
-	lv_obj_add_style(search_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(search_field, 12, 0);
+	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, SX_BODY_PAD_L, top);
+	lv_obj_add_style(search_field, &sx_style_surface, 0);
+	lv_obj_add_style(search_field, &sx_style_text, 0);
+	lv_obj_set_style_radius(search_field, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(search_field, 0, 0);
 	lv_obj_set_style_shadow_width(search_field, 0, 0);
-	lv_obj_set_style_pad_all(search_field, 14, 0);
+	lv_obj_set_style_pad_ver(search_field, 14, 0);
+	lv_obj_set_style_pad_hor(search_field, SX_CARD_PAD_H, 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 	lv_obj_add_event_cb(search_field, search_field_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -2179,7 +2251,7 @@ static void build_search_page(gui_config_t *cfg) {
 	// query with one tap. Hidden while the field is empty.
 	search_clear_btn = lv_btn_create(search_screen);
 	lv_obj_set_size(search_clear_btn, 56, 56);
-	lv_obj_align(search_clear_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + (62 - 56) / 2);
+	lv_obj_align(search_clear_btn, LV_ALIGN_TOP_RIGHT, -SX_BODY_PAD_L - 2, top + 2);
 	lv_obj_set_style_bg_opa(search_clear_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(search_clear_btn, 0, 0);
 	lv_obj_set_style_border_width(search_clear_btn, 0, 0);
@@ -2196,28 +2268,21 @@ static void build_search_page(gui_config_t *cfg) {
 	// Room for it, so a long query does not run underneath.
 	lv_obj_set_style_pad_right(search_field, 60, 0);
 
+	// What to look for: the handoff's filter pills under the field.
 	static const char *const KINDS[] = {"tracks_2", "albums", "artists"};
+	lv_obj_t *pills = sx_box(search_screen);
+	lv_obj_set_size(pills, cfg->screen_width - 2 * SX_BODY_PAD_L, LV_SIZE_CONTENT);
+	lv_obj_align(pills, LV_ALIGN_TOP_LEFT, SX_BODY_PAD_L, top + 74);
+	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW);
+	lv_obj_set_style_pad_column(pills, 10, 0);
 	for (int i = 0; i < 3; i++) {
-		lv_obj_t *pill = lv_btn_create(search_screen);
-		lv_obj_set_size(pill, 140, 52);
-		lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, 0);
-		lv_obj_set_style_shadow_width(pill, 0, 0);
-		lv_obj_set_style_border_width(pill, 0, 0);
-		lv_obj_align(pill, LV_ALIGN_TOP_LEFT, cfg->padding + i * 150, top + 78);
-		lv_obj_add_event_cb(pill, search_pill_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-		lv_obj_t *label = lv_label_create(pill);
-		lv_label_set_text(label, tr(KINDS[i]));
-		lv_obj_set_style_text_font(label, &font_ui_20, 0);
-		lv_obj_center(label);
-		search_pills[i] = pill;
+		search_pills[i] = sx_pill(pills, tr(KINDS[i]), i, search_pill_cb);
 	}
 	paint_search_pills();
 
 	search_keyboard = keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok",
 									  search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
-	theme_register_refresh(paint_search_pills);
 }
 
 // ---------------------------------------------------------------------------
@@ -2557,7 +2622,6 @@ static void open_login_cb(lv_event_t *e) {
 // ---------------------------------------------------------------------------
 
 static lv_obj_t *home_container;
-static lv_obj_t *settings_btn;
 static lv_obj_t *search_btn;
 
 // The showcases Tidal offers, with the short name tidal.c expects.
@@ -2566,12 +2630,12 @@ static const char *const FEATURED_NAMES[3] = {"new_releases", "tidal_most_stream
 
 // The showcases this session found empty. A showcase that answered with
 // nothing is not offered again: the endpoint behind it is the only one in all
-// of tidal.c that no other program still uses, and a row that leads to the
-// same nothing every time is worse than no row.
+// of tidal.c that no other program still uses, and a card that leads to the
+// same nothing every time is worse than no card.
 //
 // Not permanent, though: this is cleared on every return to the main page. From
 // here the difference between "Tidal retired this showcase" and "the Wi-Fi
-// dropped a packet" is invisible, so a single bad moment must not cost a row
+// dropped a packet" is invisible, so a single bad moment must not cost a card
 // until the player is restarted.
 static bool featured_hidden[3];
 
@@ -2580,68 +2644,32 @@ static const int QUALITY_VALUES[4] = {TIDAL_QUALITY_LOW, TIDAL_QUALITY_HIGH, TID
 
 // The perceived quality first, then the format underneath: "High" alone is not
 // distinguishable from "Hi-res", and "AAC 320" alone tells nobody it is lossy.
+// These go through tr(): half of each is a translatable word.
 static const char *const QUALITY_NAMES[4] = {"tidal_low_aac_96", "tidal_high_aac_320", "tidal_cd_flac_16_44",
 											 "tidal_hi_res_flac_24"};
+static lv_obj_t *quality_pills[4];
 
-// The two corner buttons: the gear (Tidal settings) and the magnifier. Shown
-// only when signed in, because otherwise there is nothing to configure and
-// nothing to search.
+// The magnifier, shown only when signed in: otherwise there is nothing to
+// search.
 static void update_corner_buttons(void) {
-	bool visible = tidal_configured() && tidal_logged_in();
-	lv_obj_t *const buttons[] = {settings_btn, search_btn};
-	for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
-		if (!buttons[i]) {
-			continue;
-		}
-		if (visible) {
-			lv_obj_set_hidden(buttons[i], false);
-		} else {
-			lv_obj_set_hidden(buttons[i], true);
-		}
+	if (search_btn) {
+		lv_obj_set_hidden(search_btn, !(tidal_configured() && tidal_logged_in()));
 	}
 }
 
-// Same shape as the Music page corner buttons: 56 px, transparent, aligned top
-// right and stepped leftwards one by one.
-static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
-	lv_obj_t *button = lv_btn_create(tidal_screen);
-	lv_obj_set_size(button, 56, 56);
-	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_border_width(button, 0, 0);
-	lv_obj_set_style_shadow_width(button, 0, 0);
-	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
-
-	lv_obj_t *icon = lv_image_create(button);
-	lv_image_set_src(icon, glyph);
-	lv_obj_add_style(icon, &theme_style_icon, 0);
-	lv_obj_center(icon);
-
-	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
-	return button;
-}
-
 // ---------------------------------------------------------------------------
-// Tidal settings
+// the quality and the account, on the page itself
 //
-// The corner holds the gear (as on the Music page) and the magnifier; this
-// page holds what is done once a year: quality as pills, like every other
-// choice between alternatives in this interface, and sign-out as a row.
+// What used to sit behind the gear on a page of its own: the quality as pills,
+// and the sign-out, on the account's card at the bottom of the main page.
 // ---------------------------------------------------------------------------
-
-static lv_obj_t *tsettings_screen;
-static lv_obj_t *quality_pills[4];
 
 static void quality_refresh(void) {
 	int current = tidal_get_quality();
 	for (int i = 0; i < 4; i++) {
-		if (!quality_pills[i]) {
-			continue;
+		if (quality_pills[i]) {
+			sx_pill_set_active(quality_pills[i], QUALITY_VALUES[i] == current);
 		}
-		bool on = QUALITY_VALUES[i] == current;
-		lv_obj_set_style_bg_color(quality_pills[i], on ? theme()->accent : theme()->surface_pressed, 0);
-		lv_obj_set_style_text_color(lv_obj_get_child(quality_pills[i], 0), on ? lv_color_white() : theme()->text_primary,
-									0);
 	}
 }
 
@@ -2677,74 +2705,6 @@ static void logout_cb(lv_event_t *e) {
 	char message[160];
 	snprintf(message, sizeof(message), tr("sign_out_confirm_note"), tidal_display_name());
 	confirm_show("tidal_sign_out_of_tidal", message, "leave", do_logout, NULL);
-}
-
-static void open_settings_cb(lv_event_t *e) {
-	(void)e;
-	quality_refresh();
-	switch_screen(tsettings_screen);
-}
-
-static void build_settings_page(gui_config_t *cfg) {
-	tsettings_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(tsettings_screen, cfg, "tidal_settings");
-
-	// Quality: a card with the name on top and the four pills below, exactly
-	// like "DSD output" or "Replay gain" on the Music page.
-	lv_obj_t *card = lv_obj_create(container);
-	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, LV_SIZE_CONTENT);
-	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 18, 0);
-	lv_obj_set_scrollable(card, false);
-	lv_obj_set_event_bubble(card, true);
-	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-	lv_obj_t *name = lv_label_create(card);
-	lv_label_set_text(name, tr("audio_quality"));
-	lv_obj_add_style(name, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name, &font_ui_24, 0);
-
-	lv_obj_t *pills = lv_obj_create(card);
-	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(pills, 0, 0);
-	lv_obj_set_style_border_width(pills, 0, 0);
-	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 12, 0);
-	lv_obj_set_scrollable(pills, false);
-	lv_obj_set_event_bubble(pills, true);
-	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-
-	for (int i = 0; i < 4; i++) {
-		lv_obj_t *btn = lv_btn_create(pills);
-		lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-		lv_obj_set_style_pad_hor(btn, 22, 0);
-		lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-		lv_obj_set_style_shadow_width(btn, 0, 0);
-		lv_obj_set_style_border_width(btn, 0, 0);
-		lv_obj_add_event_cb(btn, quality_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)QUALITY_VALUES[i]);
-
-		// These names go through tr(): half of each is a translatable word,
-		// not an acronym.
-		lv_obj_t *label = lv_label_create(btn);
-		lv_label_set_text(label, tr(QUALITY_NAMES[i]));
-		lv_obj_set_style_text_font(label, &font_ui_22, 0);
-		lv_obj_center(label);
-
-		quality_pills[i] = btn;
-	}
-
-	settingsrow_action(container, "leave", logout_cb, NULL);
-
-	quality_refresh();
-	theme_register_refresh(quality_refresh);
-	switcher_attach_back_gesture(tsettings_screen);
 }
 
 static void simple_job_cb(lv_event_t *e) {
@@ -2811,58 +2771,54 @@ static bool wifi_is_connected(void) {
 
 static void rebuild_home(void) {
 	lv_obj_clean(home_container);
+	for (int i = 0; i < 4; i++) {
+		quality_pills[i] = NULL;
+	}
+	update_corner_buttons();
 
 	if (!tidal_configured()) {
-		update_corner_buttons();
-		lv_obj_t *note = lv_label_create(home_container);
-		lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-		lv_obj_set_width(note, lv_pct(100));
-		lv_obj_add_style(note, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(note, &font_ui_20, 0);
-		lv_label_set_text(note, tr("api_keys_unavailable"));
+		svcui_note(home_container, tr("api_keys_unavailable"));
 		return;
 	}
 
 	// The network comes before the login, and not the other way round: signing
 	// in is a conversation with Tidal's servers, so with no network the "Sign
-	// in" row could only fail. The notice says what is actually missing.
+	// in" card could only fail. The notice says what is actually missing.
 	if (!wifi_is_connected()) {
-		update_corner_buttons();
-		// The same notice as the Wi-Fi transfer page: centred message, with a
-		// "Wi-Fi settings" row below that leads where it is fixed.
-		lv_obj_t *note = lv_label_create(home_container);
-		lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-		lv_obj_set_width(note, lv_pct(100));
-		lv_obj_add_style(note, &theme_style_text, 0); // normal colour: it is an instruction
-		lv_obj_set_style_text_font(note, &font_ui_22, 0);
-		lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
-		lv_obj_set_style_pad_hor(note, 4, 0);
-		lv_obj_set_style_pad_top(note, 14, 0);
-		lv_label_set_text(note, tr("enable_wi_fi_first"));
-		lv_obj_t *row = settingsrow_add(home_container, "wi_fi_settings", NULL, open_wifi_settings_cb, NULL);
-		lv_obj_set_style_margin_top(row, 16, 0);
+		svcui_note(home_container, tr("enable_wi_fi_first"));
+		svcui_nav_card(home_container, tr("wi_fi_settings"), NULL, open_wifi_settings_cb, NULL);
 		return;
 	}
 
 	if (!tidal_logged_in()) {
-		update_corner_buttons();
-		settingsrow_add(home_container, "sign_in", NULL, open_login_cb, NULL);
+		svcui_nav_card(home_container, tr("sign_in"), NULL, open_login_cb, NULL);
 		return;
 	}
 
-	// No "Search" row: it is the magnifier in the corner, where it sits on
+	// No "Search" card: it is the magnifier in the corner, where it sits on
 	// every other searchable page.
-	settingsrow_add(home_container, "favourite_tracks", NULL, simple_job_cb, (void *)(intptr_t)JOB_FAV_TRACKS);
-	settingsrow_add(home_container, "favourite_albums", NULL, simple_job_cb, (void *)(intptr_t)JOB_FAV_ALBUMS);
-	settingsrow_add(home_container, "my_playlists", NULL, simple_job_cb, (void *)(intptr_t)JOB_USER_PLAYLISTS);
+	svcui_nav_card(home_container, tr("favourite_tracks"), NULL, simple_job_cb, (void *)(intptr_t)JOB_FAV_TRACKS);
+	svcui_nav_card(home_container, tr("favourite_albums"), NULL, simple_job_cb, (void *)(intptr_t)JOB_FAV_ALBUMS);
+	svcui_nav_card(home_container, tr("my_playlists"), NULL, simple_job_cb, (void *)(intptr_t)JOB_USER_PLAYLISTS);
 	for (int i = 0; i < 3; i++) {
-		if (featured_hidden[i]) {
-			continue;
+		if (!featured_hidden[i]) {
+			svcui_nav_card(home_container, tr(FEATURED_NAMES[i]), NULL, featured_job_cb, (void *)(intptr_t)i);
 		}
-		settingsrow_add(home_container, FEATURED_NAMES[i], NULL, featured_job_cb, (void *)(intptr_t)i);
 	}
 
-	update_corner_buttons();
+	lv_obj_t *quality = sx_card_create(home_container);
+	sx_card_title(quality, tr("audio_quality"));
+	lv_obj_t *pills = sx_card_pills(quality);
+	for (int i = 0; i < 4; i++) {
+		quality_pills[i] = sx_pill(pills, tr(QUALITY_NAMES[i]), QUALITY_VALUES[i], quality_pick_cb);
+	}
+	quality_refresh();
+
+	// The account: who is signed in, and the way out.
+	lv_obj_t *account = sx_card_create(home_container);
+	sx_card_title(account, tidal_display_name());
+	sx_card_subtitle(account, tr("tidal"), false);
+	sx_card_action(account, tr("leave"), logout_cb, NULL);
 }
 
 // "Show album" in the player, for a Tidal track: opens the album's track list
@@ -2901,31 +2857,45 @@ static void home_loaded_cb(lv_event_t *e) {
 
 static void build_list_page(gui_config_t *cfg) {
 	list_screen = lv_obj_create(NULL);
+	lv_obj_add_style(list_screen, &theme_style_screen, 0);
 	lv_obj_add_event_cb(list_screen, list_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(list_screen, list_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
-	list_container = settingsrow_page(list_screen, cfg, "tidal");
-	list_title = settingsrow_page_title(list_screen);
+	list_title = settingsrow_title(list_screen, cfg, "tidal");
+	int top = settingsrow_content_top(cfg);
+
+	static const sx_row_handlers_t handlers = {
+		.on_tap = list_tap,
+		.on_long_press = list_hold,
+		.on_swipe_next = list_swipe_next,
+		.on_swipe_end = list_swipe_end,
+		.on_star = list_star,
+	};
+	static const svclist_cbs_t cbs = {.bind = list_bind, .near_end = maybe_load_more, .visible = list_visible_cb};
+	list = svclist_create(list_screen, &handlers, &cbs, ROW_POOL, false);
+	lv_obj_t *view = svclist_obj(list);
+	lv_obj_set_size(view, cfg->screen_width - 2 * SX_BODY_PAD_L, cfg->screen_height - top);
+	lv_obj_set_pos(view, SX_BODY_PAD_L, top);
 
 	list_empty = lv_label_create(list_screen);
 	lv_label_set_text(list_empty, tr("no_results"));
 	lv_obj_set_style_text_align(list_empty, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
+	lv_obj_add_style(list_empty, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
-	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
+	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, top + 100);
 	lv_obj_set_hidden(list_empty, true);
 
 	list_error = streamerror_create(list_screen);
-	lv_obj_set_width(list_error, cfg->screen_width - 2 * cfg->padding);
-	lv_obj_align(list_error, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 20);
+	lv_obj_set_width(list_error, cfg->screen_width - 2 * SX_BODY_PAD_L);
+	lv_obj_align(list_error, LV_ALIGN_TOP_MID, 0, top);
+	streamerror_set_service(list_error, tr("tidal"));
+	list_spin = svcui_spinner(list_screen);
 
-	lv_obj_add_event_cb(list_container, list_scrolled_cb, LV_EVENT_SCROLL, NULL);
 	switcher_attach_back_gesture(list_screen);
 	switcher_set_back_guard(list_screen, list_back_guard);
 	switcher_set_back_guard_peek(list_screen, list_back_has_step);
 	// The leftward drag that pulls in the player, as on every other browsable
 	// page.
 	player_sheet_attach_drag(list_screen, true);
-	player_sheet_attach_drag(list_container, true);
 }
 
 // "Show album" from the player, as the provider registry asks for it: the
@@ -2941,19 +2911,18 @@ void tidalpage_init(gui_config_t *cfg) {
 	stream_provider_attach_gui("tidal", &provider_gui);
 
 	tidal_screen = lv_obj_create(NULL);
-	home_container = settingsrow_page(tidal_screen, cfg, "tidal");
+	lv_obj_add_style(tidal_screen, &theme_style_screen, 0);
+	lv_obj_t *title = settingsrow_title(tidal_screen, cfg, "tidal");
+	home_container = svcui_column(tidal_screen, cfg);
 
-	// Two buttons top right, like the Music page gear. The title has to be
-	// told the corner is taken, or its text runs underneath them.
-	settingsrow_title_corner_slots(settingsrow_page_title(tidal_screen), cfg, 2);
-	settings_btn = corner_button(cfg, 0, &icon_music_settings, open_settings_cb);
-	search_btn = corner_button(cfg, 1, &icon_search, open_search_cb);
+	// The magnifier top right. The title has to be told the corner is taken,
+	// or its text runs underneath it.
+	settingsrow_title_corner_slots(title, cfg, 1);
+	search_btn = svcui_header_button(tidal_screen, cfg, 0, &icon_search, open_search_cb, NULL);
 
 	build_list_page(cfg);
 	build_search_page(cfg);
-	build_settings_page(cfg);
 	build_login_page(cfg);
-	build_busy_layer();
 	tidalcache_set_slow_start_cb(on_slow_start);
 
 	// "Can this file play right now?". Added, not set: device_state keeps a
@@ -2971,6 +2940,9 @@ void tidalpage_init(gui_config_t *cfg) {
 	art_drop_timer = lv_timer_create(art_drop_cb, ART_DROP_DELAY_MS, NULL);
 	lv_timer_pause(art_drop_timer);
 	qobuzart_set_root(storage_sd_root());
+	for (int i = 0; i < QOBUZART_SLOTS; i++) {
+		slot_owner[i] = -1;
+	}
 
 	tidalcache_set_root(storage_sd_root());
 	rebuild_home();

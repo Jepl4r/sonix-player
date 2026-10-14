@@ -610,6 +610,39 @@ int subsonic_playlist_tracks(const char *playlist_id, int offset, subsonic_track
 	return list_call("getPlaylist", extra, "playlist.entry", offset, out, sizeof(*out), max, reader_track);
 }
 
+int subsonic_random_tracks(subsonic_track_t *out, int max) {
+	char extra[32];
+	snprintf(extra, sizeof(extra), "&size=%d", max);
+	return list_call("getRandomSongs", extra, "randomSongs.song", 0, out, sizeof(*out), max, reader_track);
+}
+
+// The server card's line: a ping, timed, and the size of the library. The
+// ping is the answer to "is it there"; getScanStatus only adds the count, and
+// a server that does not have it (older Subsonic forks) or does not say it
+// still counts as connected.
+bool subsonic_status(int *tracks, int *ms) {
+	*tracks = -1;
+	*ms = -1;
+	struct timespec a, b;
+	clock_gettime(CLOCK_MONOTONIC, &a);
+	if (!subsonic_ping()) {
+		return false;
+	}
+	clock_gettime(CLOCK_MONOTONIC, &b);
+	*ms = (int)((b.tv_sec - a.tv_sec) * 1000 + (b.tv_nsec - a.tv_nsec) / 1000000);
+	char *body;
+	json_doc_t doc;
+	int resp;
+	if (call("getScanStatus", NULL, &body, &doc, &resp)) {
+		int status = json_get(&doc, resp, "scanStatus");
+		if (status >= 0) {
+			*tracks = (int)json_obj_long(&doc, status, "count", -1);
+		}
+		call_done(body, &doc);
+	}
+	return true;
+}
+
 int subsonic_starred_tracks(int offset, subsonic_track_t *out, int max) {
 	return list_call("getStarred2", NULL, "starred2.song", offset, out, sizeof(*out), max, reader_track);
 }
