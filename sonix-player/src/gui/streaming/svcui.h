@@ -29,6 +29,15 @@ lv_obj_t *svcui_header_button(lv_obj_t *screen, gui_config_t *cfg, int slot, con
 // cards (a list draws its own, svclist.h). Mono caps in the secondary colour.
 lv_obj_t *svcui_group(lv_obj_t *parent, const char *text);
 
+// A section of a service's home: a card with its name, an optional subtitle
+// (secondary; NULL for none) and the chevron, the whole card the button. The
+// handoff's Subsonic and Yandex pages are a column of these.
+lv_obj_t *svcui_nav_card(lv_obj_t *parent, const char *title, const char *subtitle, lv_event_cb_t cb, void *user);
+
+// The column such a home is: full width under the title, the cards
+// SX_CARD_GAP apart, scrolling when they do not fit.
+lv_obj_t *svcui_column(lv_obj_t *screen, gui_config_t *cfg);
+
 // A note under the cards: a sentence in the secondary colour, wrapping.
 lv_obj_t *svcui_note(lv_obj_t *parent, const char *text);
 

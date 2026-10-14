@@ -6,7 +6,10 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_frame.h"
 #include "src/gui/shell/sx_palette.h"
 #include "src/gui/shell/sx_styles.h"
 #include "src/gui/shell/sx_toast.h"
@@ -48,6 +51,34 @@ lv_obj_t *svcui_group(lv_obj_t *parent, const char *text) {
 	lv_obj_set_style_pad_left(label, 6, 0);
 	lv_label_set_text(label, text ? text : "");
 	return label;
+}
+
+lv_obj_t *svcui_nav_card(lv_obj_t *parent, const char *title, const char *subtitle, lv_event_cb_t cb, void *user) {
+	lv_obj_t *card = sx_card_create(parent);
+	sx_card_title(card, title ? title : "");
+	if (subtitle && subtitle[0]) {
+		sx_card_subtitle(card, subtitle, false);
+	}
+	sx_card_chevron(card);
+	if (cb) {
+		sx_card_on_click(card, cb, user);
+	}
+	return card;
+}
+
+lv_obj_t *svcui_column(lv_obj_t *screen, gui_config_t *cfg) {
+	int top = settingsrow_content_top(cfg);
+	lv_obj_t *c = sx_box(screen);
+	lv_obj_set_size(c, cfg->screen_width - 2 * SX_BODY_PAD_L, cfg->screen_height - top);
+	lv_obj_set_pos(c, SX_BODY_PAD_L, top);
+	lv_obj_set_style_pad_row(c, SX_CARD_GAP, 0);
+	lv_obj_set_flex_flow(c, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_scroll_dir(c, LV_DIR_VER);
+	lv_obj_set_scrollable(c, true);
+	lv_obj_set_clickable(c, true); // a drag from the gaps between the cards scrolls too
+	lv_obj_set_scrollbar_mode(c, LV_SCROLLBAR_MODE_OFF);
+	sx_frame_reserve_bottom(c);
+	return c;
 }
 
 lv_obj_t *svcui_note(lv_obj_t *parent, const char *text) {
