@@ -48,6 +48,8 @@
 #include "src/system/streaming/tidal.h"
 #include "src/system/streaming/subsonic.h"
 #include "src/system/streaming/yandex.h"
+#include "src/system/streaming/cardimport.h"
+#include "src/system/streaming/subsonicimport.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/gearboy/gbdb.h"
 #include "src/system/gearboy/gearboy.h"
@@ -2166,6 +2168,9 @@ int main(int argc, char **argv) {
 	tidal_init();
 	subsonic_init();
 	yandex_init();
+	// Accounts brought on the card as files (cardimport.h): looked for once
+	// the card's root is known, below.
+	subsonicimport_init();
 	lastfm_init();
 
 	lv_init();
@@ -2381,6 +2386,7 @@ int main(int argc, char **argv) {
 	// cache and the code that cleans it must agree on one root.
 	const char *card_root = storage_sd_root();
 	stream_provider_set_root_all(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
+	cardimport_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastsubs_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcaststate_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);

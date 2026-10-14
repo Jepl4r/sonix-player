@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "lvgl/lvgl.h"
@@ -27,6 +28,7 @@
 #include "src/gui/shell/sx_toast.h"
 #include "src/gui/streaming/tidalpage.h"
 #include "src/gui/streaming/yandexpage.h"
+#include "src/system/streaming/cardimport.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/streaming/podcast.h"
@@ -364,12 +366,57 @@ static void open_downloads_cb(lv_event_t *e) {
 	downloadspage_open(page_cfg);
 }
 
+// ---------------------------------------------------------------------------
+// Accounts brought on the card (cardimport.h): what became of the file, said
+// in a toast whatever page is up. When it signed a service in and its page is
+// the one on screen, the page is shown again, signed in. Not for the outcomes
+// that leave the file in place: the page would look for it again on being
+// shown, and round it would go.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	char service[16];
+	cardimport_result_t result;
+	char message[256];
+} import_note_t;
+
+static void import_note_async(void *user) {
+	import_note_t *n = user;
+	const char *text = n->message[0] ? n->message : tr("streaming_import_failed");
+	if (n->result == CARDIMPORT_OK) {
+		toast_success(text);
+		for (int s = 0; s < SVC_COUNT; s++) {
+			lv_obj_t *screen = SERVICES[s].entry.target ? *SERVICES[s].entry.target : NULL;
+			if (strcmp(SERVICES[s].id, n->service) == 0 && screen && lv_screen_active() == screen) {
+				lv_obj_send_event(screen, LV_EVENT_SCREEN_LOADED, NULL);
+			}
+		}
+	} else {
+		toast_error(text);
+	}
+	free(n);
+}
+
+static void import_listener(const char *service, cardimport_result_t result, const char *message) {
+	import_note_t *n = malloc(sizeof(*n));
+	if (!n) {
+		return;
+	}
+	snprintf(n->service, sizeof(n->service), "%s", service);
+	n->result = result;
+	snprintf(n->message, sizeof(n->message), "%s", message ? message : "");
+	if (!gui_post(import_note_async, n)) {
+		free(n);
+	}
+}
+
 void streaming_init(gui_config_t *cfg) {
 	qobuzpage_init(cfg);
 	tidalpage_init(cfg);
 	podcastpage_init(cfg);
 	subsonicpage_init(cfg);
 	yandexpage_init(cfg);
+	cardimport_add_listener(import_listener);
 
 	page_cfg = cfg;
 	tile_grid = gridpage_build(streaming_screen, cfg, NULL, 0, 2, 3, true);

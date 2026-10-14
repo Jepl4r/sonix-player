@@ -39,6 +39,7 @@
 #include "src/system/core/config.h"
 #include "src/system/core/panel.h"
 #include "src/system/streaming/provider.h"
+#include "src/system/streaming/cardimport.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/podcaststate.h"
@@ -838,6 +839,7 @@ static void card_databases_attach(const char *root) {
 	peq_presets_set_dir(root);
 	mseb_presets_set_dir(root);
 	stream_provider_set_root_all(root);
+	cardimport_set_root(root); // a token or a server file brought on this card
 	podcastcache_set_root(root);
 	podcastsubs_set_root(root);
 	podcaststate_set_root(root);
