@@ -4,6 +4,7 @@
 #include <stdio.h>
 #include <string.h>
 #include <malloc.h>
+#include <stdlib.h>
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
@@ -12,7 +13,15 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/streaming/qobuzart.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_row.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_toast.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/streaming/streamerror.h"
+#include "src/gui/streaming/svclist.h"
+#include "src/gui/streaming/svcui.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
@@ -83,7 +92,11 @@ typedef enum {
 	JOB_STARRED_ALBUMS,
 	JOB_PLAYLISTS,
 	JOB_ALBUM_LIST, // getAlbumList2, the type in `text2`
+	JOB_RANDOM_TRACKS, // getRandomSongs: "Random 50", one draw, no paging
 	JOB_PLAY,
+	// Not lists: they leave the list on screen alone.
+	JOB_STATUS,		 // the server card's line: a timed ping and the size of the library
+	JOB_QUEUE_ALBUM, // an album's tracks for the queue (`index`: where)
 } job_kind_t;
 
 typedef struct {
@@ -94,6 +107,7 @@ typedef struct {
 	char id_text[SUBSONIC_ID_MAX];	// album, artist or playlist id
 	int index;						// which track of the list playback starts from
 	int offset;						// first entry of this page: 0 = new list
+	unsigned list_serial;			// list jobs: list_serial when asked
 } job_t;
 
 static pthread_mutex_t job_lock = PTHREAD_MUTEX_INITIALIZER;
@@ -122,6 +136,13 @@ static char result_title[160];
 // What the list is showing right now, so a row tap knows what to do.
 static job_kind_t list_kind;
 
+// Raised by each new list asked for (GUI thread): an answer carrying an older
+// number belongs to a list the user has since left, and is dropped.
+static unsigned list_serial;
+// The server card's figures (worker only; they reach the GUI in the answer).
+static bool status_ok;
+static int status_tracks, status_ms;
+
 // Pagination, as for radio: the last page came back full, so there may be
 // another -- and one request at a time.
 static bool page_more;
@@ -137,69 +158,48 @@ static void submit(const job_t *job) {
 }
 
 // ---------------------------------------------------------------------------
-// the busy veil
+// waiting
 //
-// Only for requests that lead to a list, and only because it blocks touching a
-// second entry while the first is still arriving. It lasts as long as one HTTP
-// request.
-//
-// Playback does NOT raise it: the track starts while it is still downloading
-// (see subsoniccache_start), so there is no wait to show, and a veil raised here
-// would stay up for the whole prefetch of the following tracks.
+// 2.0 has no veils (the handoff: no full-screen dimming). A list on its way
+// opens the list page at once, under its title, with the spinner where the
+// rows will be: the page stays usable, and back goes back. Signing in, which
+// leaves nothing else to do on its page, holds the busy toast until the server
+// has answered. Playback waits for nothing: the track starts while it is
+// still downloading (see subsoniccache_start).
 // ---------------------------------------------------------------------------
-
-// The wait indicator: a spinner in the middle of the screen, no text --
-// understood without reading and needing no translation. The text callers pass
-// is ignored.
-static lv_obj_t *busy_layer;
-
-static void busy_hide(void) {
-	if (busy_layer) {
-		lv_obj_set_hidden(busy_layer, true);
-	}
-}
-
-static void busy_show(const char *text) {
-	(void)text;
-	if (!busy_layer) {
-		return;
-	}
-	lv_obj_set_hidden(busy_layer, false);
-	lv_obj_move_foreground(busy_layer);
-}
-
-static void build_busy_layer(void) {
-	busy_layer = lv_obj_create(lv_layer_sys());
-	lv_obj_set_size(busy_layer, lv_pct(100), lv_pct(100));
-	lv_obj_set_pos(busy_layer, 0, 0);
-	lv_obj_set_style_bg_color(busy_layer, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(busy_layer, LV_OPA_50, 0);
-	lv_obj_set_style_border_width(busy_layer, 0, 0);
-	lv_obj_set_style_radius(busy_layer, 0, 0);
-	lv_obj_set_scrollable(busy_layer, false);
-	lv_obj_set_hidden(busy_layer, true);
-	lv_obj_set_flex_flow(busy_layer, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(busy_layer, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-	// White rather than the theme colour: the veil underneath is 50% black over
-	// any page, so the background here is dark in both themes.
-	lv_obj_t *spin = spinner_create(busy_layer, &icon_loader_big);
-	lv_obj_set_style_image_recolor(spin, lv_color_white(), 0);
-	lv_obj_set_style_image_recolor_opa(spin, LV_OPA_COVER, 0);
-}
 
 // ---------------------------------------------------------------------------
 // the result list
+//
+// 2.0 rows over the list (svclist.h): a pool of rows rides the scroll, so two
+// hundred entries cost the rows of a screen and a half, not two hundred
+// widgets of seven objects. A track: its cover (a plaque in the album's tone
+// until it comes), the artist, the format when it is not the common case, its
+// length, the star. An album: the cover, "artist · year", the chevron. An
+// artist: a round plaque with its letter. A playlist: its cover.
+//
+// The gestures are the handoff's matrix: a tap plays a track (the page stays,
+// the mini player comes up) or opens the rest; a swipe right puts a track or a
+// whole album next, left at the end of the queue; the star stars a track at
+// once, with Undo; a hold brings up the sheet of a track or an album.
 // ---------------------------------------------------------------------------
 
-static lv_obj_t *list_container;
+#define ROW_POOL 14
+
+static svclist_t *list;
 static lv_obj_t *list_title;
 static lv_obj_t *list_empty;
 // A list that could not be loaded: what went wrong, and "Retry" (streamerror.h).
 static lv_obj_t *list_error;
+// The spinner while a list is on its way: where the rows will be.
+static lv_obj_t *list_spin;
+
+// The entries the rows show: what the worker last put in the result arrays
+// for the list on screen. Its own count, not result_count -- the worker
+// writes the next page's tail while the rows are read.
+static int shown_count;
 
 static void rebuild_home(void);
-static void row_clicked_cb(lv_event_t *e);
 
 // "3:42"
 static void duration_text(int seconds, char *out, size_t size) {
@@ -210,234 +210,286 @@ static void duration_text(int seconds, char *out, size_t size) {
 	snprintf(out, size, "%d:%02d", seconds / 60, seconds % 60);
 }
 
-// ---------------------------------------------------------------------------
-// the per-row menu
-//
-// Not every list has something to offer on a row, and those that do offer
-// different things: search results add to favourites, the favourites list
-// removes, "My playlists" deletes. Three actions, two of them irreversible --
-// so those ask for confirmation.
-// ---------------------------------------------------------------------------
+static bool kind_is_tracks(job_kind_t kind) {
+	return kind == JOB_SEARCH_TRACKS || kind == JOB_ALBUM_TRACKS || kind == JOB_PLAYLIST_TRACKS ||
+		   kind == JOB_STARRED_TRACKS || kind == JOB_RANDOM_TRACKS;
+}
+
+static bool kind_is_albums(job_kind_t kind) {
+	return kind == JOB_SEARCH_ALBUMS || kind == JOB_STARRED_ALBUMS || kind == JOB_ARTIST_ALBUMS ||
+		   kind == JOB_ALBUM_LIST;
+}
+
+static bool kind_is_artists(job_kind_t kind) { return kind == JOB_SEARCH_ARTISTS || kind == JOB_ARTISTS; }
 
 static void run(const job_t *job, const char *waiting_text);
 
-// A short toast when something was added to favourites: the list on screen does
-// not change, so without a word nothing would appear to happen.
-static void added_toast_async(void *user) {
+// ---------------------------------------------------------------------------
+// favourites: the star, and the sheet's line
+//
+// Changed at once and offered back in the toast (the handoff's principle 6):
+// nothing asks first any more -- a star taken off by mistake is one tap on
+// Undo away. The mirror of starred songs flips before the server answers
+// (subsonicsync.h); a refusal is said, and the rows follow the mirror again.
+// ---------------------------------------------------------------------------
+
+static void list_refresh_async(void *user) {
 	(void)user;
-	toast_success("added_to_favourites");
+	svclist_rebind(list);
 }
 
-typedef enum {
-	ROW_MENU_NONE = 0,
-	ROW_MENU_TRACK_ADD,	   // "add to favourites" on a track
-	ROW_MENU_TRACK_REMOVE, // "remove from favourites" on a track
-	ROW_MENU_ALBUM_ADD,
-	ROW_MENU_ALBUM_REMOVE,
-} row_menu_t;
+static void refused_async(void *user) {
+	char *why = user;
+	toast_error(why && why[0] ? why : tr("subsonic_change_refused"));
+	free(why);
+	svclist_rebind(list);
+}
 
-static row_menu_t row_menu_kind(job_kind_t kind) {
-	switch (kind) {
-	case JOB_SEARCH_TRACKS:
-	case JOB_ALBUM_TRACKS:
-	case JOB_PLAYLIST_TRACKS:
-		return ROW_MENU_TRACK_ADD;
-	case JOB_STARRED_TRACKS:
-		return ROW_MENU_TRACK_REMOVE;
-	case JOB_SEARCH_ALBUMS:
-	case JOB_ARTIST_ALBUMS:
-	case JOB_ALBUM_LIST:
-		return ROW_MENU_ALBUM_ADD;
-	case JOB_STARRED_ALBUMS:
-		return ROW_MENU_ALBUM_REMOVE;
-	default:
-		// Playlists carry no menu: deleting one on the server from a music
-		// player is a step nobody asked for.
-		return ROW_MENU_NONE;
+static void sync_done(bool ok, const char *error, void *user) {
+	(void)user;
+	if (!ok) {
+		gui_post(refused_async, strdup(error ? error : ""));
 	}
 }
 
-// The row the menu was opened on. Only one: the menu is modal.
-static int menu_index = -1;
+// The star of a track, or of an album from its sheet. Copied: the toast
+// outlives the rows it was raised on.
+static char star_id[SUBSONIC_ID_MAX];
+static bool star_album;
+static bool star_on;
 
-static char sync_message[192];
+static void star_apply(bool on) {
+	star_on = on;
+	if (star_album) {
+		subsonicsync_album_favorite(star_id, on, sync_done, NULL);
+	} else {
+		subsonicsync_favorite_toggle(star_id, on, sync_done, NULL);
+	}
+	svclist_rebind(list);
+}
 
-// Re-reads the list on screen: after removing a favourite or deleting a
-// playlist, what is displayed is no longer true.
-static void reload_current_list(void) {
+static void star_undo(void *user) {
+	(void)user;
+	star_apply(!star_on);
+}
+
+static void star_set(const char *id, bool album, bool on, const char *what) {
+	snprintf(star_id, sizeof(star_id), "%s", id);
+	star_album = album;
+	star_apply(on);
+	svcui_star_toast(on, "svc_fav_added", "svc_fav_removed", what, star_undo, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// "Play next" and "Add to end of queue"
+//
+// A Subsonic track goes into the queue by its cache path -- the file when it
+// is on the card, the name it will have otherwise -- and becomes known to the
+// prefetch, which fetches it when playback nears it as it does for a list
+// played from here (subsonic_prepare_track()). An album's tracks are asked for
+// first.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	subsonic_track_t track;
+	char key[SUBSONICCACHE_KEY_LEN];
+} queued_t;
+
+static queued_t *queued_tracks; // SUB_MAX_HELD entries, allocated on first use
+static int queued_count;
+static pthread_mutex_t queued_lock = PTHREAD_MUTEX_INITIALIZER;
+
+static bool queued_ensure(void) {
+	if (!queued_tracks) {
+		queued_tracks = calloc(SUB_MAX_HELD, sizeof(*queued_tracks));
+	}
+	return queued_tracks != NULL;
+}
+
+// Makes `t` known to the prefetch (the oldest known track gives way when the
+// list is full), and writes its tags beside the cache name, so the queue
+// shows its title. Its path into `path`.
+static void queued_add(const subsonic_track_t *t, char *path, size_t size) {
+	char key[SUBSONICCACHE_KEY_LEN];
+	subsonic_track_key(t->id, key, sizeof(key));
+	const char *suffix = subsonic_expected_suffix(t);
+	if (!subsoniccache_find(key, path, size)) {
+		subsoniccache_path(key, suffix, path, size);
+	}
+	subsoniccache_write_sidecars(key, suffix, t->id, t->title, t->artist, t->album, t->album_id, t->track_number,
+								 NULL);
+	pthread_mutex_lock(&queued_lock);
+	bool known = false;
+	for (int i = 0; i < queued_count && !known; i++) {
+		known = strcmp(queued_tracks[i].key, key) == 0;
+	}
+	if (!known) {
+		if (queued_count == SUB_MAX_HELD) {
+			memmove(queued_tracks, queued_tracks + 1, (SUB_MAX_HELD - 1) * sizeof(*queued_tracks));
+			queued_count--;
+		}
+		queued_tracks[queued_count].track = *t;
+		snprintf(queued_tracks[queued_count].key, sizeof(queued_tracks[0].key), "%s", key);
+		queued_count++;
+	}
+	pthread_mutex_unlock(&queued_lock);
+}
+
+static void queue_tracks(const subsonic_track_t *tracks, int count, playlist_queue_where_t where, const char *what) {
+	if (count <= 0 || !queued_ensure()) {
+		gui_notify_popup("playlist_cannot_add_the_tracks");
+		return;
+	}
+	char *block = malloc((size_t)count * 512);
+	const char **paths = malloc((size_t)count * sizeof(*paths));
+	if (!block || !paths) {
+		free(block);
+		free(paths);
+		gui_notify_popup("playlist_cannot_add_the_tracks");
+		return;
+	}
+	for (int i = 0; i < count; i++) {
+		queued_add(&tracks[i], block + (size_t)i * 512, 512);
+		paths[i] = block + (size_t)i * 512;
+	}
+	svcui_queue(paths, count, where, what);
+	free(paths);
+	free(block);
+}
+
+// An album's tracks for the queue are fetched on the worker into a buffer of
+// their own, handed over with the answer (the list on screen stays as it is).
+static void queue_album(const subsonic_album_t *a, playlist_queue_where_t where) {
 	job_t job = {0};
-	job.kind = list_kind;
-	switch (list_kind) {
-	case JOB_STARRED_TRACKS:
-	case JOB_STARRED_ALBUMS:
-		run(&job, "loading");
-		break;
-	default:
-		break;
-	}
+	job.kind = JOB_QUEUE_ALBUM;
+	job.index = (int)where;
+	snprintf(job.id_text, sizeof(job.id_text), "%s", a->id);
+	snprintf(job.text, sizeof(job.text), "%s", a->title);
+	run(&job, NULL);
 }
 
-static void sync_result_async(void *user) {
-	bool reload = (bool)(intptr_t)user;
-	if (sync_message[0]) {
-		gui_notify_popup(sync_message);
+static void queue_entry(int index, playlist_queue_where_t where) {
+	if (index < 0 || index >= shown_count) {
 		return;
 	}
-	if (reload) {
-		reload_current_list();
+	if (kind_is_tracks(list_kind)) {
+		queue_tracks(&result_tracks[index], 1, where, result_tracks[index].title);
+	} else if (kind_is_albums(list_kind)) {
+		queue_album(&result_albums[index], where);
 	}
 }
 
-static void row_sync_done(bool ok, const char *error, void *user) {
-	snprintf(sync_message, sizeof(sync_message), "%s",
-			 ok ? "" : (error && error[0] ? error : tr("subsonic_change_refused")));
-	gui_post(sync_result_async, user);
+// ---------------------------------------------------------------------------
+// the sheet
+// ---------------------------------------------------------------------------
+
+static int menu_index = -1;
+static job_kind_t menu_kind;
+
+static bool menu_valid(void) { return menu_index >= 0 && menu_index < shown_count && menu_kind == list_kind; }
+
+static void sheet_queue(void *user) {
+	if (menu_valid()) {
+		queue_entry(menu_index, (playlist_queue_where_t)(intptr_t)user);
+	}
 }
 
-// Adding to favourites does not change the list on screen (the user is among
-// search results), so a success toast is all that is reported.
-static void row_added_done(bool ok, const char *error, void *user) {
+static void sheet_star(void *user) {
+	if (!menu_valid()) {
+		return;
+	}
+	bool on = user != NULL;
+	if (kind_is_tracks(list_kind)) {
+		star_set(result_tracks[menu_index].id, false, on, result_tracks[menu_index].title);
+	} else {
+		star_set(result_albums[menu_index].id, true, on, result_albums[menu_index].title);
+	}
+}
+
+static void sheet_album(void *user) {
 	(void)user;
-	snprintf(sync_message, sizeof(sync_message), "%s",
-			 ok ? "" : (error && error[0] ? error : tr("subsonic_change_refused")));
-	gui_post(sync_result_async, (void *)(intptr_t)0);
-	if (ok) {
-		gui_post(added_toast_async, NULL);
-	}
-}
-
-static void do_track_add(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
+	if (!menu_valid() || !kind_is_tracks(list_kind)) {
 		return;
 	}
-	subsonicsync_favorite_toggle(result_tracks[menu_index].id, true, row_added_done, NULL);
+	const subsonic_track_t *t = &result_tracks[menu_index];
+	job_t job = {0};
+	job.kind = JOB_ALBUM_TRACKS;
+	snprintf(job.id_text, sizeof(job.id_text), "%s", t->album_id);
+	snprintf(job.text, sizeof(job.text), "%s", t->album[0] ? t->album : tr("subsonic"));
+	run(&job, "loading");
 }
 
-static void do_track_remove(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	subsonicsync_favorite_toggle(result_tracks[menu_index].id, false, row_sync_done, (void *)(intptr_t)1);
-}
+static void row_detail(int index, char *out, size_t size);
 
-static void do_album_add(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	subsonicsync_album_favorite(result_albums[menu_index].id, true, row_added_done, NULL);
-}
-
-static void do_album_remove(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	subsonicsync_album_favorite(result_albums[menu_index].id, false, row_sync_done, (void *)(intptr_t)1);
-}
-
-// The two destructive actions go through a confirmation: an accidental tap on
-// the ellipsis must not delete a playlist.
-static void ask_track_remove(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	char message[SUBSONIC_TITLE_MAX + 64];
-	snprintf(message, sizeof(message), tr("will_no_longer_be_one_of"),
-			 result_tracks[menu_index].title);
-	confirm_show("remove_from_favourites_2", message, "remove", do_track_remove, NULL);
-}
-
-static void ask_album_remove(void *user) {
-	(void)user;
-	if (menu_index < 0 || menu_index >= result_count) {
-		return;
-	}
-	char message[SUBSONIC_TITLE_MAX + 64];
-	snprintf(message, sizeof(message), tr("will_no_longer_be_one_of_2"),
-			 result_albums[menu_index].title);
-	confirm_show("remove_from_favourites_2", message, "remove", do_album_remove, NULL);
-}
-
-static void row_menu_cb(lv_event_t *e) {
-	lv_event_stop_bubbling(e); // the tap belongs to the menu, not to the row
-	if (switcher_back_drag_active() || player_sheet_drag_active()) {
-		return;
-	}
-
-	int index = (int)(intptr_t)lv_event_get_user_data(e);
-	if (index < 0 || index >= result_count) {
+static void list_hold(lv_obj_t *row, void *user) {
+	(void)row;
+	int index = (int)(intptr_t)user;
+	if (index < 0 || index >= shown_count || (!kind_is_tracks(list_kind) && !kind_is_albums(list_kind))) {
 		return;
 	}
 	menu_index = index;
-
-	popover_item_t item;
-	memset(&item, 0, sizeof(item));
-
-	switch (row_menu_kind(list_kind)) {
-	case ROW_MENU_TRACK_ADD:
-		// A track already among the favourites is not offered for adding again:
-		// it is offered for removal.
-		if (subsonicsync_is_favorite(result_tracks[index].id)) {
-			item.label = "remove_from_favourites";
-			item.action = ask_track_remove;
-		} else {
-			item.label = "medialist_add_to_favourites";
-			item.action = do_track_add;
+	menu_kind = list_kind;
+	sx_sheet_item_t items[5];
+	memset(items, 0, sizeof(items));
+	int n = 0;
+	items[n++] = (sx_sheet_item_t){.label = tr("queue_play_next"), .icon = &icon_list_start, .action = sheet_queue,
+								   .user = (void *)(intptr_t)PLAYLIST_QUEUE_NEXT};
+	items[n++] = (sx_sheet_item_t){.label = tr("queue_add_to_end"), .icon = &icon_list_plus_small,
+								   .action = sheet_queue, .user = (void *)(intptr_t)PLAYLIST_QUEUE_END};
+	static char title[SUBSONIC_TITLE_MAX];
+	if (kind_is_tracks(list_kind)) {
+		const subsonic_track_t *t = &result_tracks[index];
+		bool fav = subsonicsync_is_favorite(t->id);
+		items[n++] = (sx_sheet_item_t){.label = tr(fav ? "remove_from_favourites" : "medialist_add_to_favourites"),
+									   .icon = fav ? &icon_star_filled : &icon_star,
+									   .action = sheet_star,
+									   .user = fav ? NULL : (void *)1};
+		if (t->album_id[0] && list_kind != JOB_ALBUM_TRACKS) {
+			items[n++] = (sx_sheet_item_t){.label = tr("show_album"), .icon = &icon_chevron_right, .action = sheet_album};
 		}
-		break;
-	case ROW_MENU_TRACK_REMOVE:
-		item.label = "remove_from_favourites";
-		item.action = ask_track_remove;
-		break;
-	case ROW_MENU_ALBUM_ADD:
-		item.label = "medialist_add_to_favourites";
-		item.action = do_album_add;
-		break;
-	case ROW_MENU_ALBUM_REMOVE:
-		item.label = "remove_from_favourites";
-		item.action = ask_album_remove;
-		break;
-	default:
-		return;
+		snprintf(title, sizeof(title), "%s", t->title);
+	} else {
+		// The server says whether an album is starred only in the list of
+		// starred ones: there it is offered for removal, elsewhere for adding.
+		bool fav = list_kind == JOB_STARRED_ALBUMS;
+		items[n++] = (sx_sheet_item_t){.label = tr(fav ? "remove_from_favourites" : "medialist_add_to_favourites"),
+									   .icon = fav ? &icon_star_filled : &icon_star,
+									   .action = sheet_star,
+									   .user = fav ? NULL : (void *)1};
+		snprintf(title, sizeof(title), "%s", result_albums[index].title);
 	}
-
-	popover_show(lv_event_get_current_target(e), &item, 1);
+	static char subtitle[400];
+	row_detail(index, subtitle, sizeof(subtitle));
+	sx_sheet_menu(title, subtitle, items, n);
 }
 
-// Side of a row thumbnail, in pixels.
-#define ROW_THUMB 60
+// Side of a row's cover as fetched: the lead's own, so nothing is scaled.
+static int thumb_px(void) { return sx_row_height(false) > SX_ROW_H ? SX_ROW_THUMB_BIG : SX_ROW_THUMB; }
 
-// What getCoverArt is asked for, for a list row and for the player. The server
-// scales it, so the row's sixty pixels do not mean fetching the original
-// two-megabyte scan.
-#define LIST_COVER_PX 300
+// What getCoverArt is asked for for the player. The server scales it, so the
+// row's sixty pixels do not mean fetching the original two-megabyte scan.
 #define PLAYER_COVER_PX 600
 
 // Row cover art.
 //
-// The loader has twelve slots and a list can hold far more rows than that, so
-// slots are a shared pool and not assigned seats: they go to the rows currently
-// visible and move to new ones as the list scrolls.
-static lv_obj_t *row_thumbs[SUB_MAX_HELD];
-static char row_cover_url[SUB_MAX_HELD][QOBUZART_URL_MAX];
+// The loader has twelve slots and a list can hold far more entries than that,
+// so slots are a shared pool and not assigned seats: they go to the entries in
+// view and move to new ones as the list scrolls. The pictures are kept by
+// entry, so a row scrolled away and back finds its cover still there.
 static cover_image_t row_images[SUB_MAX_HELD];
 static bool row_has_image[SUB_MAX_HELD];
 
-// This row already asked for its cover and did not get one: dead URL, image
-// that fails to decode, host that does not answer. The reload pass restarts
-// every time a slot frees up, so without this one broken row would be asked for
-// forever and keep a slot from the rows that can be served.
+// This entry already asked for its cover and did not get one: dead URL, image
+// that fails to decode, host that does not answer. Without this one broken
+// entry would be asked for forever and keep a slot from those that can be
+// served.
 static bool row_art_failed[SUB_MAX_HELD];
 
 // The token that claims the cover slots: only its address matters, never its
 // value. See qobuzart.h.
 static const char subsonic_art_owner;
 
-// Which row occupies each slot right now, -1 = free.
+// Which entry occupies each slot right now, -1 = free.
 static int slot_owner[QOBUZART_SLOTS];
 
 // The timer that collects covers as they arrive. It lives exactly as long as
@@ -468,169 +520,141 @@ static void art_release_slot(int slot) {
 	slot_owner[slot] = -1;
 }
 
+// The cover id of entry `index` of the list on screen, "" for none.
+static const char *entry_cover_id(int index) {
+	if (index < 0 || index >= shown_count) {
+		return "";
+	}
+	if (kind_is_tracks(list_kind)) {
+		return result_tracks[index].cover_id;
+	}
+	if (kind_is_albums(list_kind)) {
+		return result_albums[index].cover_id;
+	}
+	if (list_kind == JOB_PLAYLISTS) {
+		return result_playlists[index].cover_id;
+	}
+	return ""; // an artist: its letter
+}
+
+static void art_request_range(int first, int last);
+static int art_first = 0, art_last = -1; // the entries in view, last told
+
 // Finished thumbnails are collected here periodically: same shape as the local
 // cover loader -- the thread works, the list draws, and whatever is ready shows
 // up on the next pass.
-static void art_request_visible(void);
-
 static void art_poll_cb(lv_timer_t *timer) {
 	bool freed = false;
 	if (!art_any_pending()) {
 		lv_timer_pause(timer); // nothing in flight: art_wake() restarts it
 		return;
 	}
-
 	for (int slot = 0; slot < QOBUZART_SLOTS; slot++) {
-		int row = slot_owner[slot];
-		if (row < 0 || row >= SUB_MAX_HELD || !row_thumbs[row]) {
+		int entry = slot_owner[slot];
+		if (entry < 0 || entry >= SUB_MAX_HELD) {
 			continue;
 		}
 		cover_image_t image;
 		bool finished = false;
 		if (!qobuzart_take(&subsonic_art_owner, slot, &image, &finished)) {
 			if (finished) {
-				row_art_failed[row] = true; // failed: never requested again
+				row_art_failed[entry] = true; // failed: never requested again
 				freed = true;
-				slot_owner[slot] = -1; // nothing to show: the slot goes back
+				slot_owner[slot] = -1;
 			}
 			continue;
 		}
-
-		cover_free(&row_images[row]);
-		row_images[row] = image;
-		row_has_image[row] = true;
-		// The grey note placeholder was recoloured by the theme: a real cover
-		// must keep its own colours, otherwise it turns into a flat square.
-		lv_obj_remove_style(row_thumbs[row], &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor_opa(row_thumbs[row], LV_OPA_TRANSP, 0);
-		lv_obj_set_style_radius(row_thumbs[row], 6, 0);
-		lv_obj_set_style_clip_corner(row_thumbs[row], true, 0);
-		lv_image_set_src(row_thumbs[row], &row_images[row].dsc);
-
-		// Served: the slot goes back to the pool for the next row.
+		cover_free(&row_images[entry]);
+		row_images[entry] = image;
+		row_has_image[entry] = true;
+		svclist_rebind_index(list, entry);
+		// Served: the slot goes back to the pool for the next entry.
 		slot_owner[slot] = -1;
 		freed = true;
 	}
-
-	// A slot that just freed up must be handed out immediately.
-	//
-	// There are more rows than slots, so art_request_visible() serves what it
-	// can and returns; without this pass the rows beyond the twelfth would only
-	// be asked for again on the next scroll, and never at all if the last
-	// scroll happened while every slot was busy.
+	// A slot that just freed up is handed out at once: there are more entries
+	// than slots, and without this pass the ones beyond the twelfth would wait
+	// for the next scroll.
 	if (freed) {
-		art_request_visible();
+		art_request_range(art_first, art_last);
 	}
-
 }
 
-// Requests covers for the visible rows, plus some margin above and below so
-// slow scrolling finds them already there. Called on fill and on every scroll.
-static void art_request_visible(void) {
-	if (!list_container) {
-		return;
-	}
-
-	int32_t view_top = lv_obj_get_scroll_y(list_container);
-	int32_t view_height = lv_obj_get_height(list_container);
-	int32_t margin = view_height / 2;
-
-	uint32_t children = lv_obj_get_child_count(list_container);
-	for (uint32_t c = 0; c < children && c < SUB_MAX_HELD; c++) {
-		int row = (int)c;
-		if (!row_thumbs[row] || row_has_image[row] || row_art_failed[row] || !row_cover_url[row][0]) {
+// Requests covers for the entries in view, plus half a screen either side so
+// slow scrolling finds them already there.
+static void art_request_range(int first, int last) {
+	art_first = first;
+	art_last = last;
+	int margin = (last - first) / 2 + 1;
+	int from = first - margin < 0 ? 0 : first - margin;
+	int to = last + margin >= shown_count ? shown_count - 1 : last + margin;
+	char url[SUBSONIC_URL_MAX];
+	for (int entry = from; entry <= to && entry < SUB_MAX_HELD; entry++) {
+		const char *cover = entry_cover_id(entry);
+		if (!cover[0] || row_has_image[entry] || row_art_failed[entry]) {
 			continue;
 		}
-
-		lv_obj_t *widget = lv_obj_get_child(list_container, (int32_t)c);
-		int32_t y = lv_obj_get_y(widget);
-		int32_t h = lv_obj_get_height(widget);
-		if (y + h < view_top - margin || y > view_top + view_height + margin) {
-			continue; // too far off screen to be worth a request
-		}
-
-		// Already queued for this row?
 		bool queued = false;
-		for (int slot = 0; slot < QOBUZART_SLOTS && !queued; slot++) {
-			queued = slot_owner[slot] == row;
+		int free_slot = -1;
+		for (int slot = 0; slot < QOBUZART_SLOTS; slot++) {
+			queued |= slot_owner[slot] == entry;
+			if (slot_owner[slot] < 0 && free_slot < 0) {
+				free_slot = slot;
+			}
 		}
 		if (queued) {
 			continue;
 		}
-
-		int free_slot = -1;
-		for (int slot = 0; slot < QOBUZART_SLOTS && free_slot < 0; slot++) {
-			if (slot_owner[slot] < 0) {
-				free_slot = slot;
-			}
-		}
 		if (free_slot < 0) {
 			return; // all busy: the rest on the next pass
 		}
-
-		slot_owner[free_slot] = row;
+		subsonic_cover_url(cover, thumb_px(), url, sizeof(url));
+		slot_owner[free_slot] = entry;
 		art_wake();
-		qobuzart_request(&subsonic_art_owner, free_slot, row_cover_url[row], ROW_THUMB);
+		qobuzart_request(&subsonic_art_owner, free_slot, url, thumb_px());
 	}
 }
 
 static void maybe_load_more(void);
 
-static void list_scrolled_cb(lv_event_t *e) {
-	(void)e;
-	art_request_visible();
-	maybe_load_more();
-}
-
-// The rows all go away at once (lv_obj_clean): the pointers must be forgotten
-// BEFORE that, or the thumbnail pass writes to dead objects.
+// A new list is coming: the rows show nothing (they would read the arrays the
+// worker is about to fill), and the pictures go.
 static void art_forget_rows(void) {
+	svclist_set_count(list, 0, false);
+	shown_count = 0;
 	for (int slot = 0; slot < QOBUZART_SLOTS; slot++) {
 		art_release_slot(slot);
 	}
-	for (int row = 0; row < SUB_MAX_HELD; row++) {
-		row_thumbs[row] = NULL;
-		row_cover_url[row][0] = '\0';
-		row_has_image[row] = false;
-		row_art_failed[row] = false;
-		cover_free(&row_images[row]);
+	for (int entry = 0; entry < SUB_MAX_HELD; entry++) {
+		row_has_image[entry] = false;
+		row_art_failed[entry] = false;
+		cover_free(&row_images[entry]);
 	}
+	art_first = 0;
+	art_last = -1;
 }
 
-// Gives the decoded thumbnails back without taking the list apart.
-//
-// Not art_forget_rows(): that one is only safe because an lv_obj_clean()
-// follows it immediately, so the widgets still pointing at the freed pixels are
-// destroyed before anything can draw them. Here the rows have to survive --
-// coming back to the page must find the list where it was left -- so every
-// widget goes back to the grey note first, with the styles the note needs and
-// the ones the photograph needed taken off again.
-//
-// row_art_failed is deliberately NOT cleared: a cover that would not download
-// still will not, and forgetting that would send the same failing requests
-// again at every visit.
+// Gives the decoded thumbnails back without taking the list apart: the rows
+// go back to their plaques. row_art_failed is deliberately NOT cleared: a
+// cover that would not download still will not.
 static void art_drop_pictures(void) {
 	for (int slot = 0; slot < QOBUZART_SLOTS; slot++) {
 		art_release_slot(slot);
 	}
-	for (int row = 0; row < SUB_MAX_HELD; row++) {
-		if (row_thumbs[row] && row_has_image[row]) {
-			lv_image_set_src(row_thumbs[row], &icon_music2);
-			lv_obj_add_style(row_thumbs[row], &theme_style_icon, 0);
-			lv_obj_set_style_image_recolor_opa(row_thumbs[row], LV_OPA_COVER, 0);
-			lv_obj_set_style_clip_corner(row_thumbs[row], false, 0);
-			lv_obj_set_style_radius(row_thumbs[row], 0, 0);
-		}
-		row_has_image[row] = false;
-		cover_free(&row_images[row]);
+	for (int entry = 0; entry < SUB_MAX_HELD; entry++) {
+		row_has_image[entry] = false;
+	}
+	// The rows let go of the pictures before they are freed.
+	svclist_rebind(list);
+	for (int entry = 0; entry < SUB_MAX_HELD; entry++) {
+		cover_free(&row_images[entry]);
 	}
 }
 
-// Two hundred rows of 60x60 is 1.4 MB, held until the list is rebuilt, so the
-// pictures are given back a while after the page is left. Not the moment it is
-// left: tapping a row goes to the player and coming straight back is the
-// ordinary way to use this page, and freeing on the way out would re-read and
-// re-decode a dozen pictures every time something is played.
+// Two hundred thumbnails of 56 px are 1.2 MB, held until the list is rebuilt,
+// so the pictures are given back a while after the page is left. Not the
+// moment it is left: coming straight back is the ordinary way to use this
+// page.
 #define ART_DROP_DELAY_MS 20000
 
 static lv_timer_t *art_drop_timer;
@@ -638,11 +662,9 @@ static lv_timer_t *art_drop_timer;
 static void art_drop_cb(lv_timer_t *timer) {
 	lv_timer_pause(timer);
 	art_drop_pictures();
-
-	// And back to the kernel, not merely back to the arena. A thumbnail is
-	// 7200 bytes, well under the 96 kB mmap threshold main.c sets, so the
-	// thumbnails come out of the heap rather than out of their own mappings
-	// and freeing them alone leaves the arena holding the space.
+	// And back to the kernel, not merely back to the arena: a thumbnail is
+	// under the mmap threshold main.c sets, so freeing them alone leaves the
+	// arena holding the space.
 	malloc_trim(0);
 }
 
@@ -651,14 +673,13 @@ static void list_loaded_cb(lv_event_t *e) {
 	if (art_drop_timer) {
 		lv_timer_pause(art_drop_timer); // back before the wait ran out
 	}
-	if (!list_container) {
-		return; // the screen exists before the page inside it does
+	if (list) {
+		// Whatever was given back while the page was away is asked for
+		// again; free when nothing was dropped.
+		int first, last;
+		svclist_visible(list, &first, &last);
+		art_request_range(first, last);
 	}
-	// Whatever was given back while the page was away is asked for again. Free
-	// when nothing was dropped: every row still holding its picture is skipped.
-	art_wake();
-	lv_obj_update_layout(list_container);
-	art_request_visible();
 }
 
 static void list_unloaded_cb(lv_event_t *e) {
@@ -669,186 +690,140 @@ static void list_unloaded_cb(lv_event_t *e) {
 	}
 }
 
-// One list row: name on top, detail below, and -- where applicable -- the
-// ellipsis menu on the right.
-//
-// The two labels form a flex column with a declared gap, each exactly one line
-// high: that is what makes the ellipsis the only possible outcome for text that
-// is too long, instead of letting it wrap over the subtitle.
-static lv_obj_t *make_row(const char *name, const char *detail, const char *cover_url, bool dimmed, int index) {
-	lv_obj_t *row = lv_btn_create(list_container);
-	lv_obj_set_size(row, lv_pct(100), 88);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_ver(row, 0, 0);
-	lv_obj_set_style_pad_column(row, 8, 0);
-	lv_obj_set_scrollable(row, false);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	// Gestures (back, and pulling in the player sheet) often start on a row,
-	// and a button keeps the press to itself: without this neither drag works
-	// on these lists.
-	lv_obj_set_event_bubble(row, true);
-	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
-
-	// The cover, where there is a URL for one. It starts as the grey note and
-	// becomes the real image once the thread has downloaded it: the list is
-	// readable immediately, without waiting for the network.
-	if (cover_url && cover_url[0] && index < SUB_MAX_HELD) {
-		lv_obj_t *thumb = lv_image_create(row);
-		lv_obj_set_size(thumb, ROW_THUMB, ROW_THUMB);
-		lv_image_set_inner_align(thumb, LV_IMAGE_ALIGN_CENTER);
-		lv_image_set_src(thumb, &icon_music2);
-		lv_obj_add_style(thumb, &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor_opa(thumb, LV_OPA_COVER, 0);
-		lv_obj_set_event_bubble(thumb, true);
-		row_thumbs[index] = thumb;
-		snprintf(row_cover_url[index], sizeof(row_cover_url[0]), "%s", cover_url);
+// The line under an entry's title.
+static void row_detail(int index, char *out, size_t size) {
+	out[0] = '\0';
+	if (kind_is_tracks(list_kind)) {
+		const subsonic_track_t *t = &result_tracks[index];
+		snprintf(out, size, "%s", t->artist);
+	} else if (kind_is_albums(list_kind)) {
+		const subsonic_album_t *a = &result_albums[index];
+		if (a->year > 0) {
+			snprintf(out, size, "%s \xC2\xB7 %d", a->artist, a->year);
+		} else {
+			snprintf(out, size, "%s", a->artist);
+		}
+	} else if (kind_is_artists(list_kind)) {
+		const subsonic_artist_t *a = &result_artists[index];
+		if (a->album_count > 0) {
+			snprintf(out, size, tr(a->album_count == 1 ? "subsonic_one_album" : "subsonic_albums_n"), a->album_count);
+		}
+	} else if (list_kind == JOB_PLAYLISTS) {
+		const subsonic_playlist_t *p = &result_playlists[index];
+		snprintf(out, size, "%s \xC2\xB7 %d", p->owner, p->song_count);
 	}
-
-	lv_obj_t *texts = lv_obj_create(row);
-	lv_obj_set_flex_grow(texts, 1);
-	lv_obj_set_height(texts, LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(texts, 0, 0);
-	lv_obj_set_style_border_width(texts, 0, 0);
-	lv_obj_set_style_pad_all(texts, 0, 0);
-	lv_obj_set_style_pad_row(texts, 6, 0); // breathing room between title and subtitle
-	lv_obj_set_scrollable(texts, false);
-	lv_obj_set_event_bubble(texts, true);
-	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(texts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-	lv_obj_t *label = lv_label_create(texts);
-	lv_label_set_text(label, name);
-	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(label, lv_pct(100));
-	lv_obj_set_height(label, lv_font_get_line_height(&font_ui_22));
-	lv_obj_add_style(label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-
-	// A track the subscription does not cover stays in the list but is visibly
-	// unplayable: hiding it would leave a gap in the album with no explanation.
-	if (dimmed) {
-		lv_obj_set_style_text_color(label, theme()->text_secondary, 0);
-	}
-
-	if (detail && detail[0]) {
-		lv_obj_t *sub = lv_label_create(texts);
-		lv_label_set_text(sub, detail);
-		lv_label_set_long_mode(sub, LV_LABEL_LONG_DOT);
-		lv_obj_set_width(sub, lv_pct(100));
-		lv_obj_set_height(sub, lv_font_get_line_height(&font_ui_18));
-		lv_obj_add_style(sub, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(sub, &font_ui_18, 0);
-	}
-
-	// The ellipsis button, where the list has something to offer per entry.
-	if (row_menu_kind(result_kind) != ROW_MENU_NONE) {
-		lv_obj_t *menu_btn = lv_btn_create(row);
-		lv_obj_set_size(menu_btn, 44, 44);
-		// A fingertip's worth (touch.h), kept within the row's own padding.
-		touch_grow(menu_btn, 44, 44, 14);
-		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_border_width(menu_btn, 0, 0);
-		lv_obj_set_style_shadow_width(menu_btn, 0, 0);
-		lv_obj_set_style_pad_all(menu_btn, 0, 0);
-		lv_obj_add_event_cb(menu_btn, row_menu_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
-
-		lv_obj_t *dots = lv_image_create(menu_btn);
-		lv_image_set_src(dots, &icon_ellipsis_vertical);
-		lv_obj_add_style(dots, &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
-		lv_obj_center(dots);
-	}
-
-	return row;
 }
 
-// `from` is the first row to create: 0 rebuilds everything, a higher value
-// APPENDS the new rows at the bottom without touching the others -- which is
-// what keeps the scroll position steady when the next page arrives.
-static void fill_list(int from) {
+// The first character of `text` (a whole UTF-8 one), for a letter plaque.
+static void first_char(const char *text, char *out, size_t size) {
+	unsigned char c = (unsigned char)(text ? text[0] : 0);
+	size_t n = c >= 0xF0 ? 4 : c >= 0xE0 ? 3 : c >= 0xC0 ? 2 : 1;
+	if (!c || n >= size || strlen(text) < n) {
+		snprintf(out, size, "#");
+		return;
+	}
+	memcpy(out, text, n);
+	out[n] = '\0';
+	if (n == 1 && out[0] >= 'a' && out[0] <= 'z') {
+		out[0] = (char)(out[0] - 'a' + 'A');
+	}
+}
+
+// The track playing now, as a cache key, for the playing row.
+static char playing_key[SUBSONICCACHE_KEY_LEN];
+
+static bool playing_update(void) {
+	char path[512], key[SUBSONICCACHE_KEY_LEN] = "";
+	if (playlist_current_path(path, sizeof(path)) && subsoniccache_owns(path)) {
+		subsoniccache_path_key(path, key, sizeof(key));
+	}
+	if (strcmp(key, playing_key) == 0) {
+		return false;
+	}
+	snprintf(playing_key, sizeof(playing_key), "%s", key);
+	return true;
+}
+
+static void list_bind(lv_obj_t *row, int index) {
+	if (index < 0 || index >= shown_count) {
+		return;
+	}
+	char detail[400];
+	row_detail(index, detail, sizeof(detail));
+	const lv_image_dsc_t *image = index < SUB_MAX_HELD && row_has_image[index] ? &row_images[index].dsc : NULL;
+	sx_row_set_playing(row, false);
+	if (kind_is_tracks(list_kind)) {
+		const subsonic_track_t *t = &result_tracks[index];
+		char length[16], format[16] = "";
+		duration_text(t->duration, length, sizeof(length));
+		// The format is worth a word when it is not the common case: a FLAC on
+		// a list of FLACs says nothing, an Opus among them does.
+		if (t->suffix[0] && strcmp(t->suffix, "flac") != 0 && strcmp(t->suffix, "mp3") != 0) {
+			snprintf(format, sizeof(format), "\xC2\xB7 %s", t->suffix);
+		}
+		sx_row_set_title(row, t->title);
+		sx_row_set_subtitle(row, detail, format[0] ? format : NULL, length);
+		if (list_kind == JOB_ALBUM_TRACKS && t->track_number > 0) {
+			sx_row_set_number(row, t->track_number);
+		} else {
+			sx_row_set_thumb(row, image, svcui_tone(t->album_id[0] ? t->album_id : t->title));
+		}
+		sx_row_set_trail(row, SX_ROW_TRAIL_STAR);
+		sx_row_set_starred(row, subsonicsync_is_favorite(t->id));
+		sx_row_set_swipes(row, true, true);
+		if (playing_key[0]) {
+			char key[SUBSONICCACHE_KEY_LEN];
+			subsonic_track_key(t->id, key, sizeof(key));
+			sx_row_set_playing(row, strcmp(key, playing_key) == 0);
+		}
+	} else if (kind_is_albums(list_kind)) {
+		const subsonic_album_t *a = &result_albums[index];
+		sx_row_set_title(row, a->title);
+		sx_row_set_subtitle(row, detail, NULL, NULL);
+		sx_row_set_thumb(row, image, svcui_tone(a->id));
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, true, true);
+	} else if (kind_is_artists(list_kind)) {
+		const subsonic_artist_t *a = &result_artists[index];
+		char letter[8];
+		first_char(a->name, letter, sizeof(letter));
+		sx_row_set_title(row, a->name);
+		sx_row_set_subtitle(row, detail, NULL, NULL);
+		sx_row_set_letter(row, letter, svcui_tone(a->name), true);
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, false, false);
+	} else if (list_kind == JOB_PLAYLISTS) {
+		const subsonic_playlist_t *p = &result_playlists[index];
+		sx_row_set_title(row, p->name);
+		sx_row_set_subtitle(row, detail, NULL, NULL);
+		sx_row_set_thumb(row, image, svcui_tone(p->id));
+		sx_row_set_trail(row, SX_ROW_TRAIL_CHEVRON);
+		sx_row_set_swipes(row, false, false);
+	}
+}
+
+static void list_visible_cb(int first, int last) { art_request_range(first, last); }
+
+// `from` is the first entry new: 0 a new list, a higher value a page added at
+// the bottom -- the rows already there and the scroll stay.
+static void favourites_known(void) { gui_post(list_refresh_async, NULL); }
+
+static void fill_list(job_kind_t kind, int from, int count, const char *title) {
 	if (from == 0) {
 		art_forget_rows();
-		lv_obj_clean(list_container);
 	}
-	list_kind = result_kind;
-
-	for (int i = from; i < result_count; i++) {
-		char detail[400];
-
-		char cover[SUBSONIC_URL_MAX];
-
-		switch (result_kind) {
-		case JOB_SEARCH_TRACKS:
-		case JOB_ALBUM_TRACKS:
-		case JOB_PLAYLIST_TRACKS:
-		case JOB_STARRED_TRACKS: {
-			const subsonic_track_t *t = &result_tracks[i];
-			char length[16];
-			duration_text(t->duration, length, sizeof(length));
-			// The format is worth a word when it is not the common case: a FLAC
-			// on a list of FLACs says nothing, an Opus among them does.
-			if (t->suffix[0] && strcmp(t->suffix, "flac") != 0 && strcmp(t->suffix, "mp3") != 0) {
-				snprintf(detail, sizeof(detail), "%s \xC2\xB7 %s \xC2\xB7 %s", t->artist, t->suffix, length);
-			} else {
-				snprintf(detail, sizeof(detail), "%s \xC2\xB7 %s", t->artist, length);
-			}
-			subsonic_cover_url(t->cover_id, LIST_COVER_PX, cover, sizeof(cover));
-			make_row(t->title, detail, cover, false, i);
-			break;
-		}
-		case JOB_SEARCH_ALBUMS:
-		case JOB_STARRED_ALBUMS:
-		case JOB_ARTIST_ALBUMS:
-		case JOB_ALBUM_LIST: {
-			const subsonic_album_t *a = &result_albums[i];
-			if (a->year > 0) {
-				snprintf(detail, sizeof(detail), "%s \xC2\xB7 %d", a->artist, a->year);
-			} else {
-				snprintf(detail, sizeof(detail), "%s", a->artist);
-			}
-			subsonic_cover_url(a->cover_id, LIST_COVER_PX, cover, sizeof(cover));
-			make_row(a->title, detail, cover, false, i);
-			break;
-		}
-		case JOB_SEARCH_ARTISTS:
-		case JOB_ARTISTS: {
-			const subsonic_artist_t *a = &result_artists[i];
-			snprintf(detail, sizeof(detail), tr(a->album_count == 1 ? "subsonic_one_album" : "subsonic_albums_n"),
-					 a->album_count);
-			subsonic_cover_url(a->cover_id, LIST_COVER_PX, cover, sizeof(cover));
-			make_row(a->name, a->album_count > 0 ? detail : "", cover, false, i);
-			break;
-		}
-		case JOB_PLAYLISTS: {
-			const subsonic_playlist_t *p = &result_playlists[i];
-			snprintf(detail, sizeof(detail), "%s \xC2\xB7 %d", p->owner, p->song_count);
-			subsonic_cover_url(p->cover_id, LIST_COVER_PX, cover, sizeof(cover));
-			make_row(p->name, detail, cover, false, i);
-			break;
-		}
-		default:
-			break;
-		}
+	list_kind = kind;
+	shown_count = count;
+	lv_obj_set_hidden(list_spin, true);
+	playing_update();
+	svclist_set_count(list, shown_count, from > 0);
+	lv_obj_set_hidden(list_empty, shown_count != 0);
+	lv_label_set_text(list_title, title);
+	// The stars read the mirror of starred songs: asked for when not known yet,
+	// the rows told when it comes.
+	if (kind_is_tracks(list_kind)) {
+		subsonicsync_favorites_refresh(favourites_known);
 	}
-
-	// Covers for the visible rows. This runs after the rows exist and after
-	// LVGL has computed the layout, because it reads their coordinates.
-	lv_obj_update_layout(list_container);
-	art_request_visible();
-
-	if (result_count == 0) {
-		lv_obj_set_hidden(list_empty, false);
-	} else {
-		lv_obj_set_hidden(list_empty, true);
-	}
-
-	lv_label_set_text(list_title, result_title);
 }
 
 // ---------------------------------------------------------------------------
@@ -859,42 +834,86 @@ static bool job_is_list(job_kind_t kind);
 static void retry_list(void);
 static void error_sign_in(void);
 
-static void job_done_cb(void *user) {
-	(void)user;
-	busy_hide();
+// One job's answer, handed to the GUI thread whole through gui_post's user
+// pointer, which then owns it. The worker used to post a bare "done" and the
+// GUI read the shared result_* fields -- which the next job was already
+// overwriting by then (the server card's ping right after a list, say). The
+// lists' entries stay in the shared arrays: the rows are emptied before a new
+// list is asked for (run()), and a further page only writes past the rows
+// shown.
+typedef struct {
+	job_kind_t kind;
+	char error[256];
+	stream_err_t error_class;
+	char title[160];
+	int from, count;
+	unsigned list_serial;
+	// JOB_QUEUE_ALBUM: where, the album's title, and its tracks (owned).
+	int where;
+	char what[256];
+	subsonic_track_t *tracks;
+	// JOB_STATUS
+	bool status_ok;
+	int status_tracks, status_ms;
+} answer_t;
 
-	if (result_error[0]) {
-		page_loading = false;
-		if (job_is_list(result_kind) && result_from == 0) {
-			// Said where the list would have been, with a way to ask again,
-			// rather than in a popup over whatever page was open: the list
-			// page opens (under the list's own title) and its back leads
-			// where it would have.
-			fill_list(0);
-			lv_obj_set_hidden(list_empty, true);
-			page_more = false;
-			streamerror_show(list_error, result_class, result_error, retry_list, error_sign_in);
-			if (lv_screen_active() != list_screen) {
-				switch_screen(list_screen);
-			}
-			return;
+static void status_shown(const answer_t *a);
+
+static void job_done_cb(void *user) {
+	answer_t *a = user;
+	if (a->kind == JOB_LOGIN) {
+		sx_toast_busy_end();
+	}
+	if (a->kind == JOB_STATUS) {
+		status_shown(a);
+		free(a);
+		return;
+	}
+	if (a->kind == JOB_QUEUE_ALBUM) {
+		if (a->error[0] || a->count <= 0) {
+			toast_error(a->error[0] ? a->error : tr("playlist_cannot_add_the_tracks"));
+		} else {
+			queue_tracks(a->tracks, a->count, (playlist_queue_where_t)a->where, a->what);
 		}
-		if (job_is_list(result_kind)) {
+		free(a->tracks);
+		free(a);
+		return;
+	}
+	// A list the user has since left (or asked for again): another answer is
+	// on its way, and this one would only flash past.
+	if (job_is_list(a->kind) && a->list_serial != list_serial) {
+		free(a);
+		return;
+	}
+
+	if (a->error[0]) {
+		if (job_is_list(a->kind) && a->from == 0) {
+			// Said where the list would have been, with a way to ask again,
+			// rather than in a popup over whatever page is open.
+			page_loading = false;
+			page_more = false;
+			lv_obj_set_hidden(list_spin, true);
+			lv_obj_set_hidden(list_empty, true);
+			lv_label_set_text(list_title, a->title[0] ? a->title : lv_label_get_text(list_title));
+			streamerror_show(list_error, a->error_class, a->error, retry_list, error_sign_in);
+		} else if (job_is_list(a->kind)) {
 			// A further page: the rows already there stay, and scrolling does
 			// not ask again by itself -- against a server that is down that
 			// would be a request per scroll event.
+			page_loading = false;
 			page_more = false;
-			toast_error(result_error);
-			return;
+			toast_error(a->error);
+		} else {
+			gui_notify_popup(a->error);
 		}
-		gui_notify_popup(result_error);
+		free(a);
 		return;
 	}
-	if (job_is_list(result_kind) && result_from == 0) {
+	if (job_is_list(a->kind) && a->from == 0) {
 		streamerror_hide(list_error);
 	}
 
-	switch (result_kind) {
+	switch (a->kind) {
 	case JOB_LOGIN:
 		// The favourites mirror belongs to the account just signed in to.
 		subsonicsync_forget();
@@ -904,23 +923,21 @@ static void job_done_cb(void *user) {
 		break;
 
 	case JOB_PLAY:
-		// Nothing: the worker already opened the player the instant the music
-		// started. This point is reached much later -- after the next track has
-		// been prefetched too, which takes minutes -- and reopening it now
-		// would tear away whatever page the user has opened meanwhile.
+		// Nothing: the music started long ago (play_started_async). This point
+		// is reached much later -- after the next track has been prefetched
+		// too, which takes minutes.
 		break;
 
 	default:
-		fill_list(result_from);
+		fill_list(a->kind, a->from, a->count, a->title);
 		// A full last page probably means there is another. A short one means
-		// the list really ended, and nothing more is requested.
+		// the list really ended, and nothing more is requested. A random draw
+		// is one draw.
 		page_loading = false;
-		page_more = (result_count - result_from == SUB_PAGE_LIMIT) && result_count < SUB_MAX_HELD;
-		if (lv_screen_active() != list_screen && result_from == 0) {
-			switch_screen(list_screen);
-		}
+		page_more = a->kind != JOB_RANDOM_TRACKS && (a->count - a->from == SUB_PAGE_LIMIT) && a->count < SUB_MAX_HELD;
 		break;
 	}
+	free(a);
 }
 
 // ---------------------------------------------------------------------------
@@ -1049,10 +1066,14 @@ static void cover_ready_async(void *user) {
 	free(path);
 }
 
+// 2.0: the page stays where it is, the mini player comes up with the track
+// (the player is a tap on it away), and the row playing is marked.
 static void play_started_async(void *user) {
 	(void)user;
 	player_refresh_now_playing();
-	switch_screen(player_screen);
+	if (playing_update()) {
+		svclist_rebind(list);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -1089,14 +1110,8 @@ static void prefetch_submit(void) {
 	pthread_mutex_unlock(&prefetch_lock);
 }
 
-// The whole queued list, with each track's key beside it.
-typedef struct {
-	subsonic_track_t track;
-	char key[SUBSONICCACHE_KEY_LEN];
-} queued_t;
-
-static queued_t *queued_tracks; // SUB_MAX_HELD entries, allocated on first play
-static int queued_count;
+// The tracks the prefetch knows (queued_tracks, with the lists' code above):
+// the list played, and what was queued from the lists since.
 
 static void prefetch_want_set(const char *key) {
 	pthread_mutex_lock(&prefetch_lock);
@@ -1157,12 +1172,9 @@ static void do_play(int index) {
 	if (index < 0 || index >= result_count) {
 		return;
 	}
-	if (!queued_tracks) {
-		queued_tracks = calloc(SUB_MAX_HELD, sizeof(*queued_tracks));
-		if (!queued_tracks) {
-			snprintf(result_error, sizeof(result_error), "%s", tr("out_of_memory"));
-			return;
-		}
+	if (!queued_ensure()) {
+		snprintf(result_error, sizeof(result_error), "%s", tr("out_of_memory"));
+		return;
 	}
 
 	// Whatever was downloading for another track is no longer needed.
@@ -1189,6 +1201,7 @@ static void do_play(int index) {
 	static char paths[SUB_MAX_HELD][512];
 	static const char *path_ptr[SUB_MAX_HELD];
 
+	pthread_mutex_lock(&queued_lock);
 	queued_count = 0;
 	int start = 0;
 	for (int i = 0; i < result_count && queued_count < SUB_MAX_HELD; i++) {
@@ -1213,6 +1226,7 @@ static void do_play(int index) {
 		path_ptr[queued_count] = paths[queued_count];
 		queued_count++;
 	}
+	pthread_mutex_unlock(&queued_lock);
 	if (queued_count == 0) {
 		return;
 	}
@@ -1278,6 +1292,11 @@ static void scrobble_tick(void) {
 // See the Qobuz page for the reasoning; only the identity differs.
 static void queue_watch_cb(lv_timer_t *timer) {
 	(void)timer;
+	// The playing row follows the track, which moves on by itself; only
+	// while the list is on screen.
+	if (list && shown_count > 0 && lv_screen_active() == list_screen && playing_update()) {
+		svclist_rebind(list);
+	}
 	// Never signed in and nothing of ours ever queued: nothing to watch, and
 	// this tick costs one comparison.
 	if (queued_count == 0 && !waiting_for_track && !subsonic_logged_in()) {
@@ -1355,11 +1374,15 @@ static void *prefetch_main(void *arg) {
 		}
 
 		int index = -1;
+		queued_t q = {0};
+		pthread_mutex_lock(&queued_lock);
 		for (int i = 0; i < queued_count && index < 0; i++) {
 			if (strcmp(queued_tracks[i].key, key) == 0) {
 				index = i;
+				q = queued_tracks[i];
 			}
 		}
+		pthread_mutex_unlock(&queued_lock);
 		if (index < 0) {
 			fprintf(stderr, "subsonic: %s is not in the list we know, not downloading it\n", key);
 			snprintf(prefetch_failed, sizeof(prefetch_failed), "%s", key);
@@ -1372,7 +1395,6 @@ static void *prefetch_main(void *arg) {
 			continue;
 		}
 
-		queued_t q = queued_tracks[index];
 		subsoniccache_wait_idle();
 
 		pthread_mutex_lock(&prefetch_lock);
@@ -1450,10 +1472,11 @@ static void *worker_main(void *arg) {
 		// makes do_play() a no-op: it finds an empty list and returns
 		// silently.) Nor does an extra page clear it: the old rows stay on
 		// screen and usable while the new ones download.
-		if (job.kind != JOB_PLAY && off == 0) {
+		if (job_is_list(job.kind) && off == 0) {
 			result_count = 0;
 			result_title[0] = '\0';
 		}
+		subsonic_track_t *album_tracks = NULL; // JOB_QUEUE_ALBUM's
 
 		int n = 0;
 		switch (job.kind) {
@@ -1517,8 +1540,22 @@ static void *worker_main(void *arg) {
 			snprintf(result_title, sizeof(result_title), "%s", tr("playlists"));
 			break;
 
+		case JOB_RANDOM_TRACKS:
+			n = subsonic_random_tracks(result_tracks, want);
+			snprintf(result_title, sizeof(result_title), "%s", tr("subsonic_random_50"));
+			break;
+
 		case JOB_PLAY:
 			do_play(job.index);
+			break;
+
+		case JOB_STATUS:
+			status_ok = subsonic_status(&status_tracks, &status_ms);
+			break;
+
+		case JOB_QUEUE_ALBUM:
+			album_tracks = malloc(SUB_MAX_HELD * sizeof(*album_tracks));
+			n = album_tracks ? subsonic_album_tracks(job.id_text, 0, album_tracks, SUB_MAX_HELD) : -1;
 			break;
 
 		default:
@@ -1529,12 +1566,31 @@ static void *worker_main(void *arg) {
 			result_class = streamerr_describe("subsonic", subsonic_last_error(), result_error, sizeof(result_error));
 			n = 0;
 		}
-		if (job.kind != JOB_PLAY) {
+		if (job_is_list(job.kind)) {
 			result_from = off;
 			result_count = off + n;
 		}
 
-		gui_post(job_done_cb, NULL);
+		// The answer, whole, for the GUI thread (see answer_t).
+		answer_t *a = calloc(1, sizeof(*a));
+		if (!a) {
+			free(album_tracks);
+			continue; // no memory even for this: the spinner stays, which is the truth
+		}
+		a->kind = job.kind;
+		snprintf(a->error, sizeof(a->error), "%s", result_error);
+		a->error_class = result_class;
+		snprintf(a->title, sizeof(a->title), "%s", result_title);
+		a->from = result_from;
+		a->count = job_is_list(job.kind) ? result_count : n;
+		a->list_serial = job.list_serial;
+		a->where = job.index;
+		snprintf(a->what, sizeof(a->what), "%s", job.text);
+		a->tracks = album_tracks;
+		a->status_ok = status_ok;
+		a->status_tracks = status_tracks;
+		a->status_ms = status_ms;
+		gui_post(job_done_cb, a);
 	}
 	return NULL;
 }
@@ -1569,7 +1625,40 @@ static int list_history_len;
 static job_t current_list_job;
 static bool have_current_list;
 
-static bool job_is_list(job_kind_t kind) { return kind != JOB_PLAY && kind != JOB_LOGIN && kind != JOB_NONE; }
+static bool job_is_list(job_kind_t kind) {
+	return kind != JOB_PLAY && kind != JOB_LOGIN && kind != JOB_NONE && kind != JOB_STATUS && kind != JOB_QUEUE_ALBUM;
+}
+
+// A list's title, known before it comes: the list page opens under it at once.
+static const char *job_title(const job_t *job) {
+	switch (job->kind) {
+	case JOB_ARTISTS:
+		return tr("artists");
+	case JOB_STARRED_TRACKS:
+		return tr("favourite_tracks");
+	case JOB_STARRED_ALBUMS:
+		return tr("favourite_albums");
+	case JOB_PLAYLISTS:
+		return tr("playlists");
+	case JOB_RANDOM_TRACKS:
+		return tr("subsonic_random_50");
+	default:
+		return job->text;
+	}
+}
+
+// The list page as a list is asked for: its title, no rows -- they would read
+// the arrays the worker is about to fill -- and the spinner where they will
+// be. The serial makes any answer still on its way for another list stale.
+static void list_expect(job_t *job) {
+	list_serial++;
+	job->list_serial = list_serial;
+	art_forget_rows();
+	streamerror_hide(list_error);
+	lv_obj_set_hidden(list_empty, true);
+	lv_obj_set_hidden(list_spin, false);
+	lv_label_set_text(list_title, job_title(job));
+}
 
 // Peek for the back-swipe guard: is there a step to consume inside the page?
 // It changes nothing -- it only keeps another screen from being drawn under the
@@ -1583,48 +1672,52 @@ static bool list_back_guard(void) {
 	}
 	job_t previous = list_history[--list_history_len];
 	// Re-submitted without stacking: this IS the step back.
-	have_current_list = true;
-	current_list_job = previous;
 	page_more = false;
 	page_loading = false;
+	list_expect(&previous);
+	have_current_list = true;
+	current_list_job = previous;
 	start_worker();
-	busy_show("loading");
 	submit(&previous);
 	return true;
 }
 
-static void run(const job_t *job, const char *waiting_text) {
+static void run(const job_t *job_in, const char *waiting_text) {
+	(void)waiting_text;
+	job_t copy = *job_in;
+	job_t *job = &copy;
 	// A job that opens another list while a list is already open: the previous
 	// one must be remembered, otherwise the step back skips it.
 	if (job_is_list(job->kind)) {
-		// Re-reading the SAME list (after removing a favourite, say) is not a
-		// step forward: the whole job is compared, not just its kind, otherwise
-		// two albums in a row would not stack.
+		// Re-reading the SAME list is not a step forward: the whole job is
+		// compared, not just its kind, otherwise two albums in a row would not
+		// stack.
 		bool same = have_current_list && current_list_job.kind == job->kind &&
 					strcmp(current_list_job.id_text, job->id_text) == 0 &&
 					strcmp(current_list_job.text, job->text) == 0 && strcmp(current_list_job.text2, job->text2) == 0;
-		if (have_current_list && !same && lv_screen_active() == list_screen && list_history_len < LIST_HISTORY_DEPTH) {
+		bool on_list = lv_screen_active() == list_screen;
+		if (have_current_list && !same && on_list && list_history_len < LIST_HISTORY_DEPTH) {
 			list_history[list_history_len++] = current_list_job;
-		} else if (lv_screen_active() != list_screen) {
+		} else if (!on_list) {
 			list_history_len = 0; // entering from outside: the history restarts
 		}
-		current_list_job = *job;
-		have_current_list = true;
-	}
-
-	// A new list is starting: the old one's pagination must not fire while
-	// waiting for it.
-	if (job_is_list(job->kind)) {
+		// A new list is starting: the old one's pagination must not fire while
+		// waiting for it.
 		page_more = false;
 		page_loading = false;
+		list_expect(job);
+		current_list_job = *job;
+		have_current_list = true;
+		if (!on_list) {
+			switch_screen(list_screen);
+		}
 	}
-
+	if (job->kind == JOB_LOGIN) {
+		// Nothing else to do on the sign-in page meanwhile: the busy toast
+		// holds it until the server has answered.
+		sx_toast_busy(tr("sign_in"), false);
+	}
 	start_worker();
-	// No veil for playback: it starts right away and there is nothing to wait
-	// for.
-	if (job->kind != JOB_PLAY) {
-		busy_show(waiting_text);
-	}
 	submit(job);
 }
 
@@ -1650,20 +1743,12 @@ static void maybe_load_more(void) {
 	if (lv_screen_active() != list_screen || !have_current_list || !job_is_list(current_list_job.kind)) {
 		return;
 	}
-	// A sideways drag (back, or pulling in the player sheet) also moves this
-	// list: that is not a request for more rows.
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
-		return;
-	}
-	// Within one screen of the bottom is close enough: the request takes a
-	// moment, and reaching the last row only to find the list stops there is
-	// exactly what this replaces.
-	if (lv_obj_get_scroll_bottom(list_container) > lv_obj_get_height(list_container)) {
-		return;
-	}
+	// Within one screen of the bottom is close enough (svclist says when):
+	// the request takes a moment, and reaching the last row only to find the
+	// list stops there is exactly what this replaces.
 	page_loading = true;
 	job_t job = current_list_job;
-	job.offset = result_count;
+	job.offset = shown_count;
 	start_worker();
 	submit(&job);
 }
@@ -1672,62 +1757,79 @@ static void maybe_load_more(void) {
 // taps
 // ---------------------------------------------------------------------------
 
-static void row_clicked_cb(lv_event_t *e) {
-	// A gesture that ends over a row is not a tap on the row: events bubble, so
-	// the click that closes a drag arrives here too.
-	if (switcher_back_drag_active() || player_sheet_drag_active()) {
-		return;
-	}
-	int index = (int)(intptr_t)lv_event_get_user_data(e);
-	if (index < 0 || index >= result_count) {
+static void list_tap(lv_obj_t *row, void *user) {
+	(void)row;
+	int index = (int)(intptr_t)user;
+	if (index < 0 || index >= shown_count) {
 		return;
 	}
 
 	job_t job = {0};
 
-	switch (list_kind) {
-	case JOB_SEARCH_TRACKS:
-	case JOB_ALBUM_TRACKS:
-	case JOB_PLAYLIST_TRACKS:
-	case JOB_STARRED_TRACKS:
+	if (kind_is_tracks(list_kind)) {
 		job.kind = JOB_PLAY;
 		job.index = index;
 		run(&job, NULL);
 		return;
-
-	case JOB_SEARCH_ALBUMS:
-	case JOB_STARRED_ALBUMS:
-	case JOB_ARTIST_ALBUMS:
-	case JOB_ALBUM_LIST:
+	}
+	if (kind_is_albums(list_kind)) {
 		job.kind = JOB_ALBUM_TRACKS;
 		snprintf(job.id_text, sizeof(job.id_text), "%s", result_albums[index].id);
 		snprintf(job.text, sizeof(job.text), "%s", result_albums[index].title);
 		run(&job, "loading");
 		return;
-
-	case JOB_SEARCH_ARTISTS:
-	case JOB_ARTISTS:
+	}
+	if (kind_is_artists(list_kind)) {
 		job.kind = JOB_ARTIST_ALBUMS;
 		snprintf(job.id_text, sizeof(job.id_text), "%s", result_artists[index].id);
 		snprintf(job.text, sizeof(job.text), "%s", result_artists[index].name);
 		run(&job, "loading");
 		return;
-
-	case JOB_PLAYLISTS:
+	}
+	if (list_kind == JOB_PLAYLISTS) {
 		job.kind = JOB_PLAYLIST_TRACKS;
 		snprintf(job.id_text, sizeof(job.id_text), "%s", result_playlists[index].id);
 		snprintf(job.text, sizeof(job.text), "%s", result_playlists[index].name);
 		run(&job, "loading");
-		return;
+	}
+}
 
-	default:
-		return;
+static void list_swipe_next(lv_obj_t *row, void *user) {
+	(void)row;
+	queue_entry((int)(intptr_t)user, PLAYLIST_QUEUE_NEXT);
+}
+
+static void list_swipe_end(lv_obj_t *row, void *user) {
+	(void)row;
+	queue_entry((int)(intptr_t)user, PLAYLIST_QUEUE_END);
+}
+
+static void list_star(lv_obj_t *row, void *user) {
+	(void)row;
+	int index = (int)(intptr_t)user;
+	if (index >= 0 && index < shown_count && kind_is_tracks(list_kind)) {
+		const subsonic_track_t *t = &result_tracks[index];
+		star_set(t->id, false, !subsonicsync_is_favorite(t->id), t->title);
 	}
 }
 
 // ---------------------------------------------------------------------------
 // search
 // ---------------------------------------------------------------------------
+
+// The handoff's text field: 60 px, the surface of a card, its radius.
+static void field_style(lv_obj_t *field, gui_config_t *cfg, int y) {
+	lv_obj_set_size(field, cfg->screen_width - 2 * SX_BODY_PAD_L, 60);
+	lv_obj_set_scrollbar_mode(field, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_align(field, LV_ALIGN_TOP_LEFT, SX_BODY_PAD_L, y);
+	lv_obj_add_style(field, &sx_style_surface, 0);
+	lv_obj_add_style(field, &sx_style_text, 0);
+	lv_obj_set_style_radius(field, SX_CARD_R, 0);
+	lv_obj_set_style_border_width(field, 0, 0);
+	lv_obj_set_style_shadow_width(field, 0, 0);
+	lv_obj_set_style_pad_ver(field, 14, 0);
+	lv_obj_set_style_pad_hor(field, SX_CARD_PAD_H, 0);
+}
 
 static lv_obj_t *search_field;
 static lv_obj_t *search_clear_btn; // the x that empties the field
@@ -1737,10 +1839,7 @@ static lv_obj_t *search_pills[3];
 
 static void paint_search_pills(void) {
 	for (int i = 0; i < 3; i++) {
-		bool on = i == search_kind_index;
-		lv_obj_set_style_bg_color(search_pills[i], on ? theme()->accent : theme()->surface_pressed, 0);
-		lv_obj_set_style_text_color(lv_obj_get_child(search_pills[i], 0), on ? lv_color_white() : theme()->text_primary,
-									0);
+		sx_pill_set_active(search_pills[i], i == search_kind_index);
 	}
 }
 
@@ -1810,14 +1909,7 @@ static void build_search_page(gui_config_t *cfg) {
 	search_field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(search_field, true);
 	lv_textarea_set_placeholder_text(search_field, tr("artist_album_or_track"));
-	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, 62);
-	lv_obj_set_scrollbar_mode(search_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
-	lv_obj_add_style(search_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(search_field, 12, 0);
-	lv_obj_set_style_border_width(search_field, 0, 0);
-	lv_obj_set_style_shadow_width(search_field, 0, 0);
-	lv_obj_set_style_pad_all(search_field, 14, 0);
+	field_style(search_field, cfg, top);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 	lv_obj_add_event_cb(search_field, search_field_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -1826,7 +1918,7 @@ static void build_search_page(gui_config_t *cfg) {
 	// query with one tap. Hidden while the field is empty.
 	search_clear_btn = lv_btn_create(search_screen);
 	lv_obj_set_size(search_clear_btn, 56, 56);
-	lv_obj_align(search_clear_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + (62 - 56) / 2);
+	lv_obj_align(search_clear_btn, LV_ALIGN_TOP_RIGHT, -SX_BODY_PAD_L - 2, top + 2);
 	lv_obj_set_style_bg_opa(search_clear_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(search_clear_btn, 0, 0);
 	lv_obj_set_style_border_width(search_clear_btn, 0, 0);
@@ -1843,28 +1935,21 @@ static void build_search_page(gui_config_t *cfg) {
 	// Room for it, so a long query does not run underneath.
 	lv_obj_set_style_pad_right(search_field, 60, 0);
 
+	// What to look for: the handoff's filter pills under the field.
 	static const char *const KINDS[] = {"tracks_2", "albums", "artists"};
+	lv_obj_t *pills = sx_box(search_screen);
+	lv_obj_set_size(pills, cfg->screen_width - 2 * SX_BODY_PAD_L, LV_SIZE_CONTENT);
+	lv_obj_align(pills, LV_ALIGN_TOP_LEFT, SX_BODY_PAD_L, top + 74);
+	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW);
+	lv_obj_set_style_pad_column(pills, 10, 0);
 	for (int i = 0; i < 3; i++) {
-		lv_obj_t *pill = lv_btn_create(search_screen);
-		lv_obj_set_size(pill, 140, 52);
-		lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, 0);
-		lv_obj_set_style_shadow_width(pill, 0, 0);
-		lv_obj_set_style_border_width(pill, 0, 0);
-		lv_obj_align(pill, LV_ALIGN_TOP_LEFT, cfg->padding + i * 150, top + 78);
-		lv_obj_add_event_cb(pill, search_pill_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-		lv_obj_t *label = lv_label_create(pill);
-		lv_label_set_text(label, tr(KINDS[i]));
-		lv_obj_set_style_text_font(label, &font_ui_20, 0);
-		lv_obj_center(label);
-		search_pills[i] = pill;
+		search_pills[i] = sx_pill(pills, tr(KINDS[i]), i, search_pill_cb);
 	}
 	paint_search_pills();
 
 	search_keyboard = keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok",
 									  search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
-	theme_register_refresh(paint_search_pills);
 }
 
 // ---------------------------------------------------------------------------
@@ -1944,14 +2029,7 @@ static lv_obj_t *make_field(lv_obj_t *parent, gui_config_t *cfg, const char *pla
 	lv_obj_t *field = lv_textarea_create(parent);
 	lv_textarea_set_one_line(field, true);
 	lv_textarea_set_placeholder_text(field, tr(placeholder));
-	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, 62);
-	lv_obj_set_scrollbar_mode(field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(field, LV_ALIGN_TOP_LEFT, cfg->padding, y);
-	lv_obj_add_style(field, &theme_style_card, 0);
-	lv_obj_set_style_radius(field, 12, 0);
-	lv_obj_set_style_border_width(field, 0, 0);
-	lv_obj_set_style_shadow_width(field, 0, 0);
-	lv_obj_set_style_pad_all(field, 14, 0);
+	field_style(field, cfg, y);
 	lv_obj_set_style_text_font(field, &font_ui_24, 0);
 	keyboard_style_caret(field);
 	lv_obj_add_event_cb(field, field_focus_cb, LV_EVENT_CLICKED, NULL);
@@ -1974,7 +2052,7 @@ static void build_login_page(gui_config_t *cfg) {
 
 	lv_obj_t *eye = lv_btn_create(login_screen);
 	lv_obj_set_size(eye, 56, 56);
-	lv_obj_align(eye, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + 148 + 3);
+	lv_obj_align(eye, LV_ALIGN_TOP_RIGHT, -SX_BODY_PAD_L - 2, top + 148 + 2);
 	lv_obj_set_style_bg_opa(eye, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(eye, 0, 0);
 	lv_obj_set_style_border_width(eye, 0, 0);
@@ -1991,8 +2069,8 @@ static void build_login_page(gui_config_t *cfg) {
 	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(note, cfg->screen_width - 2 * cfg->padding);
 	lv_obj_align(note, LV_ALIGN_TOP_LEFT, cfg->padding, top + 222);
-	lv_obj_add_style(note, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(note, &font_ui_18, 0);
+	lv_obj_add_style(note, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(note, &font_ui_20, 0);
 	lv_label_set_text(note, tr("subsonic_login_example"));
 
 	login_keyboard = keyboard_create(login_screen, cfg->screen_width, 316, server_field, NULL, "ok", login_accept_cb,
@@ -2021,64 +2099,126 @@ static void open_login_cb(lv_event_t *e) {
 
 // ---------------------------------------------------------------------------
 // the main page
+//
+// The handoff's page: the server as the first card -- its address, and in the
+// accent's mono line whether it answers, how many tracks it holds and how
+// fast it answered ("Connected · 2 840 tracks · 38 ms") -- a tap on it opens
+// the account's page; the sections as cards with chevrons; the stream's
+// quality as pills. The search stays in the header.
 // ---------------------------------------------------------------------------
 
 static lv_obj_t *home_container;
-static lv_obj_t *settings_btn;
 static lv_obj_t *search_btn;
+static lv_obj_t *server_card;
+static gui_config_t *home_cfg;
 
 // The quality pills: the original file, or a transcode for a slow network.
 static const char *const QUALITY_NAMES[SUBSONIC_QUALITY_COUNT] = {"subsonic_original", "qobuz_mp3_320_kbps",
 																	"subsonic_mp3_192", "subsonic_opus_128"};
+static lv_obj_t *quality_pills[SUBSONIC_QUALITY_COUNT];
 
-// The gear and the magnifier appear only once signed in.
+// The magnifier appears only once signed in.
 static void update_corner_buttons(void) {
-	bool visible = subsonic_logged_in();
-	lv_obj_t *const buttons[] = {settings_btn, search_btn};
-	for (size_t i = 0; i < sizeof(buttons) / sizeof(buttons[0]); i++) {
-		if (buttons[i]) {
-			lv_obj_set_hidden(buttons[i], !visible);
-		}
+	if (search_btn) {
+		lv_obj_set_hidden(search_btn, !subsonic_logged_in());
 	}
 }
 
-static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
-	lv_obj_t *button = lv_btn_create(subsonic_screen);
-	lv_obj_set_size(button, 56, 56);
-	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_border_width(button, 0, 0);
-	lv_obj_set_style_shadow_width(button, 0, 0);
-	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+// ---------------------------------------------------------------------------
+// the server card's line
+//
+// Asked when the page is shown, at most once a minute: a ping and the scan
+// status, on the worker, a fraction of a second against a server at home.
+// Nothing runs while the page is away.
+// ---------------------------------------------------------------------------
 
-	lv_obj_t *icon = lv_image_create(button);
-	lv_image_set_src(icon, glyph);
-	lv_obj_add_style(icon, &theme_style_icon, 0);
-	lv_obj_center(icon);
+#define STATUS_EVERY_MS 60000
+static uint32_t status_asked_ms;
+static bool status_known;
+static bool status_last_ok;
+static int status_last_tracks, status_last_ms;
 
-	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
-	return button;
+// 2840 -> "2 840", the thin gaps of the prototype (a no-break space here).
+static void group_digits(int n, char *out, size_t size) {
+	char digits[16];
+	snprintf(digits, sizeof(digits), "%d", n);
+	size_t len = strlen(digits), used = 0;
+	for (size_t i = 0; i < len && used + 4 < size; i++) {
+		if (i > 0 && (len - i) % 3 == 0) {
+			out[used++] = '\xC2';
+			out[used++] = '\xA0';
+		}
+		out[used++] = digits[i];
+	}
+	out[used] = '\0';
+}
+
+static void server_card_paint(void) {
+	if (!server_card) {
+		return;
+	}
+	char server[SUBSONIC_SERVER_MAX];
+	subsonic_server(server, sizeof(server));
+	// The host, as the user knows it: the scheme and the slash said nothing.
+	const char *host = strstr(server, "://");
+	host = host ? host + 3 : server;
+	char shown[SUBSONIC_SERVER_MAX];
+	snprintf(shown, sizeof(shown), "%s", host);
+	size_t len = strlen(shown);
+	if (len > 0 && shown[len - 1] == '/') {
+		shown[len - 1] = '\0';
+	}
+	sx_card_title(server_card, shown);
+	char line[160];
+	if (!status_known) {
+		snprintf(line, sizeof(line), "%s", tr("subsonic_status_checking"));
+	} else if (!status_last_ok) {
+		snprintf(line, sizeof(line), "%s", tr("subsonic_status_offline"));
+	} else if (status_last_tracks >= 0) {
+		char count[24];
+		group_digits(status_last_tracks, count, sizeof(count));
+		lv_snprintf(line, sizeof(line), tr("subsonic_status_line"), count, status_last_ms);
+	} else {
+		lv_snprintf(line, sizeof(line), tr("subsonic_status_ms"), status_last_ms);
+	}
+	sx_card_subtitle(server_card, line, true);
+}
+
+static void status_shown(const answer_t *a) {
+	status_known = true;
+	status_last_ok = a->status_ok;
+	status_last_tracks = a->status_tracks;
+	status_last_ms = a->status_ms;
+	server_card_paint();
+}
+
+static void status_ask(void) {
+	if (!subsonic_logged_in()) {
+		return;
+	}
+	uint32_t now = lv_tick_get();
+	if (status_asked_ms && now - status_asked_ms < STATUS_EVERY_MS) {
+		return;
+	}
+	status_asked_ms = now;
+	job_t job = {0};
+	job.kind = JOB_STATUS;
+	run(&job, NULL);
 }
 
 // ---------------------------------------------------------------------------
-// settings: quality, the account, the cache
+// the account's page: who and where, the cache, signing out
 // ---------------------------------------------------------------------------
 
 static lv_obj_t *ssettings_screen;
-static lv_obj_t *ssettings_container;
-static lv_obj_t *quality_pills[SUBSONIC_QUALITY_COUNT];
-static lv_obj_t *account_label;
+static lv_obj_t *account_card;
 
 static void quality_refresh(void) {
 	int current = subsonic_get_quality();
 	for (int i = 0; i < SUBSONIC_QUALITY_COUNT; i++) {
-		if (!quality_pills[i]) {
-			continue;
+		if (quality_pills[i]) {
+			sx_pill_set_active(quality_pills[i], i == current);
 		}
-		bool on = i == current;
-		lv_obj_set_style_bg_color(quality_pills[i], on ? theme()->accent : theme()->surface_pressed, 0);
-		lv_obj_set_style_text_color(lv_obj_get_child(quality_pills[i], 0), on ? lv_color_white() : theme()->text_primary,
-									0);
 	}
 }
 
@@ -2094,6 +2234,8 @@ static void do_logout(void *user) {
 	(void)user;
 	subsonic_logout();
 	subsonicsync_forget();
+	status_known = false;
+	status_asked_ms = 0;
 	// The cached tracks stay: they are the user's own music and may be wanted
 	// offline, and a different account on the same server shares them. They
 	// can be emptied from this page.
@@ -2118,6 +2260,8 @@ static void do_clear_cache(void *user) {
 	toast_success("subsonic_cache_cleared");
 }
 
+// Clearing the cache cannot be undone: the one change 2.0 still confirms, in
+// the sheet with the action in red.
 static void clear_cache_cb(lv_event_t *e) {
 	(void)e;
 	char message[96];
@@ -2127,85 +2271,32 @@ static void clear_cache_cb(lv_event_t *e) {
 
 static void open_settings_cb(lv_event_t *e) {
 	(void)e;
-	quality_refresh();
 	char name[SUBSONIC_SERVER_MAX + SUBSONIC_NAME_MAX];
 	subsonic_display_name(name, sizeof(name));
-	lv_label_set_text(account_label, name);
+	sx_card_title(account_card, name);
 	switch_screen(ssettings_screen);
 }
 
 static void build_settings_page(gui_config_t *cfg) {
 	ssettings_screen = lv_obj_create(NULL);
-	lv_obj_t *container = settingsrow_page(ssettings_screen, cfg, "subsonic_settings");
-	ssettings_container = container;
+	lv_obj_add_style(ssettings_screen, &theme_style_screen, 0);
+	settingsrow_title(ssettings_screen, cfg, "subsonic_settings");
+	lv_obj_t *column = svcui_column(ssettings_screen, cfg);
 
-	// Who and where, so a user with two servers knows which one this is.
-	account_label = lv_label_create(container);
-	lv_label_set_long_mode(account_label, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(account_label, lv_pct(100));
-	lv_obj_add_style(account_label, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(account_label, &font_ui_20, 0);
+	// Who and where, so a user with two servers knows which one this is; and
+	// the way out.
+	account_card = sx_card_create(column);
+	sx_card_title(account_card, "");
+	sx_card_subtitle(account_card, tr("subsonic"), false);
+	sx_card_action(account_card, tr("leave"), logout_cb, NULL);
 
-	lv_obj_t *card = lv_obj_create(container);
-	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, LV_SIZE_CONTENT);
-	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 18, 0);
-	lv_obj_set_scrollable(card, false);
-	lv_obj_set_event_bubble(card, true);
-	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-	lv_obj_t *name = lv_label_create(card);
-	lv_label_set_text(name, tr("audio_quality"));
-	lv_obj_add_style(name, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name, &font_ui_24, 0);
-
-	lv_obj_t *pills = lv_obj_create(card);
-	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(pills, 0, 0);
-	lv_obj_set_style_border_width(pills, 0, 0);
-	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 12, 0);
-	lv_obj_set_scrollable(pills, false);
-	lv_obj_set_event_bubble(pills, true);
-	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-
-	for (int i = 0; i < SUBSONIC_QUALITY_COUNT; i++) {
-		lv_obj_t *btn = lv_btn_create(pills);
-		lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-		lv_obj_set_style_pad_hor(btn, 22, 0);
-		lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-		lv_obj_set_style_shadow_width(btn, 0, 0);
-		lv_obj_set_style_border_width(btn, 0, 0);
-		lv_obj_add_event_cb(btn, quality_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-		lv_obj_t *label = lv_label_create(btn);
-		lv_label_set_text(label, tr(QUALITY_NAMES[i]));
-		lv_obj_set_style_text_font(label, &font_ui_22, 0);
-		lv_obj_center(label);
-		quality_pills[i] = btn;
-	}
-
-	lv_obj_t *note = lv_label_create(card);
-	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-	lv_obj_set_width(note, lv_pct(100));
-	lv_obj_add_style(note, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(note, &font_ui_18, 0);
-	lv_label_set_text(note, tr("subsonic_quality_note"));
-
-	settingsrow_add(container, "subsonic_clear_cache", NULL, clear_cache_cb, NULL);
-	settingsrow_action(container, "leave", logout_cb, NULL);
-
-	quality_refresh();
-	theme_register_refresh(quality_refresh);
+	svcui_nav_card(column, tr("subsonic_clear_cache"), NULL, clear_cache_cb, NULL);
 	switcher_attach_back_gesture(ssettings_screen);
 }
+
+// ---------------------------------------------------------------------------
+// the sections
+// ---------------------------------------------------------------------------
 
 static void simple_job_cb(lv_event_t *e) {
 	job_t job = {0};
@@ -2213,14 +2304,17 @@ static void simple_job_cb(lv_event_t *e) {
 	run(&job, "loading");
 }
 
-// The album lists getAlbumList2 serves, one home row each: the type the server
-// wants and the row's (translated) name, which is also the list's title.
+// The album lists getAlbumList2 serves, one card each: the type the server
+// wants and the card's (translated) name, which is also the list's title.
 typedef struct {
 	const char *type;
 	const char *label;
 } album_list_t;
 
+// The first is the handoff's "Albums": all of them, A to Z. The others are
+// the server's own selections, under their heading.
 static const album_list_t ALBUM_LISTS[] = {
+	{"alphabeticalByName", "albums"},
 	{"newest", "subsonic_recently_added"},
 	{"recent", "subsonic_recently_played"},
 	{"frequent", "subsonic_most_played"},
@@ -2253,47 +2347,57 @@ static bool wifi_is_connected(void) {
 
 static void rebuild_home(void) {
 	lv_obj_clean(home_container);
+	server_card = NULL;
+	for (int i = 0; i < SUBSONIC_QUALITY_COUNT; i++) {
+		quality_pills[i] = NULL;
+	}
+	update_corner_buttons();
 
 	// The network first: signing in is a conversation with the server. A home
 	// server on the same Wi-Fi is the usual case, but it is still the network.
 	if (!wifi_is_connected()) {
-		update_corner_buttons();
-		lv_obj_t *note = lv_label_create(home_container);
-		lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-		lv_obj_set_width(note, lv_pct(100));
-		lv_obj_add_style(note, &theme_style_text, 0);
-		lv_obj_set_style_text_font(note, &font_ui_22, 0);
-		lv_obj_set_style_text_align(note, LV_TEXT_ALIGN_CENTER, 0);
-		lv_obj_set_style_pad_hor(note, 4, 0);
-		lv_obj_set_style_pad_top(note, 14, 0);
-		lv_label_set_text(note, tr("enable_wi_fi_first"));
-		lv_obj_t *row = settingsrow_add(home_container, "wi_fi_settings", NULL, open_wifi_settings_cb, NULL);
-		lv_obj_set_style_margin_top(row, 16, 0);
+		svcui_note(home_container, tr("enable_wi_fi_first"));
+		svcui_nav_card(home_container, tr("wi_fi_settings"), NULL, open_wifi_settings_cb, NULL);
 		return;
 	}
 
 	if (!subsonic_logged_in()) {
-		update_corner_buttons();
-		settingsrow_add(home_container, "sign_in", NULL, open_login_cb, NULL);
-		lv_obj_t *note = lv_label_create(home_container);
-		lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-		lv_obj_set_width(note, lv_pct(100));
-		lv_obj_add_style(note, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(note, &font_ui_18, 0);
-		lv_obj_set_style_pad_top(note, 10, 0);
-		lv_label_set_text(note, tr("subsonic_login_note"));
+		svcui_nav_card(home_container, tr("sign_in"), NULL, open_login_cb, NULL);
+		svcui_note(home_container, tr("subsonic_login_note"));
 		return;
 	}
 
-	settingsrow_add(home_container, "artists", NULL, simple_job_cb, (void *)(intptr_t)JOB_ARTISTS);
-	for (size_t i = 0; i < sizeof(ALBUM_LISTS) / sizeof(ALBUM_LISTS[0]); i++) {
-		settingsrow_add(home_container, ALBUM_LISTS[i].label, NULL, album_list_cb, (void *)&ALBUM_LISTS[i]);
-	}
-	settingsrow_add(home_container, "playlists", NULL, simple_job_cb, (void *)(intptr_t)JOB_PLAYLISTS);
-	settingsrow_add(home_container, "favourite_albums", NULL, simple_job_cb, (void *)(intptr_t)JOB_STARRED_ALBUMS);
-	settingsrow_add(home_container, "favourite_tracks", NULL, simple_job_cb, (void *)(intptr_t)JOB_STARRED_TRACKS);
+	server_card = svcui_nav_card(home_container, "", NULL, open_settings_cb, NULL);
+	server_card_paint();
 
-	update_corner_buttons();
+	svcui_nav_card(home_container, tr(ALBUM_LISTS[0].label), NULL, album_list_cb, (void *)&ALBUM_LISTS[0]);
+	svcui_nav_card(home_container, tr("artists"), NULL, simple_job_cb, (void *)(intptr_t)JOB_ARTISTS);
+	svcui_nav_card(home_container, tr("playlists"), NULL, simple_job_cb, (void *)(intptr_t)JOB_PLAYLISTS);
+	svcui_nav_card(home_container, tr("favourite_tracks"), NULL, simple_job_cb, (void *)(intptr_t)JOB_STARRED_TRACKS);
+	svcui_nav_card(home_container, tr("favourite_albums"), NULL, simple_job_cb, (void *)(intptr_t)JOB_STARRED_ALBUMS);
+	svcui_nav_card(home_container, tr("subsonic_random_50"), NULL, simple_job_cb, (void *)(intptr_t)JOB_RANDOM_TRACKS);
+
+	svcui_group(home_container, tr("subsonic_selections"));
+	for (size_t i = 1; i < sizeof(ALBUM_LISTS) / sizeof(ALBUM_LISTS[0]); i++) {
+		svcui_nav_card(home_container, tr(ALBUM_LISTS[i].label), NULL, album_list_cb, (void *)&ALBUM_LISTS[i]);
+	}
+
+	// The stream's quality: the original file, or a transcode for a slow
+	// network.
+	lv_obj_t *quality = sx_card_create(home_container);
+	sx_card_title(quality, tr("subsonic_stream_quality"));
+	lv_obj_t *pills = sx_card_pills(quality);
+	for (int i = 0; i < SUBSONIC_QUALITY_COUNT; i++) {
+		quality_pills[i] = sx_pill(pills, tr(QUALITY_NAMES[i]), i, quality_pick_cb);
+	}
+	lv_obj_t *note = lv_label_create(quality);
+	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(note, lv_pct(100));
+	lv_obj_add_style(note, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(note, &font_ui_20, 0);
+	lv_obj_set_style_pad_bottom(note, 8, 0);
+	lv_label_set_text(note, tr("subsonic_quality_note"));
+	quality_refresh();
 }
 
 bool subsonicpage_open_album(const char *album_id, const char *title) {
@@ -2313,35 +2417,50 @@ static void home_loaded_cb(lv_event_t *e) {
 	subsoniccache_set_root(storage_sd_root());
 	qobuzart_set_root(storage_sd_root());
 	rebuild_home();
+	status_ask();
 }
 
 // ---------------------------------------------------------------------------
 
 static void build_list_page(gui_config_t *cfg) {
 	list_screen = lv_obj_create(NULL);
+	lv_obj_add_style(list_screen, &theme_style_screen, 0);
 	lv_obj_add_event_cb(list_screen, list_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(list_screen, list_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
-	list_container = settingsrow_page(list_screen, cfg, "subsonic");
-	list_title = settingsrow_page_title(list_screen);
+	list_title = settingsrow_title(list_screen, cfg, "subsonic");
+	int top = settingsrow_content_top(cfg);
+
+	static const sx_row_handlers_t handlers = {
+		.on_tap = list_tap,
+		.on_long_press = list_hold,
+		.on_swipe_next = list_swipe_next,
+		.on_swipe_end = list_swipe_end,
+		.on_star = list_star,
+	};
+	static const svclist_cbs_t cbs = {.bind = list_bind, .near_end = maybe_load_more, .visible = list_visible_cb};
+	list = svclist_create(list_screen, &handlers, &cbs, ROW_POOL, false);
+	lv_obj_t *view = svclist_obj(list);
+	lv_obj_set_size(view, cfg->screen_width - 2 * SX_BODY_PAD_L, cfg->screen_height - top);
+	lv_obj_set_pos(view, SX_BODY_PAD_L, top);
 
 	list_empty = lv_label_create(list_screen);
 	lv_label_set_text(list_empty, tr("no_results"));
 	lv_obj_set_style_text_align(list_empty, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
+	lv_obj_add_style(list_empty, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
-	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
+	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, top + 100);
 	lv_obj_set_hidden(list_empty, true);
 
 	list_error = streamerror_create(list_screen);
-	lv_obj_set_width(list_error, cfg->screen_width - 2 * cfg->padding);
-	lv_obj_align(list_error, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 20);
+	lv_obj_set_width(list_error, cfg->screen_width - 2 * SX_BODY_PAD_L);
+	lv_obj_align(list_error, LV_ALIGN_TOP_MID, 0, top);
+	streamerror_set_service(list_error, tr("subsonic"));
+	list_spin = svcui_spinner(list_screen);
 
-	lv_obj_add_event_cb(list_container, list_scrolled_cb, LV_EVENT_SCROLL, NULL);
 	switcher_attach_back_gesture(list_screen);
 	switcher_set_back_guard(list_screen, list_back_guard);
 	switcher_set_back_guard_peek(list_screen, list_back_has_step);
 	player_sheet_attach_drag(list_screen, true);
-	player_sheet_attach_drag(list_container, true);
 }
 
 static void *provider_open_album(const char *album_id, const char *title) {
@@ -2353,19 +2472,21 @@ void subsonicpage_init(gui_config_t *cfg) {
 	// (provider.h).
 	const stream_provider_gui_t provider_gui = {.badge = &icon_subsonic_badge, .open_album = provider_open_album};
 	stream_provider_attach_gui("subsonic", &provider_gui);
+	home_cfg = cfg;
 
 	subsonic_screen = lv_obj_create(NULL);
-	home_container = settingsrow_page(subsonic_screen, cfg, "subsonic");
+	lv_obj_add_style(subsonic_screen, &theme_style_screen, 0);
+	lv_obj_t *title = settingsrow_title(subsonic_screen, cfg, "subsonic");
+	home_container = svcui_column(subsonic_screen, cfg);
 
-	settingsrow_title_corner_slots(settingsrow_page_title(subsonic_screen), cfg, 2);
-	settings_btn = corner_button(cfg, 0, &icon_music_settings, open_settings_cb);
-	search_btn = corner_button(cfg, 1, &icon_search, open_search_cb);
+	// The search in the header; the account's page is the server card.
+	settingsrow_title_corner_slots(title, cfg, 1);
+	search_btn = svcui_header_button(subsonic_screen, cfg, 0, &icon_search, open_search_cb, NULL);
 
 	build_list_page(cfg);
 	build_search_page(cfg);
 	build_settings_page(cfg);
 	build_login_page(cfg);
-	build_busy_layer();
 	subsoniccache_set_slow_start_cb(on_slow_start);
 	device_state_add_prepare_cb(subsonic_prepare_track);
 
@@ -2375,6 +2496,9 @@ void subsonicpage_init(gui_config_t *cfg) {
 	art_drop_timer = lv_timer_create(art_drop_cb, ART_DROP_DELAY_MS, NULL);
 	lv_timer_pause(art_drop_timer);
 	qobuzart_set_root(storage_sd_root());
+	for (int i = 0; i < QOBUZART_SLOTS; i++) {
+		slot_owner[i] = -1;
+	}
 
 	subsoniccache_set_root(storage_sd_root());
 	rebuild_home();
