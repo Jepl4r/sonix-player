@@ -4255,10 +4255,13 @@ static void head_build(panel_t *p) {
 
 	p->album_page = true;
 	p->album_id = covertone_album_id(p->filter_value);
-	float h = 0.0f, c = 0.0f;
-	if (covertone_for_album(p->album_id, &h, &c, NULL)) {
+	float h = 0.0f, c = 0.0f, l = 0.0f;
+	if (covertone_for_album(p->album_id, &h, &c, &l)) {
 		p->album_hue = h;
-		p->album_chroma = c;
+		// An album without any picture is kept with nothing measured (chroma
+		// and lightness 0): its page is in its title's hue at the usual
+		// strength, as its row's plaque is (rowart.c), not a grey sleeve's.
+		p->album_chroma = c <= 0.0f && l <= 0.0f ? -1.0f : c;
 	} else {
 		char title[256];
 		library_album_title(p->filter_value, title, sizeof(title));
@@ -4360,7 +4363,9 @@ static void head_build(panel_t *p) {
 	}
 	if (!info.length_partial && info.length_ms > 0 && at < sizeof(meta)) {
 		char minutes[48];
-		snprintf(minutes, sizeof(minutes), tr("medialist_album_minutes"), (int)((info.length_ms + 30000) / 60000));
+		// At least a minute: a record of a few seconds read "0 min".
+		int whole = (int)((info.length_ms + 30000) / 60000);
+		snprintf(minutes, sizeof(minutes), tr("medialist_album_minutes"), whole > 0 ? whole : 1);
 		snprintf(meta + at, sizeof(meta) - at, "%s%s", at ? " \xC2\xB7 " : "", minutes);
 	}
 	if (meta[0]) {

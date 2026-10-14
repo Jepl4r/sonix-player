@@ -18,6 +18,19 @@ static lv_color_t plaque(float hue, float chroma) {
 	return sx_oklch(SX_T_COVER_TONE.L, c, hue);
 }
 
+// The plaque of an album as covertone knows it. An album with no picture at
+// all is kept with its title's hash for a hue and nothing measured -- chroma
+// and lightness both 0, which no real sleeve has, a grey one included -- and
+// its plaque is that hue at the token's strength (the handoff: no cover, the
+// hue is the title's hash), not the grey of a grey sleeve. The screen's
+// colours stay neutral for such a track all the same (sx_palette.c).
+static lv_color_t plaque_known(float hue, float chroma, float light) {
+	if (chroma <= 0.0f && light <= 0.0f) {
+		return plaque(hue, SX_T_COVER_TONE.C);
+	}
+	return plaque(hue, chroma);
+}
+
 void rowart_bind_id(rowart_t *art, int64_t album_id, const char *title) {
 	if (art->album_id == album_id && album_id != 0 && (art->tone_known || art->has_picture)) {
 		return;
@@ -30,9 +43,9 @@ void rowart_bind_id(rowart_t *art, int64_t album_id, const char *title) {
 		art->settled = false;
 		art->revision = 0;
 	}
-	float h = 0.0f, c = 0.0f;
-	if (album_id != 0 && covertone_for_album(album_id, &h, &c, NULL)) {
-		art->tone = plaque(h, c);
+	float h = 0.0f, c = 0.0f, l = 0.0f;
+	if (album_id != 0 && covertone_for_album(album_id, &h, &c, &l)) {
+		art->tone = plaque_known(h, c, l);
 		art->tone_known = true;
 	} else {
 		art->tone = plaque((float)covertone_hash_hue(title ? title : ""), SX_T_COVER_TONE.C);
@@ -69,9 +82,9 @@ bool rowart_load(rowart_t *art) {
 	art->revision = covertone_revision();
 	bool changed = false;
 	// The tone may have landed since the row was bound.
-	float h = 0.0f, c = 0.0f;
-	if (!art->tone_known && covertone_for_album(art->album_id, &h, &c, NULL)) {
-		art->tone = plaque(h, c);
+	float h = 0.0f, c = 0.0f, l = 0.0f;
+	if (!art->tone_known && covertone_for_album(art->album_id, &h, &c, &l)) {
+		art->tone = plaque_known(h, c, l);
 		art->tone_known = true;
 		changed = true;
 	}
