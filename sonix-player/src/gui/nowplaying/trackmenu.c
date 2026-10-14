@@ -1577,7 +1577,12 @@ void trackmenu_open(lv_obj_t *anchor) {
 	sx_sheet_menu(loaded ? title : tr("trackmenu_queue"), loaded ? sub : NULL, items, n);
 }
 
+// Both pages are built the first time they are opened (gui_page_defer): the
+// queue's sixteen rows are some two hundred and fifty objects, and many
+// players never open the queue in a session. Everything here that reaches
+// into the queue page asks first whether it is the page on show.
 void trackmenu_init(gui_config_t *cfg) {
-	build_queue_page(cfg);
-	build_details_page(cfg);
+	(void)cfg;
+	gui_page_defer(queue_screen, build_queue_page);
+	gui_page_defer(details_screen, build_details_page);
 }
