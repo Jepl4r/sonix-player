@@ -1,0 +1,35 @@
+# Sonix UI 2.0 — Phase 1 results (merged into sonix-r1 at f298cb7)
+
+Read the headers themselves — they document thread contracts, sizes and callbacks. This is the map.
+
+## Core (src/gui/shell/)
+- sx_tokens.h — every handoff token as SX_* constants; OKLCH pairs as macros (SX_T_D_BG, SX_T_NP_GRAD_TOP, ...). Extra: SX_TITLE_LONG_CHARS, SX_ROW_NUM_W, SX_SHEET_*, SX_MINI_MARGIN_*, SX_EQ_FRAME_MS, SX_VOL_OSD_*, SX_ACC_YELLOW_INK.
+- sx_palette.h — sx_pal() -> sx_palette_t: bg, surface, press, text, text2, accent, on_accent, active, swipe_end, cover_tone, star_on, hairline(+opa); always-dark: np_accent, np_ink, mini_bg, mini_cover_tone, np_grad_top/bot, np_panel_top/bot; album_grad[3] at the page hue. sx_palette_track_changed(path,name), sx_palette_track_cleared(), sx_palette_push_hue(h,c)/sx_palette_pop_hue() (album page), sx_palette_hue_of_name(). Helpers sx_oklch_to_565, sx_oklch, sx_tone(lc,h), sx_mix, sx_hex, sx_palette_cover_accent()/_cover_on_accent(). Gradient: sx_gradient_create(w,h,stops,n) (RGB565, 4x4 ordered dither, tile as bg image) / sx_gradient_destroy(). Tone provider is wired to covertone (main.c).
+- sx_styles.h — shared styles following the palette: sx_style_page/surface/press/active/text/text2/text_accent/accent/icon/icon2/icon_accent/hairline/swipe_end/cover_tone/mini/mini_tone/np_accent/star_on/flat; sx_box(), sx_label().
+- sx_frame.h — sx_frame_body_top(), sx_frame_body_bottom() (88 while the mini player is up), sx_frame_on_body_change(cb), sx_frame_reserve_bottom(scroller), sx_frame_lift(obj), sx_frame_exempt(obj) (auto-applied 2 levels deep on page show; call explicitly for custom layouts), sx_frame_set_idle_card(screen, card) (Home/Music "Shuffle all music" slot while idle — CONTENT NOT YET BUILT), sx_frame_idle(), sx_frame_slot_occupied().
+- sx_mini.h — fed from player.c: sx_mini_set_track/_set_playing/_set_progress/_refresh_chain; sx_mini_set_cover(thumb) (NOT YET FED: tone plaque shows; use covertone 56 px thumb); visibility: sx_mini_player_shown, sx_mini_hide_on_screen, sx_mini_update_visibility, sx_mini_visible, sx_mini_has_track, sx_mini_obj.
+- sx_chain.h — sx_chain_short(out,n,&warn): "LDAC 990 · 44.1 kHz" / "… 44.1 → 48 kHz" / "FLAC · 44.1 kHz"; warn = codec differs from the chosen one. Built on btline_compose() (nowplaying/btline.h).
+- sx_sheet.h — sx_sheet_item_t {label, icon, checked, destructive, action, user}; sx_sheet_t {title, subtitle, items, cancel_label/action_label, action_destructive, on_action, on_dismiss, user}; sx_sheet_init/open/menu/close/is_open. Strings shown as given (translate first). Callbacks run one tick after closing starts. popover.c and confirm.c already run on it (same signatures, no 7-item limit, destructive confirms red, tap outside = no).
+- sx_toast.h — sx_toast, sx_toast_undo(text, undo, user), sx_toast_glyph, sx_toast_busy(text, dismissable), sx_toast_busy_end, sx_toast_busy_showing, sx_toast_dismiss, sx_toast_showing. toast.c and gui_notify_popup* route here. Key sx_undo = "Undo".
+- sx_row.h — sx_row_handlers_t {on_tap, on_long_press, on_swipe_next, on_swipe_end, on_star, end_is_remove} (NULL = gesture off); sx_row_create(parent, handlers, compact), sx_row_height(compact), set_compact, set/get_user, set_title, set_subtitle(sub, badge, duration), set_thumb(img|NULL, tone), set_number, set_letter(l, tone, round), set_no_lead, set_trail(NONE|STAR|CHEVRON), set_starred, set_playing, set_swipes(next,end). Recycling: setters create no objects (except first thumb image). sx_eq_create, sx_eq_set_playing. Rows are 80/100 (big) and compact 64/84. 13–16 objects per row.
+- sx_card.h — sx_card_create, sx_card_on_click, sx_card_title/subtitle(mono)/value/chevron/switch/pills/swatches/bar(+_set)/action, sx_card_set_active/set_dim; sx_pill, sx_pill_set_active, sx_swatch, sx_swatch_set_active; look-only: sx_card_style, sx_pill_style, sx_switch_style. settingsrow.c builds on it.
+- switcher.h: switcher_edge_back_attach(indev), switcher_nav_anim_running(), back_btn_translate_y(). Back = left edge 22 px / 70 px; transitions MOVE 180 ms; player opens from the bottom, collapses down past 110 px (player.c).
+- settingsrow.h: settingsrow_title_fit_header(); keyboard.h: keyboard_shown_on(screen); theme.h: on_accent, THEME_ACCENT_COVER (-1).
+- fonts: font_ui_17, font_ui_21, font_ui_26_bold, font_ui_28_bold, font_ui_30_bold, font_ui_34_bold. Icons: chevron_down, moon_status, list_start, list_plus_small, x_small, circle_check_small, circle_alert_small (add more Lucide via tools/svg_to_lvgl.py as needed).
+- volume_overlay.c = the 64x300 right-edge bar. Status bar: tap -> control centre, ☾ while a sleep timer runs.
+- Emulator: SONIX_SXDEMO=1 opens a component demo page. Helper scripts: /home/claude/tmp-w8core (run.sh [panel], shot.sh, trset.py adds translations to all 22 ini files).
+- Known left for Phase 2: medialist/browser/search/radio/queue rows still 100 px cards with ⋮ (move to sx_row); player layout; album page (gradient, push/pop hue); appearance & pages with custom cards; streaming service pages; control centre; idle shuffle card content; medialist's own play menu uses a 60 % dim veil; "Large rows" heights in touch.h still 100/120 (sx_row uses 80/100).
+
+## Covers (src/system/library/covertone.h, src/system/image/albumtone.h)
+- covertone_album_id(album_value) / covertone_album_id_parts(album, key): 63-bit id (album row `name` from library_index_window).
+- covertone_for_album(id,&h,&c,&l): memory only, safe inside library row callbacks. covertone_for_path(path,...): one indexed query + 8-path cache — NEVER call inside library_for_each/library_index_window callbacks (library lock deadlock).
+- covertone_thumb(id, 56|240, &dsc, buf, size): caller buffer; 56 px fine on UI thread (~2–5 ms on device); 240 refused on UI thread. covertone_thumb_async(id,size,cb,user) -> cb on UI thread via gui_post, owner frees with covertone_thumb_free(dsc); covertone_thumb_cancel(ticket). Max 16 waiting.
+- covertone_request(id) priority (32, newest first); covertone_pause(bool) counted; covertone_revision() + covertone_set_listener(cb) (≤4/s) when tones/thumbs land; covertone_hash_hue(title).
+- DB table ALBUM_COVER (cover_h, cover_c ×510, cover_l ×255, kind grey/none/...); thumbs in .local/covers/thumbs{56,240}.sxt slot files; feature bit LIBRARY_INDEX_COVERS.
+- Grey/coverless albums return hash hue with chroma ~0 → palette may stay neutral when chroma < 0.04.
+
+## Yandex (src/system/streaming/)
+- yandexlist.{c,h}: paged lists (8 bytes/entry, details 50 per POST /tracks, prefetch, 12-page LRU) for liked/playlists/artist tracks.
+- yandexplay.{c,h}: queue a whole list as ids; files resolved near playback; playlist_replace_path() (playlist.c) fixes guessed names in place.
+- yandexwave.{c,h}: My Wave with its own worker and ordered request queue; ≤2 left → next batch; retries; session renewal.
+- yandexpage.c now = lists, menus, sign-in; new home rows: Artists, Albums, Made for you, Chart, New releases; artist page; like/unlike album/artist; Play next / Add to end via trackmenu_queue_paths().
