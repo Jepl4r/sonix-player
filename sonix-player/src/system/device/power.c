@@ -61,6 +61,14 @@
 // feels responsive; the work done per tick is trivial.
 #define POWER_TICK_MS 250
 
+// ... and with the screen dark, where nothing waits on it: the power button
+// is taken at once anyway (power_notify_power_button makes the timer ready),
+// and everything else it watches then -- the radios' minute, the standby
+// minute, the cable, the charger -- is counted in seconds or more. Hours of
+// listening in a pocket are spent here, at a quarter of the wake-ups and of
+// the sysfs reads (the cable, the charger) a tick makes.
+#define POWER_TICK_DARK_MS 1000
+
 // How long ago a marker was stamped, from the tick the caller is working with.
 //
 // A mark can be a fraction ahead of `now`: the tick reads lv_tick_get() once at
@@ -120,6 +128,10 @@ static lv_timer_t *g_refr_timer; // display refresh timer, paused while screen i
 static long g_max_brightness = -1;
 static lv_timer_t *g_power_timer;
 static bool g_screen_on = true;
+
+// The tick's period as it stands (see POWER_TICK_DARK_MS), for the windows
+// that are counted in ticks.
+static uint32_t power_tick_ms(void) { return g_screen_on ? POWER_TICK_MS : POWER_TICK_DARK_MS; }
 static uint32_t g_screen_off_at; // lv_tick when the panel last went dark
 
 // The standby countdown: the idle wait before a suspend attempt. It restarts at
@@ -697,7 +709,7 @@ static bool bluetooth_in_use(void) {
 // shutdown timer is for.
 static bool player_is_busy(bool playing, uint32_t input_idle) {
 	return playing ||							   // a track or a station
-		   input_idle < POWER_TICK_MS * 4 ||	   // a key just pressed
+		   input_idle < power_tick_ms() * 4 ||	   // a key just pressed
 		   usbdac_is_active() ||				   // a computer feeding the DAC
 		   usb_storage_active() ||				   // the card exported over USB
 		   gearboy_running() ||					   // the emulator
@@ -1500,6 +1512,10 @@ void power_screen_off(void) {
 
 	led_set_standby(true); // the LED standby option keys off this
 
+	if (g_power_timer) {
+		lv_timer_set_period(g_power_timer, POWER_TICK_DARK_MS);
+	}
+
 	// The screen going dark is the natural moment to write the time down: a
 	// battery pulled out while the device sits in standby then costs a few
 	// seconds of clock, not however long was left on the slow timer.
@@ -1600,6 +1616,10 @@ void power_screen_on(void) {
 
 	led_set_standby(false);
 
+	if (g_power_timer) {
+		lv_timer_set_period(g_power_timer, POWER_TICK_MS);
+	}
+
 	fprintf(stderr, "power: screen on (brightness=%ld)\n", g_cfg.brightness);
 }
 
@@ -1645,6 +1665,16 @@ static void power_timer_cb(lv_timer_t *timer) {
 		now = lv_tick_get();
 	}
 
+	// 1a. the dark screen keeps its animations stopped (power_screen_off): one
+	//     started since -- a list scrolling to the new track -- resumes LVGL's
+	//     animation timer by itself, which would then run until the wake.
+	if (!g_screen_on) {
+		lv_timer_t *anim_timer = lv_anim_get_timer();
+		if (anim_timer && !lv_timer_get_paused(anim_timer)) {
+			lv_timer_pause(anim_timer);
+		}
+	}
+
 	// 2. music playing keeps resetting the suspend clock (but not the screen
 	//    clock -- the screen still dims while a track plays untouched)
 	// A live stream goes out through audio_external_*, which audio.c's own
@@ -1671,7 +1701,7 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// cannot fall in the middle of a track change.
 	bool usb_now = usb_vbus_present();
 	bool usb_changed = g_usb_present_known && usb_now != g_usb_present_last;
-	if (playing || input_idle < POWER_TICK_MS * 2 || usb_changed) {
+	if (playing || input_idle < power_tick_ms() * 2 || usb_changed) {
 		g_mem_active_ms = now;
 	}
 	g_usb_present_last = usb_now;
@@ -1840,11 +1870,29 @@ void power_get_config(power_config_t *out) {
 	}
 }
 
+// The dark screen stays undrawn. Pausing the refresh timer at the blank is
+// not enough on its own: LVGL resumes it from every invalidation (its
+// LV_EVENT_REFR_REQUEST handler), so a title changing with the track, a
+// queue row moving on or the slowed battery poll each had a whole frame laid
+// out and rendered into a framebuffer nobody was scanning out -- 0.6 frames a
+// second while playing in the dark, up to 28,000 pixels each. This handler
+// runs after LVGL's and takes the timer back down. Nothing is lost: the
+// areas stay recorded, and the wake repaints the whole screen anyway.
+static void refr_request_cb(lv_event_t *e) {
+	(void)e;
+	if (!g_screen_on && g_refr_timer) {
+		lv_timer_pause(g_refr_timer);
+	}
+}
+
 void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_cfg = *cfg;
 	g_disp = disp;
 	g_refr_timer = disp ? lv_display_get_refr_timer(disp) : NULL;
 	g_screen_on = true;
+	if (disp) {
+		lv_display_add_event_cb(disp, refr_request_cb, LV_EVENT_REFR_REQUEST, NULL);
+	}
 
 	// discover the panel's maximum backlight level
 	g_max_brightness = g_cfg.max_brightness_path ? read_long_from_file(g_cfg.max_brightness_path) : -1;
