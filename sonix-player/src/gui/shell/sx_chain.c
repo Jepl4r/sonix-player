@@ -9,6 +9,7 @@
 #include "src/system/audio/audio.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/playback/device_state.h"
+#include "src/system/streaming/radio.h"
 
 // "44.1" or "96": the rate in kHz the way the Bluetooth line writes it.
 static void rate_khz(char *out, size_t size, int hz) {
@@ -49,6 +50,19 @@ bool sx_chain_short(char *out, size_t size, bool *warn) {
 			*warn = !codec_as_chosen();
 		}
 		return true;
+	}
+
+	// A station (Phase 2): what comes down the wire -- the file the player had
+	// loaded before it is not what plays.
+	if (radio_is_active()) {
+		radio_now_t now;
+		radio_get_now(&now);
+		if (now.codec[0] && now.bitrate > 0) {
+			snprintf(out, size, "%s \xC2\xB7 %d kbps", now.codec, now.bitrate);
+		} else {
+			snprintf(out, size, "%s", now.codec);
+		}
+		return out[0] != '\0';
 	}
 
 	// The jack (or USB): what the file is and the rate it plays at.

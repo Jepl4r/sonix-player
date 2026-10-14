@@ -32,6 +32,10 @@ void trackmenu_details_open(const char *path);
 // UI thread.
 bool trackmenu_show_artist(void);
 
+// The queue changed under the page (an undo, a list queued from elsewhere):
+// bound again where it is, if it is the page on show. UI thread.
+void trackmenu_queue_refresh(void);
+
 // The playing track changed: move the accent mark in the queue to the row that
 // carries it now. The rows themselves do not change -- the queue is the same
 // list -- so nothing here rebinds or re-reads anything.
