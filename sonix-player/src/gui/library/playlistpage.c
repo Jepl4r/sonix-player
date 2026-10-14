@@ -11,15 +11,19 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
+#include "src/gui/library/listacts.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/nowplaying/player.h"
-#include "src/gui/shell/popover.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_frame.h"
+#include "src/gui/shell/sx_palette.h"
+#include "src/gui/shell/sx_row.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
-#include "src/gui/shell/touch.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 #include "src/system/library/playlists.h"
@@ -40,6 +44,9 @@ lv_obj_t *playlistpage_screen;
 // How many of an account's playlists the picker lists: as many as the services'
 // mirrors keep.
 #define SERVICE_PLAYLISTS_MAX 60
+
+static void service_row_tap_cb(lv_obj_t *row, void *user);
+static void new_playlist_cb(lv_event_t *e);
 
 static gui_config_t *config;
 static lv_obj_t *list;
@@ -276,7 +283,6 @@ static lv_obj_t *name_field;
 static keyboard_t *name_keyboard;
 
 static void rebuild_rows(void);
-static void service_row_clicked_cb(lv_event_t *e);
 static void name_layer_show(const char *initial);
 
 // ---------------------------------------------------------------------------
@@ -301,12 +307,9 @@ static void open_playlist(const char *name) {
 	medialist_open(name, LIBRARY_LIST_PLAYLIST, LIBRARY_FILTER_NONE, name);
 }
 
-static void row_clicked_cb(lv_event_t *e) {
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
-		return; // a swipe across the list, not a tap
-	}
-
-	const char *name = lv_event_get_user_data(e);
+static void row_tap_cb(lv_obj_t *row, void *user) {
+	(void)row;
+	const char *name = user;
 	if (!name) {
 		return;
 	}
@@ -393,24 +396,75 @@ static void menu_backup_action(void *user) {
 	menu_name[0] = '\0';
 }
 
-static void menu_btn_cb(lv_event_t *e) {
-	lv_event_stop_bubbling(e);
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
-		return;
+// A playlist's tracks as a handle, in its own order (NULL when it is empty).
+static library_index_t *playlist_tracks(const char *name) {
+	library_index_t *ix = library_index_open(LIBRARY_LIST_PLAYLIST, LIBRARY_FILTER_NONE, name, LIBRARY_ORDER_DEFAULT,
+											 false);
+	if (ix && library_index_count(ix) > 0) {
+		return ix;
 	}
+	library_index_close(ix);
+	gui_notify_popup("playlist_empty_playlist");
+	return NULL;
+}
 
-	const char *name = lv_event_get_user_data(e);
-	if (!name) {
+static void menu_play_action(void *user) {
+	if (menu_name[0]) {
+		listacts_play_index(playlist_tracks(menu_name), user != NULL, menu_name);
+	}
+}
+
+static void menu_queue_action(void *user) {
+	if (menu_name[0]) {
+		library_index_t *ix = playlist_tracks(menu_name);
+		if (ix) {
+			listacts_queue_index(ix, (playlist_queue_where_t)(intptr_t)user, menu_name);
+		}
+	}
+}
+
+// The handoff's matrix treats a playlist as it treats a record: pulled right
+// its tracks play next, pulled left they go to the end of the queue.
+static void row_next_cb(lv_obj_t *row, void *user) {
+	(void)row;
+	if (user && !picking) {
+		snprintf(menu_name, sizeof(menu_name), "%s", (const char *)user);
+		menu_queue_action((void *)(intptr_t)PLAYLIST_QUEUE_NEXT);
+	}
+}
+
+static void row_end_cb(lv_obj_t *row, void *user) {
+	(void)row;
+	if (user && !picking) {
+		snprintf(menu_name, sizeof(menu_name), "%s", (const char *)user);
+		menu_queue_action((void *)(intptr_t)PLAYLIST_QUEUE_END);
+	}
+}
+
+// Held: the playlist's sheet -- what its ellipsis menu had (rename, delete,
+// back up), with play, shuffle and the queue's two ends before them.
+static void row_hold_cb(lv_obj_t *row, void *user) {
+	(void)row;
+	const char *name = user;
+	if (!name || picking) {
 		return;
 	}
 	snprintf(menu_name, sizeof(menu_name), "%s", name);
-
-	popover_item_t items[3] = {
-		{"rename", menu_rename_action, NULL},
-		{"delete", menu_delete_action, NULL},
-		{"playlist_backup", menu_backup_action, NULL},
+	sx_sheet_item_t items[] = {
+		{tr("medialist_play"), &icon_play, false, false, menu_play_action, NULL},
+		{tr("lists_shuffle"), &icon_shuffle, false, false, menu_play_action, (void *)(intptr_t)1},
+		{tr("queue_play_next"), &icon_list_start, false, false, menu_queue_action,
+		 (void *)(intptr_t)PLAYLIST_QUEUE_NEXT},
+		{tr("queue_add_to_end"), &icon_list_plus_small, false, false, menu_queue_action,
+		 (void *)(intptr_t)PLAYLIST_QUEUE_END},
+		{tr("rename"), &icon_file, false, false, menu_rename_action, NULL},
+		{tr("playlist_backup"), &icon_save_state, false, false, menu_backup_action, NULL},
+		{tr("delete"), &icon_trash, false, true, menu_delete_action, NULL},
 	};
-	popover_show(lv_event_get_current_target(e), items, 3);
+	char subtitle[48];
+	int tracks = playlists_count_tracks(menu_name);
+	snprintf(subtitle, sizeof(subtitle), tr(tracks == 1 ? "playlist_track_2" : "playlist_tracks"), tracks);
+	sx_sheet_menu(menu_name, subtitle, items, (int)(sizeof(items) / sizeof(items[0])));
 }
 
 // ---------------------------------------------------------------------------
@@ -428,98 +482,49 @@ static void menu_btn_cb(lv_event_t *e) {
 // land in a different playlist from the one on screen. An id attached to the
 // row cannot slide.
 // Returns the subtitle label, for a caller that has to correct it later.
-static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_dsc_t *glyph,
-						 const char *service_playlist) {
+static void add_row(const char *name, const char *subtitle, const char *service_playlist) {
 	char *owned = strdup(name);
 	if (!owned) {
-		return NULL;
+		return;
 	}
-
-	lv_obj_t *row = lv_btn_create(list);
-	lv_obj_set_size(row, lv_pct(100), ROW_HEIGHT);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_ver(row, 10, 0);
-	lv_obj_set_style_pad_column(row, 14, 0);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_event_bubble(row, true); // the player sheet drags from here too
 	char *uuid = NULL;
 	if (service_playlist && service_playlist[0]) {
-		// An account playlist has no file to delete, so it carries no menu:
-		// tapping it is the only action.
 		uuid = strdup(service_playlist);
 		if (!uuid) {
-			lv_obj_delete(row);
 			free(owned);
-			return NULL;
+			return;
 		}
-		lv_obj_add_event_cb(row, service_row_clicked_cb, LV_EVENT_CLICKED, uuid);
+	}
+
+	// The 2.0 row (sx_row.h): a plaque with the name's first letter, the name,
+	// how many tracks, a chevron. A playlist on the card takes a record's
+	// gestures (tap, the queue's two swipes, its sheet held); an account's
+	// playlist, listed only to put a track in it, takes a tap and nothing else.
+	static const sx_row_handlers_t LOCAL = {
+		.on_tap = row_tap_cb,
+		.on_long_press = row_hold_cb,
+		.on_swipe_next = row_next_cb,
+		.on_swipe_end = row_end_cb,
+	};
+	static const sx_row_handlers_t SERVICE = {
+		.on_tap = service_row_tap_cb,
+	};
+	lv_obj_t *row = sx_row_create(list, uuid ? &SERVICE : &LOCAL, false);
+	sx_row_set_user(row, uuid ? uuid : owned);
+	if (uuid) {
 		lv_obj_add_event_cb(row, row_delete_cb, LV_EVENT_DELETE, uuid);
-	} else {
-		lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, owned);
 	}
 	lv_obj_add_event_cb(row, row_delete_cb, LV_EVENT_DELETE, owned);
 
-	lv_obj_t *icon = lv_image_create(row);
-	lv_image_set_src(icon, glyph);
-	lv_obj_add_style(icon, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
-
-	lv_obj_t *texts = lv_obj_create(row);
-	lv_obj_set_flex_grow(texts, 1);
-	lv_obj_set_height(texts, lv_pct(100));
-	lv_obj_set_style_bg_opa(texts, 0, 0);
-	lv_obj_set_style_border_width(texts, 0, 0);
-	lv_obj_set_style_pad_all(texts, 0, 0);
-	lv_obj_set_scrollable(texts, false);
-	lv_obj_set_event_bubble(texts, true);
-	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(texts, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-	lv_obj_t *name_label = lv_label_create(texts);
-	lv_label_set_text(name_label, name);
-	lv_label_set_long_mode(name_label, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(name_label, lv_pct(100));
-	// One line, cut with dots past it.
-	lv_obj_set_height(name_label, lv_font_get_line_height(&font_ui_24));
-	lv_obj_add_style(name_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name_label, &font_ui_24, 0);
-
-	lv_obj_t *sub = NULL;
-	if (subtitle && subtitle[0]) {
-		sub = lv_label_create(texts);
-		lv_label_set_text(sub, subtitle);
-		lv_obj_add_style(sub, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(sub, &font_ui_16, 0);
-	}
-
-	if (uuid) {
-		return sub; // no ellipsis: account playlists cannot be deleted from here
-	}
-
-	// The ellipsis on the right edge, as on every track row.
-	lv_obj_t *menu_btn = lv_btn_create(row);
-	lv_obj_set_size(menu_btn, 44, 44);
-	// A fingertip's worth (touch.h), kept within the row's own padding.
-	touch_grow(menu_btn, 44, 44, 14);
-	lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_border_width(menu_btn, 0, 0);
-	lv_obj_set_style_shadow_width(menu_btn, 0, 0);
-	lv_obj_set_style_pad_all(menu_btn, 0, 0);
-	lv_obj_add_event_cb(menu_btn, menu_btn_cb, LV_EVENT_CLICKED, owned);
-
-	lv_obj_t *dots = lv_image_create(menu_btn);
-	lv_image_set_src(dots, &icon_ellipsis_vertical);
-	lv_obj_add_style(dots, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
-	lv_obj_center(dots);
-
-	return sub;
+	char letter[8];
+	listacts_first_letter(name, letter, sizeof(letter));
+	sx_row_set_letter(row, letter, listacts_name_tone(name), false);
+	sx_row_set_title(row, name);
+	sx_row_set_subtitle(row, subtitle ? subtitle : "", NULL, NULL);
+	// Choosing where a track goes, a row is a destination: no chevron, no
+	// swipes, no sheet.
+	sx_row_set_trail(row, picking ? SX_ROW_TRAIL_NONE : SX_ROW_TRAIL_CHEVRON);
+	sx_row_set_swipes(row, !picking, !picking);
 }
 
 // --- account playlists -----------------------------------------------------
@@ -557,11 +562,9 @@ static void service_playlists_ready_async(void *user) {
 
 static void service_playlists_changed(void) { gui_post(service_playlists_ready_async, NULL); }
 
-static void service_row_clicked_cb(lv_event_t *e) {
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
-		return;
-	}
-	const char *playlist_id = lv_event_get_user_data(e);
+static void service_row_tap_cb(lv_obj_t *row, void *user) {
+	(void)row;
+	const char *playlist_id = user;
 	if (!playlist_id || !playlist_id[0] || !pending_service || !pending_service->playlist_add) {
 		return;
 	}
@@ -574,7 +577,7 @@ static bool collect_row_cb(const char *name, void *user) {
 	char subtitle[48];
 	int tracks = playlists_count_tracks(name);
 	snprintf(subtitle, sizeof(subtitle), tr(tracks == 1 ? "playlist_track_2" : "playlist_tracks"), tracks);
-	add_row(name, subtitle, &icon_list_music, NULL);
+	add_row(name, subtitle, NULL);
 
 	(*count)++;
 	return true;
@@ -1165,6 +1168,12 @@ static void name_layer_show(const char *initial) {
 	lv_obj_move_foreground(name_layer);
 }
 
+static void new_playlist_tap_cb(lv_obj_t *row, void *user) {
+	(void)row;
+	(void)user;
+	new_playlist_cb(NULL);
+}
+
 static void new_playlist_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active()) {
 		return;
@@ -1190,31 +1199,12 @@ static void rebuild_rows(void) {
 
 	// The "new playlist" row comes first in both modes: it is the only way the
 	// first playlist can be made.
-	lv_obj_t *new_row = lv_btn_create(list);
-	lv_obj_set_size(new_row, lv_pct(100), ROW_HEIGHT);
-	lv_obj_add_style(new_row, &theme_style_card, 0);
-	lv_obj_add_style(new_row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(new_row, ROW_RADIUS, 0);
-	lv_obj_set_style_border_width(new_row, 0, 0);
-	lv_obj_set_style_shadow_width(new_row, 0, 0);
-	lv_obj_set_style_pad_hor(new_row, 16, 0);
-	lv_obj_set_style_pad_column(new_row, 14, 0);
-	lv_obj_set_flex_flow(new_row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(new_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_event_bubble(new_row, true);
-	lv_obj_add_event_cb(new_row, new_playlist_cb, LV_EVENT_CLICKED, NULL);
-
-	lv_obj_t *new_icon = lv_image_create(new_row);
-	lv_image_set_src(new_icon, &icon_plus);
-	lv_obj_add_style(new_icon, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor(new_icon, theme()->accent, 0);
-	lv_obj_set_style_image_recolor_opa(new_icon, LV_OPA_COVER, 0);
-
-	lv_obj_t *new_label = lv_label_create(new_row);
-	lv_label_set_text(new_label, tr("playlist_new_playlist"));
-	lv_obj_add_style(new_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(new_label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(new_label, theme()->accent, 0);
+	static const sx_row_handlers_t NEW_ROW = {.on_tap = new_playlist_tap_cb};
+	lv_obj_t *new_row = sx_row_create(list, &NEW_ROW, false);
+	sx_row_set_letter(new_row, "+", sx_pal()->accent, true);
+	sx_row_set_title(new_row, tr("playlist_new_playlist"));
+	sx_row_set_subtitle(new_row, "", NULL, NULL);
+	sx_row_set_trail(new_row, SX_ROW_TRAIL_NONE);
 
 	int count = 0;
 	if (picking && pending_service) {
@@ -1226,7 +1216,7 @@ static void rebuild_rows(void) {
 			char subtitle[48];
 			snprintf(subtitle, sizeof(subtitle), tr(got[i].track_count == 1 ? "playlist_track_2" : "playlist_tracks"),
 					 got[i].track_count);
-			add_row(got[i].name, subtitle, &icon_list_music, got[i].id);
+			add_row(got[i].name, subtitle, got[i].id);
 			count++;
 		}
 		free(got);
@@ -1341,7 +1331,7 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(list, 0, 0);
 	lv_obj_set_style_pad_hor(list, cfg->padding, 0);
 	lv_obj_set_style_pad_bottom(list, 12, 0);
-	lv_obj_set_style_pad_gap(list, ROW_GAP, 0);
+	lv_obj_set_style_pad_gap(list, SX_ROW_GAP, 0);
 	lv_obj_set_scroll_dir(list, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
 	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);

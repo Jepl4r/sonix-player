@@ -76,6 +76,11 @@ void listacts_album_sheet(const char *album_value, const char *artist, const cha
 // Plays one record from its first track (`shuffled`: in a random order).
 void listacts_play_album(const char *album_value, bool shuffled);
 
+// Plays a handle's tracks from the first (`shuffled`: the shuffle mode on, from
+// a track at random, "Shuffled: <label>" said). Takes ownership of `ix`. False
+// when there is nothing to play.
+bool listacts_play_index(library_index_t *ix, bool shuffled, const char *label);
+
 // The collected paths of a handle, for the callers that need them as a list
 // (adding to a playlist, starring a record). The caller frees each and the
 // array. At most `max`.

@@ -255,26 +255,33 @@ bool listacts_shuffle_all(void) {
 	return true;
 }
 
-void listacts_play_album(const char *album_value, bool shuffled) {
-	library_index_t *ix = listacts_album_tracks(album_value);
-	if (!ix) {
-		return;
+bool listacts_play_index(library_index_t *ix, bool shuffled, const char *label) {
+	int count = library_index_count(ix);
+	if (!ix || count <= 0) {
+		library_index_close(ix);
+		return false;
 	}
 	set_shuffle(shuffled);
-	int count = library_index_count(ix);
 	int start = shuffled && count > 1 ? (int)lv_rand(0, (uint32_t)(count - 1)) : 0;
 	if (!device_state_play_index(ix, start)) {
-		return;
+		return false;
 	}
-	// "Play albums back to back" needs to know which record is ending.
-	playlist_set_album(album_value);
+	playlist_set_album("");
 	listacts_played();
-	if (shuffled) {
-		char title[256];
+	if (shuffled && label && label[0]) {
 		char text[320];
-		library_album_title(album_value, title, sizeof(title));
-		snprintf(text, sizeof(text), tr("lists_shuffled"), title);
+		snprintf(text, sizeof(text), tr("lists_shuffled"), label);
 		sx_toast(text);
+	}
+	return true;
+}
+
+void listacts_play_album(const char *album_value, bool shuffled) {
+	char title[256];
+	library_album_title(album_value, title, sizeof(title));
+	if (listacts_play_index(listacts_album_tracks(album_value), shuffled, title)) {
+		// "Play albums back to back" needs to know which record is ending.
+		playlist_set_album(album_value);
 	}
 }
 
@@ -421,7 +428,7 @@ void listacts_album_sheet(const char *album_value, const char *artist, const cha
 	sx_sheet_item_t items[SHEET_ITEMS_MAX];
 	int n = 0;
 	items[n++] = (sx_sheet_item_t){tr("medialist_play"), &icon_play, false, false, album_play_cb, NULL};
-	items[n++] = (sx_sheet_item_t){tr("medialist_play_in_random_order"), &icon_shuffle, false, false, album_play_cb,
+	items[n++] = (sx_sheet_item_t){tr("lists_shuffle"), &icon_shuffle, false, false, album_play_cb,
 								   (void *)(intptr_t)1};
 	items[n++] = (sx_sheet_item_t){tr("queue_play_next"), &icon_list_start, false, false, album_queue_cb,
 								   (void *)(intptr_t)PLAYLIST_QUEUE_NEXT};
