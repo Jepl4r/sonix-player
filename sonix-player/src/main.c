@@ -28,6 +28,7 @@
 #include "src/system/device/adb.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/playback/sleeptimer.h"
+#include "src/system/playback/device_state.h"
 #include "src/system/audio/usbaudio.h"
 #include "src/system/audio/audio.h"
 #include "src/system/library/audiobookdb.h"
@@ -2426,7 +2427,7 @@ int main(int argc, char **argv) {
 	// page (see the restore further down), which needs the player built and
 	// its track put back first.
 	bool nowplaying_first =
-		config_get_int("player", "remember_track", 0) && config_get_bool("music", "nowplaying_at_boot", false);
+		device_state_remember_enabled() && config_get_bool("music", "nowplaying_at_boot", false);
 	bool rest_pending = gui_init(&gui_cfg, !nowplaying_first);
 
 	// "Rotate screen", as it was left. After gui_init so there are screens to
@@ -2502,7 +2503,7 @@ int main(int argc, char **argv) {
 	// the first frame is the now-playing page, so the track is put back here,
 	// before it, and the page opened over the home screen without the slide.
 	// The artwork still arrives from its worker a moment later.
-	if (config_get_int("player", "remember_track", 0)) {
+	if (device_state_remember_enabled()) {
 		if (config_get_bool("music", "nowplaying_at_boot", false)) {
 			if (restore_saved_track()) {
 				player_sheet_open(false);

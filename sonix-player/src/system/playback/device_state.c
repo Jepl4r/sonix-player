@@ -17,6 +17,8 @@
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/streaming/radio.h"
+#include "src/system/library/audiobookdb.h"
+#include "src/system/remote/dlna.h"
 #include "src/system/audio/replaygain.h"
 #include "src/system/device/system.h"
 
@@ -143,7 +145,13 @@ static uint32_t remember_now_ms(void) {
 	return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
 }
 
-static bool remember_enabled(void) { return config_get_int("player", "remember_track", 0) != 0; }
+// On unless switched off. 2.0 asks for it ("after a stop or a reboot the mini
+// player shows the last track, paused, at its position"), so the default moved
+// from off to on -- for players that never touched the switch only: the key is
+// written the first time it is, and is never written at first boot.
+bool device_state_remember_enabled(void) { return config_get_int("player", "remember_track", 1) != 0; }
+
+static bool remember_enabled(void) { return device_state_remember_enabled(); }
 
 // A track this player must not offer to come back to: a live stream has no
 // position, and a streaming cache file will not exist at the next boot.
@@ -161,6 +169,19 @@ void device_state_remember_restored(const char *path, double position) {
 	remember.restore_ms = remember.saved_ms;
 }
 
+// Where the track is to come back at. A track that has played to its end --
+// the queue ran out on it -- comes back at its start, paused (2.0: "the end
+// of the queue is a pause"): remembered at its last second, the play button
+// after a reboot played that second and stopped again, and looked as if it did
+// nothing.
+static double remember_position(const device_state_t *state) {
+	if (state->status != AUDIO_STATUS_PLAYING && state->progress_total_secs > 2.0 &&
+		state->progress_current_secs >= state->progress_total_secs - 1.0) {
+		return 0.0;
+	}
+	return state->progress_current_secs;
+}
+
 void device_state_remember_note(void) {
 	if (!remember_enabled()) {
 		return;
@@ -170,9 +191,9 @@ void device_state_remember_note(void) {
 	if (!remember_worth_saving(&state)) {
 		return;
 	}
-	if (remember_should_write(&remember, state.current_file, state.status, state.progress_current_secs,
-							  remember_now_ms())) {
-		library_playback_state_save(state.current_file, state.progress_current_secs);
+	double position = remember_position(&state);
+	if (remember_should_write(&remember, state.current_file, state.status, position, remember_now_ms())) {
+		library_playback_state_save(state.current_file, position);
 	}
 }
 
@@ -206,10 +227,11 @@ void device_state_remember_flush(void) {
 		return;
 	}
 	remember.restore_pos = -1.0;
-	library_playback_state_save(state.current_file, state.progress_current_secs);
+	double position = remember_position(&state);
+	library_playback_state_save(state.current_file, position);
 	snprintf(remember.file, sizeof(remember.file), "%s", state.current_file);
 	remember.status = state.status;
-	remember.pos = state.progress_current_secs;
+	remember.pos = position;
 	remember.saved_ms = remember_now_ms();
 	remember.have = true;
 }
@@ -773,6 +795,95 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 	device_state_remember_restored(current_metadata_file, position);
 }
 
+// ---------------------------------------------------------------------------
+// The queue a book interrupted (device_state.h)
+//
+// A book, and a track a phone pushes over DLNA, are played through the same
+// queue as music -- a book's parts are its queue -- so starting one used to
+// throw the music queue away. 2.0 keeps it: the queue is snapshotted
+// (playlist_snapshot_take) at the moment the book replaces it, and put back
+// when the user goes back to it from the queue page. Anything else that builds
+// a new queue -- a list, an album, a folder -- forgets it: the music queue is
+// then the new one, and the old one would be a second queue nobody can see.
+// Only in memory: a reboot in the middle of a book comes back to the book.
+// ---------------------------------------------------------------------------
+
+static playlist_snapshot_t *parked;
+
+static void parked_drop(void) {
+	if (parked) {
+		playlist_snapshot_free(parked);
+		parked = NULL;
+	}
+}
+
+// Whether `path` is the outside kind -- a book, or a phone's track -- and not
+// another queue of music.
+static bool path_is_outside(const char *path) {
+	if (!path || !path[0]) {
+		return false;
+	}
+	if (dlna_owns_path(path)) {
+		return true;
+	}
+	char book[512];
+	return audiobookdb_book_for_file(path, book, sizeof(book));
+}
+
+// Called by every entry point that is about to replace the queue, with the
+// first track of what replaces it.
+static void parked_before_new_queue(const char *first_path) {
+	if (!path_is_outside(first_path)) {
+		parked_drop();
+		return;
+	}
+	// Already parked (one book after another, or a book's parts being started
+	// again from its page): the music queue is the one parked first.
+	if (parked) {
+		return;
+	}
+	// A book interrupting a book, or the phone's queue, is not music to park.
+	if (audiobook_is_playing() || dlna_owns_playback() || path_is_outside(current_metadata_file)) {
+		return;
+	}
+	if (playlist_count() > 0) {
+		parked = playlist_snapshot_take();
+		if (parked) {
+			fprintf(stderr, "queue: parked %d track(s) behind '%s' (%zu bytes)\n", playlist_snapshot_count(parked),
+					first_path, playlist_snapshot_bytes(parked));
+		}
+	}
+}
+
+bool device_state_parked(int *count, int *position) {
+	if (count) {
+		*count = playlist_snapshot_count(parked);
+	}
+	if (position) {
+		*position = parked ? playlist_snapshot_position(parked) : -1;
+	}
+	return parked != NULL;
+}
+
+bool device_state_parked_path(int index, char *out, size_t size) {
+	return playlist_snapshot_path_at(parked, index, out, size);
+}
+
+bool device_state_resume_parked(int index) {
+	if (!parked) {
+		return false;
+	}
+	playlist_snapshot_t *snap = parked;
+	parked = NULL;
+	if (!playlist_snapshot_restore(snap, NULL)) {
+		return false;
+	}
+	if (index < 0) {
+		index = playlist_current_index();
+	}
+	return device_state_play_queue_index(index);
+}
+
 // The same, but starting somewhere other than the beginning: an audiobook
 // resumed where it was left. Split out rather than folded into a flag on
 // load_and_play() because only a book has a position to come back to, and the
@@ -780,6 +891,7 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 void device_state_play_file_at(const char *filepath, double position) {
 	// Same reason as load_and_play: this changes the track too.
 	scrub_cancel();
+	parked_before_new_queue(filepath);
 
 	char folder[512];
 	strncpy(folder, filepath, sizeof(folder) - 1);
@@ -812,6 +924,7 @@ void device_state_play_file_at(const char *filepath, double position) {
 }
 
 void device_state_play_file(const char *filepath) {
+	parked_before_new_queue(filepath);
 	// The queue is built from the selected file's directory, so playback can
 	// continue past this track.
 	char folder[512];
@@ -833,6 +946,7 @@ void device_state_play_file(const char *filepath) {
 // Starts playback from an explicit list of paths: the queue becomes exactly
 // that list, so next/prev walk it. What the library index pages call.
 bool device_state_play_index(library_index_t *ix, int start_index) {
+	parked_drop(); // a library list is music
 	if (!playlist_load_index(ix, start_index)) {
 		return false;
 	}
@@ -845,10 +959,25 @@ bool device_state_play_index(library_index_t *ix, int start_index) {
 	return true;
 }
 
+bool device_state_play_index_dealt(library_index_t *ix) {
+	parked_drop();
+	if (!playlist_load_index(ix, 0)) {
+		return false;
+	}
+	playlist_deal_all();
+	char path[512];
+	if (!playlist_current_path(path, sizeof(path))) {
+		return false;
+	}
+	load_and_play(path);
+	return true;
+}
+
 void device_state_play_list(const char *const *list, int count, int start_index) {
 	if (!list || count <= 0) {
 		return;
 	}
+	parked_before_new_queue(list[start_index >= 0 && start_index < count ? start_index : 0]);
 	playlist_load_paths(list, count, start_index);
 
 	char path[512];
@@ -865,6 +994,7 @@ void device_state_play_list_ordered_at(const char *const *list, int count, int s
 	if (!list || count <= 0) {
 		return;
 	}
+	parked_before_new_queue(list[start_index >= 0 && start_index < count ? start_index : 0]);
 	playlist_load_paths_ordered(list, count, start_index);
 
 	// Chosen from a list: an episode picks up where it was left even when it is

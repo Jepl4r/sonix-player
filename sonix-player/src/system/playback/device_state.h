@@ -87,6 +87,10 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 // started, and then nothing has changed.
 bool device_state_play_index(library_index_t *ix, int start_index);
 
+// The same, dealt in a random order first and played from the first of the
+// deal, the mode left as it is: "Shuffle all music". Takes ownership of `ix`.
+bool device_state_play_index_dealt(library_index_t *ix);
+
 // Play from an explicit list of full paths: a playlist file, a streaming album,
 // anything with no query behind it. The queue is the list itself, so next/prev
 // follow it instead of the file's folder.
@@ -125,6 +129,29 @@ void device_state_add_prepare_cb(device_state_prepare_cb cb);
 
 // Jump to entry `index` of the current queue.
 bool device_state_play_queue_index(int index);
+
+// ---------------------------------------------------------------------------
+// Outside the queue (2.0, the handoff's `ext`)
+//
+// A book, or a track a phone sends over DLNA, plays "outside the queue": the
+// music queue it interrupted is kept aside, whole, rather than replaced, and
+// the queue page shows it under "Now playing X -- outside the queue". Going
+// back to it is a tap on one of its rows (device_state_resume_parked). Any
+// other new queue -- a list, an album, a folder of music -- forgets it.
+// (Radio, AirPlay and the Bluetooth receiver never touched the queue in the
+// first place: they play beside it.) In memory only. UI thread.
+// ---------------------------------------------------------------------------
+
+// True while a queue is parked; `count` its length and `position` the track it
+// was on (either may be NULL).
+bool device_state_parked(int *count, int *position);
+
+// Entry `index` (playback order) of the parked queue.
+bool device_state_parked_path(int index, char *out, size_t size);
+
+// Puts the parked queue back as the queue and plays its entry `index` (-1: the
+// track it was on), from the start. False when nothing is parked.
+bool device_state_resume_parked(int index);
 
 // Call when the current track has finished on its own (see
 // device_state_take_completion). Advances the folder queue according to the
@@ -270,6 +297,10 @@ void device_state_refresh_battery(void);
 // restored() told what the boot restore asked for, so a poll that lands before
 //           the decoder has seeked cannot write a zero over it.
 // ---------------------------------------------------------------------------
+// Whether "Remember track" is on: on unless switched off (the default moved to
+// on in 2.0, for players that never set it).
+bool device_state_remember_enabled(void);
+
 void device_state_remember_note(void);
 void device_state_remember_flush(void);
 void device_state_remember_restored(const char *path, double position);

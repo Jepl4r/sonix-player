@@ -757,11 +757,128 @@ void playlist_load_paths_ordered(const char *const *list, int count, int start_i
 
 bool playlist_insert_next(const char *path) { return playlist_queue_paths(&path, 1, PLAYLIST_QUEUE_NEXT) == 1; }
 
+static bool rebuild_without(const uint8_t *gone);
+static int queue_insert(const char *const *list, int count, playlist_queue_where_t where);
+
+// The paths a "play next" is about, for the walk over a library list's rows.
+typedef struct {
+	const char *const *set;
+	int count;
+	uint8_t *hit; // one per row of the list, set where the row is one of `set`
+	size_t at;
+} dedup_walk_t;
+
+static bool path_in_set(const char *path, const char *const *set, int count) {
+	for (int i = 0; path && i < count; i++) {
+		if (set[i] && set[i][0] && strcmp(set[i], path) == 0) {
+			return true;
+		}
+	}
+	return false;
+}
+
+static bool dedup_walk_cb(const char *name, const char *path, const char *artist, void *user) {
+	(void)name;
+	(void)artist;
+	dedup_walk_t *w = user;
+	if (path_in_set(path, w->set, w->count)) {
+		w->hit[w->at] = 1;
+	}
+	w->at++;
+	return true;
+}
+
+// The rule the 2.0 handoff gives "Play next": the tracks are taken out of
+// what is still to come before they go in after the playing one, so a track
+// already further down is moved up rather than queued twice. Only ahead of
+// playback: what has played stays in the history as it was. Rebuilds the queue
+// (as a removal does) when anything is taken out; the "play next" block right
+// after the playing track keeps being one, so the next addition still joins
+// its end.
+static void dedup_upcoming(const char *const *set, int count) {
+	if (!order || entry_count == 0 || pos + 1 >= entry_count || ix_count > PLAYLIST_DEDUP_IX_MAX) {
+		return;
+	}
+	uint8_t *gone = calloc(entry_count, 1);
+	uint8_t *hit = ix_count ? calloc(ix_count, 1) : NULL;
+	if (!gone || (ix_count && !hit)) {
+		free(gone);
+		free(hit);
+		return;
+	}
+	if (ix_count) {
+		dedup_walk_t w = {set, count, hit, 0};
+		library_index_window(source_ix, 0, (int)ix_count, dedup_walk_cb, &w);
+	}
+	size_t taken = 0;
+	for (size_t s = pos + 1; s < entry_count; s++) {
+		size_t entry = order[s];
+		bool same = entry < ix_count ? hit[entry] != 0 : path_in_set(entry_path(entry), set, count);
+		if (same) {
+			gone[entry] = 1;
+			taken++;
+		}
+	}
+	free(hit);
+	if (taken == 0) {
+		free(gone);
+		return;
+	}
+	bool chained = chain_valid && chain_from == pos;
+	if (rebuild_without(gone) && chained) {
+		// The chain, found again from the marks the rebuild carried over: the
+		// run of "play next" entries straight after the playing track.
+		size_t last = pos;
+		while (last + 1 < entry_count && entry_queued_next(order[last + 1])) {
+			last++;
+		}
+		if (last > pos) {
+			chain_from = pos;
+			chain_slot = last;
+			chain_valid = true;
+		}
+	}
+	free(gone);
+}
+
 int playlist_queue_paths(const char *const *list, int count, playlist_queue_where_t where) {
 	if (!list || count <= 0) {
 		return 0;
 	}
 
+	// "Play next" on what is playing is not a track to queue after itself, and
+	// copies of the set further down go before the set comes in (see above).
+	const char **picked = NULL;
+	if (where == PLAYLIST_QUEUE_NEXT && order && entry_count > 0) {
+		char playing[512] = "";
+		const char *at = entry_path(order[pos]);
+		if (at) {
+			snprintf(playing, sizeof(playing), "%s", at);
+		}
+		picked = malloc((size_t)count * sizeof(*picked));
+		if (picked) {
+			int kept = 0;
+			for (int i = 0; i < count; i++) {
+				if (list[i] && list[i][0] && strcmp(list[i], playing) != 0) {
+					picked[kept++] = list[i];
+				}
+			}
+			if (kept == 0) {
+				free(picked);
+				return 0;
+			}
+			dedup_upcoming(picked, kept);
+			list = picked;
+			count = kept;
+		}
+	}
+
+	int queued = queue_insert(list, count, where);
+	free(picked);
+	return queued;
+}
+
+static int queue_insert(const char *const *list, int count, playlist_queue_where_t where) {
 	bool was_empty = entry_count == 0 || !order;
 	size_t first_new = entry_count; // push_path appends: the new entries start here
 	size_t added = 0;
@@ -1101,6 +1218,228 @@ bool playlist_move(int index, int delta) {
 	chain_valid = false;
 	custom_queue = true;
 	revision++;
+	return true;
+}
+
+bool playlist_shuffle_upcoming(void) {
+	if (!order || entry_count < 3 || pos + 2 >= entry_count) {
+		return false;
+	}
+	// Asked for in so many words, so the "play next" promises give way: they
+	// are dealt with the rest, and a later change of mode must not lift them
+	// back to the front of a queue the user has just mixed.
+	for (size_t s = pos + 1; s < entry_count; s++) {
+		entry_mark_queued_next(order[s], false);
+	}
+	order_shuffle_upcoming();
+	chain_valid = false;
+	custom_queue = true;
+	revision++;
+	return true;
+}
+
+bool playlist_move_next(int index) {
+	if (!order || index < 0 || (size_t)index >= entry_count || (size_t)index == pos) {
+		return false;
+	}
+	size_t entry = order[index];
+	if ((size_t)index > pos) {
+		// Still to come: the ones between the playing track and it move down
+		// a place.
+		if ((size_t)index > pos + 1) {
+			memmove(&order[pos + 2], &order[pos + 1], ((size_t)index - pos - 1) * sizeof(*order));
+			order[pos + 1] = entry;
+		}
+	} else {
+		// From what has played: the ones after it, the playing track included,
+		// move up a place, and playback with them.
+		memmove(&order[index], &order[index + 1], (pos - (size_t)index) * sizeof(*order));
+		pos--;
+		order[pos + 1] = entry;
+	}
+	// A "play next" like any other: a change of shuffle does not move it away.
+	entry_mark_queued_next(entry, true);
+	chain_valid = false;
+	custom_queue = true;
+	revision++;
+	return true;
+}
+
+bool playlist_deal_all(void) {
+	if (!order || entry_count == 0) {
+		return false;
+	}
+	for (size_t s = 0; s < entry_count; s++) {
+		entry_mark_queued_next(order[s], false);
+	}
+	order_shuffle_round();
+	chain_valid = false;
+	custom_queue = true;
+	revision++;
+	return true;
+}
+
+// ---------------------------------------------------------------------------
+// snapshots (playlist.h)
+// ---------------------------------------------------------------------------
+
+struct playlist_snapshot {
+	library_index_t *ix; // a clone of the list's handle, or NULL for a queue of paths
+	size_t ix_count;
+	size_t appended;
+	char **paths;	 // the appended entries' paths, `appended` of them
+	uint8_t *flags;	 // their "play next" marks
+	size_t *order;	 // entry_count of them
+	size_t entry_count;
+	size_t pos;
+	bool custom;
+	bool ordered;
+	bool chain_valid;
+	size_t chain_from, chain_slot;
+	char album[sizeof(queue_album)];
+	size_t bytes;
+};
+
+void playlist_snapshot_free(playlist_snapshot_t *snap) {
+	if (!snap) {
+		return;
+	}
+	for (size_t i = 0; snap->paths && i < snap->appended; i++) {
+		free(snap->paths[i]);
+	}
+	free(snap->paths);
+	free(snap->flags);
+	free(snap->order);
+	library_index_close(snap->ix);
+	free(snap);
+}
+
+size_t playlist_snapshot_bytes(const playlist_snapshot_t *snap) { return snap ? snap->bytes : 0; }
+
+int playlist_snapshot_count(const playlist_snapshot_t *snap) { return snap ? (int)snap->entry_count : 0; }
+
+int playlist_snapshot_position(const playlist_snapshot_t *snap) { return snap ? (int)snap->pos : -1; }
+
+bool playlist_snapshot_path_at(const playlist_snapshot_t *snap, int index, char *out, size_t size) {
+	if (!snap || !snap->order || index < 0 || (size_t)index >= snap->entry_count || !out || size == 0) {
+		return false;
+	}
+	size_t entry = snap->order[index];
+	if (entry >= snap->ix_count) {
+		size_t appended = entry - snap->ix_count;
+		if (appended >= snap->appended || !snap->paths) {
+			return false;
+		}
+		snprintf(out, size, "%s", snap->paths[appended]);
+		return true;
+	}
+	char resolved[512] = {0};
+	if (library_index_window(snap->ix, (int)entry, 1, resolve_cb, resolved) != 1 || !resolved[0]) {
+		return false;
+	}
+	snprintf(out, size, "%s", resolved);
+	return true;
+}
+
+playlist_snapshot_t *playlist_snapshot_take(void) {
+	if (!order || entry_count == 0) {
+		return NULL;
+	}
+	playlist_snapshot_t *snap = calloc(1, sizeof(*snap));
+	if (!snap) {
+		return NULL;
+	}
+	snap->bytes = sizeof(*snap);
+	bool ok = true;
+	if (source_ix) {
+		snap->ix = library_index_clone(source_ix);
+		ok = snap->ix != NULL;
+		snap->bytes += ix_count * 4;
+	}
+	snap->ix_count = ix_count;
+	snap->appended = appended_count();
+	if (ok && snap->appended) {
+		snap->paths = calloc(snap->appended, sizeof(*snap->paths));
+		snap->flags = malloc(snap->appended);
+		ok = snap->paths && snap->flags;
+		for (size_t i = 0; ok && i < snap->appended; i++) {
+			snap->paths[i] = strdup(paths[i]);
+			ok = snap->paths[i] != NULL;
+			snap->flags[i] = next_flags ? next_flags[i] : 0;
+			if (ok) {
+				snap->bytes += strlen(paths[i]) + 1 + sizeof(char *) + 1;
+			}
+		}
+	}
+	if (ok) {
+		snap->order = malloc(entry_count * sizeof(*snap->order));
+		ok = snap->order != NULL;
+		if (ok) {
+			memcpy(snap->order, order, entry_count * sizeof(*snap->order));
+			snap->bytes += entry_count * sizeof(*snap->order);
+		}
+	}
+	if (!ok) {
+		playlist_snapshot_free(snap);
+		return NULL;
+	}
+	snap->entry_count = entry_count;
+	snap->pos = pos;
+	snap->custom = custom_queue;
+	snap->ordered = ordered_queue;
+	snap->chain_valid = chain_valid;
+	snap->chain_from = chain_from;
+	snap->chain_slot = chain_slot;
+	snprintf(snap->album, sizeof(snap->album), "%s", queue_album);
+	return snap;
+}
+
+bool playlist_snapshot_restore(playlist_snapshot_t *snap, const char *playing_path) {
+	if (!snap || !snap->order || snap->entry_count != snap->ix_count + snap->appended) {
+		playlist_snapshot_free(snap);
+		return false;
+	}
+
+	// The arrays are taken over rather than copied: the snapshot is consumed.
+	playlist_clear();
+	source_ix = snap->ix;
+	snap->ix = NULL;
+	ix_count = snap->ix_count;
+	entry_count = snap->ix_count;
+	path_cache_clear();
+	if (snap->appended) {
+		paths = snap->paths;
+		next_flags = snap->flags;
+		snap->paths = NULL;
+		snap->flags = NULL;
+		capacity = snap->appended;
+		entry_count += snap->appended;
+	}
+	order = snap->order;
+	snap->order = NULL;
+	pos = snap->pos < entry_count ? snap->pos : 0;
+	custom_queue = snap->custom;
+	ordered_queue = snap->ordered;
+	chain_valid = snap->chain_valid;
+	chain_from = snap->chain_from;
+	chain_slot = snap->chain_slot;
+	revision++;
+	playlist_set_album(snap->album);
+	snap->appended = 0; // the paths belong to the queue now
+	playlist_snapshot_free(snap);
+
+	// Playback stays on the track that is loaded: the toast may have been up
+	// across a track change.
+	if (playing_path && playing_path[0]) {
+		const char *at = entry_path(order[pos]);
+		if (!at || strcmp(at, playing_path) != 0) {
+			size_t was = pos;
+			if (!playlist_locate(playing_path)) {
+				pos = was;
+			}
+			chain_valid = false;
+		}
+	}
 	return true;
 }
 
