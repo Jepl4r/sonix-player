@@ -7,6 +7,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/shell/confirm.h"
+#include "src/gui/shell/sx_sheet.h"
 #include "src/gui/shell/easteregg.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/settings/fwupdate.h"
@@ -81,8 +82,16 @@ static void factory_second_confirmed(void *user) {
 
 static void factory_first_confirmed(void *user) {
 	(void)user;
-	confirm_show("system_are_you_sure", "system_reset_confirm_note",
-				 "system_reset_2", factory_second_confirmed, NULL);
+	// The second sheet's button is the irreversible one: red (2.0, principle 6).
+	sx_sheet_t sheet = {
+		.title = tr("system_are_you_sure"),
+		.subtitle = tr("system_reset_confirm_note"),
+		.cancel_label = tr("cancel"),
+		.action_label = tr("system_reset_2"),
+		.action_destructive = true,
+		.on_action = factory_second_confirmed,
+	};
+	sx_sheet_open(&sheet);
 }
 
 static void factory_clicked_cb(lv_event_t *e) {
