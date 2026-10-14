@@ -16,6 +16,9 @@
 #include "src/gui/shell/main_menu.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_toast.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
 #include "src/gui/shell/toast.h"
@@ -26,41 +29,48 @@
 #include "src/system/library/library.h"
 #include "src/system/device/power.h"
 
+// ---------------------------------------------------------------------------
+// The scan page
+//
+// 2.0 (principle 6): asking for a scan starts it -- from the Music page's
+// empty state, its "what a rescan would add" card, or Settings > Music > Scan
+// options -- with the folders chosen last time (Scan options > Folders to
+// scan, below; the whole card until somebody chooses). No question first: a
+// scan changes nothing a scan cannot put back.
+//
+// The page is one card: "Scanning...", the tracks found so far, the folder
+// being read in the mono line, a bar measured against the library's size
+// before the scan (none on a first scan, which has nothing to measure
+// against), and Stop. When the scan ends the page gives way to the Music page
+// and a toast says how many tracks there are. The page keeps the whole panel
+// while it runs (no back chevron, no mini player): the scan holds the screen
+// on and owns the card.
+// ---------------------------------------------------------------------------
+
 // Fast enough that the number never looks stuck, slow enough that redrawing it
 // costs nothing next to reading tags off a card.
-#define SCAN_POLL_MS 200
+#define SCAN_POLL_MS 250
 
 lv_obj_t *libraryscan_screen;
 
-static lv_obj_t *count_label;
-static lv_obj_t *status_label;
-static lv_obj_t *ok_button;
-static lv_obj_t *cancel_button;
+static lv_obj_t *scan_card;
+static lv_obj_t *scan_folder; // the folder being read
+static lv_obj_t *scan_bar;
 static lv_timer_t *poll_timer;
+static int scan_expected; // tracks before the scan: the bar's measure; 0 unknown
 
 static const char *sd_root;
 
-static void show_finished(int found) {
-	lv_label_set_text_fmt(count_label, "%d", found);
-	lv_label_set_text(status_label, found == 1 ? tr("libraryscan_track_found") : tr("libraryscan_tracks_found"));
-
-	lv_obj_set_hidden(cancel_button, true);
-	lv_obj_set_hidden(ok_button, false);
-
-	// The scan is over; the screen may go back to timing out.
-	power_hold_screen_on(false);
-}
-
-static void poll_cb(lv_timer_t *timer) {
-	int found = library_scan_found();
-	lv_label_set_text_fmt(count_label, "%d", found);
-
-	if (library_scan_running()) {
-		return;
+static void card_update(int found) {
+	char text[96];
+	lv_snprintf(text, sizeof(text), tr("libraryscan_found"), found);
+	sx_card_subtitle(scan_card, text, false);
+	if (scan_expected > 0) {
+		// Short of the end until it is the end: the card may hold more now.
+		int percent = found * 100 / scan_expected;
+		sx_card_bar_set(scan_bar, percent > 95 ? 95 : percent);
 	}
-
-	lv_timer_pause(timer);
-	show_finished(found);
+	lv_obj_set_hidden(scan_bar, scan_expected <= 0);
 }
 
 // Back to the Music page, which now shows the library, with the menu as the
@@ -70,35 +80,48 @@ static void back_to_music(void) {
 	switch_screen_no_history(music_screen);
 }
 
-static void ok_cb(lv_event_t *e) {
-	(void)e;
+static void poll_cb(lv_timer_t *timer) {
+	int found = library_scan_found();
+	if (library_scan_running()) {
+		card_update(found);
+		// Where on the card, without the mount point in front.
+		char folder[256];
+		library_scan_current_folder(folder, sizeof(folder));
+		const char *shown = folder;
+		size_t root = sd_root ? strlen(sd_root) : 0;
+		if (root && strncmp(folder, sd_root, root) == 0) {
+			shown = folder[root] == '/' ? folder + root + 1 : folder + root;
+		}
+		lv_label_set_text(scan_folder, shown);
+		return;
+	}
+
+	lv_timer_pause(timer);
+	// The scan is over; the screen may go back to timing out.
+	power_hold_screen_on(false);
+	char text[96];
+	lv_snprintf(text, sizeof(text), tr("libraryscan_found"), found);
+	sx_toast(text);
 	back_to_music();
 }
 
 // Stopping is not throwing away: the scan thread winds up at the next file and
 // commits everything it has already read, so the index holds exactly the
-// tracks the counter was showing.
-static void cancel_cb(lv_event_t *e) {
+// tracks the counter was showing. The poll sees it end.
+static void stop_cb(lv_event_t *e) {
 	(void)e;
-
 	library_scan_stop();
-	lv_timer_pause(poll_timer);
-	power_hold_screen_on(false);
-
-	back_to_music();
 }
 
 void libraryscan_begin(void) {
-	lv_label_set_text(count_label, "0");
-	lv_label_set_text(status_label, tr("libraryscan_tracks_found"));
-	lv_obj_set_hidden(ok_button, true);
-	lv_obj_set_hidden(cancel_button, false);
+	scan_expected = library_is_open() ? library_track_count() : 0;
+	card_update(0);
+	lv_label_set_text(scan_folder, "");
 
 	if (!library_scan_start(sd_root)) {
 		// Nothing to scan (no card, or a scan is somehow already going).
-		lv_label_set_text(status_label, tr("no_card_to_scan"));
-		lv_obj_set_hidden(cancel_button, true);
-		lv_obj_set_hidden(ok_button, false);
+		toast_error("no_card_to_scan");
+		back_to_music();
 		return;
 	}
 
@@ -110,21 +133,57 @@ void libraryscan_begin(void) {
 	lv_timer_resume(poll_timer);
 }
 
+void libraryscan_choose_folders(void) { switch_screen(libraryscan_screen); }
+
+static void build_scan_page(gui_config_t *cfg) {
+	lv_obj_add_style(libraryscan_screen, &theme_style_screen, 0);
+	// Beside where the chevron would be, like every page; this one has none.
+	settingsrow_title_corner_slots(settingsrow_title(libraryscan_screen, cfg, "music"), cfg, 0);
+
+	lv_obj_t *box = lv_obj_create(libraryscan_screen);
+	lv_obj_remove_style_all(box);
+	lv_obj_set_size(box, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_align(box, LV_ALIGN_TOP_LEFT, 0, settingsrow_content_top(cfg));
+	lv_obj_set_style_pad_hor(box, cfg->padding, 0);
+	lv_obj_set_scrollable(box, false);
+
+	scan_card = sx_card_create(box);
+	sx_card_title(scan_card, tr("libraryscan_scanning"));
+	sx_card_subtitle(scan_card, "", false);
+	scan_bar = sx_card_bar(scan_card, 0);
+	sx_card_action(scan_card, tr("libraryscan_stop"), stop_cb, NULL);
+	// Under the head: the folder being read, small, cut short at the end.
+	scan_folder = lv_label_create(scan_card);
+	lv_obj_set_width(scan_folder, lv_pct(100));
+	lv_label_set_long_mode(scan_folder, LV_LABEL_LONG_DOT);
+	lv_obj_add_style(scan_folder, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(scan_folder, &font_ui_17, 0);
+	lv_label_set_text(scan_folder, "");
+	lv_obj_move_to_index(scan_folder, 1);
+
+	poll_timer = lv_timer_create(poll_cb, SCAN_POLL_MS, NULL);
+	lv_timer_pause(poll_timer);
+}
+
 // ---------------------------------------------------------------------------
-// Which folders: the card's top-level folders, ticked, before the scan starts
+// Folders to scan: the card's top-level folders, each a switch
+//
+// Its own page now, reached from Scan options, rather than a question before
+// every scan. A switch is saved as it is flipped (library_scan_folders_set):
+// every folder on is the whole card, the files at its root included; turning
+// the last one off is refused with a toast -- a scan of nothing is no scan.
+// The rows are made when the page opens, a batch at a time as it scrolls, and
+// let go when it closes.
 // ---------------------------------------------------------------------------
 
-#define PICK_CHROME_H 250 // the card's title, note, buttons and padding
 // Rows are made this many at a time, more as the list nears its end.
 #define PICK_BATCH 30
 
-static gui_config_t *pick_cfg;
-static lv_obj_t *pick_veil;
+lv_obj_t *libraryscan_folders_screen;
+
 static lv_obj_t *pick_list;
-static lv_obj_t *pick_scan_btn;
 static char **pick_names;
 static bool *pick_on;
-static lv_obj_t **pick_marks;
 static int pick_count;
 static int pick_capacity;
 static int pick_built; // rows made so far, the first pick_built names
@@ -150,11 +209,7 @@ static bool pick_add(const char *name) {
 		if (on) {
 			pick_on = on;
 		}
-		lv_obj_t **marks = realloc(pick_marks, (size_t)grown * sizeof(*marks));
-		if (marks) {
-			pick_marks = marks;
-		}
-		if (!names || !on || !marks) {
+		if (!names || !on) {
 			return false;
 		}
 		pick_capacity = grown;
@@ -164,7 +219,6 @@ static bool pick_add(const char *name) {
 		return false;
 	}
 	pick_on[pick_count] = false;
-	pick_marks[pick_count] = NULL;
 	pick_count++;
 	return true;
 }
@@ -206,7 +260,7 @@ static void pick_read_folders(void) {
 	}
 }
 
-// Ticked: the folders saved last time, or every folder when nothing was saved.
+// On: the folders saved last time, or every folder when nothing was saved.
 static void pick_load_selection(void) {
 	int saved_count = 0;
 	char **saved = library_scan_folders(&saved_count);
@@ -219,41 +273,7 @@ static void pick_load_selection(void) {
 	library_scan_folders_free(saved, saved_count);
 }
 
-static void pick_paint(void) {
-	int on = 0;
-	for (int i = 0; i < pick_count; i++) {
-		if (i < pick_built && pick_marks[i]) {
-			lv_obj_set_style_image_opa(pick_marks[i], pick_on[i] ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
-		}
-		on += pick_on[i];
-	}
-	lv_obj_set_style_opa(pick_scan_btn, (pick_count == 0 || on > 0) ? LV_OPA_COVER : LV_OPA_40, 0);
-}
-
-static void pick_row_cb(lv_event_t *e) {
-	int i = (int)(intptr_t)lv_event_get_user_data(e);
-	if (i >= 0 && i < pick_count) {
-		pick_on[i] = !pick_on[i];
-		pick_paint();
-	}
-}
-
-static void pick_close(void) { lv_obj_set_hidden(pick_veil, true); }
-
-static void pick_veil_cb(lv_event_t *e) {
-	if (lv_event_get_target(e) == pick_veil) {
-		pick_close();
-	}
-}
-
-static void pick_cancel_cb(lv_event_t *e) {
-	(void)e;
-	pick_close();
-}
-
-// Every folder ticked is the whole card, the files at its root included.
-static void pick_scan_cb(lv_event_t *e) {
-	(void)e;
+static void pick_save(void) {
 	const char **chosen = malloc((size_t)(pick_count ? pick_count : 1) * sizeof(*chosen));
 	if (!chosen) {
 		return;
@@ -264,137 +284,56 @@ static void pick_scan_cb(lv_event_t *e) {
 			chosen[count++] = pick_names[i];
 		}
 	}
-	if (pick_count > 0 && count == 0) {
-		free(chosen);
-		toast_error(tr("libraryscan_choose_a_folder"));
-		return;
-	}
 	library_scan_folders_set(chosen, count == pick_count ? 0 : count);
 	free(chosen);
-	pick_close();
-	switch_screen(libraryscan_screen);
 }
 
-static lv_obj_t *pick_button(lv_obj_t *parent, const char *text, bool accent, lv_event_cb_t cb) {
-	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_height(btn, 56);
-	lv_obj_set_flex_grow(btn, 1);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_set_style_bg_color(btn, accent ? theme()->accent : theme()->surface_pressed, 0);
-	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_t *label = lv_label_create(btn);
-	lv_label_set_text(label, tr(text));
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_set_style_text_color(label, accent ? lv_color_white() : theme()->text_primary, 0);
-	lv_obj_center(label);
-	return btn;
+static void pick_switch_cb(lv_event_t *e) {
+	lv_obj_t *sw = lv_event_get_target(e);
+	int i = (int)(intptr_t)lv_obj_get_user_data(sw);
+	if (i < 0 || i >= pick_count) {
+		return;
+	}
+	bool on = lv_obj_has_state(sw, LV_STATE_CHECKED);
+	if (!on) {
+		int others = 0;
+		for (int k = 0; k < pick_count; k++) {
+			others += k != i && pick_on[k];
+		}
+		if (others == 0) {
+			lv_obj_add_state(sw, LV_STATE_CHECKED);
+			toast_error("libraryscan_choose_a_folder");
+			return;
+		}
+	}
+	pick_on[i] = on;
+	pick_save();
 }
 
-static void pick_scroll_cb(lv_event_t *e);
-
-static void pick_build(void) {
-	gui_config_t *cfg = pick_cfg;
-	pick_veil = lv_obj_create(lv_layer_top());
-	lv_obj_set_size(pick_veil, lv_pct(100), lv_pct(100));
-	lv_obj_set_style_bg_color(pick_veil, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(pick_veil, LV_OPA_60, 0);
-	lv_obj_set_style_border_width(pick_veil, 0, 0);
-	lv_obj_set_style_radius(pick_veil, 0, 0);
-	lv_obj_set_style_pad_all(pick_veil, 0, 0);
-	lv_obj_set_scrollable(pick_veil, false);
-	lv_obj_set_clickable(pick_veil, true);
-	lv_obj_set_hidden(pick_veil, true);
-	lv_obj_add_event_cb(pick_veil, pick_veil_cb, LV_EVENT_CLICKED, NULL);
-
-	lv_obj_t *card = lv_obj_create(pick_veil);
-	lv_obj_set_size(card, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
-	lv_obj_set_style_max_height(card, cfg->screen_height - cfg->top_bar_height - 2 * cfg->padding, 0);
-	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 16, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 12, 0);
-	lv_obj_set_scrollable(card, false);
-	lv_obj_set_clickable(card, true);
-	lv_obj_set_event_bubble(card, false);
-	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_align(card, LV_ALIGN_CENTER, 0, cfg->top_bar_height / 2);
-
-	lv_obj_t *title = lv_label_create(card);
-	lv_label_set_text(title, tr("musicsettings_scan_the_music_library"));
-	lv_label_set_long_mode(title, LV_LABEL_LONG_WRAP);
-	lv_obj_set_width(title, lv_pct(100));
-	lv_obj_add_style(title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(title, &font_ui_24, 0);
-
-	lv_obj_t *note = lv_label_create(card);
-	lv_label_set_text(note, tr("libraryscan_choose_folders_note"));
-	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
-	lv_obj_set_width(note, lv_pct(100));
-	lv_obj_add_style(note, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(note, &font_ui_18, 0);
-
-	// The folders scroll; the title and the buttons stay put.
-	pick_list = lv_obj_create(card);
-	lv_obj_remove_style_all(pick_list);
-	lv_obj_set_width(pick_list, lv_pct(100));
-	lv_obj_set_height(pick_list, LV_SIZE_CONTENT);
-	// What the panel leaves once the title, the note and the buttons are in.
-	lv_obj_set_style_max_height(pick_list, cfg->screen_height - cfg->top_bar_height - 2 * cfg->padding - PICK_CHROME_H,
-								0);
-	lv_obj_set_style_pad_row(pick_list, 6, 0);
-	lv_obj_set_flex_flow(pick_list, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_scroll_dir(pick_list, LV_DIR_VER);
-	lv_obj_set_scrollbar_mode(pick_list, LV_SCROLLBAR_MODE_AUTO);
-	lv_obj_add_event_cb(pick_list, pick_scroll_cb, LV_EVENT_SCROLL, NULL);
-
-	lv_obj_t *buttons = lv_obj_create(card);
-	lv_obj_remove_style_all(buttons);
-	lv_obj_set_size(buttons, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_column(buttons, 12, 0);
-	lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
-	pick_button(buttons, "cancel", false, pick_cancel_cb);
-	pick_scan_btn = pick_button(buttons, "scan", true, pick_scan_cb);
+// The whole card flips its switch, as a switch card does.
+static void pick_card_cb(lv_event_t *e) {
+	lv_obj_t *sw = lv_event_get_user_data(e);
+	if (!sw || lv_event_get_target(e) == sw) {
+		return;
+	}
+	if (lv_obj_has_state(sw, LV_STATE_CHECKED)) {
+		lv_obj_remove_state(sw, LV_STATE_CHECKED);
+	} else {
+		lv_obj_add_state(sw, LV_STATE_CHECKED);
+	}
+	lv_obj_send_event(sw, LV_EVENT_VALUE_CHANGED, NULL);
 }
 
 // Makes up to `n` more rows, after the ones already there.
 static void pick_append(int n) {
 	int last = pick_built + n < pick_count ? pick_built + n : pick_count;
 	for (int i = pick_built; i < last; i++) {
-		lv_obj_t *row = lv_btn_create(pick_list);
-		lv_obj_set_size(row, lv_pct(100), 60);
-		lv_obj_set_style_bg_color(row, theme()->surface_pressed, 0);
-		lv_obj_set_style_radius(row, 10, 0);
-		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_border_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 16, 0);
-		lv_obj_set_style_pad_column(row, 10, 0);
-		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-		lv_obj_set_scroll_on_focus(row, true);
-		lv_obj_add_event_cb(row, pick_row_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
-
-		lv_obj_t *folder = lv_image_create(row);
-		lv_image_set_src(folder, &icon_folder);
-		lv_obj_add_style(folder, &theme_style_icon, 0);
-
-		lv_obj_t *label = lv_label_create(row);
-		lv_label_set_text(label, pick_names[i]);
-		lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-		lv_obj_set_flex_grow(label, 1);
-		lv_obj_set_height(label, lv_font_get_line_height(&font_ui_22));
-		lv_obj_add_style(label, &theme_style_text, 0);
-		lv_obj_set_style_text_font(label, &font_ui_22, 0);
-
-		pick_marks[i] = lv_image_create(row);
-		lv_image_set_src(pick_marks[i], &icon_check);
-		lv_obj_add_style(pick_marks[i], &theme_style_icon, 0);
-		lv_obj_set_style_image_recolor(pick_marks[i], theme()->accent, 0);
-		lv_obj_set_style_image_recolor_opa(pick_marks[i], LV_OPA_COVER, 0);
-		lv_obj_set_style_image_opa(pick_marks[i], pick_on[i] ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+		lv_obj_t *card = sx_card_create(pick_list);
+		sx_card_title(card, pick_names[i]);
+		lv_obj_t *sw = sx_card_switch(card, pick_switch_cb);
+		lv_obj_set_user_data(sw, (void *)(intptr_t)i);
+		lv_obj_set_state(sw, LV_STATE_CHECKED, pick_on[i]);
+		sx_card_on_click(card, pick_card_cb, sw);
 	}
 	pick_built = last;
 }
@@ -407,46 +346,47 @@ static void pick_scroll_cb(lv_event_t *e) {
 	}
 }
 
-static void pick_fill(void) {
-	lv_obj_clean(pick_list);
+static void pick_rows_clean(void) {
+	// The note stays: it is the first child.
+	while (lv_obj_get_child_count(pick_list) > 1) {
+		lv_obj_delete(lv_obj_get_child(pick_list, -1));
+	}
 	pick_built = 0;
-	pick_append(PICK_BATCH);
 }
 
-void libraryscan_choose_folders(void) {
-	if (!pick_veil) {
-		pick_build();
-	}
+static void folders_load_start_cb(lv_event_t *e) {
+	(void)e;
+	pick_rows_clean();
 	pick_read_folders();
 	pick_load_selection();
-	pick_fill();
+	pick_append(PICK_BATCH);
 	lv_obj_scroll_to_y(pick_list, 0, LV_ANIM_OFF);
-	pick_paint();
-	lv_obj_set_hidden(pick_veil, false);
-	lv_obj_move_foreground(pick_veil);
 }
 
-// Both buttons sit at the same place at the bottom of the screen; only one is
-// ever visible.
-static lv_obj_t *make_button(lv_obj_t *parent, const char *text, lv_color_t colour, lv_event_cb_t cb,
-							 gui_config_t *cfg) {
-	lv_obj_t *button = lv_btn_create(parent);
-	lv_obj_set_size(button, 240, 68);
-	lv_obj_align(button, LV_ALIGN_BOTTOM_MID, 0, -(cfg->padding * 2));
-	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_bg_color(button, colour, 0);
-	lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
-	lv_obj_set_style_shadow_width(button, 0, 0);
-	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
+static void folders_unloaded_cb(lv_event_t *e) {
+	(void)e;
+	pick_rows_clean();
+	pick_clear();
+}
 
-	lv_obj_t *label = lv_label_create(button);
-	lv_label_set_text(label, tr(text));
-	lv_obj_set_style_text_font(label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(label, lv_color_white(), 0);
-	lv_obj_center(label);
+void libraryscan_open_folders(void) { switch_screen(libraryscan_folders_screen); }
 
-	return button;
+static void build_folders_page(gui_config_t *cfg) {
+	libraryscan_folders_screen = lv_obj_create(NULL);
+	pick_list = settingsrow_page(libraryscan_folders_screen, cfg, "libraryscan_folders");
+	settingsrow_title_corner_slots(settingsrow_page_title(libraryscan_folders_screen), cfg, 0);
+	lv_obj_t *note = lv_label_create(pick_list);
+	lv_obj_set_width(note, lv_pct(100));
+	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+	lv_obj_add_style(note, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(note, &font_ui_21, 0);
+	lv_obj_set_style_pad_hor(note, 6, 0);
+	lv_obj_set_style_pad_bottom(note, 4, 0);
+	lv_label_set_text(note, tr("libraryscan_folders_note"));
+	lv_obj_add_event_cb(pick_list, pick_scroll_cb, LV_EVENT_SCROLL, NULL);
+	lv_obj_add_event_cb(libraryscan_folders_screen, folders_load_start_cb, LV_EVENT_SCREEN_LOAD_START, NULL);
+	lv_obj_add_event_cb(libraryscan_folders_screen, folders_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+	switcher_attach_back_gesture(libraryscan_folders_screen);
 }
 
 // ---------------------------------------------------------------------------
@@ -555,55 +495,10 @@ static void boot_check_cb(lv_timer_t *timer) {
 
 void libraryscan_init(gui_config_t *cfg) {
 	sd_root = cfg->sd_root_path;
-	pick_cfg = cfg;
 	library_set_update_listener(update_listener);
 
-	lv_obj_add_style(libraryscan_screen, &theme_style_screen, 0);
-
-	// Centred: this page has no back chevron beside it to align with.
-	lv_obj_t *title = settingsrow_title(libraryscan_screen, cfg, "scan_2");
-	lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-
-	int content_top = settingsrow_content_top(cfg);
-
-	lv_obj_t *container = lv_obj_create(libraryscan_screen);
-	lv_obj_set_size(container, lv_pct(100), cfg->screen_height - content_top);
-	lv_obj_align(container, LV_ALIGN_TOP_LEFT, 0, content_top);
-	lv_obj_set_style_bg_opa(container, 0, 0);
-	lv_obj_set_style_border_width(container, 0, 0);
-	lv_obj_set_style_radius(container, 0, 0);
-	lv_obj_set_style_pad_all(container, cfg->padding, 0);
-	lv_obj_set_style_pad_gap(container, 10, 0);
-	lv_obj_set_scrollable(container, false);
-	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-	lv_obj_t *note = lv_image_create(container);
-	lv_image_set_src(note, &icon_music_note);
-	lv_obj_add_style(note, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(note, LV_OPA_COVER, 0);
-	lv_obj_set_style_pad_bottom(note, 16, 0);
-
-	// The count is the whole point of the page, so it gets the accent colour
-	// and the largest type on it.
-	count_label = lv_label_create(container);
-	lv_label_set_text(count_label, "0");
-	lv_obj_set_style_text_color(count_label, theme()->accent, 0);
-	lv_obj_set_style_text_font(count_label, &font_ui_32, 0);
-
-	status_label = lv_label_create(container);
-	lv_label_set_text(status_label, tr("libraryscan_tracks_found"));
-	lv_obj_add_style(status_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(status_label, &font_ui_26, 0);
-
-	// The two buttons share the foot of the page: cancel while the scan runs, OK
-	// once it is done.
-	cancel_button = make_button(libraryscan_screen, "cancel", lv_color_make(210, 66, 58), cancel_cb, cfg);
-	ok_button = make_button(libraryscan_screen, "ok", theme()->accent, ok_cb, cfg);
-	lv_obj_set_hidden(ok_button, true);
-
-	poll_timer = lv_timer_create(poll_cb, SCAN_POLL_MS, NULL);
-	lv_timer_pause(poll_timer);
+	build_scan_page(cfg);
+	build_folders_page(cfg);
 
 	// The card may have been written while the player was off.
 	lv_timer_t *boot_check = lv_timer_create(boot_check_cb, BOOT_CHECK_DELAY_MS, NULL);

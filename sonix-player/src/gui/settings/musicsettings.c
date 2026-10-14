@@ -1297,11 +1297,30 @@ static void screen_loaded_cb(lv_event_t *e) {
 	refresh_active_chevrons();
 }
 
-// The row asks which folders first; the scan page opens only from there,
-// which is why it carries no chevron.
+// The row starts the scan at once (2.0: no question before a scan) with the
+// folders chosen on their own page; an action, so no chevron.
 static void scan_row_cb(lv_event_t *e) {
 	(void)e;
 	libraryscan_choose_folders();
+}
+
+// Which of the card's folders the scan reads: the whole card, or how many.
+static lv_obj_t *scan_folders_value;
+
+static void scan_folders_refresh(void) {
+	int count = 0;
+	char **names = library_scan_folders(&count);
+	library_scan_folders_free(names, count);
+	if (count == 0) {
+		lv_label_set_text(scan_folders_value, tr("libraryscan_folders_all"));
+	} else {
+		lv_label_set_text_fmt(scan_folders_value, "%d", count);
+	}
+}
+
+static void scan_folders_cb(lv_event_t *e) {
+	(void)e;
+	libraryscan_open_folders();
 }
 
 static void album_chain_cb(lv_event_t *e) {
@@ -1376,6 +1395,7 @@ static void retagged_show(void) {
 // (libraryscan.c), so the switch is read again each time the page comes up.
 static void scan_page_loading_cb(lv_event_t *e) {
 	(void)e;
+	scan_folders_refresh();
 	lv_obj_set_state(detect_changes_switch, LV_STATE_CHECKED, library_detect_changes());
 	retagged_show();
 }
@@ -1498,7 +1518,7 @@ static void join_albums_cb(lv_event_t *e) {
 static void organize_leave_cb(lv_event_t *e) {
 	(void)e;
 	lv_obj_t *next = lv_screen_active();
-	if (!organize_changed || next == scan_screen || next == artistexceptions_screen) {
+	if (!organize_changed || next == scan_screen || next == artistexceptions_screen || next == libraryscan_folders_screen) {
 		return;
 	}
 	organize_changed = false;
@@ -1514,6 +1534,8 @@ static void build_scan_page(gui_config_t *cfg) {
 	// Detect changes reads again only what changed, so an index from before the
 	// scan timed tracks keeps no lengths until the scan is run.
 	option_note(container, "musicsettings_scan_lengths_note");
+	// What it reads: once asked before every scan, now a page of its own.
+	settingsrow_add(container, "libraryscan_folders", &scan_folders_value, scan_folders_cb, NULL);
 
 	settingsrow_toggle(container, "musicsettings_do_not_ignore_articles", &keep_articles_switch, keep_articles_cb);
 	if (!library_skip_articles()) {
