@@ -3429,7 +3429,13 @@ static void refresh_page_state(void) {
 	refresh_listening();
 }
 
+// The network watch, awake only while the page is up (wifi_watch_cb).
+static lv_timer_t *wifi_watch_timer;
+
 static void page_loaded_cb(lv_event_t *e) {
+	if (wifi_watch_timer) {
+		lv_timer_resume(wifi_watch_timer);
+	}
 	(void)e;
 	states_seen = podcaststate_revision();
 	refresh_page_state();
@@ -3475,8 +3481,10 @@ static void states_follow(void) {
 // follows it once a second, as the radio hub does; otherwise the notice stays
 // up until the section is left and entered again.
 static void wifi_watch_cb(lv_timer_t *timer) {
-	(void)timer;
 	if (lv_screen_active() != podcast_screen) {
+		// Off the page there is nothing to follow: asleep until the page is
+		// loaded again (page_loaded_cb), instead of a wake-up a second.
+		lv_timer_pause(timer);
 		return;
 	}
 	states_follow();
@@ -3906,7 +3914,7 @@ void podcastpage_init(gui_config_t *cfg) {
 	fetch_start_thread();
 
 	lv_timer_create(queue_watch_cb, 1000, NULL);
-	lv_timer_create(wifi_watch_cb, 1000, NULL);
+	wifi_watch_timer = lv_timer_create(wifi_watch_cb, 1000, NULL);
 	art_drop_timer = lv_timer_create(art_drop_cb, ART_DROP_DELAY_MS, NULL);
 	lv_timer_pause(art_drop_timer);
 	art_timer = lv_timer_create(art_poll_cb, 120, NULL);

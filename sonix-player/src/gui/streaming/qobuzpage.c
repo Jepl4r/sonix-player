@@ -1388,6 +1388,11 @@ static void queue_watch_cb(lv_timer_t *timer) {
 	if (list && shown_count > 0 && lv_screen_active() == list_screen && playing_update()) {
 		svclist_rebind(list);
 	}
+	// Never signed in and nothing of ours ever queued: nothing to watch, and
+	// this tick costs one comparison (as on the Subsonic page).
+	if (queued_count == 0 && !waiting_for_track && !qobuz_logged_in()) {
+		return;
+	}
 	// A queue that is a library list holds no cache files, and walking it here
 	// would be a database read per entry, once a second, for nothing. The
 	// bookkeeping below still has to run: something was very likely being

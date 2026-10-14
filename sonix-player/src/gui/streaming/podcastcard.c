@@ -2037,11 +2037,17 @@ static void states_refresh(page_t *p) {
 
 // Once a second while a page is in sight: the player sits over it as a sheet,
 // and closing the sheet does not load the page again.
+static lv_timer_t *states_timer;
+
 static void states_watch_cb(lv_timer_t *timer) {
-	(void)timer;
 	lv_obj_t *active = lv_screen_active();
 	page_t *p = active == podcastcard_screen ? &card_page : active == podcastcard_feed_screen ? &feed_page : NULL;
-	if (!p || player_sheet_is_open() || p->count == 0) {
+	if (!p) {
+		// Neither page is up: asleep until one is loaded again.
+		lv_timer_pause(timer);
+		return;
+	}
+	if (player_sheet_is_open() || p->count == 0) {
 		return;
 	}
 	if (podcaststate_revision() != p->states_seen) {
@@ -2050,6 +2056,7 @@ static void states_watch_cb(lv_timer_t *timer) {
 }
 
 static void card_loaded_cb(lv_event_t *e) {
+	lv_timer_resume(states_timer);
 	(void)e;
 	page_t *p = &card_page;
 	selection_stop(p);
@@ -2079,6 +2086,7 @@ static void feed_unloaded_cb(lv_event_t *e) {
 }
 
 static void feed_loaded_cb(lv_event_t *e) {
+	lv_timer_resume(states_timer);
 	(void)e;
 	page_t *p = &feed_page;
 	if (!feed_loaded && !feed_loading && open_feed.id > 0) {
@@ -2351,7 +2359,7 @@ void podcastcard_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(podcastcard_feed_screen, feed_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 
 	theme_register_refresh(repaint);
-	lv_timer_create(states_watch_cb, 1000, NULL);
+	states_timer = lv_timer_create(states_watch_cb, 1000, NULL);
 	hero_timer = lv_timer_create(hero_poll_cb, 100, NULL);
 	lv_timer_pause(hero_timer);
 }
