@@ -18,7 +18,14 @@
 #define CALL_TIMEOUT_MS 3000
 #define RETRY_MS 3000	 // between attempts to reach bluealsa on the bus
 #define TICK_MS 250		 // while waiting for the output to move over
-#define IDLE_WAIT_MS 600 // with nothing to bridge
+#define IDLE_WAIT_MS 600 // with a stream, between looks at the bus connection
+// With no stream at all -- Bluetooth off, wired listening, nothing paired --
+// there is nothing to look at: every change this thread acts on (a stream
+// named, a level, a reset, the stop) signals the condition it sleeps on, and
+// each is checked under the same lock just before the sleep, so none can slip
+// in between. It used to wake every 600 ms regardless, the dark screen
+// included; this is only a backstop.
+#define IDLE_NOTHING_MS 60000
 
 // How many more times a stream that answered nothing about its volume is
 // tried again on its own, RETRY_MS apart, before this side gives up on it
@@ -380,6 +387,7 @@ static void *btvolume_worker(void *unused) {
 				conn = NULL;
 			}
 			state = BTV_IDLE;
+			wait_ms = IDLE_NOTHING_MS;
 		} else if (!conn) {
 			if ((uint32_t)(now_ms() - last_try) >= RETRY_MS || last_try == 0) {
 				last_try = now_ms();

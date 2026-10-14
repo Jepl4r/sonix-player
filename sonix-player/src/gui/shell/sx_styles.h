@@ -51,4 +51,15 @@ lv_obj_t *sx_box(lv_obj_t *parent);
 // ellipsis when it does not fit its width.
 lv_obj_t *sx_label(lv_obj_t *parent, const lv_font_t *font, lv_style_t *colour_style);
 
+// Setters that leave the widget alone when it already shows the value. LVGL
+// invalidates on every set, the same value included (and a label is laid out
+// again), so a page refreshed from a poll -- the player's clock and buttons
+// twice a second, the status bar -- repainted the same pixels over themselves.
+// sx_set_text compares with what the label holds; a label that cuts its text
+// with an ellipsis holds the cut text, and is simply set again.
+void sx_set_text(lv_obj_t *label, const char *text);
+void sx_set_src(lv_obj_t *img, const void *src);
+// The image recoloured in `color` at full strength, as local style.
+void sx_set_recolor(lv_obj_t *img, lv_color_t color);
+
 #endif /* GUI_SX_STYLES_H */

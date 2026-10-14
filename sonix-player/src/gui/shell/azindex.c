@@ -54,10 +54,18 @@ static azindex_t *strips[MAX_STRIPS];
 static int strip_count;
 static lv_timer_t *timer;
 
+// The timer runs only while a strip or a letter is up (see timer_cb).
+static void timer_wake(void) {
+	if (timer && lv_timer_get_paused(timer)) {
+		lv_timer_resume(timer);
+	}
+}
+
 static void show_bar(azindex_t *ix, bool shown) {
 	if (shown) {
 		lv_obj_set_hidden(ix->bar, false);
 		lv_obj_move_foreground(ix->bar);
+		timer_wake();
 	} else {
 		lv_obj_set_hidden(ix->bar, true);
 	}
@@ -79,6 +87,7 @@ static void hint_show(azindex_t *ix, int slot) {
 	lv_obj_set_hidden(ix->hint, false);
 	lv_obj_move_foreground(ix->hint);
 	ix->hint_at = lv_tick_get();
+	timer_wake();
 }
 
 void azindex_set_rows(azindex_t *ix, const int first[LIBRARY_INDEX_BUCKETS], int count, bool descending) {
@@ -215,9 +224,10 @@ static void bar_cb(lv_event_t *e) {
 }
 
 // Takes the strip and the big letter away once nothing has asked for them for
-// a moment.
+// a moment. Stops itself once nothing is up, and showing either starts it
+// again: it used to run five times a second from the first strip built.
 static void timer_cb(lv_timer_t *t) {
-	(void)t;
+	bool up = false;
 	for (int i = 0; i < strip_count; i++) {
 		azindex_t *ix = strips[i];
 		if (!lv_obj_is_hidden(ix->bar) && lv_tick_elaps(ix->wanted_at) > HIDE_MS) {
@@ -226,6 +236,10 @@ static void timer_cb(lv_timer_t *t) {
 		if (!lv_obj_is_hidden(ix->hint) && lv_tick_elaps(ix->hint_at) > HINT_MS) {
 			lv_obj_set_hidden(ix->hint, true);
 		}
+		up = up || !lv_obj_is_hidden(ix->bar) || !lv_obj_is_hidden(ix->hint);
+	}
+	if (!up) {
+		lv_timer_pause(t);
 	}
 }
 
@@ -310,6 +324,7 @@ azindex_t *azindex_create(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t *list, i
 	strips[strip_count++] = ix;
 	if (!timer) {
 		timer = lv_timer_create(timer_cb, 200, NULL);
+		lv_timer_pause(timer); // until a strip is shown
 		power_pause_in_standby(timer);
 		sx_frame_on_body_change(fit_slot);
 	}

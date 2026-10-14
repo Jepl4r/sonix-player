@@ -1,6 +1,7 @@
 #include "scrolltext.h"
 
 #include "src/gui/fonts/fonts.h"
+#include "src/system/device/power.h"
 
 #include "lvgl/src/misc/lv_text_ap.h"
 
@@ -210,6 +211,7 @@ typedef struct {
 	lv_obj_t *label;
 	const fade_masks_t *masks; // NULL while the text fits, or no mask could be had
 	bool overflows;			   // the text does not fit: it scrolls, so it is paced
+	bool parked;			   // out of sight: clipped, not scrolling (see "Out of sight")
 } fade_label_t;
 
 static fade_label_t fade_labels[FADE_LABELS_MAX];
@@ -228,6 +230,7 @@ static fade_label_t *fade_entry(lv_obj_t *label) {
 	fade_labels[fade_label_count].label = label;
 	fade_labels[fade_label_count].masks = NULL;
 	fade_labels[fade_label_count].overflows = false;
+	fade_labels[fade_label_count].parked = false;
 	return &fade_labels[fade_label_count++];
 }
 
@@ -293,15 +296,79 @@ static void fade_pick(fade_label_t *entry) {
 	}
 }
 
+// ---------------------------------------------------------------------------
+// Out of sight
+//
+// A scrolling title never stops on its own: LVGL repeats the pass for ever,
+// and while any animation is alive its timer wakes the interface every 16 ms.
+// The labels here mostly live where they are not seen -- the player and the
+// screensaver are sheets on the top layer, hidden when down, the control
+// centre the same -- and a long title kept all of that going, plus this
+// file's own poll, at every moment of the day, the dark screen included.
+//
+// So the poll looks, for each scrolling label, whether it can be seen at all
+// (its screen shown, nothing above it hidden, the panel on), and one that
+// cannot is parked: put in LVGL's clip mode, which has no animation and which
+// LVGL does not start one in again when the text changes behind it. Being
+// drawn is the sure sign it is seen again: a hidden object coming back is
+// invalidated, a screen being loaded is drawn whole, the panel waking redraws
+// everything. Its draw event therefore takes it back to the scroll, by way of
+// an asynchronous call because nothing may be changed while a frame is drawn,
+// and the title starts again from its pause, like a fresh one.
+// ---------------------------------------------------------------------------
+
+static bool label_seen(lv_obj_t *label) { return power_screen_is_on() && lv_obj_is_visible(label); }
+
+static void fade_park(fade_label_t *entry) {
+	entry->parked = true;
+	lv_label_set_long_mode(entry->label, LV_LABEL_LONG_CLIP);
+}
+
+static void fade_unpark_async(void *data) {
+	lv_obj_t *label = data;
+	fade_label_t *entry = NULL;
+	for (int i = 0; i < fade_label_count; i++) {
+		if (fade_labels[i].label == label) {
+			entry = &fade_labels[i];
+			break;
+		}
+	}
+	if (!entry || !entry->parked) {
+		return;
+	}
+	entry->parked = false;
+	lv_label_set_long_mode(label, LV_LABEL_LONG_SCROLL_CIRCULAR);
+	if (entry->overflows && fade_timer) {
+		lv_timer_resume(fade_timer); // to pace the new animation, and to see it leave again
+	}
+}
+
+static void fade_draw_cb(lv_event_t *e) {
+	lv_obj_t *label = lv_event_get_target_obj(e);
+	for (int i = 0; i < fade_label_count; i++) {
+		if (fade_labels[i].label == label) {
+			if (fade_labels[i].parked) {
+				lv_async_call(fade_unpark_async, label);
+			}
+			return;
+		}
+	}
+}
+
 static void fade_poll_cb(lv_timer_t *timer) {
 	(void)timer;
 	bool any = false;
 	for (int i = 0; i < fade_label_count; i++) {
-		if (!fade_labels[i].overflows) {
+		fade_label_t *entry = &fade_labels[i];
+		if (!entry->overflows || entry->parked) {
+			continue;
+		}
+		if (!label_seen(entry->label)) {
+			fade_park(entry);
 			continue;
 		}
 		any = true;
-		fade_pick(&fade_labels[i]);
+		fade_pick(entry);
 	}
 	if (!any) {
 		lv_timer_pause(fade_timer);
@@ -351,6 +418,7 @@ static void fade_size_cb(lv_event_t *e) { fade_update(lv_event_get_target(e)); }
 // could land on the same address and inherit its state.
 static void fade_delete_cb(lv_event_t *e) {
 	lv_obj_t *label = lv_event_get_target(e);
+	lv_async_call_cancel(fade_unpark_async, label);
 	for (int i = 0; i < fade_label_count; i++) {
 		if (fade_labels[i].label != label) {
 			continue;
@@ -419,7 +487,18 @@ void scrolltext_apply(lv_obj_t *label) {
 
 	lv_obj_add_event_cb(label, fade_size_cb, LV_EVENT_SIZE_CHANGED, NULL);
 	lv_obj_add_event_cb(label, fade_delete_cb, LV_EVENT_DELETE, NULL);
+	lv_obj_add_event_cb(label, fade_draw_cb, LV_EVENT_DRAW_MAIN_BEGIN, NULL);
 	fade_update(label);
+
+	// Born out of sight, as nearly all of them are (a page being built, a
+	// sheet still down): parked from the start. Not only for the overflow
+	// measured above -- a label not laid out yet is zero wide, LVGL finds its
+	// placeholder text too long for that and starts a scroll that nothing
+	// ends while its page is never shown (AirPlay's and DLNA's titles).
+	fade_label_t *entry = fade_entry(label);
+	if (entry && !entry->parked && !label_seen(label)) {
+		fade_park(entry);
+	}
 }
 
 // `text` on one line: line breaks, tabs and other control characters become

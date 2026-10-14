@@ -11,6 +11,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/shell/onscreen.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
@@ -1241,6 +1242,35 @@ void keyboard_set_field(keyboard_t *kb, lv_obj_t *field) {
 // of accent, like a system text field's cursor.
 #define KB_CARET_WIDTH 3
 
+#define KB_CARET_BLINK_MS 900 // a calm blink
+
+// The blink runs only while the field's screen is shown (onscreen.h). LVGL
+// starts it when the field is made and never stops it, and most fields live on
+// pages built once and kept: each of them kept the animation timer, and so the
+// whole interface, waking sixty times a second wherever the user was. Setting
+// the caret where it already is is LVGL's one public way back into its blink.
+static const lv_style_selector_t kb_caret_parts[] = {LV_PART_CURSOR, LV_PART_CURSOR | LV_STATE_FOCUSED};
+
+static void kb_caret_blink_on(lv_obj_t *field) {
+	for (unsigned i = 0; i < sizeof(kb_caret_parts) / sizeof(kb_caret_parts[0]); i++) {
+		lv_obj_set_style_anim_duration(field, KB_CARET_BLINK_MS, kb_caret_parts[i]);
+	}
+	lv_textarea_set_cursor_pos(field, lv_textarea_get_cursor_pos(field));
+}
+
+// A zero blink time, not merely a deleted animation: LVGL restarts the blink
+// on every change of text or cursor, and fields on hidden pages are written
+// to (cleared, refilled), which would bring it straight back. With the time
+// at zero LVGL itself keeps it off and the caret plainly drawn.
+static void kb_caret_blink_off(lv_obj_t *field) {
+	for (unsigned i = 0; i < sizeof(kb_caret_parts) / sizeof(kb_caret_parts[0]); i++) {
+		lv_obj_set_style_anim_duration(field, 0, kb_caret_parts[i]);
+	}
+	// The blink is the only animation a field runs on its own; anything else
+	// aimed at it (a scroll) has no business going on for a page that is gone.
+	lv_anim_delete(field, NULL);
+}
+
 void keyboard_style_caret(lv_obj_t *field) {
 	if (!field) {
 		return;
@@ -1269,8 +1299,9 @@ void keyboard_style_caret(lv_obj_t *field) {
 		lv_obj_set_style_border_color(field, theme()->accent, parts[i]);
 		lv_obj_set_style_border_opa(field, LV_OPA_COVER, parts[i]);
 		lv_obj_set_style_border_width(field, KB_CARET_WIDTH, parts[i]);
-		lv_obj_set_style_anim_duration(field, 900, parts[i]); // a calm blink
 	}
+	// The blink time is set by these two, as the field is shown or not.
+	onscreen_bind(field, kb_caret_blink_on, kb_caret_blink_off);
 }
 
 // ---------------------------------------------------------------------------

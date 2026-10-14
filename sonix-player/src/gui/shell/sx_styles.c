@@ -1,6 +1,7 @@
 #include "sx_styles.h"
 
 #include <math.h>
+#include <string.h>
 
 #include "src/gui/shell/sx_palette.h"
 
@@ -161,4 +162,35 @@ lv_obj_t *sx_label(lv_obj_t *parent, const lv_font_t *font, lv_style_t *colour_s
 		lv_obj_add_style(label, colour_style, 0);
 	}
 	return label;
+}
+
+void sx_set_text(lv_obj_t *label, const char *text) {
+	if (!label || !text) {
+		return;
+	}
+	const char *now = lv_label_get_text(label);
+	if (!now || strcmp(now, text) != 0) {
+		lv_label_set_text(label, text);
+	}
+}
+
+void sx_set_src(lv_obj_t *img, const void *src) {
+	if (img && lv_image_get_src(img) != src) {
+		lv_image_set_src(img, src);
+	}
+}
+
+void sx_set_recolor(lv_obj_t *img, lv_color_t color) {
+	if (!img) {
+		return;
+	}
+	lv_style_value_t v;
+	if (lv_obj_get_local_style_prop(img, LV_STYLE_IMAGE_RECOLOR, &v, 0) != LV_STYLE_RES_FOUND ||
+		!lv_color_eq(v.color, color)) {
+		lv_obj_set_style_image_recolor(img, color, 0);
+	}
+	if (lv_obj_get_local_style_prop(img, LV_STYLE_IMAGE_RECOLOR_OPA, &v, 0) != LV_STYLE_RES_FOUND ||
+		v.num != LV_OPA_COVER) {
+		lv_obj_set_style_image_recolor_opa(img, LV_OPA_COVER, 0);
+	}
 }

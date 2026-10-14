@@ -738,11 +738,11 @@ static void apply_playback_status(audio_status_t status) {
 	// not resume, it reconnects -- so the button says stop while it is on.
 	// Stopped, it goes back to play: the station stays loaded, and pressing
 	// it opens a fresh connection to the same one.
-	lv_image_set_src(play_btn_icon,
-					 live_mode ? (playing ? &icon_stop : &icon_play) : (playing ? &icon_pause : &icon_play));
+	//
+	// This runs from every poll, twice a second: written only when it changes.
+	sx_set_src(play_btn_icon, live_mode ? (playing ? &icon_stop : &icon_play) : (playing ? &icon_pause : &icon_play));
 	// 2.0: the glyph on the white disc is the album's dark ink (np_ink).
-	lv_obj_set_style_image_recolor(play_btn_icon, sx_pal()->np_ink, 0);
-	lv_obj_set_style_image_recolor_opa(play_btn_icon, LV_OPA_COVER, 0);
+	sx_set_recolor(play_btn_icon, sx_pal()->np_ink);
 	np_pause_badge_update(playing);
 
 	// Keep polling either way, just less often when nothing is playing. The
@@ -856,10 +856,12 @@ static void update_queue_position(void) {
 		int index;
 		int count;
 		if (live_custom_nav && radio_list_position(&index, &count)) {
-			lv_label_set_text_fmt(queue_position_label, "%d/%d", index + 1, count);
+			char text[32];
+			snprintf(text, sizeof(text), "%d/%d", index + 1, count);
+			sx_set_text(queue_position_label, text);
 		} else {
 			// 2.0: a lone station says it is on air where a track says its place.
-			lv_label_set_text(queue_position_label, tr("np_on_air"));
+			sx_set_text(queue_position_label, tr("np_on_air"));
 		}
 		return;
 	}
@@ -868,11 +870,14 @@ static void update_queue_position(void) {
 	int index = playlist_current_index();
 	bool worth_saying = count > 1 && index >= 0 && !audiobook_mode && !dlna_owns_playback();
 
+	// From every poll: set only when it changes (sx_set_text).
 	if (!worth_saying) {
-		lv_label_set_text(queue_position_label, "");
+		sx_set_text(queue_position_label, "");
 		return;
 	}
-	lv_label_set_text_fmt(queue_position_label, "%d/%d", shown_queue_position(), count);
+	char text[32];
+	snprintf(text, sizeof(text), "%d/%d", shown_queue_position(), count);
+	sx_set_text(queue_position_label, text);
 }
 
 // Works out view_start and view_length for playback at `position` in a file
@@ -945,11 +950,13 @@ static void set_progress_label(double current_secs, double total_secs) {
 		}
 	}
 
+	// Set only when they change (sx_set_text): this runs twice a second, and
+	// the total never moves within a track.
 	formatDoubleSeconds(shown, progress_label_text, sizeof(progress_label_text));
-	lv_label_set_text(elapsed_label, progress_label_text);
+	sx_set_text(elapsed_label, progress_label_text);
 
 	formatDoubleSeconds(view_length, progress_label_text, sizeof(progress_label_text));
-	lv_label_set_text(remaining_label, progress_label_text);
+	sx_set_text(remaining_label, progress_label_text);
 
 	// Written from here because this is the one place that runs on every poll
 	// and on every track change, which is exactly when the answer can move.
@@ -5108,8 +5115,10 @@ static void np_paint_backgrounds(void) {
 	lv_obj_set_style_bg_color(player_menu, want[3], 0);
 	lv_obj_set_style_bg_image_src(player_screen, page_strip, 0);
 	lv_obj_set_style_bg_image_tiled(player_screen, true, 0);
-	lv_obj_set_style_bg_image_src(player_menu, panel_strip, 0);
-	lv_obj_set_style_bg_image_tiled(player_menu, true, 0);
+	// The panel's strip is drawn by sx_gradient_paint() (attached where the
+	// panel is made), which reads np_panel_strip: rounded corners make LVGL's
+	// own tiled background far too dear for the panel (sx_palette.h).
+	lv_obj_invalidate(player_menu);
 	// The old strips only once nothing points at them.
 	sx_gradient_destroy(np_page_strip);
 	sx_gradient_destroy(np_panel_strip);
@@ -6326,6 +6335,7 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_shadow_width(player_menu, 0, 0);
 	lv_obj_set_style_radius(player_menu, SX_NP_PANEL_R, 0);
 	lv_obj_set_style_pad_hor(player_menu, NP_PANEL_PAD_H, 0);
+	sx_gradient_paint(player_menu, &np_panel_strip);
 	menu_style_for_layout();
 	lv_obj_set_scrollable(player_menu, false);
 	// Pulled down, the panel takes the player with it, as the artwork does.

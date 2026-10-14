@@ -175,9 +175,10 @@ void covertone_set_listener(void (*changed)(void));
 // Plumbing: called by main.c and library.c, not by pages.
 // ---------------------------------------------------------------------------
 
-// UI thread, once, after LVGL is up: notes which thread the UI is, and starts
-// the watcher (a 100 ms LVGL timer) that pauses the worker while a finger is
-// down, a list scrolls or a screen is being loaded.
+// UI thread, once, after LVGL and its input devices are up: notes which thread
+// the UI is, and sets up the watcher (a 100 ms LVGL timer, started by a touch
+// and stopping itself after) that pauses the worker while a finger is down, a
+// list scrolls or a screen is being loaded.
 void covertone_ui_init(void);
 
 // The library index at `db_path` has just been opened (library_open): the

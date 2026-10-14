@@ -102,6 +102,54 @@ static lv_obj_t *library_icon;	 // Detect changes at work, or just done
 static lv_timer_t *library_timer; // takes the check glyph away
 static lv_obj_t *sonixlink_icon; // shown while a phone is driving the player
 static void refresh_play_icon(const device_state_t *state);
+
+// ---------------------------------------------------------------------------
+// Writing only what changed
+//
+// The bar is refreshed from polls -- the player's progress poll every half
+// second while playing, the radios every two seconds, volume and battery
+// every five -- and nearly every refresh finds what was already there. LVGL
+// does not know that: setting an image's source, a style property or a text
+// invalidates the widget and repaints it every time, the same glyph over
+// itself (a frame a second on a home page doing nothing, five on the player).
+// These write only a value that differs. Where the theme's own style should
+// come back, the local one is removed only if there is one to remove.
+// ---------------------------------------------------------------------------
+
+static void bar_set_src(lv_obj_t *img, const void *src) {
+	if (lv_image_get_src(img) != src) {
+		lv_image_set_src(img, src);
+	}
+}
+
+static void bar_set_hidden(lv_obj_t *obj, bool hidden) {
+	if (lv_obj_is_hidden(obj) != hidden) {
+		lv_obj_set_hidden(obj, hidden);
+	}
+}
+
+static void bar_set_local(lv_obj_t *obj, lv_style_prop_t prop, lv_style_value_t value) {
+	lv_style_value_t now;
+	if (lv_obj_get_local_style_prop(obj, prop, &now, 0) == LV_STYLE_RES_FOUND && memcmp(&now, &value, sizeof(now)) == 0) {
+		return;
+	}
+	lv_obj_set_local_style_prop(obj, prop, value, 0);
+}
+
+static void bar_remove_local(lv_obj_t *obj, lv_style_prop_t prop) {
+	lv_style_value_t now;
+	if (lv_obj_get_local_style_prop(obj, prop, &now, 0) == LV_STYLE_RES_FOUND) {
+		lv_obj_remove_local_style_prop(obj, prop, 0);
+	}
+}
+
+static void bar_set_recolor(lv_obj_t *obj, lv_color_t color) {
+	bar_set_local(obj, LV_STYLE_IMAGE_RECOLOR, (lv_style_value_t){.color = color});
+}
+
+static void bar_set_image_opa(lv_obj_t *obj, lv_opa_t opa) {
+	bar_set_local(obj, LV_STYLE_IMAGE_OPA, (lv_style_value_t){.num = opa});
+}
 static void refresh_sonixlink_icon(void);
 static lv_obj_t *clock_label;
 static lv_obj_t *moon_icon; // 2.0: a sleep timer is set (refresh_moon)
@@ -263,14 +311,18 @@ void topbar_refresh_volume(int percent) {
 		percent = 100;
 	}
 
-	lv_label_set_text_fmt(vol_label, "%d", percent);
+	char text[8];
+	snprintf(text, sizeof(text), "%d", percent);
+	if (strcmp(lv_label_get_text(vol_label), text) != 0) {
+		lv_label_set_text(vol_label, text);
+	}
 
 	// Past this threshold the number turns red, warning that the next steps are
 	// the loud ones. The volume pop-up uses the same threshold.
 	if (percent > VOLUME_WARN_PERCENT) {
-		lv_obj_set_style_text_color(vol_label, VOLUME_WARN_COLOR, 0);
+		bar_set_local(vol_label, LV_STYLE_TEXT_COLOR, (lv_style_value_t){.color = VOLUME_WARN_COLOR});
 	} else {
-		lv_obj_remove_local_style_prop(vol_label, LV_STYLE_TEXT_COLOR, 0);
+		bar_remove_local(vol_label, LV_STYLE_TEXT_COLOR);
 	}
 
 	const lv_image_dsc_t *icon = &icon_volume_high;
@@ -279,7 +331,7 @@ void topbar_refresh_volume(int percent) {
 	} else if (percent < VOLUME_HIGH_PERCENT) {
 		icon = &icon_volume_low;
 	}
-	lv_image_set_src(vol_icon, icon);
+	bar_set_src(vol_icon, icon);
 }
 
 // Shows or hides the headphone glyph to match what is in the jacks. Four times
@@ -428,9 +480,9 @@ void topbar_refresh_radios(void) {
 		// bringing the radio up takes a second or two during which the status
 		// still reads OFF.
 		if (!wifi_get_enabled()) {
-			lv_obj_set_hidden(wifi_icon, true);
+			bar_set_hidden(wifi_icon, true);
 		} else {
-			lv_obj_set_hidden(wifi_icon, false);
+			bar_set_hidden(wifi_icon, false);
 
 			if (status.state == WIFI_STATE_CONNECTED) {
 				// Connected: the arc shows the signal strength.
@@ -442,14 +494,14 @@ void topbar_refresh_radios(void) {
 				} else if (status.bars == 2) {
 					glyph = &icon_wifi_high;
 				}
-				lv_image_set_src(wifi_icon, glyph);
-				lv_obj_set_style_image_opa(wifi_icon, LV_OPA_COVER, 0);
+				bar_set_src(wifi_icon, glyph);
+				bar_set_image_opa(wifi_icon, LV_OPA_COVER);
 			} else {
 				// On but attached to nothing: the full arc, faded. The empty
 				// glyph is a single dot at this size and reads as a speck of dust
 				// rather than a radio.
-				lv_image_set_src(wifi_icon, &icon_wifi_max);
-				lv_obj_set_style_image_opa(wifi_icon, RADIO_IDLE_OPA, 0);
+				bar_set_src(wifi_icon, &icon_wifi_max);
+				bar_set_image_opa(wifi_icon, RADIO_IDLE_OPA);
 			}
 		}
 	}
@@ -460,11 +512,10 @@ void topbar_refresh_radios(void) {
 		// status bar that stays empty for all of them looks like the switch did
 		// nothing.
 		if (!bluetooth_get_enabled()) {
-			lv_obj_set_hidden(bt_icon, true);
+			bar_set_hidden(bt_icon, true);
 		} else {
-			lv_obj_set_hidden(bt_icon, false);
-			lv_obj_set_style_image_opa(bt_icon,
-									   bluetooth_get_state() == BT_STATE_CONNECTED ? LV_OPA_COVER : RADIO_IDLE_OPA, 0);
+			bar_set_hidden(bt_icon, false);
+			bar_set_image_opa(bt_icon, bluetooth_get_state() == BT_STATE_CONNECTED ? LV_OPA_COVER : RADIO_IDLE_OPA);
 
 			// A local colour while a codec is known, and the shared icon style
 			// back when it is not: a radio that is merely on has no codec to
@@ -473,11 +524,11 @@ void topbar_refresh_radios(void) {
 			lv_color_t color;
 			bt_current_codec(codec, sizeof(codec));
 			if (codec[0] && bt_codec_color(codec, &color)) {
-				lv_obj_set_style_image_recolor(bt_icon, color, 0);
-				lv_obj_set_style_image_recolor_opa(bt_icon, LV_OPA_COVER, 0);
+				bar_set_recolor(bt_icon, color);
+				bar_set_local(bt_icon, LV_STYLE_IMAGE_RECOLOR_OPA, (lv_style_value_t){.num = LV_OPA_COVER});
 			} else {
-				lv_obj_remove_local_style_prop(bt_icon, LV_STYLE_IMAGE_RECOLOR, 0);
-				lv_obj_remove_local_style_prop(bt_icon, LV_STYLE_IMAGE_RECOLOR_OPA, 0);
+				bar_remove_local(bt_icon, LV_STYLE_IMAGE_RECOLOR);
+				bar_remove_local(bt_icon, LV_STYLE_IMAGE_RECOLOR_OPA);
 			}
 		}
 	}
@@ -496,9 +547,9 @@ static void refresh_sonixlink_icon(void) {
 		return;
 	}
 	if (sonixlink_is_connected()) {
-		lv_obj_set_hidden(sonixlink_icon, false);
+		bar_set_hidden(sonixlink_icon, false);
 	} else {
-		lv_obj_set_hidden(sonixlink_icon, true);
+		bar_set_hidden(sonixlink_icon, true);
 	}
 }
 
@@ -587,9 +638,9 @@ static void refresh_play_icon(const device_state_t *state) {
 	airplay_state_t ap;
 	airplay_get_state(&ap);
 	if (ap.playing) {
-		lv_image_set_src(play_icon, &icon_airplay_status);
-		lv_obj_remove_local_style_prop(play_icon, LV_STYLE_IMAGE_RECOLOR, 0);
-		lv_obj_set_hidden(play_icon, false);
+		bar_set_src(play_icon, &icon_airplay_status);
+		bar_remove_local(play_icon, LV_STYLE_IMAGE_RECOLOR);
+		bar_set_hidden(play_icon, false);
 		return;
 	}
 
@@ -600,9 +651,9 @@ static void refresh_play_icon(const device_state_t *state) {
 	// so the two disagreed on every screen. A paused track is still there in
 	// the mini player.
 	if (state->status == AUDIO_STATUS_PLAYING) {
-		lv_image_set_src(play_icon, &icon_pause_status);
+		bar_set_src(play_icon, &icon_pause_status);
 	} else {
-		lv_obj_set_hidden(play_icon, true);
+		bar_set_hidden(play_icon, true);
 		return;
 	}
 
@@ -611,11 +662,11 @@ static void refresh_play_icon(const device_state_t *state) {
 	// going. A fixed Bluetooth blue rather than the accent colour, because it
 	// means wireless, not active.
 	if (state->status == AUDIO_STATUS_PLAYING && bluetooth_audio_active()) {
-		lv_obj_set_style_image_recolor(play_icon, lv_color_make(0, 122, 255), 0);
+		bar_set_recolor(play_icon, lv_color_make(0, 122, 255));
 	} else {
-		lv_obj_remove_local_style_prop(play_icon, LV_STYLE_IMAGE_RECOLOR, 0);
+		bar_remove_local(play_icon, LV_STYLE_IMAGE_RECOLOR);
 	}
-	lv_obj_set_hidden(play_icon, false);
+	bar_set_hidden(play_icon, false);
 }
 
 // The things noticed with the hands, on their own fast timer: what is in the

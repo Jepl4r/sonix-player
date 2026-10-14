@@ -1113,8 +1113,17 @@ void covertone_pause(bool paused) {
 // The UI thread's watcher: a finger on the screen, a list still moving under
 // its own momentum, or a screen sliding in all mean the card and the
 // processor are better left alone for a moment.
+//
+// It runs only from a touch until all three are over, not all the time: it
+// used to poll ten times a second for the whole life of the player, screen
+// off and pocket included. A press starts it (ui_press_cb); while it finds
+// the interface busy it keeps the hold topped up, and once it does not it
+// stops itself until the next press. A list thrown by the finger is still
+// scrolling when the finger lifts, and the transitions are started by taps,
+// so both fall inside a run.
+static lv_timer_t *ui_watch_timer;
+
 static void ui_watch_cb(lv_timer_t *timer) {
-	(void)timer;
 	bool busy = false;
 	for (lv_indev_t *indev = lv_indev_get_next(NULL); indev && !busy; indev = lv_indev_get_next(indev)) {
 		if (lv_indev_get_type(indev) != LV_INDEV_TYPE_POINTER) {
@@ -1128,13 +1137,30 @@ static void ui_watch_cb(lv_timer_t *timer) {
 	}
 	if (busy) {
 		ui_busy_until_ms = mono_ms() + UI_BUSY_HOLD_MS;
+	} else {
+		lv_timer_pause(timer); // the hold set last runs out by itself
+	}
+}
+
+static void ui_press_cb(lv_event_t *e) {
+	(void)e;
+	ui_busy_until_ms = mono_ms() + UI_BUSY_HOLD_MS;
+	if (ui_watch_timer && lv_timer_get_paused(ui_watch_timer)) {
+		lv_timer_resume(ui_watch_timer);
+		lv_timer_reset(ui_watch_timer);
 	}
 }
 
 void covertone_ui_init(void) {
 	ui_thread = pthread_self();
 	ui_thread_known = true;
-	lv_timer_create(ui_watch_cb, 100, NULL);
+	ui_watch_timer = lv_timer_create(ui_watch_cb, 100, NULL);
+	lv_timer_pause(ui_watch_timer);
+	for (lv_indev_t *indev = lv_indev_get_next(NULL); indev; indev = lv_indev_get_next(indev)) {
+		if (lv_indev_get_type(indev) == LV_INDEV_TYPE_POINTER) {
+			lv_indev_add_event_cb(indev, ui_press_cb, LV_EVENT_PRESSED, NULL);
+		}
+	}
 }
 
 static bool on_ui_thread(void) { return ui_thread_known && pthread_equal(pthread_self(), ui_thread); }

@@ -157,6 +157,20 @@ typedef struct {
 lv_draw_buf_t *sx_gradient_create(int32_t w, int32_t h, const sx_grad_stop_t *stops, int count);
 void sx_gradient_destroy(lv_draw_buf_t *strip);
 
+// The strip on an object with rounded corners. Not as its background image:
+// LVGL draws a tiled image under a corner radius line by line through a
+// radius mask, over every tile of the WHOLE object for every frame that
+// touches any of it -- the player's panel spent 10,000 masked lines on each
+// step of the title scrolling across 18,000 of its pixels, four times what
+// the title itself cost. This draws the strip from the object's own draw
+// event, only over the part of the object being redrawn, through the mask
+// only in the bands of the corners and with plain copies everywhere else.
+// `slot` points at the caller's strip pointer, read at every draw, so a new
+// strip needs no call here, only lv_obj_invalidate(obj); a NULL strip draws
+// nothing, and so does a transparent bg_opa or bg_image_opa. Set the object's
+// bg_color as usual (what the strip is drawn on). UI thread only.
+void sx_gradient_paint(lv_obj_t *obj, lv_draw_buf_t *const *slot);
+
 // ---------------------------------------------------------------------------
 // For theme.c only
 // ---------------------------------------------------------------------------

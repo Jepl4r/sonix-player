@@ -64,6 +64,7 @@
 #include "src/system/core/logging.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/library/playlists.h"
+#include "src/system/device/perfstat.h"
 #include "src/system/device/power.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/device/screenshot.h"
@@ -962,6 +963,8 @@ static void install_signal_guards(void) {
 #ifdef HOST_BUILD
 #include <SDL2/SDL.h>
 
+#include "lvgl/src/display/lv_display_private.h"
+
 #define GET_MUSIC_DIR() (snprintf((char[256]){0}, 256, "%s/Music", getenv("HOME") ? getenv("HOME") : ""))
 #else
 #include <fcntl.h>
@@ -1153,10 +1156,18 @@ static lv_display_t *init_host_display(void) {
 	int width = 0, height = 0;
 	panel_size(&width, &height, 0, 0); // the window is made from it: nothing to ask
 
+	lv_timer_t *timers_before = lv_timer_get_next(NULL);
 	lv_display_t *disp = lv_sdl_window_create(width, height);
 	if (!disp) {
 		fprintf(stderr, "Error: Failed to create SDL2 window\n");
 		return NULL;
+	}
+	// SDL's event pump, a 5 ms timer the device does not have: left out of the
+	// wake-up statistics (perfstat.h). New timers go to the head of the list.
+	for (lv_timer_t *t = lv_timer_get_next(NULL); t && t != timers_before; t = lv_timer_get_next(t)) {
+		if (t != disp->refr_timer) {
+			perfstat_ignore_timer(t);
+		}
 	}
 
 	// Non-resizeable, which also makes tiling window managers float it.
@@ -2517,7 +2528,7 @@ int main(int argc, char **argv) {
 	lv_timer_create(tls_preload_timer_cb, 1000, NULL);
 
 #ifdef HOST_BUILD
-	lv_timer_create(host_shot_poll_cb, 200, NULL); // see host_shot_poll_cb
+	perfstat_ignore_timer(lv_timer_create(host_shot_poll_cb, 200, NULL)); // see host_shot_poll_cb; not the device's
 #endif
 
 	// The media player bluez shows to the headphones. After gui_init, because
@@ -2618,10 +2629,15 @@ int main(int argc, char **argv) {
 	// bridge timer polls fast in that case.
 	watchdog_start();
 
+	// [debug] perf_stats: wake-up and frame accounting in the log (perfstat.h).
+	perfstat_init(disp);
+
 	printf("Entering main event loop...\n");
 	while (running) {
 		ui_heartbeat++;
+		perfstat_pass_begin();
 		uint32_t time_till_next = lv_timer_handler();
+		perfstat_pass_end();
 		if (time_till_next > MAIN_LOOP_MAX_SLEEP_MS) {
 			time_till_next = MAIN_LOOP_MAX_SLEEP_MS; // also catches LV_NO_TIMER_READY
 		}
@@ -2632,7 +2648,9 @@ int main(int argc, char **argv) {
 			{.fd = gui_post_wake_fd(), .events = POLLIN},
 			{.fd = touch_poll_fd(), .events = POLLIN},
 		};
-		if (poll(fds, 2, (int)time_till_next) > 0) {
+		int ready = poll(fds, 2, (int)time_till_next);
+		perfstat_woke(ready > 0 && (fds[0].revents & POLLIN), ready > 0 && (fds[1].revents & POLLIN));
+		if (ready > 0) {
 			if (fds[1].revents & (POLLERR | POLLHUP | POLLNVAL)) {
 				// The node went away or broke: stop watching it rather than
 				// spin on an error that will be reported forever, and go back
