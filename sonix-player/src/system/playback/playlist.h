@@ -273,4 +273,31 @@ playback_mode_t playlist_get_mode(void);
 // NORMAL) and returns the new mode.
 playback_mode_t playlist_cycle_mode(void);
 
+// ---------------------------------------------------------------------------
+// Undo (UI 2.0): every change to the queue made from a list comes with a toast
+// offering to take it back for a few seconds.
+//
+// playlist_queue_paths_undoable() is playlist_queue_paths() that also notes
+// what it did; playlist_queue_undo() takes exactly that addition out again
+// and puts the "play next" chain and the custom flag back as they were.
+// It refuses (false) once anything else has changed the queue since, once one
+// of the added tracks has come up, and for an addition that made the queue
+// out of nothing (there was no queue to go back to). UI thread, like the rest.
+// ---------------------------------------------------------------------------
+typedef struct {
+	bool valid;
+	bool was_empty;
+	bool custom;
+	bool chain_valid;
+	size_t first_new;
+	size_t added;
+	size_t chain_from;
+	size_t chain_slot;
+	unsigned revision;
+} playlist_queue_undo_t;
+
+int playlist_queue_paths_undoable(const char *const *paths, int count, playlist_queue_where_t where,
+								  playlist_queue_undo_t *undo);
+bool playlist_queue_undo(const playlist_queue_undo_t *undo);
+
 #endif // PLAYLIST_H

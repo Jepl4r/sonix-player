@@ -1870,3 +1870,71 @@ bool playlist_next_folder(const char *root, const char *folder, char *out, size_
 	fprintf(stderr, "playlist: %d folders after '%s' and none of them holds a track\n", FOLDER_WALK_MAX, folder);
 	return false;
 }
+
+// ---------------------------------------------------------------------------
+// Undoing an addition (UI 2.0's toast with "Undo")
+// ---------------------------------------------------------------------------
+
+int playlist_queue_paths_undoable(const char *const *list, int count, playlist_queue_where_t where,
+								  playlist_queue_undo_t *undo) {
+	if (undo) {
+		memset(undo, 0, sizeof(*undo));
+		undo->was_empty = entry_count == 0 || !order;
+		undo->first_new = entry_count;
+		undo->custom = custom_queue;
+		undo->chain_valid = chain_valid;
+		undo->chain_from = chain_from;
+		undo->chain_slot = chain_slot;
+	}
+	int added = playlist_queue_paths(list, count, where);
+	if (undo) {
+		undo->added = added > 0 ? (size_t)added : 0;
+		undo->revision = revision;
+		undo->valid = added > 0 && !undo->was_empty;
+	}
+	return added;
+}
+
+bool playlist_queue_undo(const playlist_queue_undo_t *undo) {
+	// Only the very change it was made for: anything since -- another addition,
+	// a removal, a new deal, a new queue -- has moved the revision, and the
+	// entries it would take out may no longer be the ones it added.
+	if (!undo || !undo->valid || undo->added == 0 || undo->revision != revision || !order ||
+		undo->first_new + undo->added != entry_count || undo->first_new < ix_count) {
+		return false;
+	}
+	size_t first = undo->first_new;
+	size_t last = first + undo->added; // exclusive
+
+	// None of them may have come up yet: the one playing cannot be taken out,
+	// and one already heard is history the queue page shows.
+	for (size_t s = 0; s <= pos && s < entry_count; s++) {
+		if (order[s] >= first && order[s] < last) {
+			return false;
+		}
+	}
+
+	size_t kept = 0;
+	for (size_t s = 0; s < entry_count; s++) {
+		if (order[s] < first || order[s] >= last) {
+			order[kept++] = order[s];
+		}
+	}
+	// `pos` stays: everything taken out was after it.
+	for (size_t k = first; k < last; k++) {
+		free(paths[k - ix_count]);
+		paths[k - ix_count] = NULL;
+	}
+	entry_count = first;
+	for (int i = 0; i < PATH_CACHE_SLOTS; i++) {
+		if (path_cache[i].valid && path_cache[i].entry >= first) {
+			path_cache[i].valid = false;
+		}
+	}
+	custom_queue = undo->custom;
+	chain_valid = undo->chain_valid;
+	chain_from = undo->chain_from;
+	chain_slot = undo->chain_slot;
+	revision++;
+	return true;
+}
