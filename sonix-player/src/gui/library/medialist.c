@@ -4056,10 +4056,13 @@ static void album_paint(panel_t *p) {
 		lv_obj_set_style_bg_color(p->head_bar, pal->album_grad[0], 0);
 	}
 	// The mini player's band stands on the page's colour where it is (the
-	// gradient between its 380 and 900 px stops), not on the theme's page.
+	// gradient between its 380 and 900 px stops), not on the theme's page --
+	// the colour of the gradient where the band begins, so there is no step at
+	// its top edge (taken at the band's middle it was a darker stripe across
+	// the page); below that edge it is only the screen's last 88 px.
 	lv_obj_t *mini = sx_mini_obj();
 	if (mini) {
-		int y = (int)p->cfg->screen_height - SX_MINI_SLOT_H / 2;
+		int y = (int)p->cfg->screen_height - SX_MINI_SLOT_H;
 		int pct = y <= GRAD_Y1 ? 0 : y >= GRAD_Y2 ? 100 : (y - GRAD_Y1) * 100 / (GRAD_Y2 - GRAD_Y1);
 		lv_obj_set_style_bg_color(mini, sx_mix(pal->album_grad[2], pal->album_grad[1], (uint8_t)pct), 0);
 	}
