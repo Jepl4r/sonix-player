@@ -12,6 +12,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/lang.h"
 
@@ -181,7 +182,7 @@ static void build_graph(lv_obj_t *parent) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, 236);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 14, 0);
@@ -432,7 +433,7 @@ static void build_band_page(gui_config_t *cfg) {
 	lv_obj_set_width(shape_card, lv_pct(100));
 	lv_obj_set_height(shape_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(shape_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(shape_card, 12, 0);
+	lv_obj_set_style_radius(shape_card, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(shape_card, 0, 0);
 	lv_obj_set_style_shadow_width(shape_card, 0, 0);
 	lv_obj_set_style_pad_all(shape_card, 18, 0);

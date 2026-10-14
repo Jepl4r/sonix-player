@@ -15,6 +15,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/core/config.h"
 #include "src/system/device/factoryreset.h"
 #include "src/system/audio/headset.h"
@@ -249,7 +250,7 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 	lv_obj_set_width(sd_card, lv_pct(100));
 	lv_obj_set_height(sd_card, 116);
 	lv_obj_add_style(sd_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(sd_card, 12, 0);
+	lv_obj_set_style_radius(sd_card, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(sd_card, 0, 0);
 	lv_obj_set_style_shadow_width(sd_card, 0, 0);
 	lv_obj_set_style_pad_hor(sd_card, 20, 0);

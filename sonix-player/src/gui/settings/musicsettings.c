@@ -24,6 +24,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/audio/audio.h"
@@ -929,7 +930,7 @@ static void build_mseb_page(gui_config_t *cfg) {
 		lv_obj_set_width(card, lv_pct(100));
 		lv_obj_set_height(card, 104);
 		lv_obj_add_style(card, &theme_style_card, 0);
-		lv_obj_set_style_radius(card, 12, 0);
+		lv_obj_set_style_radius(card, SX_CARD_R, 0);
 		lv_obj_set_style_border_width(card, 0, 0);
 		lv_obj_set_style_shadow_width(card, 0, 0);
 		lv_obj_set_style_pad_hor(card, 20, 0);
@@ -1133,7 +1134,7 @@ static void build_eq_page(gui_config_t *cfg) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, 360);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 14, 0);

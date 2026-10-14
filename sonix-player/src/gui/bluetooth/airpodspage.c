@@ -10,6 +10,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/bluetooth/airpods.h"
 #include "src/system/core/lang.h"
 
@@ -394,7 +395,7 @@ static void build_tabbar(lv_obj_t *container) {
 	lv_obj_set_width(tabbar, lv_pct(100));
 	lv_obj_set_height(tabbar, LV_SIZE_CONTENT);
 	lv_obj_add_style(tabbar, &theme_style_card, 0);
-	lv_obj_set_style_radius(tabbar, 12, 0);
+	lv_obj_set_style_radius(tabbar, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(tabbar, 0, 0);
 	lv_obj_set_style_shadow_width(tabbar, 0, 0);
 	lv_obj_set_style_pad_all(tabbar, 10, 0);
@@ -452,7 +453,7 @@ void airpodspage_init(gui_config_t *cfg) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_ver(card, 22, 0);

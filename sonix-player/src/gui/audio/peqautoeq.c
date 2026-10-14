@@ -20,6 +20,8 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/sx_tokens.h"
+#include "src/gui/shell/sx_styles.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
@@ -808,9 +810,12 @@ static void build_pages(gui_config_t *config) {
 	lv_textarea_set_placeholder_text(search_field, tr("peq_autoeq_headphones"));
 	lv_obj_set_size(search_field, lv_pct(100), 62);
 	lv_obj_add_style(search_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(search_field, 12, 0);
+	// The 2.0 input: a pill on the surface.
+	lv_obj_add_style(search_field, &sx_style_surface, 0);
+	lv_obj_set_style_radius(search_field, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_border_width(search_field, 0, 0);
 	lv_obj_set_style_pad_all(search_field, 14, 0);
+	lv_obj_set_style_pad_hor(search_field, 22, 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 

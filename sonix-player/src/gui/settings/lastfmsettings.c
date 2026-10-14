@@ -11,6 +11,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/audio/audio.h"
 #include "src/system/core/lang.h"
 #include "src/system/lastfm/lastfm.h"
@@ -231,7 +232,7 @@ static lv_obj_t *make_field(lv_obj_t *parent, gui_config_t *cfg, const char *pla
 	lv_obj_set_scrollbar_mode(field, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_align(field, LV_ALIGN_TOP_LEFT, cfg->padding, y);
 	lv_obj_add_style(field, &theme_style_card, 0);
-	lv_obj_set_style_radius(field, 12, 0);
+	lv_obj_set_style_radius(field, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(field, 0, 0);
 	lv_obj_set_style_shadow_width(field, 0, 0);
 	lv_obj_set_style_pad_all(field, 14, 0);
