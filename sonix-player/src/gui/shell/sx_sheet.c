@@ -446,11 +446,19 @@ static void fill(void) {
 	// The one colour set by hand, read again on every show.
 	lv_obj_set_style_bg_color(handle, theme()->text_secondary, 0);
 
-	// The list takes what the panel has left once the rest is laid out.
+	// The list takes what the panel has left once the rest is laid out --
+	// measured with neither of the two capped (Phase 2 fix: with the panel
+	// already at its own limit, the difference came out too small, the list
+	// ran on below the screen and did not scroll; a player's menu of eleven
+	// lines lost its last two).
+	int32_t panel_max = screen_h - SX_STATUSBAR_H - TOP_MARGIN + SX_SHEET_R;
+	lv_obj_set_style_max_height(panel, LV_COORD_MAX, 0);
+	lv_obj_set_style_max_height(list, LV_COORD_MAX, 0);
 	lv_obj_update_layout(panel);
 	int32_t rest = lv_obj_get_height(panel) - lv_obj_get_height(list);
-	int32_t room = screen_h - SX_STATUSBAR_H - TOP_MARGIN + SX_SHEET_R - rest;
+	int32_t room = panel_max - rest;
 	lv_obj_set_style_max_height(list, room > SX_SHEET_ITEM_H ? room : SX_SHEET_ITEM_H, 0);
+	lv_obj_set_style_max_height(panel, panel_max, 0);
 }
 
 void sx_sheet_open(const sx_sheet_t *sheet) {

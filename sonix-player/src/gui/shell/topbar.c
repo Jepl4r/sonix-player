@@ -561,6 +561,9 @@ static void refresh_moon(void) {
 	for (int k = 0; k < SLEEPTIMER_COUNT && !armed; k++) {
 		armed = sleeptimer_enabled((sleeptimer_kind_t)k) && sleeptimer_minutes((sleeptimer_kind_t)k) > 0;
 	}
+	// The player's "Sleep timer: at the end of the track / of the album" is
+	// the stop after this track or album (player.c, Phase 2): the same moon.
+	armed = armed || device_state_stop_after() != DEVICE_STATE_STOP_AFTER_NONE;
 	if (lv_obj_is_hidden(moon_icon) == armed) {
 		lv_obj_set_hidden(moon_icon, !armed);
 	}

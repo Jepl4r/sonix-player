@@ -161,5 +161,46 @@ bool player_cover_copy(int size, cover_image_t *out, uint64_t *id);
 void player_set_statusbar_always(bool on);
 bool player_statusbar_always(void);
 
+// ---------------------------------------------------------------------------
+// Sonix UI 2.0: what the player's menu and the queue page ask of it
+//
+// All UI thread.
+// ---------------------------------------------------------------------------
+
+// The queue changed under the player (an edit on the queue page, an undo, a
+// list queued from elsewhere): "Up next · X" and the "3/12" under the bar are
+// read again. Cheap; the poll catches anything not told.
+void player_queue_changed(void);
+
+// What plays outside the queue (the handoff's `ext`): a station, a book, a
+// phone over AirPlay, DLNA or the Bluetooth receiver. True with its title in
+// `out`; false while the queue's own track plays.
+bool player_outside_title(char *out, size_t size);
+
+// Shuffle, as a switch of its own (the repeat button cycles repeat only):
+// on/off keeps the repeat that goes with it, and says so in a toast.
+bool player_shuffle_on(void);
+void player_shuffle_toggle(void);
+
+// The words (lyrics): whether the playing file can have them (a file on the
+// card that is not a book), whether they are up, and up or away. The menu's
+// "Lyrics" line -- the swipe on the artwork that pulled them in before 2.0 is
+// the previous/next track now. Wanted, they stay up from one track to the
+// next, as before.
+bool player_lyrics_available(void);
+bool player_lyrics_shown(void);
+void player_lyrics_toggle(void);
+
+// "Sleep timer" for the menu: its label with what is set ("Sleep timer · 30
+// min"), and its sheet (off / 15 / 30 / 60 min / at the end of the track) --
+// the three timers of sleeptimer.h, the one that belongs to what is playing,
+// so the settings, the control centre and the moon in the status bar agree.
+const char *player_sleep_label(void);
+void player_sleep_sheet_open(void);
+
+// The idle state's one button, "Shuffle all music": every track of the
+// library, dealt, played from the first of the deal. False (with a toast)
+// when the library is empty.
+bool player_shuffle_all_music(void);
 
 #endif

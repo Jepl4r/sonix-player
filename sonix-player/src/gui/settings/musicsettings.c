@@ -1982,7 +1982,7 @@ static void build_playback_page(gui_config_t *cfg) {
 
 	// What survives the power switch: the loaded track and the volume level.
 	settingsrow_toggle(container, "musicsettings_remember_track", &remember_track_switch, remember_track_cb);
-	if (config_get_int("player", "remember_track", 0)) {
+	if (device_state_remember_enabled()) {
 		lv_obj_add_state(remember_track_switch, LV_STATE_CHECKED);
 	}
 	settingsrow_toggle(container, "musicsettings_remember_volume", &remember_volume_switch, remember_volume_cb);
