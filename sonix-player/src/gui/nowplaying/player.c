@@ -811,6 +811,19 @@ static void apply_playback_status(audio_status_t status) {
 // Blank rather than "1/1" when there is nothing to be lost in: a single track,
 // a book (one long file), a stream (no queue at all), or playback that belongs
 // to a phone over DLNA.
+// The number shown. Under shuffle, the place in the list (above). Otherwise
+// the place in the playback order: since 2.0 "Play next" moves a track up the
+// order without moving its stored entry, so the stored index stopped being
+// the position outside shuffle too -- a track sent next from the sixth place
+// read "6/6" while it played second.
+static int shown_queue_position(void) {
+	playback_mode_t mode = playlist_get_mode();
+	if (mode == PLAYBACK_MODE_SHUFFLE || mode == PLAYBACK_MODE_SHUFFLE_REPEAT) {
+		return (int)playlist_current_entry() + 1;
+	}
+	return playlist_current_index() + 1;
+}
+
 bool player_queue_position(int *position, int *count) {
 	*position = 0;
 	*count = 0;
@@ -829,7 +842,7 @@ bool player_queue_position(int *position, int *count) {
 	if (total <= 1 || index < 0 || audiobook_mode || dlna_owns_playback()) {
 		return false;
 	}
-	*position = (int)playlist_current_entry() + 1;
+	*position = shown_queue_position();
 	*count = total;
 	return true;
 }
@@ -859,7 +872,7 @@ static void update_queue_position(void) {
 		lv_label_set_text(queue_position_label, "");
 		return;
 	}
-	lv_label_set_text_fmt(queue_position_label, "%d/%d", (int)playlist_current_entry() + 1, count);
+	lv_label_set_text_fmt(queue_position_label, "%d/%d", shown_queue_position(), count);
 }
 
 // Works out view_start and view_length for playback at `position` in a file
@@ -3172,6 +3185,11 @@ static void apply_cover_result(void) {
 	if (!has_cover) {
 		cover_shown_id = 0; // nothing to compare the next track against
 		lyrics_bg_forget(); // no picture, nothing to blur
+		// Outside the library the mini player shows a copy of the last
+		// picture decoded here: a stream after a stream (a Subsonic record,
+		// then My Wave) would otherwise keep the previous sleeve under the
+		// new title. Nothing decoded now, so this takes the copy away.
+		np_mini_from_cover();
 	}
 	bar_over_player_update();
 	if (lyrics_progress > 0) {
