@@ -274,6 +274,18 @@ void http_set_thread_timeout_cap(int secs);
 // seconds rather than sat out.
 void http_stream_set_read_timeout(http_stream_t *st, int secs);
 
+// The Content-Type of the last answer an http_request() on THIS thread got
+// (empty when it sent none): what a JSON API that may answer with an HTML page
+// instead -- an anti-bot filter's challenge -- is diagnosed by.
+const char *http_last_content_type(void);
+
+// Headers every stream opened by THIS thread from now on sends as well, lines
+// already terminated with "\r\n" (NULL: none). A User-Agent or an Accept among
+// them replaces the default one. The string is the caller's and must outlive
+// the streams. For a CDN that wants the same browser the API was talked to
+// with (zvukcache.c). The same rule applies to http_request()'s extra_headers.
+void http_set_thread_stream_headers(const char *headers);
+
 // Percent-encodes `in` into `out` for use inside a URL path segment or query
 // value. Returns out.
 char *http_url_encode(const char *in, char *out, size_t out_size);
