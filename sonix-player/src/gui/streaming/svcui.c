@@ -5,6 +5,7 @@
 #include <string.h>
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/nowplaying/queueundo.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
@@ -107,124 +108,22 @@ lv_color_t svcui_tone(const char *name) {
 // Queueing, with "Undo"
 //
 // The two lines the Library's rows offer, said the 2.0 way: what went where
-// in the toast, and Undo. playlist_queue_paths() puts the set either after
-// the playing track (NEXT, after the previous "next" while that chain holds)
-// or at the end of the playback order (END), contiguous either way, so the
-// set is found again by its paths right where it was put: Undo takes those
-// entries out (playlist_remove) -- and only if they are still there in that
-// order, since the queue moves on underneath a toast.
+// in the toast, and Undo -- the queue's one undo (queueundo.h), the same the
+// library lists and the player use, so an Undo here puts the queue back
+// exactly as it was, whatever moved meanwhile.
 // ---------------------------------------------------------------------------
 
-typedef struct {
-	int first;
-	int count;
-	char **paths;
-} queued_set_t;
-
-static queued_set_t last_set;
-
-static void set_forget(queued_set_t *s) {
-	for (int i = 0; i < s->count; i++) {
-		free(s->paths[i]);
-	}
-	free(s->paths);
-	memset(s, 0, sizeof(*s));
-}
-
-static bool set_matches_at(const queued_set_t *s, int at) {
-	char path[1024];
-	for (int i = 0; i < s->count; i++) {
-		if (!playlist_path_at(at + i, path, sizeof(path)) || strcmp(path, s->paths[i]) != 0) {
-			return false;
-		}
-	}
-	return true;
-}
-
-static void undo_queue(void *user) {
-	(void)user;
-	queued_set_t *s = &last_set;
-	if (s->count <= 0) {
-		return;
-	}
-	int *indices = malloc((size_t)s->count * sizeof(*indices));
-	if (indices && set_matches_at(s, s->first)) {
-		for (int i = 0; i < s->count; i++) {
-			indices[i] = s->first + i;
-		}
-		if (playlist_remove(indices, s->count)) {
-			device_state_queue_changed();
-		}
-	}
-	free(indices);
-	set_forget(s);
-}
-
 int svcui_queue(const char *const *paths, int count, playlist_queue_where_t where, const char *what) {
-	set_forget(&last_set);
-	int before = playlist_count();
-	int current = playlist_current_index();
-	int queued = playlist_queue_paths(paths, count, where);
+	int queued = queue_undo_add_paths(paths, count, where);
 	if (queued <= 0) {
-		gui_notify_popup("playlist_cannot_add_the_tracks");
-		return 0;
+		return 0; // the reason has been said
 	}
-	// Written down now, once for the whole set (as trackmenu_queue_paths).
-	device_state_queue_changed();
-
 	char line[320];
 	lv_snprintf(line, sizeof(line), tr(where == PLAYLIST_QUEUE_NEXT ? "svc_queued_next" : "svc_queued_end"),
 				what && what[0] ? what : "");
-
-	// Nothing was queued before: the set became the queue, and taking it out
-	// again would be emptying it -- not an undo anyone wants from a toast.
-	if (before <= 0) {
-		sx_toast(line);
-		return queued;
-	}
-
-	queued_set_t *s = &last_set;
-	s->paths = calloc((size_t)queued, sizeof(*s->paths));
-	if (!s->paths) {
-		sx_toast(line);
-		return queued;
-	}
-	for (int i = 0, k = 0; i < count && k < queued; i++) {
-		if (paths[i] && paths[i][0]) {
-			s->paths[k] = strdup(paths[i]);
-			if (!s->paths[k]) {
-				break;
-			}
-			s->count = ++k;
-		}
-	}
-	if (s->count != queued) {
-		set_forget(s);
-		sx_toast(line);
-		return queued;
-	}
-	// Where the set landed: the end of the order, or the first place after
-	// the playing track where the whole run reads back.
-	int total = playlist_count();
-	s->first = -1;
-	if (where == PLAYLIST_QUEUE_END) {
-		if (set_matches_at(s, total - queued)) {
-			s->first = total - queued;
-		}
-	} else {
-		for (int at = current + 1; at >= 0 && at + queued <= total; at++) {
-			if (set_matches_at(s, at)) {
-				s->first = at;
-				break;
-			}
-		}
-	}
-	if (s->first < 0) {
-		set_forget(s);
-		sx_toast(line);
-		return queued;
-	}
-	sx_toast_undo(line, undo_queue, NULL);
+	// Without "Undo" when nothing was queued before: the set became the queue,
+	// and taking it out again would be emptying it.
+	queue_undo_commit(line);
 	return queued;
 }
 

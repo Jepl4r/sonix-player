@@ -15,6 +15,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/popover.h"
@@ -1415,13 +1416,18 @@ static void play_next_cb(void *user) {
 	if (!e) {
 		return;
 	}
-	bool ok = menu_page->feed ? podcastpage_feed_play_next(e->item) : playlist_insert_next(e->path);
-	if (ok) {
-		device_state_queue_changed();
-		toast_success(tr("added_to_the_queue"));
-	} else {
+	// The queue's one door (trackmenu_queue_paths): "Play next" the 2.0 way --
+	// a copy further down moves up rather than playing twice -- written down
+	// once, and said in a toast with "Undo" like every other change to it.
+	char path[512] = "";
+	bool ok = menu_page->feed ? podcastpage_feed_path(e->item, path, sizeof(path))
+							  : (e->path && snprintf(path, sizeof(path), "%s", e->path) > 0);
+	if (!ok) {
 		toast_error(tr("playlist_cannot_add_the_tracks"));
+		return;
 	}
+	const char *one = path;
+	trackmenu_queue_paths(&one, 1, PLAYLIST_QUEUE_NEXT);
 }
 
 static void download_cb(void *user) {

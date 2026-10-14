@@ -9,6 +9,7 @@
 #include "src/gui/library/medialist.h"
 #include "src/gui/library/playlistpage.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/nowplaying/queueundo.h"
 #include "src/gui/nowplaying/trackmenu.h"
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/shell/gui.h"
@@ -130,37 +131,14 @@ library_index_t *listacts_album_tracks(const char *album_value) {
 // The queue, with its undo
 // ---------------------------------------------------------------------------
 
-// The one addition that can still be taken back: the toast offering it is the
-// latest one, and a newer toast drops the older offer.
-static playlist_queue_undo_t queue_undo;
-
-static void queue_undo_cb(void *user) {
-	(void)user;
-	if (playlist_queue_undo(&queue_undo)) {
-		device_state_queue_changed();
-		changed();
-	} else {
-		// Something else changed the queue in the meantime (a track came up,
-		// another addition): taking these out now could take the wrong ones.
-		sx_toast(tr("lists_undo_too_late"));
-	}
-	queue_undo.valid = false;
-}
-
 int listacts_queue(const char *const *paths, int count, playlist_queue_where_t where, const char *label) {
-	if (!paths || count <= 0) {
-		gui_notify_popup("playlist_cannot_add_the_tracks");
-		return 0;
-	}
-	int queued = playlist_queue_paths_undoable(paths, count, where, &queue_undo);
+	// One undo for every change to the queue, wherever it was made from
+	// (queueundo.h): the snapshot or the note first, the queue written down at
+	// once and the player told; a refusal says why by itself.
+	int queued = queue_undo_add_paths(paths, count, where);
 	if (queued <= 0) {
-		gui_notify_popup("playlist_cannot_add_the_tracks");
 		return 0;
 	}
-	// Written down now: the on-disk copy is otherwise refreshed only when a
-	// track is loaded, and a power-off before that loses the addition.
-	device_state_queue_changed();
-
 	char what[160];
 	if (label && label[0]) {
 		snprintf(what, sizeof(what), "%s", label);
@@ -169,11 +147,7 @@ int listacts_queue(const char *const *paths, int count, playlist_queue_where_t w
 	}
 	char text[256];
 	snprintf(text, sizeof(text), tr(where == PLAYLIST_QUEUE_NEXT ? "lists_plays_next" : "lists_at_end"), what);
-	if (queue_undo.valid) {
-		sx_toast_undo(text, queue_undo_cb, NULL);
-	} else {
-		sx_toast(text); // the queue was made out of nothing: no queue to go back to
-	}
+	queue_undo_commit(text); // no "Undo" when the set became the queue: nothing to go back to
 	return queued;
 }
 

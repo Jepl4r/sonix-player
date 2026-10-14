@@ -2339,26 +2339,23 @@ void podcastpage_feed_play(int index) {
 	run(&job);
 }
 
-bool podcastpage_feed_play_next(int index) {
-	if (index < 0 || index >= feed_count) {
+bool podcastpage_feed_path(int index, char *path, size_t size) {
+	if (index < 0 || index >= feed_count || !path || size == 0) {
 		return false;
 	}
+	path[0] = '\0';
 	const podcast_episode_t *e = &result_episodes[index];
-	char path[512];
 	// Kept on the card, or already in the cache: that file. Otherwise the
 	// cache's name for it, with the tags written now, and the episode comes
 	// down when its turn arrives (podcastpage_prepare_track).
-	if (!podcastdl_path(e, e->feed_title, path, sizeof(path)) || access(path, F_OK) != 0) {
-		if (!podcastcache_find(e->id, path, sizeof(path))) {
-			podcastcache_path(e->id, e->mime, path, sizeof(path));
+	if (!podcastdl_path(e, e->feed_title, path, size) || access(path, F_OK) != 0) {
+		if (!podcastcache_find(e->id, path, size)) {
+			podcastcache_path(e->id, e->mime, path, size);
 			podcastcache_write_sidecars(e->id, e->mime, e->title, e->feed_title[0] ? e->feed_title : NULL,
 										e->feed_id, browsing_author, browsing_image, e->image, false);
 		}
 	}
-	if (!path[0]) {
-		return false;
-	}
-	return playlist_insert_next(path);
+	return path[0] != '\0';
 }
 
 void podcastpage_resume(const podcaststate_t *state) {

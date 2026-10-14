@@ -20,7 +20,8 @@
 // the wording, the toasts and the undo are one thing.
 //
 // Principle 6: every change says so in a toast with "Undo", which takes the
-// change back -- the queue as it was before (playlist_queue_undo), the star
+// change back -- the queue as it was before (queueundo.h, the one undo of
+// the queue, which the player's and the services' changes use too), the star
 // the way it was. Only the latest change can be undone: the toast that offers
 // it is replaced by the next one.
 //

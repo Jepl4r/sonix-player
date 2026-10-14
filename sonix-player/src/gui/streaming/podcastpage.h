@@ -61,8 +61,10 @@ void podcastpage_set_browsing(const podcast_feed_t *feed);
 
 // Plays episode `index` of the list, with the ones after it queued.
 void podcastpage_feed_play(int index);
-// Puts episode `index` after the one playing. False when it cannot.
-bool podcastpage_feed_play_next(int index);
+// The file episode `index` plays from, for the queue: the one on the card or
+// in the cache, else the cache's name for it with its tags written, fetched
+// when its turn comes. False when there is none.
+bool podcastpage_feed_path(int index, char *path, size_t size);
 // Keeps episode `index` on the card, in the folder named after `feed_title`,
 // with the card that follows the download.
 void podcastpage_feed_download(int index, const char *feed_title);

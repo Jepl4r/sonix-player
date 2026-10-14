@@ -3,6 +3,8 @@
 
 #include <stdbool.h>
 
+#include "src/system/playback/playlist.h"
+
 // ---------------------------------------------------------------------------
 // "Undo" for every change to the queue (Sonix UI 2.0, principle 6)
 //
@@ -23,9 +25,12 @@
 //         queue_undo_cancel();
 //     }
 //
-// trackmenu_queue_paths() -- "Play next" and "Add to end" from any list,
-// service page or sheet -- already does all of this, so a page that queues
-// through it gets the toast with "Undo" without doing anything.
+// Additions -- "Play next" and "Add to the end" from any list, service page or
+// sheet -- go through queue_undo_add_paths() and then queue_undo_commit():
+// trackmenu_queue_paths(), listacts_queue() (the library lists) and
+// svcui_queue() (the streaming pages) are the three doors, each with its own
+// wording, and all of them end here, so every change to the queue has the same
+// "Undo". This is the only undo of the queue: there is no other to keep in step.
 //
 // One snapshot at a time: a new begin() replaces the last one, and the toast
 // of an earlier change loses its "Undo" when a later one takes its place, as
@@ -57,7 +62,16 @@ void queue_undo_cancel(void);
 // poll; cheap.
 void queue_undo_tick(void);
 
-// True while a snapshot is held (for tests and the report).
+// Queues `paths` (playlist_queue_paths) after taking what "Undo" needs: the
+// snapshot, or -- for a queue too long for one -- a note of just this
+// addition, so even a queue of thousands can take back what was added to it.
+// The queue is written down to the card, the player and the queue page are
+// told. Returns how many went in; on 0 the reason has been said ("already
+// playing" for "Play next" on the playing track, else "could not add") and
+// nothing is left to commit. Otherwise follow with queue_undo_commit(text).
+int queue_undo_add_paths(const char *const *paths, int count, playlist_queue_where_t where);
+
+// True while a snapshot or a note is held (for tests and the report).
 bool queue_undo_pending(void);
 
 #endif /* QUEUEUNDO_H */

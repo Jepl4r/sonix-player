@@ -809,16 +809,10 @@ static void queue_shuffle_all_cb(lv_event_t *e) {
 // ---------------------------------------------------------------------------
 
 int trackmenu_queue_paths(const char *const *paths, int count, playlist_queue_where_t where) {
-	// The snapshot first, so the toast can offer "Undo" (queueundo.h).
-	queue_undo_begin();
-	int queued = playlist_queue_paths(paths, count, where);
+	// The snapshot (or note) first, so the toast can offer "Undo"; the queue
+	// written down and the pages told (queueundo.h).
+	int queued = queue_undo_add_paths(paths, count, where);
 	if (queued > 0) {
-		// Written down now: the mirror on disk is otherwise refreshed only when
-		// a track is loaded, and a power-off before that loses the addition.
-		// One write for the whole set, whatever its size.
-		device_state_queue_changed();
-		player_queue_changed();
-		trackmenu_queue_refresh();
 		static char text[320];
 		if (queued == 1 && paths && paths[0]) {
 			char title[256], artist[256];
@@ -830,9 +824,6 @@ int trackmenu_queue_paths(const char *const *paths, int count, playlist_queue_wh
 					 tr(where == PLAYLIST_QUEUE_NEXT ? "queue_will_play_next" : "queue_added_to_end"));
 		}
 		queue_undo_commit(text);
-	} else {
-		queue_undo_cancel();
-		gui_notify_popup("playlist_cannot_add_the_tracks");
 	}
 	return queued;
 }
