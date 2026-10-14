@@ -125,7 +125,12 @@ static int queue_next_count;
 static int queue_played_count; // entries 0 .. queue_played_count - 1
 static int queue_pitch;		  // a row and the gap under it
 static int32_t queue_y_cur, queue_y_next, queue_y_played;
+// What the layout was worked out for, so the poll's look (trackmenu_queue_
+// poll) costs nothing when nothing moved -- a layout binds every row in view
+// again, three lookups each.
 static unsigned queue_seen_revision;
+static int queue_seen_current = -2;
+static queue_mode_t queue_seen_mode;
 
 static void queue_layout(void);
 static void queue_window_update(void);
@@ -385,6 +390,7 @@ static void queue_layout(void) {
 		return;
 	}
 	queue_seen_revision = playlist_revision();
+	queue_seen_current = playlist_current_index();
 	queue_pitch = sx_row_height(true) + SX_ROW_GAP;
 
 	char outside[256] = "";
@@ -418,6 +424,7 @@ static void queue_layout(void) {
 		queue_cur = current >= 0 && current < queue_total ? current : -1;
 		queue_next_first = queue_cur + 1;
 	}
+	queue_seen_mode = queue_mode;
 	if (queue_next_first > queue_total) {
 		queue_next_first = queue_total;
 	}
@@ -492,8 +499,26 @@ void trackmenu_queue_refresh(void) {
 	}
 }
 
+static queue_mode_t queue_mode_now(void) {
+	char outside[8];
+	if (player_outside_title(outside, sizeof(outside))) {
+		return audiobook_is_playing() || dlna_owns_playback() ? QUEUE_MODE_PARKED : QUEUE_MODE_BESIDE;
+	}
+	return playlist_count() <= 0 && !sx_mini_has_track() ? QUEUE_MODE_IDLE : QUEUE_MODE_QUEUE;
+}
+
+void trackmenu_queue_poll(void) {
+	if (!queue_page_up()) {
+		return;
+	}
+	if (playlist_revision() != queue_seen_revision || playlist_current_index() != queue_seen_current ||
+		queue_mode_now() != queue_seen_mode) {
+		queue_layout();
+	}
+}
+
 // The track changed under the page: the runs move round it.
-void trackmenu_notify_now_playing(void) { trackmenu_queue_refresh(); }
+void trackmenu_notify_now_playing(void) { trackmenu_queue_poll(); }
 
 // covertone has thumbnails or tones it did not have (covertonefan.h): the
 // rows still on their plaque look again.

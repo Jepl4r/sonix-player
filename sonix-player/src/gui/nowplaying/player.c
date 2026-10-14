@@ -4701,6 +4701,7 @@ void player_set_statusbar_always(bool on) {
 		studio_place();
 	}
 	lyrics_layout();
+	np_layout_changed(); // the "Up next" chip is on the chevron's line
 
 	if (!on) {
 		if (sheet_open) {
@@ -5223,6 +5224,17 @@ static void np_thumb240_request(void) {
 	thumb240_ticket = covertone_thumb_async(np_album_id, COVERTONE_THUMB_LARGE, thumb240_arrived, NULL);
 }
 
+// Whether covertone knew the playing album's tone when it came up: until it
+// does the palette runs on a hash of the name, and the listener repaints once
+// it lands -- once, not at every one of its calls while a scan works through
+// the card.
+static bool np_album_tone_known;
+
+static bool np_album_tone_now(void) {
+	float h, c, l;
+	return np_album_id != 0 && covertone_for_album(np_album_id, &h, &c, &l);
+}
+
 static void np_album_changed(const char *path, bool live) {
 	int64_t id = 0;
 	char album[512];
@@ -5240,6 +5252,7 @@ static void np_album_changed(const char *path, bool live) {
 	if (id != 0) {
 		cover_free(&mini_cover_copy);
 	}
+	np_album_tone_known = np_album_tone_now();
 	np_mini_thumb_refresh();
 }
 
@@ -5256,6 +5269,10 @@ static void np_covertone_changed(void) {
 	}
 	// The hue, when this album's tone has just been worked out: what was a hash
 	// of the name until now becomes the sleeve's own colour.
+	if (np_album_tone_known || !np_album_tone_now()) {
+		return;
+	}
+	np_album_tone_known = true;
 	device_state_t state;
 	device_state_get(&state);
 	if (!state.live && state.current_file[0]) {
@@ -5518,6 +5535,7 @@ static void upnext_update(void) {
 static void np_layout_changed(void) {
 	if (upnext_chip) {
 		lv_obj_set_hidden(upnext_chip, layout_studio_now);
+		lv_obj_align(upnext_chip, LV_ALIGN_TOP_RIGHT, -NP_CHIP_RIGHT, upnext_y());
 	}
 }
 
@@ -5978,6 +5996,7 @@ static void np_poll(const device_state_t *state) {
 		update_queue_position();
 	}
 	np_outside_watch(state);
+	trackmenu_queue_poll(); // the queue page, when it is up and its queue moved
 	// The chain can change under a track -- a codec renegotiated, headphones
 	// switched, the output reopened at another rate -- so it is read again,
 	// but only for a line somebody can see.

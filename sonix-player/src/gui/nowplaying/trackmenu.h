@@ -36,9 +36,13 @@ bool trackmenu_show_artist(void);
 // bound again where it is, if it is the page on show. UI thread.
 void trackmenu_queue_refresh(void);
 
-// The playing track changed: move the accent mark in the queue to the row that
-// carries it now. The rows themselves do not change -- the queue is the same
-// list -- so nothing here rebinds or re-reads anything.
+// The same, only when something it shows moved (the queue's revision, the
+// track, a source outside the queue): from the player's poll and every track
+// change. Nothing at all while the page is not up. UI thread.
+void trackmenu_queue_poll(void);
+
+// The playing track changed: on the queue page (when it is up) the runs move
+// round the new one -- trackmenu_queue_poll().
 void trackmenu_notify_now_playing(void);
 
 // Queueing from a menu, the one way every list does it: "Play next" or "Add to
