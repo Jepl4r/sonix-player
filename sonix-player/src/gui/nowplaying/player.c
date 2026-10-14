@@ -111,6 +111,7 @@ static void np_thumb240_drop(void);
 static void np_pause_badge_update(bool playing);
 static void np_outside_watch(const device_state_t *state);
 static void np_poll(const device_state_t *state);
+static void np_layout_changed(void);
 static void np_mini_from_cover(void);
 static bool repeat_one_from_shuffle; // where the repeat button goes back to after "one"
 static void mode_toast(playback_mode_t mode);
@@ -163,6 +164,8 @@ static bool progress_running;
 // polling on that reading would stay frozen until the next touch.
 #define POLL_PERIOD_PLAYING_MS 500
 #define POLL_PERIOD_IDLE_MS 2000
+#define POLL_PERIOD_DARK_PLAYING_MS 2000 // the panel off (apply_playback_status)
+#define POLL_PERIOD_DARK_IDLE_MS 10000
 
 // How far past their 56 px the buttons at the two ends of the transport row
 // take a tap. Upwards and downwards the 84 px row still clips it; sideways the
@@ -760,7 +763,16 @@ static void apply_playback_status(audio_status_t status) {
 	}
 
 	bool settling = polls_since_stop < POLLS_FAST_AFTER_STOP;
-	lv_timer_set_period(progress_slider_timer, (playing || settling) ? POLL_PERIOD_PLAYING_MS : POLL_PERIOD_IDLE_MS);
+	uint32_t period = (playing || settling) ? POLL_PERIOD_PLAYING_MS : POLL_PERIOD_IDLE_MS;
+	// 2.0, the battery: with the panel dark there is nothing to draw and the
+	// end of a track is pushed (track_end_hook), so the poll only has the
+	// card's bookkeeping left -- read-ahead, "remember track", a book's
+	// position -- which a slower beat serves as well. Paused in the dark, it
+	// barely wakes at all. power.c runs it at once when the panel comes back.
+	if (!power_screen_is_on()) {
+		period = (playing || settling) ? POLL_PERIOD_DARK_PLAYING_MS : POLL_PERIOD_DARK_IDLE_MS;
+	}
+	lv_timer_set_period(progress_slider_timer, period);
 	lv_timer_resume(progress_slider_timer);
 
 	// The status bar shows the same state, and told here rather than left to
@@ -2708,6 +2720,7 @@ static void apply_layout(void) {
 		lyrics_layout(); // studio_put() places the page itself
 	}
 	menu_style_for_layout(); // the panel's spacing for the arrangement now up
+	np_layout_changed();
 	align_title_with_star(); // the title may have just left its row, or come back to it
 
 	paint_alt_tint();
@@ -3916,15 +3929,26 @@ static void update_progress(void) {
 	progress_anchor_tick = lv_tick_get();
 	progress_running = state.status == AUDIO_STATUS_PLAYING && state.progress_total_secs > 0;
 	if (smooth_timer) {
-		if (progress_running) {
+		// Sixteen times a second only for a bar somebody sees: the player up
+		// and the panel lit. (It used to run whenever music played and return
+		// at once inside -- sixteen wake-ups a second for nothing.)
+		if (progress_running && sheet_open && power_screen_is_on()) {
 			lv_timer_resume(smooth_timer);
 		} else {
 			lv_timer_pause(smooth_timer);
 		}
 	}
 
-	set_progress_label(state.progress_current_secs, current_total_length);
-	sx_mini_set_progress(state.progress_current_secs, state.live ? 0 : current_total_length);
+	// A track the queue ran out on stands at its end, stopped; play starts it
+	// from the top (device_state_toggle_play_pause), so that is what the bar
+	// says -- the handoff's "the end of the queue is a pause".
+	double shown = state.progress_current_secs;
+	if (state.status == AUDIO_STATUS_STOPPED && !state.live && current_total_length > 2.0 &&
+		shown >= current_total_length - 1.0) {
+		shown = 0;
+	}
+	set_progress_label(shown, current_total_length);
+	sx_mini_set_progress(shown, state.live ? 0 : current_total_length);
 	wave_refresh(cover_shown_path, state.progress_current_secs);
 	if (state.status == AUDIO_STATUS_PLAYING && !state.live) {
 		device_state_read_ahead(state.progress_current_secs, state.progress_total_secs);
@@ -4707,6 +4731,9 @@ void player_sheet_open(bool animate) {
 	back_btn_player_mode(true);
 	sx_mini_player_shown(true);
 	lyrics_screen_hold_update();
+	if (smooth_timer && progress_running) {
+		lv_timer_resume(smooth_timer);
+	}
 	// The poll keeps these only while the player is up (np_poll), so they are
 	// brought up to date as it comes up.
 	{
@@ -4750,6 +4777,9 @@ void player_sheet_close(bool animate) {
 	bool was_open = sheet_open;
 	sheet_open = false;
 	chain_set_open(false); // the block is the player's, and does not wait for it
+	if (smooth_timer) {
+		lv_timer_pause(smooth_timer); // nothing of it shows under the page
+	}
 	back_btn_player_mode(false);
 	sx_mini_player_shown(false);
 	lyrics_screen_hold_update();
@@ -4971,10 +5001,10 @@ void player_sheet_attach_drag(lv_obj_t *obj, bool opening) {
 // the chevron that puts the player away and the "Up next · X ›" chip that
 // opens the queue. Always dark, whatever the theme.
 //
-// What it costs. The two gradients are strips 4 px wide (sx_gradient_create:
-// 4 x 800 x 2 = 6.4 KB for the page, 4 x 336 x 2 = 2.7 KB for the panel),
-// made when the album's colour changes and tiled across the width by the
-// renderer; a frame of the open player draws them as one image task each. No
+// What it costs. The two gradients are strips 16 px wide (sx_gradient_create:
+// 16 x 800 x 2 = 25.6 KB for the page, 16 x 336 x 2 = 10.7 KB for the panel;
+// see NP_GRAD_STRIP_W), made when the album's colour changes (about 0.1 ms of
+// the emulator's CPU for both) and tiled across the width by the renderer. No
 // timer is added: everything here is updated from the poll the player already
 // runs, and only when its text or state actually changes.
 // ---------------------------------------------------------------------------
@@ -5025,6 +5055,14 @@ static void menu_style_for_layout(void) {
 // The gradients, once per album
 // ---------------------------------------------------------------------------
 
+// How wide the strips are. Tiled across the screen, each copy is a draw task
+// of its own: at 4 px a full redraw of the player (opening it, the slide)
+// is 120 tasks a strip and cost a third more than flat colours (5.6 ms ->
+// 7.5 ms of the emulator's CPU per frame, 200 frames, measured); at 16 px it
+// is 30 tasks and +8 % (6.1 ms), for 36 KB of strips instead of 9 KB. The
+// ordered dither repeats every 4 px, so any multiple of 4 is seamless.
+#define NP_GRAD_STRIP_W 16
+
 static lv_draw_buf_t *np_page_strip;
 static lv_draw_buf_t *np_panel_strip;
 static lv_color_t np_strip_cols[4];
@@ -5042,8 +5080,8 @@ static void np_paint_backgrounds(void) {
 	int h = sheet_height > 0 ? sheet_height : (int)lv_obj_get_height(player_screen);
 	sx_grad_stop_t page[2] = {{want[0], 0}, {want[1], h}};
 	sx_grad_stop_t panel[2] = {{want[2], 0}, {want[3], np_panel_h}};
-	lv_draw_buf_t *page_strip = sx_gradient_create(4, h, page, 2);
-	lv_draw_buf_t *panel_strip = sx_gradient_create(4, np_panel_h + SX_NP_PANEL_R, panel, 2);
+	lv_draw_buf_t *page_strip = sx_gradient_create(NP_GRAD_STRIP_W, h, page, 2);
+	lv_draw_buf_t *panel_strip = sx_gradient_create(NP_GRAD_STRIP_W, np_panel_h + SX_NP_PANEL_R, panel, 2);
 
 	// The flat colours stay under them: what shows if a strip could not be
 	// made, and what the renderer starts from.
@@ -5473,6 +5511,14 @@ static void upnext_update(void) {
 				   (title[0] ? lv_obj_get_width(upnext_lead) : 0);
 	lv_obj_set_width(upnext_name, LV_SIZE_CONTENT);
 	lv_obj_set_style_max_width(upnext_name, room > 40 ? room : 40, 0);
+}
+
+// Studio's head -- the title, and the ⋮ at its right -- is where the chip
+// would be: there the queue is a line of the menu.
+static void np_layout_changed(void) {
+	if (upnext_chip) {
+		lv_obj_set_hidden(upnext_chip, layout_studio_now);
+	}
 }
 
 void player_queue_changed(void) {
@@ -6075,6 +6121,8 @@ const char *player_sleep_label(void) {
 		snprintf(label, sizeof(label), "%s \xC2\xB7 %s", tr("np_sleep"), value);
 	} else if (device_state_stop_after() == DEVICE_STATE_STOP_AFTER_TRACK) {
 		snprintf(label, sizeof(label), "%s \xC2\xB7 %s", tr("np_sleep"), tr("np_sleep_end_short"));
+	} else if (device_state_stop_after() == DEVICE_STATE_STOP_AFTER_ALBUM) {
+		snprintf(label, sizeof(label), "%s \xC2\xB7 %s", tr("np_sleep"), tr("np_sleep_end_album_short"));
 	} else {
 		snprintf(label, sizeof(label), "%s", tr("np_sleep"));
 	}
@@ -6101,8 +6149,11 @@ static void sleep_undo(void *user) {
 	}
 }
 
+#define SLEEP_PICK_TRACK -1
+#define SLEEP_PICK_ALBUM -2
+
 static void sleep_pick(void *user) {
-	int choice = (int)(intptr_t)user; // minutes; 0 off; -1 the end of the track
+	int choice = (int)(intptr_t)user; // minutes; 0 off; SLEEP_PICK_TRACK / _ALBUM
 	sleeptimer_kind_t kind = sleep_kind_for_menu();
 	sleep_was.kind = kind;
 	sleep_was.enabled = sleeptimer_enabled(kind);
@@ -6113,21 +6164,19 @@ static void sleep_pick(void *user) {
 	if (choice > 0) {
 		sleeptimer_set_minutes(kind, choice);
 		sleeptimer_set_enabled(kind, true);
-		if (device_state_stop_after() == DEVICE_STATE_STOP_AFTER_TRACK) {
-			device_state_set_stop_after(DEVICE_STATE_STOP_AFTER_NONE);
-		}
+		device_state_set_stop_after(DEVICE_STATE_STOP_AFTER_NONE); // one way to stop at a time
 		char value[32];
 		snprintf(value, sizeof(value), tr("np_sleep_minutes"), choice);
 		snprintf(text, sizeof(text), tr("np_sleep_set"), value);
 	} else if (choice < 0) {
+		bool album = choice == SLEEP_PICK_ALBUM;
 		sleeptimer_set_enabled(kind, false);
-		device_state_set_stop_after(DEVICE_STATE_STOP_AFTER_TRACK);
-		snprintf(text, sizeof(text), "%s", tr("trackmenu_stop_after_track_set"));
+		device_state_set_stop_after(album ? DEVICE_STATE_STOP_AFTER_ALBUM : DEVICE_STATE_STOP_AFTER_TRACK);
+		snprintf(text, sizeof(text), "%s",
+				 tr(album ? "trackmenu_stop_after_album_set" : "trackmenu_stop_after_track_set"));
 	} else {
 		sleeptimer_set_enabled(kind, false);
-		if (device_state_stop_after() == DEVICE_STATE_STOP_AFTER_TRACK) {
-			device_state_set_stop_after(DEVICE_STATE_STOP_AFTER_NONE);
-		}
+		device_state_set_stop_after(DEVICE_STATE_STOP_AFTER_NONE);
 		snprintf(text, sizeof(text), "%s", tr("np_sleep_cleared"));
 	}
 	// Counting from now when something of that kind is playing, and the moon in
@@ -6140,18 +6189,32 @@ static void sleep_pick(void *user) {
 void player_sleep_sheet_open(void) {
 	sleeptimer_kind_t kind = sleep_kind_for_menu();
 	int now = sleeptimer_enabled(kind) ? sleeptimer_minutes(kind) : 0;
-	bool at_end = device_state_stop_after() == DEVICE_STATE_STOP_AFTER_TRACK;
+	device_state_stop_after_t stop = device_state_stop_after();
 	static char m15[32], m30[32], m60[32];
 	snprintf(m15, sizeof(m15), tr("np_sleep_minutes"), 15);
 	snprintf(m30, sizeof(m30), tr("np_sleep_minutes"), 30);
 	snprintf(m60, sizeof(m60), tr("np_sleep_minutes"), 60);
-	sx_sheet_item_t items[] = {
-		{tr("np_sleep_off"), NULL, now == 0 && !at_end, false, sleep_pick, (void *)(intptr_t)0},
+	sx_sheet_item_t items[7] = {
+		{tr("np_sleep_off"), NULL, now == 0 && stop == DEVICE_STATE_STOP_AFTER_NONE, false, sleep_pick,
+		 (void *)(intptr_t)0},
 		{m15, NULL, now == 15, false, sleep_pick, (void *)(intptr_t)15},
 		{m30, NULL, now == 30, false, sleep_pick, (void *)(intptr_t)30},
 		{m60, NULL, now == 60, false, sleep_pick, (void *)(intptr_t)60},
-		{tr("np_sleep_end"), NULL, at_end, false, sleep_pick, (void *)(intptr_t)-1},
 	};
+	int n = 4;
+	// The end of the track (and of the album) only where there is one: not
+	// on a station. The album's -- 1.2.5's "stop after this album" -- for
+	// music only: a book and a podcast stop at their own ends.
+	device_state_t state;
+	device_state_get(&state);
+	if (!state.live) {
+		items[n++] = (sx_sheet_item_t){tr("np_sleep_end"), NULL, stop == DEVICE_STATE_STOP_AFTER_TRACK, false,
+									   sleep_pick, (void *)(intptr_t)SLEEP_PICK_TRACK};
+		if (!audiobook_mode && !podcast_mode) {
+			items[n++] = (sx_sheet_item_t){tr("np_sleep_end_album"), NULL, stop == DEVICE_STATE_STOP_AFTER_ALBUM,
+										   false, sleep_pick, (void *)(intptr_t)SLEEP_PICK_ALBUM};
+		}
+	}
 	// A length set elsewhere (the settings' wheel: 45 minutes) is not one of
 	// the four: it is said in the subtitle instead of ticked.
 	static char sub[160];
@@ -6162,7 +6225,7 @@ void player_sleep_sheet_open(void) {
 	} else {
 		snprintf(sub, sizeof(sub), "%s", tr("np_sleep_sub"));
 	}
-	sx_sheet_menu(tr("np_sleep"), sub, items, (int)(sizeof(items) / sizeof(items[0])));
+	sx_sheet_menu(tr("np_sleep"), sub, items, n);
 }
 
 // ---------------------------------------------------------------------------

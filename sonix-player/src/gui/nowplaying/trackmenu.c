@@ -1526,11 +1526,6 @@ void trackmenu_open(lv_obj_t *anchor) {
 		items[n++] = (sx_sheet_item_t){tr("np_stop_after_track"), &npicon_stop_after,
 									   stop == DEVICE_STATE_STOP_AFTER_TRACK, false, stop_after_pick,
 									   (void *)(intptr_t)DEVICE_STATE_STOP_AFTER_TRACK};
-		if (!podcast) {
-			items[n++] = (sx_sheet_item_t){tr("np_stop_after_album"), &npicon_stop_after,
-										   stop == DEVICE_STATE_STOP_AFTER_ALBUM, false, stop_after_pick,
-										   (void *)(intptr_t)DEVICE_STATE_STOP_AFTER_ALBUM};
-		}
 	}
 	items[n++] = (sx_sheet_item_t){player_sleep_label(), &npicon_sleep, false, false, sleep_cb, NULL};
 	if (!ext && loaded) {
