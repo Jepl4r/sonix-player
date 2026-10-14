@@ -212,6 +212,12 @@ ICONS = [
     # the gap itself -- the two halves apart while off, closed up while on.
     ("gapless-on-quick.svg", "gapless_on_quick", 46),
     ("gapless-off-quick.svg", "gapless_off_quick", 46),
+    # 2.0's control centre: the volume limit (Lucide's gauge), USB DAC mode
+    # (the USB-C port of its status glyph) and the DAC's filter (a waveform),
+    # at circle size.
+    ("gauge.svg", "volume_limit_quick", 46),
+    ("usb-audio-out.svg", "dac_quick", 46),
+    ("audio-waveform.svg", "dac_filter_quick", 46),
     # File types, in the file manager and on the web page: one glyph per
     # family, at the size of the folder beside them.
     ("files-music.svg", "files_music", 32),

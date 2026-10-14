@@ -403,6 +403,18 @@ static lv_obj_t *add_item(int index) {
 		lv_image_set_src(tick, &icon_check);
 		lv_obj_add_style(tick, &sx_style_icon_accent, 0);
 	}
+
+	// A label longer than the line (a DAC filter's name, most things in
+	// German) wraps: the row grows to hold its lines with air above and below,
+	// instead of the lines filling the 64 px edge to edge.
+	int32_t text_w = lv_display_get_horizontal_resolution(lv_obj_get_display(row)) - 2 * SX_SHEET_PAD_H - ICON_SLOT -
+					 20 - (it->icon && it->checked ? ICON_SLOT + 20 : 0);
+	lv_point_t size;
+	lv_text_get_size(&size, it->label ? it->label : "", &font_ui_24, 0, 0, text_w, LV_TEXT_FLAG_NONE);
+	int32_t wanted = size.y + 2 * 12;
+	if (wanted > SX_SHEET_ITEM_H) {
+		lv_obj_set_height(row, wanted);
+	}
 	return row;
 }
 

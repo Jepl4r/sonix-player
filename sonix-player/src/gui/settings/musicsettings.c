@@ -64,14 +64,21 @@ static void refresh_filter_checks(void) {
 	}
 }
 
-static void filter_row_cb(lv_event_t *e) {
-	int filter = (int)(intptr_t)lv_event_get_user_data(e);
+int musicsettings_dac_filter(void) { return (int)config_get_int("audio", "dac_filter", 0); }
 
+const char *musicsettings_dac_filter_name(int filter) { return FILTER_NAMES[filter >= 0 && filter < 4 ? filter : 0]; }
+
+void musicsettings_set_dac_filter(int filter) {
+	if (filter < 0 || filter >= 4) {
+		return;
+	}
 	config_set_int("audio", "dac_filter", filter);
 	config_save();
 	set_dac_filter(filter);
 	refresh_filter_checks();
 }
+
+static void filter_row_cb(lv_event_t *e) { musicsettings_set_dac_filter((int)(intptr_t)lv_event_get_user_data(e)); }
 
 static void build_filter_page(gui_config_t *cfg) {
 	dacfilter_screen = lv_obj_create(NULL);
@@ -655,6 +662,8 @@ static void build_volume_limit_page(gui_config_t *cfg) {
 
 	vlimit_refresh();
 	lv_obj_add_event_cb(vlimit_screen, vlimit_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	// And when the control centre switches it with the page under the card.
+	lv_obj_add_event_cb(vlimit_screen, vlimit_loaded_cb, LV_EVENT_REFRESH, NULL);
 	switcher_attach_back_gesture(vlimit_screen);
 }
 
@@ -1206,6 +1215,8 @@ static void build_eq_page(gui_config_t *cfg) {
 // ---------------------------------------------------------------------------
 
 lv_obj_t *musicsettings_eq_screen(void) { return eq_screen; }
+lv_obj_t *musicsettings_volume_limit_screen(void) { return vlimit_screen; }
+lv_obj_t *musicsettings_filter_screen(void) { return dacfilter_screen; }
 lv_obj_t *musicsettings_mseb_screen(void) { return mseb_screen; }
 
 lv_obj_t *musicsettings_fade_screen(void) { return fade_screen; }

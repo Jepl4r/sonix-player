@@ -4,6 +4,7 @@
 #include <string.h>
 
 #include "src/gui/wireless/airplay.h"
+#include "src/gui/audio/dacpage.h"
 #include "src/gui/bluetooth/btsettings.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
@@ -13,16 +14,14 @@
 #include "src/gui/audio/peqpage.h"
 #include "src/gui/library/audiobooks.h"
 #include "src/gui/nowplaying/player.h"
-#include "src/gui/shell/scrolltext.h"
 #include "src/gui/streaming/podcastpage.h"
 #include "src/gui/wireless/dlna.h"
 #include "src/gui/wireless/sonixlink.h"
 #include "src/gui/wireless/wifitransfer.h"
+#include "src/gui/shell/sx_palette.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
-#include "src/system/playback/audiobook.h"
-#include "src/system/streaming/podcast.h"
-#include "src/system/streaming/podcastcache.h"
-#include "src/system/streaming/podcastsubs.h"
 #include "src/system/bluetooth/btreceiver.h"
 #include "src/system/audio/usbdac.h"
 #include "src/system/net/wifitransfer.h"
@@ -33,50 +32,62 @@
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/core/config.h"
-#include "src/system/playback/device_state.h"
 #include "src/system/core/lang.h"
-#include "src/system/library/library.h"
 #include "src/system/audio/eq.h"
-#include "src/system/playback/playlist.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/device/power.h"
-#include "src/system/streaming/provider.h"
-#include "src/system/streaming/radio.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/remote/sonixlink.h"
 #include "src/system/net/wifi.h"
 
-#define PANEL_ANIM_MS 180
+// ---------------------------------------------------------------------------
+// Sonix UI 2.0: the control centre
+//
+// An overlay at the top of the screen, under the status bar: one card
+// (SX_CC_BG, dark in both themes) with the round buttons four to a line,
+// SX_CC_BTN across with their names under them, and the brightness slider.
+// A tap on a button switches what it stands for (lit in the accent while on);
+// a hold opens its page. It comes down from the status bar following the
+// finger (topbar.c, player.c), and goes away with a swipe up of SX_CC_CLOSE_PX
+// anywhere on it, or a tap anywhere off it.
+//
+// The page underneath stays as it is, undimmed: a translucent veil over the
+// whole screen would have to be blended on every frame of the slide, the whole
+// page under it redrawn first to blend against (see the note on the veil).
+//
+// The first eight buttons show; with more in the panel (Settings > More >
+// Control centre arranges up to sixteen), a handle under the slider stretches
+// the card down to show them, by a drag or a tap.
+//
+// The 1.2.5 panel's second card -- the track playing and its transport -- is
+// gone: in 2.0 the mini player is under the card on every page, and the player
+// has everything that card had.
+//
+// Costs nothing while shut: built once, its only timer (repainting the buttons
+// that can change under it, line out with a jack pulled) runs while it is open.
+// ---------------------------------------------------------------------------
+
+#define PANEL_ANIM_MS SX_ANIM_SHEET_MS
 #define PANEL_POLL_MS 700
 
-// Four round quick controls to a line. Four at 88 px plus their gaps is 394,
-// against the roughly 400 px the card leaves inside its padding, so a fifth
-// does not fit however tight the gap gets: the extra controls wrap onto a
-// second line rather than shrinking.
-#define CIRCLE_BUTTON_SIZE 88
-#define CIRCLE_BUTTON_GAP 14
-#define QP_BUTTONS_PER_LINE 4
+#define CC_MARGIN 14	   // from the screen's sides
+#define CC_TOP_GAP 12	   // under the status bar
+#define CC_RADIUS 24
+#define CC_PAD 20
+#define CC_GAP 14		   // between the lines of buttons
+#define CC_LABEL_GAP 6	   // between a button and its name
+#define CC_BUTTONS_PER_LINE 4
+#define BRIGHT_ROW_H 56
+#define BRIGHT_ROW_GAP 12
+#define HANDLE_ROOM 24 // added under the slider when the card has a handle
 
-// How the sheet divides the screen up: a strip for the close hint at the
-// bottom, small gaps at the top and between the cards, and the rest split
-// evenly between them. The leftover space goes to the cards rather than around
-// them, or on a 720 px panel everything sits high.
-#define CARD_PADDING 20
-#define HINT_STRIP_H 52 // room under the cards for the close line
-#define CARD_TOP_GAP 12 // between the status bar and the first card
-#define CARD_GAP 16	   // between the two cards
-#define CARD_ROW_GAP 12 // between the blocks inside the controls card
-#define HANDLE_ROOM 24	// added under the slider when the card has a handle
-#define BRIGHT_ROW_H 44
+// The card's own colours: dark in both themes, as on the prototype.
+#define CC_TEXT 0xFFFFFF
+#define CC_LABEL_OPA 204   // the names, white at 80 %
+#define CC_TRACK_OPA 51	   // the slider's track, white at 20 %
 
-// The sheet's own padding. The cards are aligned inside the content area, so
-// every y below is measured from there and not from the top of the screen;
-// measuring from the screen puts the close line over the second card.
-#define PANEL_PAD_TOP(cfg) ((cfg)->padding + 8)
-#define PANEL_PAD_BOTTOM 8
-
-static lv_obj_t *veil;	// dims the page still showing while the sheet is part-way in
-static lv_obj_t *panel; // the full-screen sheet, parked above the top edge
+static lv_obj_t *veil;	// the full screen behind the card: a tap target, never drawn
+static lv_obj_t *panel; // the card, parked above the top edge
 static lv_obj_t *brightness_slider;
 static lv_obj_t *mseb_btn, *eq_btn;
 static lv_obj_t *wifi_btn, *bt_btn;
@@ -91,6 +102,9 @@ static lv_obj_t *sleep_audiobook_btn;
 static lv_obj_t *sleep_podcast_btn;
 static lv_obj_t *wifi_transfer_btn;
 static lv_obj_t *gapless_btn;
+static lv_obj_t *vlimit_btn;
+static lv_obj_t *dac_btn;
+static lv_obj_t *filter_btn;
 
 // ---------------------------------------------------------------------------
 // Which buttons the panel carries, and where
@@ -101,13 +115,12 @@ static lv_obj_t *gapless_btn;
 // whatever the config file says.
 // ---------------------------------------------------------------------------
 
-// Two tables and not one struct of pairs, because the two columns are read by
-// different things and only one of them is text. The keys are what the config
-// file carries and must never be retranslated or renamed; the tags are what the
-// settings page puts on screen, and they reach tr() through
-// quickpanel_button_tag(), a hop the string extractor cannot follow -- so
-// button_tag is named in tools/extract_strings.py's TABLES, and the keys stay
-// out of the language files where they never belonged.
+// Three tables and not one struct of tuples, because the columns are read by
+// different things and only some of them are text. The keys are what the
+// config file carries and must never be retranslated or renamed; the tags are
+// what the settings page puts on screen, and the labels the short names under
+// the circles. The keys stay out of the language files, where they never
+// belonged.
 static const char *const button_key[QP_BTN_COUNT] = {
 	[QP_BTN_WIFI] = "wifi",
 	[QP_BTN_BLUETOOTH] = "bluetooth",
@@ -125,6 +138,9 @@ static const char *const button_key[QP_BTN_COUNT] = {
 	[QP_BTN_SLEEP_PODCAST] = "sleep_podcast",
 	[QP_BTN_WIFI_TRANSFER] = "wifi_transfer",
 	[QP_BTN_GAPLESS] = "gapless",
+	[QP_BTN_VOLUME_LIMIT] = "volume_limit",
+	[QP_BTN_DAC] = "dac",
+	[QP_BTN_DAC_FILTER] = "dac_filter",
 };
 
 static const char *const button_tag[QP_BTN_COUNT] = {
@@ -144,6 +160,32 @@ static const char *const button_tag[QP_BTN_COUNT] = {
 	[QP_BTN_SLEEP_PODCAST] = "quickpanel_sleep_podcast",
 	[QP_BTN_WIFI_TRANSFER] = "wifitransfer_title",
 	[QP_BTN_GAPLESS] = "musicsettings_gapless_playback",
+	[QP_BTN_VOLUME_LIMIT] = "musicsettings_volume_limit",
+	[QP_BTN_DAC] = "quickpanel_dac_mode",
+	[QP_BTN_DAC_FILTER] = "musicsettings_filters",
+};
+
+// Under the circles: a word or two, at most the width of a quarter of the card.
+static const char *const button_label[QP_BTN_COUNT] = {
+	[QP_BTN_WIFI] = "qp_label_wifi",
+	[QP_BTN_BLUETOOTH] = "qp_label_bluetooth",
+	[QP_BTN_AIRPLAY] = "qp_label_airplay",
+	[QP_BTN_MSEB] = "qp_label_mseb",
+	[QP_BTN_EQ] = "qp_label_eq",
+	[QP_BTN_FADE] = "qp_label_fade",
+	[QP_BTN_GAIN] = "qp_label_gain",
+	[QP_BTN_LINEOUT] = "qp_label_lineout",
+	[QP_BTN_SONIXLINK] = "qp_label_sonixlink",
+	[QP_BTN_PEQ] = "qp_label_peq",
+	[QP_BTN_DLNA] = "qp_label_dlna",
+	[QP_BTN_SLEEP_MUSIC] = "qp_label_sleep_music",
+	[QP_BTN_SLEEP_AUDIOBOOK] = "qp_label_sleep_audiobook",
+	[QP_BTN_SLEEP_PODCAST] = "qp_label_sleep_podcast",
+	[QP_BTN_WIFI_TRANSFER] = "qp_label_wifi_transfer",
+	[QP_BTN_GAPLESS] = "qp_label_gapless",
+	[QP_BTN_VOLUME_LIMIT] = "qp_label_volume_limit",
+	[QP_BTN_DAC] = "qp_label_dac",
+	[QP_BTN_DAC_FILTER] = "qp_label_dac_filter",
 };
 
 static uint8_t slots[QP_SLOT_COUNT];  // the grid, QP_BTN_NONE where it is empty
@@ -155,293 +197,75 @@ static bool order_loaded;
 // does not also toggle the effect.
 static bool long_press_consumed;
 static bool panel_open;
-static int panel_h;
+static int open_y; // the card's top while it is down, under the status bar
 
-// Interactive drag state: where the sheet was when the finger went down.
+// Interactive drag state: where the card was when the finger went down.
 static bool drag_active;
 static int drag_from_y;
 static uint32_t drag_begin_ms;
 
-// A gesture this fast decides by its direction rather than by how far it got.
-//
-// A flick is short: the finger goes down, snaps a hundred pixels and is gone,
-// and that never reaches the quarter of a screen a deliberate drag is measured
-// against -- so the sheet followed the finger and then snapped back, which from
-// the outside is a control centre that ignores a quick swipe. The floor keeps
-// the wobble of a tap out of it.
+// A gesture this fast decides by its direction rather than by how far it got:
+// a flick is over long before it has covered the distance a deliberate drag
+// is measured against. The floor keeps the wobble of a tap out of it.
 #define FLICK_MIN_PX 40
 #define FLICK_SPEED_PX_S 500
 
-// How far a drag has to travel before the release opens or closes rather than
-// snapping back. Fixed pixels and not a share of the panel: both players have
-// the same 480-wide glass, so the same gesture decides the same way on the
-// 720-tall R3 Pro II and the 800-tall R1. 180 is a quarter of 720.
-#define DRAG_COMMIT_PX 180
+// How far a drag down from the status bar has to bring the card before the
+// release keeps it down rather than sending it back. Upwards, on the card,
+// it is the handoff's SX_CC_CLOSE_PX.
+#define DRAG_OPEN_PX 100
 
 // ---------------------------------------------------------------------------
-// The stretch of the controls card
+// The stretch of the card
 //
 // The card shows the first QP_SLOT_VISIBLE buttons. When the panel holds more,
-// the card is a little taller, a handle sits under the brightness slider, and
-// a drag down on the sheet stretches the card downwards, over the now-playing
-// card: the slider moves down with the edge and the buttons past the eighth
-// open up between the first two lines and the slider, as further lines of the
-// same grid. A drag up folds it back before a second one carries the sheet
-// away. The now-playing card fades as the controls card covers it, and is
-// taken out altogether once it is covered, so a tap under the stretched card
-// cannot reach its transport.
+// a handle sits under the brightness slider, and a drag down on the card (or a
+// tap on the handle) stretches it downwards over the page: the slider moves
+// down with the edge and the buttons past the eighth open up between the first
+// two lines and the slider, as further lines of the same grid. A drag up folds
+// it back before a second one carries the card away.
 // ---------------------------------------------------------------------------
 
-static lv_obj_t *controls_card;
-static lv_obj_t *np_card;
 static lv_obj_t *quick_row;	   // the first QP_SLOT_VISIBLE buttons
 static lv_obj_t *extra_clip;	   // the window the stretch opens, under the first lines
 static lv_obj_t *extra_row;	   // the rest, inside that window
 static lv_obj_t *bright_row;	   // moved down by the stretch
 static lv_obj_t *expand_handle; // the line under the slider, and a tap target
-static lv_obj_t *expand_pill;
-static int card_h_rest;		   // both cards' height with nothing past the eighth
-static int card_top;		   // the controls card's top, inside the sheet
-static int card_h_base;		   // the controls card's height at rest, handle room included
+static int card_h_rest;		   // the card's height with nothing past the eighth
+static int card_h_base;		   // the card's height at rest, handle room included
 static int expand_full;		   // how far the card stretches; 0 when nothing is past the eighth
 static int expand_h;		   // how far it is stretched now
 static int expand_from;		   // where a drag found it
 static uint32_t expand_begin_ms;
 
-// Set once a press has moved the sheet or the card, so the click that ends the
-// same press does not also fold the card from its handle.
+// Set once a press has moved the card, so the click that ends the same press
+// does not also fold the card from its handle.
 static bool press_dragged;
 
-// The now-playing card's widgets.
-static lv_obj_t *np_title;
-static lv_obj_t *np_artist;
-static lv_obj_t *np_play_btn;
-static lv_obj_t *np_play_icon;
-static lv_obj_t *np_repeat_icon;
-
-// Transport widgets. Prev, next and repeat are hidden on a live stream, as the
-// player hides them: they would not do nothing, they would quietly swap the
-// station for a track out of the queue. Prev and next stay for a station from
-// radio.txt, where they move along that list.
-static lv_obj_t *np_prev_btn;
-static lv_obj_t *np_next_btn;
-static lv_obj_t *np_prev_icon;
-static lv_obj_t *np_next_icon;
-static lv_obj_t *np_star_btn;
-static lv_obj_t *np_repeat_btn;
-static lv_obj_t *np_star_icon;
 static lv_timer_t *poll_timer;
 
 bool quickpanel_is_open(void) { return panel_open; }
-
-// ---------------------------------------------------------------------------
-// now-playing state
-// ---------------------------------------------------------------------------
-
-static void refresh_repeat_icon(void) {
-	lv_color_t active = theme()->accent;
-	lv_color_t inactive = lv_color_make(128, 128, 128);
-	const lv_image_dsc_t *glyph;
-	lv_color_t color;
-
-	switch (playlist_get_mode()) {
-	case PLAYBACK_MODE_REPEAT_ONE:
-		glyph = &icon_repeat_one;
-		color = active;
-		break;
-	case PLAYBACK_MODE_REPEAT_ALL:
-		glyph = &icon_repeat_all;
-		color = active;
-		break;
-	case PLAYBACK_MODE_SHUFFLE:
-		glyph = &icon_shuffle;
-		color = active;
-		break;
-	case PLAYBACK_MODE_SHUFFLE_REPEAT:
-		glyph = &icon_shuffle_repeat;
-		color = active;
-		break;
-	default:
-		glyph = &icon_repeat_off;
-		color = inactive;
-		break;
-	}
-	lv_image_set_src(np_repeat_icon, glyph);
-	lv_obj_set_style_image_recolor(np_repeat_icon, color, 0);
-	lv_obj_set_style_image_recolor_opa(np_repeat_icon, LV_OPA_COVER, 0);
-}
-
-static void refresh_now_playing_card(void) {
-	device_state_t state;
-	device_state_get(&state);
-
-	if (state.live) {
-		// A radio: the station on the first line, what it reports on air on the
-		// second. A live stream has no file, so without this branch the card
-		// shows the no-track text while a station is playing.
-		scrolltext_set(np_title, state.metadata.title);
-		scrolltext_set(np_artist, state.metadata.artist);
-	} else if (state.current_file[0]) {
-		const char *slash = strrchr(state.current_file, '/');
-		scrolltext_set(np_title, state.metadata.title[0] ? state.metadata.title
-														 : (slash ? slash + 1 : state.current_file));
-		// The same name the player line and the screensaver show.
-		const char *artist = metadata_shown_artist(&state.metadata);
-		scrolltext_set(np_artist, artist);
-	} else {
-		scrolltext_set(np_title, tr("quickpanel_no_track"));
-		scrolltext_set(np_artist, "");
-	}
-
-	// A live stream cannot be paused, so on a radio the button becomes the stop
-	// the player also shows.
-	const lv_image_dsc_t *glyph = state.status == AUDIO_STATUS_PLAYING ? &icon_pause_large : &icon_play_large;
-	if (state.live && state.status == AUDIO_STATUS_PLAYING) {
-		glyph = &icon_stop;
-	}
-	lv_image_set_src(np_play_icon, glyph);
-
-	bool station_steps = state.live && radio_can_step();
-
-	// Greyed out and inert while a station connects, as on the player.
-	bool connecting = state.live && radio_is_connecting();
-	lv_obj_t *const transport[] = {np_prev_btn, np_play_btn, np_next_btn};
-	for (size_t i = 0; i < sizeof(transport) / sizeof(transport[0]); i++) {
-		if (!transport[i]) {
-			continue;
-		}
-		if (connecting) {
-			lv_obj_add_state(transport[i], LV_STATE_DISABLED);
-		} else {
-			lv_obj_remove_state(transport[i], LV_STATE_DISABLED);
-		}
-	}
-	lv_obj_t *const only_for_tracks[] = {np_prev_btn, np_next_btn, np_repeat_btn};
-	for (size_t i = 0; i < sizeof(only_for_tracks) / sizeof(only_for_tracks[0]); i++) {
-		if (!only_for_tracks[i]) {
-			continue;
-		}
-		bool steps = station_steps && only_for_tracks[i] != np_repeat_btn;
-		if (state.live && !steps) {
-			lv_obj_set_hidden(only_for_tracks[i], true);
-		} else {
-			lv_obj_set_hidden(only_for_tracks[i], false);
-		}
-	}
-
-	// Must come after the loop above: that loop unhides the repeat button for
-	// everything that is not a stream, books included, so hiding it earlier
-	// would be undone in the same pass.
-	//
-	// On a book the transport is a pair of timed jumps, mirroring the player so
-	// the two places do not disagree about what the same buttons do. prev_cb and
-	// next_cb already route through the player, which knows about books, so only
-	// the glyphs change here.
-	bool book = !state.live && audiobook_is_playing();
-	// A podcast is driven like an audiobook -- timed jumps instead of prev/next
-	// track -- but with its own intervals (podcast_skip_*), no repeat mode, and a
-	// star that follows the feed rather than the track. Same dressing as the
-	// player.
-	long long podcast_feed_id = 0;
-	player_current_podcast_feed(&podcast_feed_id, NULL);
-	bool podcast = !state.live && !book && podcastcache_is_episode(state.current_file);
-	bool skips = book || podcast;
-	int back = book ? audiobook_skip_back() : podcast ? podcast_skip_back() : 0;
-	int forward = book ? audiobook_skip_forward() : podcast ? podcast_skip_forward() : 0;
-	if (np_prev_icon) {
-		lv_image_set_src(np_prev_icon, !skips                       ? &icon_skip_back_large
-									   : back == AUDIOBOOK_SKIP_HUGE ? &icon_prev_60
-									   : back == AUDIOBOOK_SKIP_LONG ? &icon_prev_30
-																	 : &icon_prev_10);
-	}
-	if (np_next_icon) {
-		lv_image_set_src(np_next_icon, !skips                          ? &icon_skip_forward_large
-									   : forward == AUDIOBOOK_SKIP_HUGE ? &icon_next_60
-									   : forward == AUDIOBOOK_SKIP_LONG ? &icon_next_30
-																		: &icon_next_10);
-	}
-
-	// Repeat/shuffle goes away on both books and podcasts: a queue of episodes is
-	// not an album. The star goes away only on books; on a podcast it stays and
-	// follows the feed (see star_cb).
-	if (np_repeat_btn) {
-		if (book || podcast) {
-			lv_obj_set_hidden(np_repeat_btn, true);
-		} else {
-			lv_obj_set_hidden(np_repeat_btn, false);
-		}
-	}
-	if (np_star_btn) {
-		if (book) {
-			lv_obj_set_hidden(np_star_btn, true);
-		} else {
-			lv_obj_set_hidden(np_star_btn, false);
-		}
-	}
-
-	// Accent glyph on a disc that is white under the dark theme and the quiet
-	// dark circle under the light one, where white would vanish into the card.
-	lv_obj_set_style_image_recolor(np_play_icon, theme()->accent, 0);
-	lv_obj_set_style_image_recolor_opa(np_play_icon, LV_OPA_COVER, 0);
-	if (np_play_btn) {
-		lv_obj_set_style_bg_color(np_play_btn, theme()->dark ? lv_color_white() : theme()->surface_pressed, 0);
-	}
-
-	// On a radio the star is about the station and lives in the radio database:
-	// there is no file to look up in the music library.
-	radio_station_t station;
-	bool fav;
-	const stream_provider_t *service = NULL;
-	if (radio_current_station(&station)) {
-		fav = radio_fav_contains(station.uuid);
-	} else if (podcast) {
-		// On a podcast the star reports whether the feed is followed, exactly as
-		// the player's star does.
-		fav = podcastsubs_is_followed(podcast_feed_id);
-	} else if ((service = stream_provider_for_track(state.current_file)) != NULL) {
-		// A streamed track: the star reports the account state, like the
-		// player's. Reading the local database here would draw a star that
-		// disagrees with the one a tap fills.
-		//
-		// The local mirror is also refreshed, because it may not be populated
-		// yet: the control centre can be opened on a streamed track without the
-		// player ever having been visited, and an empty star on a track that is
-		// a favourite turns the next tap into an "add" for something already
-		// added.
-		fav = service->fav_get(state.current_file);
-		service->fav_refresh(NULL);
-	} else {
-		fav = state.current_file[0] && library_fav_contains(state.current_file);
-	}
-	lv_image_set_src(np_star_icon, fav ? &icon_star_filled : &icon_star);
-	lv_obj_set_style_image_recolor(np_star_icon, fav ? lv_color_make(246, 211, 45) : lv_color_make(150, 150, 150), 0);
-	lv_obj_set_style_image_recolor_opa(np_star_icon, LV_OPA_COVER, 0);
-
-	refresh_repeat_icon();
-}
 
 static void refresh_audio_buttons(void);
 
 static void poll_cb(lv_timer_t *timer) {
 	(void)timer;
-	refresh_now_playing_card();
 	// The circles can be turned off by something other than a tap while the
 	// panel is open -- line out ends when its jack is pulled or when Bluetooth
-	// takes the sound -- so the row is repainted with the card.
+	// takes the sound.
 	refresh_audio_buttons();
 }
+
+// Where the card waits while it is shut: its whole height above the top edge,
+// whatever it is stretched to.
+static int parked_y(void) { return -lv_obj_get_height(panel) - 4; }
 
 // ---------------------------------------------------------------------------
 // open / close
 // ---------------------------------------------------------------------------
 
-static void anim_y_cb(void *obj, int32_t v);
-
-// Defined further down with the circle buttons; panel_prepare() needs it here.
-static void refresh_audio_buttons(void);
-
-// The full-screen object behind the sheet has no background: it exists only to
-// collect the tap that closes the sheet, and LVGL does not draw a background it
+// The full-screen object behind the card has no background: it exists only to
+// collect the tap that closes the card, and LVGL does not draw a background it
 // cannot see.
 //
 // It must stay that way. A translucent veil over the whole 480x720 screen would
@@ -450,20 +274,17 @@ static void refresh_audio_buttons(void);
 // every step, on a CPU that is also feeding the DAC.
 static void anim_y_cb(void *obj, int32_t v) { lv_obj_set_y((lv_obj_t *)obj, v); }
 
-// True when the sheet raised the status bar itself and so has to put it away
+// True when the card raised the status bar itself and so has to put it away
 // again. That happens exactly when the control centre is opened from the
 // player, the one page that hides the bar.
 static bool raised_topbar;
 
-// Restores whatever the page underneath had. Called when the sheet has finished
-// sliding away, not when it starts: the bar has to stay up for the whole slide,
-// or it flickers out from under a sheet still on screen.
+// Restores whatever the page underneath had. Called when the card has finished
+// sliding away, not when it starts: the bar has to stay up for the whole slide.
 //
 // The bar goes back down only if the player is still the thing underneath. A
 // long press on one of the icons closes the player and loads a page while this
-// slide is still running, and a page keeps its status bar: without the check
-// the bar would be hidden on that page a fifth of a second after it appeared,
-// taking the pull-down handle with it.
+// slide is still running, and a page keeps its status bar.
 static void restore_topbar(void) {
 	if (raised_topbar) {
 		raised_topbar = false;
@@ -503,11 +324,11 @@ static void panel_slide_to(int y, bool animate) {
 }
 
 // ---------------------------------------------------------------------------
-// Stretching the controls card (see the note over controls_card)
+// Stretching the card (see the note over quick_row)
 // ---------------------------------------------------------------------------
 
 static void expand_set(int h) {
-	if (!controls_card) {
+	if (!panel) {
 		return;
 	}
 	if (h > expand_full) {
@@ -517,17 +338,10 @@ static void expand_set(int h) {
 		h = 0;
 	}
 	expand_h = h;
-	lv_obj_set_height(controls_card, card_h_base + h);
+	lv_obj_set_height(panel, card_h_base + h);
 	lv_obj_set_height(extra_clip, h);
 	lv_obj_set_style_translate_y(bright_row, h, 0);
-
-	// In proportion to the stretch: the second block comes in as the card
-	// uncovers it, and the card underneath goes out as it is covered.
-	lv_opa_t shown = expand_full > 0 ? (lv_opa_t)(LV_OPA_COVER * h / expand_full) : LV_OPA_TRANSP;
 	lv_obj_set_hidden(extra_clip, h == 0);
-	lv_obj_set_style_opa(extra_row, shown, 0);
-	lv_obj_set_hidden(np_card, expand_full > 0 && h >= expand_full);
-	lv_obj_set_style_opa(np_card, (lv_opa_t)(LV_OPA_COVER - shown), 0);
 }
 
 static void expand_anim_cb(void *obj, int32_t v) {
@@ -536,17 +350,17 @@ static void expand_anim_cb(void *obj, int32_t v) {
 }
 
 static void expand_to(int h, bool animate) {
-	if (!controls_card) {
+	if (!panel) {
 		return;
 	}
-	lv_anim_delete(controls_card, expand_anim_cb);
+	lv_anim_delete(panel, expand_anim_cb);
 	if (!animate) {
 		expand_set(h);
 		return;
 	}
 	lv_anim_t a;
 	lv_anim_init(&a);
-	lv_anim_set_var(&a, controls_card);
+	lv_anim_set_var(&a, panel);
 	lv_anim_set_exec_cb(&a, expand_anim_cb);
 	lv_anim_set_values(&a, expand_h, h);
 	lv_anim_set_duration(&a, PANEL_ANIM_MS);
@@ -555,7 +369,7 @@ static void expand_to(int h, bool animate) {
 }
 
 static void expand_drag_begin(void) {
-	lv_anim_delete(controls_card, expand_anim_cb);
+	lv_anim_delete(panel, expand_anim_cb);
 	expand_from = expand_h;
 	expand_begin_ms = lv_tick_get();
 }
@@ -563,7 +377,7 @@ static void expand_drag_begin(void) {
 static void expand_drag_update(int dy) { expand_set(expand_from + dy); }
 
 // Past halfway it stays stretched, short of it it folds back; a flick goes the
-// way it was flicked, as the sheet's own drag does.
+// way it was flicked, as the card's own drag does.
 static void expand_drag_end(void) {
 	int travel = expand_h - expand_from;
 	bool open = expand_h * 2 > expand_full;
@@ -583,7 +397,7 @@ static void expand_handle_clicked_cb(lv_event_t *e) {
 	expand_to(expand_h > 0 ? 0 : expand_full, true);
 }
 
-// Everything the sheet has to freshen before it becomes visible, whether it is
+// Everything the card has to freshen before it becomes visible, whether it is
 // being animated in or dragged in a pixel at a time.
 static void panel_prepare(void) {
 	long max = power_get_max_brightness();
@@ -597,41 +411,32 @@ static void panel_prepare(void) {
 		value = max;
 	}
 	lv_slider_set_value(brightness_slider, (int32_t)value, LV_ANIM_OFF);
-	lv_obj_set_style_bg_color(brightness_slider, theme()->accent, LV_PART_INDICATOR);
-	// The sheet is built once at startup, so the knob outline has to be reapplied
-	// for whichever theme is live now; otherwise it keeps the ring (or lack of
-	// one) it was created with.
-	theme_apply_slider_knob(brightness_slider);
+	// The accent may have changed since the card was last down (a new cover).
+	lv_obj_set_style_bg_color(brightness_slider, sx_pal()->accent, LV_PART_INDICATOR);
 
-	refresh_now_playing_card();
 	refresh_audio_buttons();
 
-	// The sheet always comes in folded, as Android's does.
+	// The card always comes in folded.
 	expand_to(0, false);
-	if (expand_pill) {
-		lv_obj_set_style_bg_color(expand_pill, theme()->text_primary, 0);
-	}
 
 	lv_obj_set_hidden(veil, false);
 	lv_obj_move_foreground(veil);
 
 	// The player hides the status bar so artwork can run to the top edge. The
 	// control centre needs it back: the clock, battery and volume belong with
-	// these controls, and the sheet covers the artwork anyway while it is up.
+	// these controls.
 	if (topbar_is_hidden()) {
 		raised_topbar = true;
 		topbar_set_hidden(false);
 	}
 
-	// The bar is also restacked above the sheet, so clock, battery and volume
-	// stay readable with the control centre open.
+	// The bar is also restacked above the card, which slides in from under it.
 	topbar_bring_to_front();
 }
 
 // While the device is acting as a USB sound card, a Wi-Fi file server or a
 // Bluetooth receiver it is not playing anything, and those pages are meant to
-// stay in front, so the control centre would show transport buttons for a
-// transport that is not running. It refuses to open instead.
+// stay in front. The control centre refuses to open instead.
 bool quickpanel_blocked(void) {
 	// The transfer answers with the switch rather than with the server: killing
 	// thttpd takes a moment and the answer about the process is cached on top of
@@ -646,8 +451,9 @@ void quickpanel_open(void) {
 	}
 	panel_open = true;
 	panel_prepare();
+	lv_obj_set_y(panel, parked_y());
 	lv_timer_resume(poll_timer);
-	panel_slide_to(0, true);
+	panel_slide_to(open_y, true);
 }
 
 void quickpanel_close(void) {
@@ -656,11 +462,11 @@ void quickpanel_close(void) {
 	}
 	panel_open = false;
 	lv_timer_pause(poll_timer);
-	panel_slide_to(-panel_h, true);
+	panel_slide_to(parked_y(), true);
 }
 
 // ---------------------------------------------------------------------------
-// Following the finger: the gesture moves the sheet directly, and only the last
+// Following the finger: the gesture moves the card directly, and only the last
 // stretch after the release is animated.
 // ---------------------------------------------------------------------------
 
@@ -670,14 +476,13 @@ void quickpanel_drag_begin(void) {
 	}
 	lv_anim_delete(panel, anim_y_cb);
 	drag_active = true;
-	drag_from_y = panel_open ? 0 : -panel_h;
-	drag_begin_ms = lv_tick_get();
-
 	if (!panel_open) {
 		panel_prepare();
-		lv_obj_set_y(panel, -panel_h);
-		lv_timer_resume(poll_timer); // the card is visible from the first pixel of travel
+		lv_obj_set_y(panel, parked_y());
+		lv_timer_resume(poll_timer);
 	}
+	drag_from_y = lv_obj_get_y(panel);
+	drag_begin_ms = lv_tick_get();
 }
 
 void quickpanel_drag_update(int dy) {
@@ -685,11 +490,11 @@ void quickpanel_drag_update(int dy) {
 		return;
 	}
 	int y = drag_from_y + dy;
-	if (y > 0) {
-		y = 0;
+	if (y > open_y) {
+		y = open_y;
 	}
-	if (y < -panel_h) {
-		y = -panel_h;
+	if (y < parked_y()) {
+		y = parked_y();
 	}
 	lv_obj_set_y(panel, y);
 }
@@ -700,11 +505,12 @@ void quickpanel_drag_end(void) {
 	}
 	drag_active = false;
 
-	// A fixed stretch of travel decides the outcome, in whichever direction the
-	// gesture started: the same point-of-no-return feel as the swipe-back.
+	// A fixed stretch of travel decides the outcome: down from the status bar
+	// DRAG_OPEN_PX, up on the card the handoff's SX_CC_CLOSE_PX.
 	int y = lv_obj_get_y(panel);
 	int travel = y - drag_from_y;
-	bool open = drag_from_y == 0 ? travel > -DRAG_COMMIT_PX : travel > DRAG_COMMIT_PX;
+	bool was_open = drag_from_y >= open_y;
+	bool open = was_open ? travel > -SX_CC_CLOSE_PX : travel > DRAG_OPEN_PX;
 
 	// Unless it was a flick, which is over long before it has covered that much.
 	// Then only the direction counts.
@@ -720,7 +526,7 @@ void quickpanel_drag_end(void) {
 	} else {
 		lv_timer_pause(poll_timer);
 	}
-	panel_slide_to(open ? 0 : -panel_h, true);
+	panel_slide_to(open ? open_y : parked_y(), true);
 }
 
 static void veil_clicked_cb(lv_event_t *e) {
@@ -728,10 +534,10 @@ static void veil_clicked_cb(lv_event_t *e) {
 	quickpanel_close();
 }
 
-// The upward half of the gesture: a drag anywhere on the sheet carries it back
-// out, following the finger all the way. With buttons past the eighth, a drag
-// down stretches the controls card instead, and a drag up on a stretched card
-// folds it before anything carries the sheet away.
+// The upward half of the gesture: a drag up anywhere on the card carries it
+// back out, following the finger. With buttons past the eighth, a drag down
+// stretches the card instead, and a drag up on a stretched card folds it before
+// anything carries the card away.
 static void panel_drag_cb(lv_event_t *e) {
 	static lv_point_t start;
 	static bool tracking;
@@ -798,7 +604,7 @@ static void panel_drag_cb(lv_event_t *e) {
 }
 
 // ---------------------------------------------------------------------------
-// controls
+// brightness
 // ---------------------------------------------------------------------------
 
 static void brightness_changed_cb(lv_event_t *e) {
@@ -810,111 +616,6 @@ static void brightness_released_cb(lv_event_t *e) {
 	(void)e;
 	config_set_int("screen", "brightness", (int)lv_slider_get_value(brightness_slider));
 	config_save();
-}
-
-static void play_cb(lv_event_t *e) {
-	(void)e;
-	player_key_play_pause();
-	refresh_now_playing_card();
-}
-
-// The control centre is an on-screen control, so its prev/next do what the
-// player's on-screen buttons do: on a podcast they seek by seconds rather than
-// changing episode, which stays with the physical side keys.
-static void next_cb(lv_event_t *e) {
-	(void)e;
-	player_screen_next();
-	refresh_now_playing_card();
-}
-
-static void prev_cb(lv_event_t *e) {
-	(void)e;
-	player_screen_prev();
-	refresh_now_playing_card();
-}
-
-static void repeat_cb(lv_event_t *e) {
-	(void)e;
-	playlist_cycle_mode();
-	refresh_repeat_icon();
-}
-
-// Result of a streamed track's star, delivered by the service's sync worker. Same contract as
-// the player's star: success needs no message, since the filled star already
-// says it, but failure does, because the star filled on touch and now empties
-// again. Reported on the GUI thread via gui_post, never from the worker.
-static char qp_fav_error[192];
-
-static void qp_fav_error_async(void *user) {
-	(void)user;
-	if (qp_fav_error[0]) {
-		gui_notify_popup(qp_fav_error);
-	}
-	refresh_now_playing_card();
-	player_refresh_now_playing();
-}
-
-// `user` is the provider written to, whose fallback message names the service.
-static void qp_fav_done(bool ok, const char *error, void *user) {
-	const stream_provider_t *service = user;
-	snprintf(qp_fav_error, sizeof(qp_fav_error), "%s",
-			 ok ? "" : (error && error[0] ? error : tr(service->fav_failed_key)));
-	gui_post(qp_fav_error_async, NULL);
-}
-
-static void star_cb(lv_event_t *e) {
-	(void)e;
-
-	radio_station_t station;
-	if (radio_current_station(&station)) {
-		if (radio_fav_contains(station.uuid)) {
-			radio_fav_remove(station.uuid);
-		} else {
-			radio_fav_add(&station);
-		}
-		refresh_now_playing_card();
-		player_refresh_now_playing();
-		return;
-	}
-
-	// A podcast: the star follows or unfollows the feed, like the player's, and
-	// reads the same source so the two stars cannot disagree.
-	long long feed_id = 0;
-	podcast_feed_t feed;
-	if (player_current_podcast_feed(&feed_id, &feed)) {
-		if (podcastsubs_is_followed(feed_id)) {
-			podcastsubs_unfollow(feed_id);
-		} else {
-			podcastsubs_follow(&feed);
-		}
-		refresh_now_playing_card();
-		player_refresh_now_playing();
-		return;
-	}
-
-	device_state_t state;
-	device_state_get(&state);
-	if (!state.current_file[0]) {
-		return;
-	}
-
-	// A streamed track: the star goes to the account favourites, like the
-	// player's, and not to the local database, which would store the path of a
-	// cache file that is gone twenty tracks later.
-	const stream_provider_t *service = stream_provider_for_track(state.current_file);
-	if (service) {
-		bool want = !service->fav_get(state.current_file);
-		service->fav_toggle(state.current_file, want, qp_fav_done, (void *)service);
-		refresh_now_playing_card(); // the local mirror already flipped, so redraw at once
-		player_refresh_now_playing();
-		return;
-	}
-
-	const char *slash = strrchr(state.current_file, '/');
-	const char *title = state.metadata.title[0] ? state.metadata.title : (slash ? slash + 1 : state.current_file);
-	library_fav_toggle(state.current_file, title, state.metadata.artist);
-	refresh_now_playing_card();
-	player_refresh_now_playing(); // the player's own star follows at once
 }
 
 // ---------------------------------------------------------------------------
@@ -992,6 +693,37 @@ static void order_load(void) {
 	}
 	order_loaded = true;
 
+	// A panel nobody has arranged -- nothing in the file at all, which is every
+	// player until the settings page is used -- gets 2.0's: Wi-Fi, Bluetooth,
+	// AirPlay, MSEB, EQ, the volume limit, the DAC and its filter in front,
+	// and what 1.2.5 had in front besides (gain, line out, SonixLink) with the
+	// parametric EQ behind the handle, so nothing that was a tap away goes
+	// further. The rest wait among the unused ones.
+	const char *saved_order = config_get("quickpanel", "order", "");
+	const char *saved_hidden = config_get("quickpanel", "hidden", "");
+	if ((!saved_order || !saved_order[0]) && (!saved_hidden || !saved_hidden[0])) {
+		static const uint8_t FRESH[] = {
+			QP_BTN_WIFI, QP_BTN_BLUETOOTH, QP_BTN_AIRPLAY, QP_BTN_MSEB, QP_BTN_EQ, QP_BTN_VOLUME_LIMIT,
+			QP_BTN_DAC,	 QP_BTN_DAC_FILTER, QP_BTN_GAIN, QP_BTN_LINEOUT, QP_BTN_SONIXLINK, QP_BTN_PEQ,
+		};
+		bool used[QP_BTN_COUNT] = {false};
+		int at = 0;
+		for (size_t i = 0; i < sizeof(FRESH); i++) {
+			slots[at++] = FRESH[i];
+			used[FRESH[i]] = true;
+		}
+		while (at < QP_SLOT_COUNT) {
+			slots[at++] = QP_BTN_NONE;
+		}
+		hidden_n = 0;
+		for (int i = 0; i < QP_BTN_COUNT; i++) {
+			if (!used[i]) {
+				hidden[hidden_n++] = (uint8_t)i;
+			}
+		}
+		return;
+	}
+
 	long saved_version = config_get_int("quickpanel", "layout", 1);
 	int grid = saved_version < 4 ? QP_SLOT_VISIBLE : QP_SLOT_COUNT;
 
@@ -1023,7 +755,8 @@ static void order_load(void) {
 		// panel nobody asked to change, so they wait among the unused ones, where
 		// the settings page shows them.
 		bool waits = i == QP_BTN_DLNA || i == QP_BTN_SLEEP_MUSIC || i == QP_BTN_SLEEP_AUDIOBOOK ||
-					 i == QP_BTN_SLEEP_PODCAST || i == QP_BTN_WIFI_TRANSFER || i == QP_BTN_GAPLESS;
+					 i == QP_BTN_SLEEP_PODCAST || i == QP_BTN_WIFI_TRANSFER || i == QP_BTN_GAPLESS ||
+					 i == QP_BTN_VOLUME_LIMIT || i == QP_BTN_DAC || i == QP_BTN_DAC_FILTER;
 		if ((saved_version < 2 && i == QP_BTN_FADE) || waits) {
 			hidden[hidden_n++] = (uint8_t)i;
 		} else {
@@ -1108,7 +841,7 @@ static void order_save(void) {
 	config_save();
 }
 
-static lv_obj_t *button_widget(quickpanel_button_t which) {
+static lv_obj_t *button_circle(quickpanel_button_t which) {
 	switch (which) {
 	case QP_BTN_WIFI:
 		return wifi_btn;
@@ -1142,9 +875,21 @@ static lv_obj_t *button_widget(quickpanel_button_t which) {
 		return wifi_transfer_btn;
 	case QP_BTN_GAPLESS:
 		return gapless_btn;
+	case QP_BTN_VOLUME_LIMIT:
+		return vlimit_btn;
+	case QP_BTN_DAC:
+		return dac_btn;
+	case QP_BTN_DAC_FILTER:
+		return filter_btn;
 	default:
 		return NULL;
 	}
+}
+
+// What the grid places: the circle's column, with its name under it.
+static lv_obj_t *button_widget(quickpanel_button_t which) {
+	lv_obj_t *circle = button_circle(which);
+	return circle ? lv_obj_get_parent(circle) : NULL;
 }
 
 // Puts the widgets in the grid's order: the first QP_SLOT_VISIBLE into the
@@ -1182,17 +927,12 @@ static void order_apply(void) {
 	// How far the card stretches: a line and the gap above it for each line of
 	// the second block, the same pitch as the lines above.
 	int extra = at > QP_SLOT_VISIBLE ? at - QP_SLOT_VISIBLE : 0;
-	int lines = (extra + QP_BUTTONS_PER_LINE - 1) / QP_BUTTONS_PER_LINE;
-	expand_full = lines * (CIRCLE_BUTTON_SIZE + CIRCLE_BUTTON_GAP);
+	int lines = (extra + CC_BUTTONS_PER_LINE - 1) / CC_BUTTONS_PER_LINE;
+	expand_full = lines * (SX_CC_BTN + CC_LABEL_GAP + lv_font_get_line_height(&font_ui_16) + CC_GAP);
 
-	// With a handle to show the card takes HANDLE_ROOM from the now-playing
-	// card, which has height to spare under its transport; without one both
-	// stay as they always were.
-	if (controls_card) {
-		int room = expand_full ? HANDLE_ROOM : 0;
-		card_h_base = card_h_rest + room;
-		lv_obj_set_y(np_card, card_top + card_h_base + CARD_GAP);
-		lv_obj_set_height(np_card, card_h_rest - room);
+	// With a handle to show, the card is HANDLE_ROOM taller under the slider.
+	if (panel) {
+		card_h_base = card_h_rest + (expand_full ? HANDLE_ROOM : 0);
 		lv_obj_set_hidden(expand_handle, expand_full == 0);
 	}
 	expand_to(0, false);
@@ -1356,70 +1096,96 @@ const lv_image_dsc_t *quickpanel_button_icon(quickpanel_button_t button) {
 		return &icon_wifi_transfer_quick;
 	case QP_BTN_GAPLESS:
 		return &icon_gapless_on_quick;
+	case QP_BTN_VOLUME_LIMIT:
+		return &icon_volume_limit_quick;
+	case QP_BTN_DAC:
+		return &icon_dac_quick;
+	case QP_BTN_DAC_FILTER:
+		return &icon_dac_filter_quick;
 	default:
 		return &icon_wifi;
 	}
 }
+
 
 // ---------------------------------------------------------------------------
 // construction
 // ---------------------------------------------------------------------------
 
 // First in line for a circle's tap and hold: a press that has become a drag of
-// the sheet or the card ends there, and the circle's own handlers never hear of
-// it. The finger stays on a circle while the sheet carries both, and a circle
-// keeps its press while the finger leaves it, so either would otherwise end the
-// drag by toggling or by opening a page.
+// the card ends there, and the circle's own handlers never hear of it. The
+// finger stays on a circle while the card carries both, and a circle keeps its
+// press while the finger leaves it, so either would otherwise end the drag by
+// toggling or by opening a page.
 static void circle_guard_cb(lv_event_t *e) {
 	if (press_dragged) {
 		lv_event_stop_processing(e);
 	}
 }
 
-// One round quick control: a circle in the pressed-surface colour with the
-// glyph centred on it. Callers attach their own handlers. Presses bubble on to
-// the sheet, so a drag that starts on a circle moves the sheet or the card like
-// a drag anywhere else.
-static lv_obj_t *make_circle_button(lv_obj_t *parent, const lv_image_dsc_t *glyph) {
-	lv_obj_t *btn = lv_btn_create(parent);
+// The width of one place in the grid: a quarter of the card inside its padding.
+static int cell_w;
+
+// One round quick control and its name under it, in a column the grid places:
+// a circle SX_CC_BTN across in SX_CC_BTN_OFF with the glyph white on it.
+// Returns the circle, which callers attach their handlers to; the column is
+// its parent. Presses bubble on to the card, so a drag that starts on a circle
+// moves the card like a drag anywhere else.
+static lv_obj_t *make_circle_button(lv_obj_t *parent, const lv_image_dsc_t *glyph, quickpanel_button_t which) {
+	lv_obj_t *cell = lv_obj_create(parent);
+	lv_obj_remove_style_all(cell);
+	lv_obj_set_size(cell, cell_w, LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(cell, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(cell, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_style_pad_row(cell, CC_LABEL_GAP, 0);
+	lv_obj_set_scrollable(cell, false);
+	lv_obj_set_event_bubble(cell, true);
+
+	lv_obj_t *btn = lv_btn_create(cell);
+	lv_obj_remove_style_all(btn);
 	lv_obj_set_event_bubble(btn, true);
 	lv_obj_add_event_cb(btn, circle_guard_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(btn, circle_guard_cb, LV_EVENT_LONG_PRESSED, NULL);
-	lv_obj_set_size(btn, CIRCLE_BUTTON_SIZE, CIRCLE_BUTTON_SIZE);
+	lv_obj_set_size(btn, SX_CC_BTN, SX_CC_BTN);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-	lv_obj_add_style(btn, &theme_style_switch, 0); // neutral circle that follows the theme
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
+	lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
+	lv_obj_set_style_bg_color(btn, lv_color_hex(SX_CC_BTN_OFF), 0);
+	// The pressed fill at once (principle 2): a step lighter.
+	lv_obj_set_style_bg_color(btn, lv_color_hex(0x5A5A5A), LV_STATE_PRESSED);
+	// The name under it answers a tap too.
+	lv_obj_set_ext_click_area(btn, CC_LABEL_GAP + 10);
 
 	lv_obj_t *icon = lv_image_create(btn);
 	lv_image_set_src(icon, glyph);
-	lv_obj_add_style(icon, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor(icon, lv_color_hex(CC_TEXT), 0);
 	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+	// The 46 px glyphs drawn at 40, the prototype's weight in an 84 circle.
+	lv_image_set_scale(icon, 256 * 40 / 46);
 	lv_obj_center(icon);
+
+	lv_obj_t *label = lv_label_create(cell);
+	lv_obj_set_width(label, cell_w);
+	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_set_style_text_font(label, &font_ui_16, 0);
+	lv_obj_set_style_text_color(label, lv_color_hex(CC_TEXT), 0);
+	lv_obj_set_style_text_opa(label, CC_LABEL_OPA, 0);
+	lv_label_set_text(label, tr(button_label[which]));
 
 	return btn;
 }
 
-// Paints a quick button for its state: accent fill with a white glyph while on,
-// the neutral circle while off.
+// Paints a quick button for its state: the accent with its own ink while on,
+// the neutral circle with a white glyph while off.
 static void circle_button_set_on(lv_obj_t *btn, bool on) {
 	if (!btn) {
 		return;
 	}
 	lv_obj_t *icon = lv_obj_get_child(btn, 0);
-
-	if (on) {
-		lv_obj_set_style_bg_color(btn, theme()->accent, 0);
-		lv_obj_set_style_bg_opa(btn, LV_OPA_COVER, 0);
-		if (icon) {
-			lv_obj_set_style_image_recolor(icon, lv_color_white(), 0);
-		}
-	} else {
-		lv_obj_remove_local_style_prop(btn, LV_STYLE_BG_COLOR, 0);
-		lv_obj_remove_local_style_prop(btn, LV_STYLE_BG_OPA, 0);
-		if (icon) {
-			lv_obj_remove_local_style_prop(icon, LV_STYLE_IMAGE_RECOLOR, 0);
-		}
+	const sx_palette_t *p = sx_pal();
+	lv_obj_set_style_bg_color(btn, on ? p->accent : lv_color_hex(SX_CC_BTN_OFF), 0);
+	if (icon) {
+		lv_obj_set_style_image_recolor(icon, on ? p->on_accent : lv_color_hex(CC_TEXT), 0);
 	}
 }
 
@@ -1443,6 +1209,10 @@ static void refresh_audio_buttons(void) {
 	circle_button_set_on(sleep_audiobook_btn, sleep_timer_armed(SLEEPTIMER_AUDIOBOOK));
 	circle_button_set_on(sleep_podcast_btn, sleep_timer_armed(SLEEPTIMER_PODCAST));
 	circle_button_set_on(wifi_transfer_btn, wifitransfer_get_enabled());
+	circle_button_set_on(vlimit_btn, volume_limit_enabled());
+	// The DAC and the filter are ways to a page and a choice, never "on".
+	circle_button_set_on(dac_btn, false);
+	circle_button_set_on(filter_btn, false);
 
 	bool high = musicsettings_high_gain();
 	if (gain_btn) {
@@ -1842,63 +1612,96 @@ static void open_page(lv_obj_t *screen) {
 
 static void open_page_cb(lv_event_t *e) { open_page(lv_event_get_user_data(e)); }
 
-// A bare glyph button for the transport row.
-static lv_obj_t *make_flat_button(lv_obj_t *parent, int size, lv_event_cb_t cb) {
-	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, size, size);
-	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_set_style_pad_all(btn, 0, 0);
-	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
-	return btn;
+// The volume limit: a tap switches the ceilings on or off, a hold opens their
+// page. The level may come down under a ceiling at once, and the status bar's
+// figure is the one place that says so.
+static void vlimit_clicked_cb(lv_event_t *e) {
+	(void)e;
+	if (long_press_consumed) {
+		long_press_consumed = false;
+		return;
+	}
+	volume_limit_set_enabled(!volume_limit_enabled());
+	config_save();
+	topbar_refresh_volume(get_volume_percent());
+	toggled();
 }
 
-// The rounded surface each half of the panel sits on. Both cards are the same
-// size and stack from the top of the sheet with one gap between them, so
-// together they fill the screen instead of floating in the middle of it.
-static lv_obj_t *make_card(lv_obj_t *parent, int width, int height, int top_y) {
-	lv_obj_t *card = lv_obj_create(parent);
-	lv_obj_set_ignore_layout(card, true);
-	lv_obj_set_size(card, width, height);
-	lv_obj_align(card, LV_ALIGN_TOP_MID, 0, top_y);
-	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 20, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, CARD_PADDING, 0);
-	lv_obj_set_scrollable(card, false);
-	// Presses bubble to the sheet, whose drag handler carries the panel back out
-	// from anywhere on it.
-	lv_obj_set_event_bubble(card, true);
-	return card;
+static void vlimit_page_cb(lv_event_t *e) {
+	(void)e;
+	open_page(musicsettings_volume_limit_screen());
+}
+
+// USB DAC mode is a page that takes the whole player over (and shuts the
+// control centre while it runs), so the circle is the way to it rather than a
+// switch: a tap or a hold opens it.
+static void dac_clicked_cb(lv_event_t *e) {
+	(void)e;
+	if (long_press_consumed) {
+		long_press_consumed = false;
+		return;
+	}
+	open_page(dacpage_screen);
+}
+
+// The DAC's filter is one of four, not on or off: a tap offers the four in a
+// sheet, the one in force ticked; a hold opens their page, which explains them.
+static void filter_picked(void *user) { musicsettings_set_dac_filter((int)(intptr_t)user); }
+
+static void filter_clicked_cb(lv_event_t *e) {
+	(void)e;
+	if (long_press_consumed) {
+		long_press_consumed = false;
+		return;
+	}
+	quickpanel_close(); // the sheet belongs to the page, not under the card
+	int current = musicsettings_dac_filter();
+	sx_sheet_item_t items[4];
+	for (int i = 0; i < 4; i++) {
+		items[i] = (sx_sheet_item_t){tr(musicsettings_dac_filter_name(i)), NULL, i == current, false, filter_picked,
+									 (void *)(intptr_t)i};
+	}
+	sx_sheet_menu(tr("musicsettings_filters"), NULL, items, 4);
+}
+
+static void filter_page_cb(lv_event_t *e) {
+	(void)e;
+	open_page(musicsettings_filter_screen());
 }
 
 void quickpanel_init(gui_config_t *cfg) {
-	panel_h = cfg->screen_height;
+	int card_w = cfg->screen_width - 2 * CC_MARGIN;
+	cell_w = (card_w - 2 * CC_PAD) / CC_BUTTONS_PER_LINE;
+	open_y = SX_STATUSBAR_H + CC_TOP_GAP;
 
 	veil = lv_obj_create(lv_layer_top());
+	lv_obj_remove_style_all(veil);
 	lv_obj_set_size(veil, lv_pct(100), lv_pct(100));
-	lv_obj_set_pos(veil, 0, 0);
-	lv_obj_set_style_bg_opa(veil, LV_OPA_TRANSP, 0); // see anim_y_cb: it is a tap target, not a dimmer
-	lv_obj_set_style_border_width(veil, 0, 0);
-	lv_obj_set_style_radius(veil, 0, 0);
-	lv_obj_set_style_pad_all(veil, 0, 0);
+	lv_obj_set_pos(veil, 0, 0); // see anim_y_cb: it is a tap target, not a dimmer
 	lv_obj_set_scrollable(veil, false);
+	lv_obj_set_clickable(veil, true);
 	lv_obj_set_hidden(veil, true);
 	lv_obj_add_event_cb(veil, veil_clicked_cb, LV_EVENT_CLICKED, NULL);
 
-	// The sheet fills the whole screen, iOS-control-centre style.
+	// One line of buttons with their names, and the card around two of them,
+	// the slider and the padding.
+	int line_h = SX_CC_BTN + CC_LABEL_GAP + lv_font_get_line_height(&font_ui_16);
+	int lines = QP_SLOT_VISIBLE / CC_BUTTONS_PER_LINE;
+	int grid_h = lines * line_h + (lines - 1) * CC_GAP;
+	card_h_rest = 2 * CC_PAD + grid_h + BRIGHT_ROW_GAP + BRIGHT_ROW_H;
+	card_h_base = card_h_rest;
+
 	panel = lv_obj_create(veil);
-	lv_obj_set_size(panel, cfg->screen_width, panel_h);
-	lv_obj_set_pos(panel, 0, -panel_h);
-	lv_obj_add_style(panel, &theme_style_screen, 0);
-	lv_obj_set_style_radius(panel, 0, 0);
-	lv_obj_set_style_border_width(panel, 0, 0);
-	lv_obj_set_style_pad_hor(panel, cfg->padding, 0);
-	lv_obj_set_style_pad_top(panel, PANEL_PAD_TOP(cfg), 0);
-	lv_obj_set_style_pad_bottom(panel, PANEL_PAD_BOTTOM, 0);
-	lv_obj_set_style_pad_gap(panel, 14, 0);
+	lv_obj_remove_style_all(panel);
+	lv_obj_set_size(panel, card_w, card_h_rest);
+	lv_obj_set_pos(panel, CC_MARGIN, -card_h_rest - 4);
+	lv_obj_set_style_bg_color(panel, lv_color_hex(SX_CC_BG), 0);
+	lv_obj_set_style_bg_opa(panel, LV_OPA_COVER, 0);
+	lv_obj_set_style_radius(panel, CC_RADIUS, 0);
+	lv_obj_set_style_clip_corner(panel, false, 0);
+	lv_obj_set_style_pad_all(panel, CC_PAD, 0);
+	lv_obj_set_style_pad_row(panel, BRIGHT_ROW_GAP, 0);
+	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_scrollable(panel, false);
 	lv_obj_set_event_bubble(panel, false);
 	lv_obj_set_clickable(panel, true);
@@ -1907,57 +1710,24 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(panel, panel_drag_cb, LV_EVENT_RELEASED, NULL);
 	lv_obj_add_event_cb(panel, panel_drag_cb, LV_EVENT_PRESS_LOST, NULL);
 
-	// Two equal cards stacked under the status bar: a small gap above the first,
-	// one between them, a strip at the bottom for the close line, and the rest
-	// split evenly between the cards. All measured inside the sheet's padding,
-	// which is where LVGL aligns them.
-	int content_h = panel_h - PANEL_PAD_TOP(cfg) - PANEL_PAD_BOTTOM;
-	int top_inset = cfg->top_bar_height - PANEL_PAD_TOP(cfg) + CARD_TOP_GAP;
-	if (top_inset < 0) {
-		top_inset = 0; // a bar shorter than the padding leaves nothing to clear
-	}
-	int card_w = cfg->screen_width - 2 * cfg->padding;
-	int card_h = (content_h - top_inset - HINT_STRIP_H - CARD_GAP) / 2;
-	if (card_h < 160) {
-		card_h = 160; // floor for panels shorter than any shipped screen
-	}
+	quick_row = lv_obj_create(panel);
+	lv_obj_remove_style_all(quick_row);
+	lv_obj_set_size(quick_row, lv_pct(100), grid_h);
+	lv_obj_set_style_pad_row(quick_row, CC_GAP, 0);
+	lv_obj_set_scrollable(quick_row, false);
+	lv_obj_set_event_bubble(quick_row, true);
+	lv_obj_set_flex_flow(quick_row, LV_FLEX_FLOW_ROW_WRAP);
+	lv_obj_set_flex_align(quick_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
-	// --- First card: the quick controls. ---
-	controls_card = make_card(panel, card_w, card_h, top_inset);
-	card_h_rest = card_h;
-	card_h_base = card_h;
-	card_top = top_inset;
-	lv_obj_set_flex_flow(controls_card, LV_FLEX_FLOW_COLUMN);
-	// Brightness under the buttons; the buttons take the height above it and
-	// their rows are centred in it, so a single row of four sits midway between
-	// the top of the card and the slider. A fixed height and not a share of the
-	// card, so the slider stays where it is while the card stretches.
-	lv_obj_set_flex_align(controls_card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(controls_card, CARD_ROW_GAP, 0);
-	int row_h = card_h - 2 * CARD_PADDING - BRIGHT_ROW_H - CARD_ROW_GAP;
-
-	lv_obj_t *row = lv_obj_create(controls_card);
-	quick_row = row;
-	// Wraps to a second line past four buttons; the third flex argument below
-	// centres the lines inside the height.
-	lv_obj_set_size(row, lv_pct(100), row_h);
-	lv_obj_set_style_bg_opa(row, 0, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, CIRCLE_BUTTON_GAP, 0);
-	lv_obj_set_scrollable(row, false);
-	lv_obj_set_event_bubble(row, true);
-	lv_obj_set_style_pad_row(row, CIRCLE_BUTTON_GAP, 0);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_t *row = quick_row;
 
 	// The radios: a tap switches them, a hold opens their page, the same contract
-	// MSEB and the equalizer use.
-	wifi_btn = make_circle_button(row, &icon_wifi);
+	// MSEB and the equaliser use.
+	wifi_btn = make_circle_button(row, &icon_wifi, QP_BTN_WIFI);
 	lv_obj_add_event_cb(wifi_btn, wifi_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(wifi_btn, open_page_cb, LV_EVENT_LONG_PRESSED, wifisettings_screen);
 
-	bt_btn = make_circle_button(row, &icon_bluetooth);
+	bt_btn = make_circle_button(row, &icon_bluetooth, QP_BTN_BLUETOOTH);
 	lv_obj_add_event_cb(bt_btn, bt_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(bt_btn, open_page_cb, LV_EVENT_LONG_PRESSED, btsettings_screen);
 
@@ -1965,87 +1735,92 @@ void quickpanel_init(gui_config_t *cfg) {
 	// while doing something else, not a page to enter. Same contract as Wi-Fi and
 	// Bluetooth: tap switches it, long press opens the page, which remains where
 	// the incoming stream is shown.
-	airplay_btn = make_circle_button(row, &icon_airplay_quick);
+	airplay_btn = make_circle_button(row, &icon_airplay_quick, QP_BTN_AIRPLAY);
 	lv_obj_add_event_cb(airplay_btn, airplay_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(airplay_btn, open_page_cb, LV_EVENT_LONG_PRESSED, airplay_screen);
 
-	// MSEB and the equalizer: tap to switch on or off, hold to open the page.
-	mseb_btn = make_circle_button(row, &icon_mseb);
+	// MSEB and the equaliser: tap to switch on or off, hold to open the page.
+	mseb_btn = make_circle_button(row, &icon_mseb, QP_BTN_MSEB);
 	lv_obj_add_event_cb(mseb_btn, mseb_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(mseb_btn, open_page_cb, LV_EVENT_LONG_PRESSED, musicsettings_mseb_screen());
 
-	eq_btn = make_circle_button(row, &icon_equalizer);
+	eq_btn = make_circle_button(row, &icon_equalizer, QP_BTN_EQ);
 	lv_obj_add_event_cb(eq_btn, eq_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(eq_btn, open_page_cb, LV_EVENT_LONG_PRESSED, musicsettings_eq_screen());
 
 	// Crossfade, same contract: tap switches it, hold opens its page.
-	fade_btn = make_circle_button(row, &icon_fade_track);
+	fade_btn = make_circle_button(row, &icon_fade_track, QP_BTN_FADE);
 	lv_obj_add_event_cb(fade_btn, fade_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(fade_btn, open_page_cb, LV_EVENT_LONG_PRESSED, musicsettings_fade_screen());
 
 	// Gain is the odd control: two states rather than on and off, so the glyph
 	// itself changes and the accent marks only the loud one. Low gain is not
-	// "off", it is the normal setting.
-	//
-	// No long press here: gain is a plain switch on the music settings page
-	// rather than a section of its own, so there is no page to shortcut to, and
-	// opening the whole page from a hold surprised more than it helped.
-	gain_btn = make_circle_button(row, &icon_low_gain);
+	// "off", it is the normal setting. No long press: gain is a plain switch on
+	// the music settings page rather than a section of its own.
+	gain_btn = make_circle_button(row, &icon_low_gain, QP_BTN_GAIN);
 	lv_obj_add_event_cb(gain_btn, gain_clicked_cb, LV_EVENT_CLICKED, NULL);
 
 	// Line out: a tap switches the jack between headphones and an amplifier. No
 	// long press either -- there is no page behind it.
-	lineout_btn = make_circle_button(row, &icon_lineout);
+	lineout_btn = make_circle_button(row, &icon_lineout, QP_BTN_LINEOUT);
 	lv_obj_add_event_cb(lineout_btn, lineout_clicked_cb, LV_EVENT_CLICKED, NULL);
 
-	sonixlink_btn = make_circle_button(row, &icon_sonixlink_quick);
+	sonixlink_btn = make_circle_button(row, &icon_sonixlink_quick, QP_BTN_SONIXLINK);
 	lv_obj_add_event_cb(sonixlink_btn, sonixlink_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(sonixlink_btn, open_page_cb, LV_EVENT_LONG_PRESSED, sonixlink_screen);
 
-	peq_btn = make_circle_button(row, &icon_peq_quick);
+	peq_btn = make_circle_button(row, &icon_peq_quick, QP_BTN_PEQ);
 	lv_obj_add_event_cb(peq_btn, peq_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(peq_btn, open_page_cb, LV_EVENT_LONG_PRESSED, peqpage_screen());
 
-	dlna_btn = make_circle_button(row, &icon_dlna_quick);
+	dlna_btn = make_circle_button(row, &icon_dlna_quick, QP_BTN_DLNA);
 	lv_obj_add_event_cb(dlna_btn, dlna_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(dlna_btn, open_page_cb, LV_EVENT_LONG_PRESSED, dlna_screen);
 
 	// Each of the three opens, on a long press, the page of its own kind of
 	// listening, where its length is chosen.
-	sleep_music_btn = make_circle_button(row, &icon_sleep_music_quick);
+	sleep_music_btn = make_circle_button(row, &icon_sleep_music_quick, QP_BTN_SLEEP_MUSIC);
 	lv_obj_add_event_cb(sleep_music_btn, sleep_music_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(sleep_music_btn, sleep_page_cb, LV_EVENT_LONG_PRESSED, (void *)(intptr_t)SLEEPTIMER_MUSIC);
 
-	sleep_audiobook_btn = make_circle_button(row, &icon_sleep_audiobook_quick);
+	sleep_audiobook_btn = make_circle_button(row, &icon_sleep_audiobook_quick, QP_BTN_SLEEP_AUDIOBOOK);
 	lv_obj_add_event_cb(sleep_audiobook_btn, sleep_audiobook_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(sleep_audiobook_btn, sleep_page_cb, LV_EVENT_LONG_PRESSED,
 						(void *)(intptr_t)SLEEPTIMER_AUDIOBOOK);
 
-	sleep_podcast_btn = make_circle_button(row, &icon_sleep_podcast_quick);
+	sleep_podcast_btn = make_circle_button(row, &icon_sleep_podcast_quick, QP_BTN_SLEEP_PODCAST);
 	lv_obj_add_event_cb(sleep_podcast_btn, sleep_podcast_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(sleep_podcast_btn, sleep_page_cb, LV_EVENT_LONG_PRESSED,
 						(void *)(intptr_t)SLEEPTIMER_PODCAST);
 
 	// A tap opens the page with the server starting; a hold opens it as it is.
-	wifi_transfer_btn = make_circle_button(row, &icon_wifi_transfer_quick);
+	wifi_transfer_btn = make_circle_button(row, &icon_wifi_transfer_quick, QP_BTN_WIFI_TRANSFER);
 	lv_obj_add_event_cb(wifi_transfer_btn, wifi_transfer_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(wifi_transfer_btn, open_page_cb, LV_EVENT_LONG_PRESSED, wifitransfer_screen);
 
-	gapless_btn = make_circle_button(row, &icon_gapless_off_quick);
+	gapless_btn = make_circle_button(row, &icon_gapless_off_quick, QP_BTN_GAPLESS);
 	lv_obj_add_event_cb(gapless_btn, gapless_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(gapless_btn, gapless_page_cb, LV_EVENT_LONG_PRESSED, NULL);
 
-	bright_row = lv_obj_create(controls_card);
+	vlimit_btn = make_circle_button(row, &icon_volume_limit_quick, QP_BTN_VOLUME_LIMIT);
+	lv_obj_add_event_cb(vlimit_btn, vlimit_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(vlimit_btn, vlimit_page_cb, LV_EVENT_LONG_PRESSED, NULL);
+
+	dac_btn = make_circle_button(row, &icon_dac_quick, QP_BTN_DAC);
+	lv_obj_add_event_cb(dac_btn, dac_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(dac_btn, open_page_cb, LV_EVENT_LONG_PRESSED, dacpage_screen);
+
+	filter_btn = make_circle_button(row, &icon_dac_filter_quick, QP_BTN_DAC_FILTER);
+	lv_obj_add_event_cb(filter_btn, filter_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(filter_btn, filter_page_cb, LV_EVENT_LONG_PRESSED, NULL);
+
+	// Brightness: the sun, then a 10 px track (white at 20 %) filled with the
+	// accent, in a row tall enough to be a target. No knob, as on the
+	// prototype: the fill's end is where the finger is.
+	bright_row = lv_obj_create(panel);
+	lv_obj_remove_style_all(bright_row);
 	lv_obj_set_size(bright_row, lv_pct(100), BRIGHT_ROW_H);
-	lv_obj_set_style_bg_opa(bright_row, 0, 0);
-	lv_obj_set_style_border_width(bright_row, 0, 0);
-	lv_obj_set_style_pad_all(bright_row, 0, 0);
-	// The knob is 26 px across and centred on the value, so at full scale half of
-	// it falls past the end of the track; the row clips its children, which would
-	// slice the knob down the middle. Keeping the track 13 px short of the row's
-	// right edge gives it room.
-	lv_obj_set_style_pad_right(bright_row, 13, 0);
-	lv_obj_set_style_pad_gap(bright_row, 18, 0);
+	lv_obj_set_style_pad_column(bright_row, 16, 0);
 	lv_obj_set_scrollable(bright_row, false);
 	lv_obj_set_event_bubble(bright_row, true);
 	lv_obj_set_flex_flow(bright_row, LV_FLEX_FLOW_ROW);
@@ -2053,7 +1828,7 @@ void quickpanel_init(gui_config_t *cfg) {
 
 	lv_obj_t *sun = lv_image_create(bright_row);
 	lv_image_set_src(sun, &icon_sun);
-	lv_obj_add_style(sun, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor(sun, lv_color_hex(CC_TEXT), 0);
 	lv_obj_set_style_image_recolor_opa(sun, LV_OPA_COVER, 0);
 
 	brightness_slider = lv_slider_create(bright_row);
@@ -2061,18 +1836,17 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_set_flex_grow(brightness_slider, 1);
 	lv_slider_set_range(brightness_slider, 5, 100);
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-	lv_obj_set_style_bg_color(brightness_slider, theme()->text_secondary, LV_PART_MAIN);
-	lv_obj_set_style_bg_opa(brightness_slider, LV_OPA_40, LV_PART_MAIN);
+	lv_obj_set_style_bg_color(brightness_slider, lv_color_hex(CC_TEXT), LV_PART_MAIN);
+	lv_obj_set_style_bg_opa(brightness_slider, CC_TRACK_OPA, LV_PART_MAIN);
 	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
-	lv_obj_set_style_bg_color(brightness_slider, theme()->accent, LV_PART_INDICATOR);
-	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-	lv_obj_set_style_bg_color(brightness_slider, lv_color_white(), LV_PART_KNOB);
-	theme_apply_slider_knob(brightness_slider);
-	lv_obj_set_style_pad_all(brightness_slider, 8, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(brightness_slider, 8, LV_PART_KNOB);
-	lv_obj_set_style_shadow_opa(brightness_slider, LV_OPA_30, LV_PART_KNOB);
-	lv_obj_set_style_shadow_color(brightness_slider, lv_color_black(), LV_PART_KNOB);
-	lv_obj_set_ext_click_area(brightness_slider, 18);
+	lv_obj_set_style_bg_color(brightness_slider, sx_pal()->accent, LV_PART_INDICATOR);
+	lv_obj_set_style_bg_opa(brightness_slider, LV_OPA_TRANSP, LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(brightness_slider, 0, LV_PART_KNOB);
+	lv_obj_set_style_outline_width(brightness_slider, 0, LV_PART_KNOB);
+	lv_obj_set_style_border_width(brightness_slider, 0, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(brightness_slider, 0, LV_PART_KNOB);
+	// The whole row high, so a finger anywhere on the line takes it.
+	lv_obj_set_ext_click_area(brightness_slider, (BRIGHT_ROW_H - 10) / 2);
 	lv_obj_add_event_cb(brightness_slider, brightness_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 	lv_obj_add_event_cb(brightness_slider, brightness_released_cb, LV_EVENT_RELEASED, NULL);
 
@@ -2081,175 +1855,47 @@ void quickpanel_init(gui_config_t *cfg) {
 	// down by as much; the buttons sit in it one gap down, so they read as
 	// further lines of the grid above. The window clips them, so the stretch is
 	// what uncovers them.
-	int first_lines = QP_SLOT_VISIBLE / QP_BUTTONS_PER_LINE;
-	int first_h = first_lines * CIRCLE_BUTTON_SIZE + (first_lines - 1) * CIRCLE_BUTTON_GAP;
-	extra_clip = lv_obj_create(controls_card);
+	extra_clip = lv_obj_create(panel);
 	lv_obj_remove_style_all(extra_clip);
 	lv_obj_set_ignore_layout(extra_clip, true);
 	lv_obj_set_size(extra_clip, lv_pct(100), 0);
-	lv_obj_set_pos(extra_clip, 0, (row_h + first_h) / 2); // the grid's lines are centred in the row
+	lv_obj_set_pos(extra_clip, 0, grid_h);
 	lv_obj_set_scrollable(extra_clip, false);
 	lv_obj_set_event_bubble(extra_clip, true);
 	lv_obj_set_hidden(extra_clip, true);
 
 	extra_row = lv_obj_create(extra_clip);
+	lv_obj_remove_style_all(extra_row);
 	lv_obj_set_size(extra_row, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_pos(extra_row, 0, CIRCLE_BUTTON_GAP);
-	lv_obj_set_style_bg_opa(extra_row, 0, 0);
-	lv_obj_set_style_border_width(extra_row, 0, 0);
-	lv_obj_set_style_pad_all(extra_row, 0, 0);
-	lv_obj_set_style_pad_gap(extra_row, CIRCLE_BUTTON_GAP, 0);
+	lv_obj_set_pos(extra_row, 0, CC_GAP);
+	lv_obj_set_style_pad_row(extra_row, CC_GAP, 0);
 	lv_obj_set_scrollable(extra_row, false);
 	lv_obj_set_event_bubble(extra_row, true);
 	lv_obj_set_flex_flow(extra_row, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_flex_align(extra_row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_flex_align(extra_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
 
 	// The handle: a short line in the band under the slider -- the room the
 	// card gains for it and the card's bottom padding -- which travels down
 	// with the edge as the card stretches. The line is what is seen; the strip
-	// round it, the whole band high, is what a tap finds, and a tap folds or
-	// stretches the card. Presses bubble on to the sheet, so a drag starting on
-	// it is the same drag as anywhere else.
-	expand_handle = lv_obj_create(controls_card);
+	// round it is what a tap finds, and a tap folds or stretches the card.
+	expand_handle = lv_obj_create(panel);
+	lv_obj_remove_style_all(expand_handle);
 	lv_obj_set_ignore_layout(expand_handle, true);
-	lv_obj_set_size(expand_handle, 160, HANDLE_ROOM + CARD_PADDING);
-	lv_obj_align(expand_handle, LV_ALIGN_BOTTOM_MID, 0, CARD_PADDING);
-	lv_obj_set_style_bg_opa(expand_handle, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_border_width(expand_handle, 0, 0);
-	lv_obj_set_style_shadow_width(expand_handle, 0, 0);
-	lv_obj_set_style_pad_all(expand_handle, 0, 0);
+	lv_obj_set_size(expand_handle, 160, HANDLE_ROOM + CC_PAD);
+	lv_obj_align(expand_handle, LV_ALIGN_BOTTOM_MID, 0, CC_PAD);
 	lv_obj_set_scrollable(expand_handle, false);
 	lv_obj_set_event_bubble(expand_handle, true);
+	lv_obj_set_clickable(expand_handle, true);
 	lv_obj_add_event_cb(expand_handle, expand_handle_clicked_cb, LV_EVENT_CLICKED, NULL);
 
-	expand_pill = lv_obj_create(expand_handle);
-	lv_obj_set_size(expand_pill, 36, 5);
-	lv_obj_center(expand_pill);
-	lv_obj_set_style_radius(expand_pill, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_bg_color(expand_pill, theme()->text_primary, 0);
-	lv_obj_set_style_bg_opa(expand_pill, LV_OPA_40, 0);
-	lv_obj_set_style_border_width(expand_pill, 0, 0);
-	lv_obj_set_style_shadow_width(expand_pill, 0, 0);
-	lv_obj_set_clickable(expand_pill, false);
-
-	// --- Second card: what is playing, and its transport. ---
-	np_card = make_card(panel, card_w, card_h, top_inset + card_h + CARD_GAP);
-	lv_obj_set_flex_flow(np_card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(np_card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(np_card, 6, 0);
-
-	// Title and artist are centred and scroll when too long, the same treatment
-	// as the player's now-playing lines. Each is exactly one line of its own
-	// font high: a scrolling label shorter than its text scrolls it upwards
-	// instead of sideways, which is what a fixed height did to the artist as
-	// soon as the text size was Large.
-	np_title = lv_label_create(np_card);
-	lv_obj_set_width(np_title, lv_pct(100));
-	lv_obj_set_height(np_title, lv_font_get_line_height(&font_ui_26));
-	lv_obj_add_style(np_title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(np_title, &font_ui_26, 0);
-	lv_obj_set_style_text_align(np_title, LV_TEXT_ALIGN_CENTER, 0);
-	scrolltext_apply(np_title);
-
-	np_artist = lv_label_create(np_card);
-	lv_obj_set_width(np_artist, lv_pct(100));
-	lv_obj_set_height(np_artist, lv_font_get_line_height(&font_ui_22));
-	lv_obj_add_style(np_artist, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(np_artist, &font_ui_22, 0);
-	lv_obj_set_style_text_align(np_artist, LV_TEXT_ALIGN_CENTER, 0);
-	scrolltext_apply(np_artist);
-
-	lv_obj_t *transport = lv_obj_create(np_card);
-	lv_obj_set_size(transport, lv_pct(100), 96);
-	lv_obj_set_style_bg_opa(transport, 0, 0);
-	lv_obj_set_style_border_width(transport, 0, 0);
-	lv_obj_set_style_pad_all(transport, 0, 0);
-	lv_obj_set_scrollable(transport, false);
-	lv_obj_set_event_bubble(transport, true);
-	lv_obj_set_flex_flow(transport, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(transport, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(transport, 4, 0);
-	lv_obj_set_style_pad_top(transport, 10, 0);
-
-	// Repeat/shuffle pinned left, the star pinned right, transport centred
-	// between them: the player's arrangement.
-	lv_obj_t *repeat_btn = make_flat_button(transport, 56, repeat_cb);
-	np_repeat_btn = repeat_btn;
-	lv_obj_set_ignore_layout(repeat_btn, true);
-	lv_obj_align(repeat_btn, LV_ALIGN_LEFT_MID, 0, 0);
-	np_repeat_icon = lv_image_create(repeat_btn);
-	lv_obj_center(np_repeat_icon);
-
-	lv_obj_t *prev_btn = make_flat_button(transport, 76, prev_cb);
-	np_prev_btn = prev_btn;
-	np_star_icon = NULL; // really created further down, once the star button exists
-	lv_obj_t *prev_icon = lv_image_create(prev_btn);
-	np_prev_icon = prev_icon;
-	lv_image_set_src(prev_icon, &icon_skip_back_large);
-	lv_obj_add_style(prev_icon, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(prev_icon, LV_OPA_COVER, 0);
-	lv_obj_center(prev_icon);
-
-	// The play disc keeps the neutral circle colour the other round controls use;
-	// the white disc belongs over artwork, not on a card that follows the theme.
-	lv_obj_t *play_btn = make_flat_button(transport, 84, play_cb);
-	lv_obj_set_style_radius(play_btn, LV_RADIUS_CIRCLE, 0);
-	lv_obj_add_style(play_btn, &theme_style_switch, 0);
-	lv_obj_set_style_bg_opa(play_btn, LV_OPA_COVER, 0);
-	np_play_btn = play_btn;
-	np_play_icon = lv_image_create(play_btn);
-	lv_obj_add_style(np_play_icon, &theme_style_icon, 0);
-	lv_obj_center(np_play_icon);
-
-	lv_obj_t *next_btn = make_flat_button(transport, 76, next_cb);
-	np_next_btn = next_btn;
-	lv_obj_t *next_icon = lv_image_create(next_btn);
-	// The look of the three while a station connects; see the refresh.
-	lv_obj_set_style_opa(prev_btn, LV_OPA_40, LV_STATE_DISABLED);
-	lv_obj_set_style_opa(play_btn, LV_OPA_40, LV_STATE_DISABLED);
-	lv_obj_set_style_opa(next_btn, LV_OPA_40, LV_STATE_DISABLED);
-	np_next_icon = next_icon;
-	lv_image_set_src(next_icon, &icon_skip_forward_large);
-	lv_obj_add_style(next_icon, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(next_icon, LV_OPA_COVER, 0);
-	lv_obj_center(next_icon);
-
-	lv_obj_t *star_btn = make_flat_button(transport, 56, star_cb);
-	np_star_btn = star_btn;
-	lv_obj_set_ignore_layout(star_btn, true);
-	lv_obj_align(star_btn, LV_ALIGN_RIGHT_MID, 0, 0);
-	np_star_icon = lv_image_create(star_btn);
-	lv_obj_center(np_star_icon);
-
-	// --- The way out: a short bar at the bottom, a home-indicator rather than a
-	// chevron, because it reads as "drag me" instead of "press me" and dragging
-	// is what actually closes the panel. The line is not clickable: a finger
-	// landing on it talks to the surface underneath, where the gesture lives.
-	lv_obj_t *close_btn = lv_obj_create(panel);
-	lv_obj_set_ignore_layout(close_btn, true);
-	lv_obj_set_size(close_btn, 140, HINT_STRIP_H - 8);
-	// Flush with the bottom of the sheet's content box, which centres the line in
-	// the band between the last card and the screen edge: the band is
-	// HINT_STRIP_H below the card plus PANEL_PAD_BOTTOM under the content box,
-	// and the button is HINT_STRIP_H - 8 tall, so its middle lands halfway. Any
-	// offset here takes it off centre.
-	lv_obj_align(close_btn, LV_ALIGN_BOTTOM_MID, 0, 0);
-	lv_obj_set_style_bg_opa(close_btn, LV_OPA_TRANSP, 0);
-	lv_obj_set_style_shadow_width(close_btn, 0, 0);
-	lv_obj_set_style_border_width(close_btn, 0, 0);
-	lv_obj_set_style_pad_all(close_btn, 0, 0);
-	lv_obj_set_clickable(close_btn, false);
-	lv_obj_set_scrollable(close_btn, false);
-
-	lv_obj_t *hint = lv_image_create(close_btn);
-	lv_image_set_src(hint, &icon_control_center_line);
-	lv_obj_add_style(hint, &theme_style_icon, 0);
-	lv_obj_set_style_image_opa(hint, LV_OPA_60, 0);
-	lv_obj_center(hint);
-
-	// The controls card in front of the now-playing one, which it covers when
-	// stretched.
-	lv_obj_move_to_index(controls_card, lv_obj_get_index(np_card));
+	lv_obj_t *pill = lv_obj_create(expand_handle);
+	lv_obj_remove_style_all(pill);
+	lv_obj_set_size(pill, SX_SHEET_HANDLE_W, SX_SHEET_HANDLE_H);
+	lv_obj_center(pill);
+	lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_bg_color(pill, lv_color_hex(CC_TEXT), 0);
+	lv_obj_set_style_bg_opa(pill, LV_OPA_40, 0);
+	lv_obj_set_clickable(pill, false);
 
 	// Built in the order above, then arranged into the user's -- see
 	// Settings > More > Control centre. Last, once both rows and the handle
