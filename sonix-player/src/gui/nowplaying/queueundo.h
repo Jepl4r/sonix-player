@@ -40,8 +40,9 @@
 // UI thread only.
 // ---------------------------------------------------------------------------
 
-// Takes the snapshot. Cheap for a queue of paths; for a library list it is a
-// copy of the row ids (4 bytes a track).
+// Takes the snapshot: for a library list a copy of the row ids (4 bytes a
+// track), for a queue of paths a copy of each path -- not taken past 2000 of
+// them (QUEUE_UNDO_MAX_PATHS), and the toast then comes without "Undo".
 void queue_undo_begin(void);
 
 // The change happened: the toast with `text` (shown as given, translated

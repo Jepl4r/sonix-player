@@ -810,6 +810,10 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 
 static playlist_snapshot_t *parked;
 
+// The most paths (entries held by name, not as library rows) a parked queue
+// may copy: about 400 KB.
+#define PARKED_MAX_PATHS 4000
+
 static void parked_drop(void) {
 	if (parked) {
 		playlist_snapshot_free(parked);
@@ -846,7 +850,9 @@ static void parked_before_new_queue(const char *first_path) {
 	if (audiobook_is_playing() || dlna_owns_playback() || path_is_outside(current_metadata_file)) {
 		return;
 	}
-	if (playlist_count() > 0) {
+	// Held for as long as the book plays: a queue of thousands of paths (a
+	// streaming list) is not kept, as before 2.0.
+	if (playlist_count() > 0 && playlist_appended_count() <= PARKED_MAX_PATHS) {
 		parked = playlist_snapshot_take();
 		if (parked) {
 			fprintf(stderr, "queue: parked %d track(s) behind '%s' (%zu bytes)\n", playlist_snapshot_count(parked),

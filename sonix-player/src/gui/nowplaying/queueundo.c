@@ -21,9 +21,18 @@ static void drop(void) {
 	snap = NULL;
 }
 
+// A queue of paths copies each of them into the snapshot (a library list
+// copies only its row ids): a list of thousands queued from a streaming
+// service is half a megabyte for the few seconds of a toast. Past this the
+// change is made all the same and said without "Undo".
+#define QUEUE_UNDO_MAX_PATHS 2000
+
 void queue_undo_begin(void) {
 	drop();
 	generation++;
+	if (playlist_appended_count() > QUEUE_UNDO_MAX_PATHS) {
+		return;
+	}
 	snap = playlist_snapshot_take();
 }
 
