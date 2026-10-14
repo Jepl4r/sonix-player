@@ -50,6 +50,9 @@
 #include "src/system/streaming/yandex.h"
 #include "src/system/streaming/cardimport.h"
 #include "src/system/streaming/subsonicimport.h"
+#ifdef SONIX_ZVUK
+#include "src/system/streaming/zvuk.h"
+#endif
 #include "src/system/remote/dlna.h"
 #include "src/system/gearboy/gbdb.h"
 #include "src/system/gearboy/gearboy.h"
@@ -2168,6 +2171,9 @@ int main(int argc, char **argv) {
 	tidal_init();
 	subsonic_init();
 	yandex_init();
+#ifdef SONIX_ZVUK
+	zvuk_init();
+#endif
 	// Accounts brought on the card as files (cardimport.h): looked for once
 	// the card's root is known, below.
 	subsonicimport_init();

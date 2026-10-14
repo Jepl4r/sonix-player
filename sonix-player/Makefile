@@ -58,6 +58,16 @@ endif
 #                               or offset wider than 32 bits, which an exFAT
 #                               card produces routinely.
 CFLAGS = -O3 -g -Wall -MMD -MP -D_FILE_OFFSET_BITS=64 -I. -I$(LVGL_DIR) -DLV_CONF_INCLUDE_SIMPLE=1 -DGB_CORE=1
+
+# The Zvuk service (zvuk.com): this fork's builds carry it, upstream's would
+# not -- its API is unofficial, as Yandex's. `make SONIX_ZVUK=0` builds without
+# it: every Zvuk source compiles to nothing and the hooks elsewhere fall away.
+# The objects do not depend on the flag: after changing it, `make clean` (or
+# touch src/system/streaming/zvuk*.c src/gui/streaming/zvuk*.c and the hooks).
+SONIX_ZVUK ?= 1
+ifeq ($(SONIX_ZVUK),1)
+CFLAGS += -DSONIX_ZVUK=1
+endif
 # On the host the audio libraries are the system ones (libopusfile-dev,
 # libwavpack-dev); on the target they are the ones this Makefile builds below.
 # opusfile.h includes <opus_multistream.h> unprefixed, so the opus/ directory
