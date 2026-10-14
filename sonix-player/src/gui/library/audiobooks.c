@@ -14,17 +14,24 @@
 #include "src/gui/library/audiobookextras.h"
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/nowplaying/player.h"
-#include "src/gui/shell/confirm.h"
-#include "src/gui/shell/gridpage.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_frame.h"
+#include "src/gui/shell/sx_palette.h"
+#include "src/gui/shell/sx_row.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_toast.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
+#include "src/system/device/usb.h"
 #include "src/system/library/audiobookdb.h"
 #include "src/system/library/library.h"
 #include "src/system/playback/audiobook.h"
@@ -42,6 +49,7 @@ static lv_obj_t *books_screen;
 static lv_obj_t *names_screen;
 
 static void start_scan(void *user);
+static void scan_stop_cb(lv_event_t *e);
 
 // ---------------------------------------------------------------------------
 // Which list a page shows, and the order it is read in
@@ -144,7 +152,9 @@ static void sort_menu_show(lv_obj_t *anchor, list_id_t list, void (*reload)(void
 	popover_show(anchor, items, sorts->choice_count);
 }
 
-// A glyph button on the title row, counted from the right edge.
+// A glyph button on the title row, counted from the right edge. 56 x 56 at the
+// header's height: touch_header() makes it the 2.0 header's round 72 px target
+// when the page is shown.
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(screen);
 	lv_obj_set_size(button, 56, 56);
@@ -164,43 +174,40 @@ static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, co
 	return button;
 }
 
-// The viewport of a windowed list: a scrollable page with a fixed-height canvas
-// inside it, so twelve row widgets can stand in for however many entries.
-static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **body_out, lv_obj_t **empty_out, int row_width, lv_event_cb_t scroll_cb) {
+// The viewport of a windowed list: a scrollable column under the header with,
+// in it, an optional section heading and a fixed-height canvas the pool of
+// rows is placed on, so twelve row widgets stand in for however many entries.
+static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **body_out, lv_obj_t **empty_out, lv_event_cb_t scroll_cb, void *user) {
 	int content_top = settingsrow_content_top(cfg);
 
 	lv_obj_t *list = lv_obj_create(screen);
+	lv_obj_remove_style_all(list);
 	lv_obj_set_size(list, lv_pct(100), cfg->screen_height - content_top);
 	lv_obj_align(list, LV_ALIGN_TOP_LEFT, 0, content_top);
-	lv_obj_set_style_bg_opa(list, 0, 0);
-	lv_obj_set_style_border_width(list, 0, 0);
-	lv_obj_set_style_radius(list, 0, 0);
 	lv_obj_set_style_pad_hor(list, cfg->padding, 0);
-	lv_obj_set_style_pad_ver(list, 0, 0);
+	lv_obj_set_style_pad_row(list, 6, 0);
+	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_scroll_dir(list, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
-	lv_obj_add_event_cb(list, scroll_cb, LV_EVENT_SCROLL, NULL);
+	lv_obj_add_event_cb(list, scroll_cb, LV_EVENT_SCROLL, user);
 	// Presses on the rows and on the empty area bubble into the gesture
 	// handlers; set here because an empty list binds no row to set it later.
 	lv_obj_set_event_bubble(list, true);
 
 	lv_obj_t *body = lv_obj_create(list);
-	lv_obj_set_width(body, row_width);
+	lv_obj_remove_style_all(body);
+	lv_obj_set_width(body, lv_pct(100));
 	lv_obj_set_height(body, 1);
-	lv_obj_set_pos(body, 0, 0);
-	lv_obj_set_style_bg_opa(body, 0, 0);
-	lv_obj_set_style_border_width(body, 0, 0);
-	lv_obj_set_style_pad_all(body, 0, 0);
 	lv_obj_set_scrollable(body, false);
 	lv_obj_set_event_bubble(body, true);
 
 	lv_obj_t *empty = lv_label_create(list);
-	lv_obj_set_width(empty, row_width);
+	lv_obj_set_width(empty, lv_pct(100));
 	lv_label_set_long_mode(empty, LV_LABEL_LONG_WRAP);
 	lv_obj_set_style_text_align(empty, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_add_style(empty, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(empty, &font_ui_24, 0);
-	lv_obj_align(empty, LV_ALIGN_TOP_MID, 0, 90);
+	lv_obj_add_style(empty, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(empty, &font_ui_22, 0);
+	lv_obj_set_style_pad_top(empty, 80, 0);
 	lv_obj_set_hidden(empty, true);
 
 	player_sheet_attach_drag(list, true);
@@ -212,44 +219,48 @@ static lv_obj_t *make_viewport(lv_obj_t *screen, gui_config_t *cfg, lv_obj_t **b
 }
 
 // ---------------------------------------------------------------------------
-// the books page
+// A list of books
 //
-// The rows are the ones the all-tracks list uses -- same height, same 72 px
-// thumbnail, same now-playing mark, same windowed pool of twelve widgets. A
-// book carries a cover far more reliably than a loose track does.
+// 2.0: the books are sx_rows -- the cover's thumbnail at the left (a plaque
+// with the title's first letter in the title's tone until there is one, and
+// for a book without a picture), the title, the author under it, the playing
+// book on the surface with its title in the accent. A tap plays the book from
+// where it was left (the handoff's matrix: a book plays, it has no swipes and
+// no sheet).
 //
-// The data is windowed with the widgets: the page holds a handle -- four bytes
-// a book -- and a band of forty-eight rows read back as the viewport moves.
+// Two of these exist: the section page's own -- every book, the page the menu
+// opens on -- and the page its sheet opens for the rest (continue listening,
+// the finished books, an author's books, a series). They share the twelve
+// cover slots the coverloader keeps for the books (60..71): only the one on
+// screen asks for pictures, and the other lets go of what it was waiting for
+// as it leaves (pictures it already holds it keeps).
+//
+// The data is windowed with the widgets: a list holds a handle -- four bytes a
+// book -- and a band of forty-eight rows read back as the viewport moves. The
+// author is read for a row the first time it is shown (one indexed query),
+// not for the whole band.
 // ---------------------------------------------------------------------------
 
-#define ROW_HEIGHT 100
-#define ROW_GAP 8
-#define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
-#define ROW_PAD 14
-#define THUMB_SIZE 72
 #define ROW_POOL 12
 
 // How many rows are read from the database at a time. Four times the pool, so
 // scrolling a screenful does not go back to the database.
 #define WINDOW_ROWS 48
 
-#define PLAYMARK_WIDTH 6
-#define PLAYMARK_HEIGHT 52
-#define PLAYMARK_INSET 4 // from the row's left edge
-
 #define THUMB_POLL_MS 150
 
 typedef struct {
 	char name[256];
 	char path[512];
+	char author[128];
+	bool author_read;
 } winrow_t;
 
+typedef struct booklist booklist_t;
+
 typedef struct {
-	lv_obj_t *button;
-	lv_obj_t *icon;
-	lv_obj_t *label;
-	lv_obj_t *playmark;
+	lv_obj_t *obj; // the sx_row
+	booklist_t *owner;
 	int index;
 
 	bool has_thumb;
@@ -258,36 +269,43 @@ typedef struct {
 	cover_image_t thumb;
 } row_t;
 
-static lv_obj_t *books_title;
-static lv_obj_t *books_sort_icon;
-static lv_obj_t *book_list; // the scrollable viewport
-static lv_obj_t *book_body; // the fixed-height canvas the rows are placed on
-static lv_obj_t *empty_label;
+struct booklist {
+	lv_obj_t *screen;
+	lv_obj_t *title;
+	lv_obj_t *sort_icon;
+	lv_obj_t *viewport; // scrolls
+	lv_obj_t *group;	// "BOOKS · 3"; the section page's only
+	lv_obj_t *body;		// the fixed-height canvas the rows are placed on
+	lv_obj_t *empty;	// what an empty list says
+	row_t rows[ROW_POOL];
+
+	audiobookdb_index_t *index;
+	int count;
+	winrow_t *window; // WINDOW_ROWS of them, allocated on first use
+	int window_first;
+	int window_count;
+
+	int row_height; // sx_row_height() when the rows were last sized
+	int lead;		// the thumbnail's side at that height
+
+	// What it shows: the list, and the author or series for the two lists
+	// that are one of those.
+	list_id_t list;
+	char value[256];
+};
+
+static booklist_t shelf; // the section page: every book
+static booklist_t other; // continue, finished, an author's, a series'
 static lv_timer_t *thumb_timer;
-
-static row_t rows[ROW_POOL];
-
-static audiobookdb_index_t *book_index;
-static int entry_count;
-
-static winrow_t *window_rows; // WINDOW_ROWS of them, allocated once
-static int window_first = -1;
-static int window_count;
-
-static int row_width;
-
-// What the books page is showing: the list, and the author or series for the
-// two lists that are one of those.
-static list_id_t books_list = LIST_LIBRARY;
-static char books_value[256];
 static char np_book[512]; // the book playing now, for the mark
 
-static int row_slot(const row_t *row) { return COVERLOADER_AUDIOBOOKS_BASE + (int)(row - rows); }
+static int row_slot(const row_t *row) { return COVERLOADER_AUDIOBOOKS_BASE + (int)(row - row->owner->rows); }
+static int list_pitch(const booklist_t *bl) { return bl->row_height + SX_ROW_GAP; }
 
-static bool row_at(int index, const char **name_out, const char **path_out);
+static bool row_at(booklist_t *bl, int index, winrow_t **out);
 
-static audiobook_list_t books_kind(void) {
-	switch (books_list) {
+static audiobook_list_t list_kind(list_id_t list) {
+	switch (list) {
 	case LIST_FINISHED:
 		return AUDIOBOOK_LIST_FINISHED;
 	case LIST_CONTINUE:
@@ -301,31 +319,45 @@ static audiobook_list_t books_kind(void) {
 	}
 }
 
-static audiobookdb_index_t *books_index_open(void) {
+static audiobookdb_index_t *list_index_open(const booklist_t *bl) {
 	audiobook_order_t order;
 	bool desc;
-	sort_to_order(list_sort(books_list), &order, &desc);
-	return audiobookdb_index_open(books_kind(), books_value, order, desc);
+	sort_to_order(list_sort(bl->list), &order, &desc);
+	return audiobookdb_index_open(list_kind(bl->list), bl->value, order, desc);
 }
 
-static void row_show_glyph(row_t *row) {
-	lv_image_set_src(row->icon, &icon_book_headphones_row);
-	lv_obj_add_style(row->icon, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(row->icon, LV_OPA_COVER, 0);
+// The plaque a row stands on until its picture comes, and for good when the
+// book has none: the title's first letter on the title's own tone, the way the
+// genre and artist lists show theirs.
+static void row_show_plaque_as(row_t *row, const char *name, bool with_letter) {
+	char letter[8] = "";
+	if (with_letter && name && name[0]) {
+		// One character, which in UTF-8 is up to four bytes.
+		int n = 1;
+		unsigned char c = (unsigned char)name[0];
+		if (c >= 0xF0) {
+			n = 4;
+		} else if (c >= 0xE0) {
+			n = 3;
+		} else if (c >= 0xC0) {
+			n = 2;
+		}
+		for (int i = 0; i < n && name[i]; i++) {
+			letter[i] = name[i];
+		}
+	}
+	sx_row_set_letter(row->obj, letter, sx_tone(SX_T_COVER_TONE, sx_palette_hue_of_name(name ? name : "")), false);
 }
 
-// A jacket must not be tinted, so the recolour the glyph relies on is switched
-// off for as long as a picture is on the row.
-static void row_show_cover(row_t *row, const lv_image_dsc_t *dsc) {
-	lv_image_set_src(row->icon, dsc);
-	lv_obj_set_style_image_recolor_opa(row->icon, LV_OPA_TRANSP, 0);
-}
+static void row_show_plaque(row_t *row, const char *name) { row_show_plaque_as(row, name, true); }
 
 static void row_drop_thumb(row_t *row) {
 	coverloader_release(row_slot(row));
 
 	if (row->has_thumb) {
-		row_show_glyph(row); // stop pointing at the pixels before they go
+		// Stop pointing at the pixels before they go.
+		winrow_t *w = NULL;
+		row_show_plaque(row, row_at(row->owner, row->index, &w) ? w->name : "");
 		cover_free(&row->thumb);
 		row->has_thumb = false;
 	}
@@ -333,21 +365,20 @@ static void row_drop_thumb(row_t *row) {
 	row->thumb_settled = false;
 }
 
-static void row_update_playmark(row_t *row) {
-	if (!row->playmark) {
-		return;
+static void row_update_playing(row_t *row) {
+	winrow_t *w = NULL;
+	bool there = row_at(row->owner, row->index, &w);
+	bool playing = np_book[0] && there && w->path[0] && strcmp(w->path, np_book) == 0;
+	// On a plaque the bars stand alone: the letter under them would read as
+	// a smudge.
+	if (there && !row->has_thumb) {
+		row_show_plaque_as(row, w->name, !playing);
 	}
-	const char *path = NULL;
-	bool playing = np_book[0] && row_at(row->index, NULL, &path) && path[0] && strcmp(path, np_book) == 0;
-	if (playing) {
-		lv_obj_set_hidden(row->playmark, false);
-	} else {
-		lv_obj_set_hidden(row->playmark, true);
-	}
+	sx_row_set_playing(row->obj, playing);
 }
 
 // The mark follows the book, so every file of a folder book lights its row.
-static void refresh_playmarks(void) {
+static void refresh_playmarks(booklist_t *bl) {
 	device_state_t state;
 	device_state_get(&state);
 	np_book[0] = '\0';
@@ -356,7 +387,7 @@ static void refresh_playmarks(void) {
 	}
 
 	for (int i = 0; i < ROW_POOL; i++) {
-		row_update_playmark(&rows[i]);
+		row_update_playing(&bl->rows[i]);
 	}
 }
 
@@ -368,24 +399,26 @@ static void row_bind(row_t *row, int index) {
 	row_drop_thumb(row);
 	row->index = index;
 
-	if (index < 0 || index >= entry_count) {
-		lv_obj_set_hidden(row->button, true);
+	booklist_t *bl = row->owner;
+	winrow_t *w = NULL;
+	if (index < 0 || index >= bl->count || !row_at(bl, index, &w)) {
+		// Past the end, or the handle went stale under the list: hiding it is
+		// what the next window_update() undoes, once the list is rebuilt.
+		lv_obj_set_hidden(row->obj, true);
 		return;
 	}
 
-	const char *name = NULL;
-	if (!row_at(index, &name, NULL)) {
-		// The handle went stale under the list, or the row is gone. Hiding it
-		// is what the next window_update() undoes, once the list is rebuilt.
-		lv_obj_set_hidden(row->button, true);
-		return;
+	if (!w->author_read) {
+		audiobookdb_book_info(w->path, NULL, 0, w->author, sizeof(w->author), NULL);
+		w->author_read = true;
 	}
 
-	lv_obj_set_hidden(row->button, false);
-	lv_obj_set_y(row->button, index * ROW_PITCH);
-	lv_label_set_text(row->label, name);
-	row_show_glyph(row);
-	row_update_playmark(row);
+	lv_obj_set_hidden(row->obj, false);
+	lv_obj_set_y(row->obj, index * list_pitch(bl));
+	sx_row_set_title(row->obj, w->name);
+	sx_row_set_subtitle(row->obj, w->author[0] ? w->author : NULL, NULL, NULL);
+	row_show_plaque(row, w->name);
+	row_update_playing(row);
 }
 
 static bool first_part_cb(const char *path, const char *title, void *user) {
@@ -406,25 +439,28 @@ static const char *cover_source(const char *book, char *first, size_t size) {
 }
 
 // Asks for the artwork of the visible rows and collects what the worker has
-// finished.
-static void thumbs_update(void) {
+// finished. Only for the list on screen: the two share the slots.
+static void thumbs_update(booklist_t *bl) {
+	if (lv_screen_active() != bl->screen || lv_obj_is_hidden(bl->viewport)) {
+		return;
+	}
 	bool anything_pending = false;
 
 	for (int i = 0; i < ROW_POOL; i++) {
-		row_t *row = &rows[i];
-		if (row->index < 0 || row->index >= entry_count || row->thumb_settled) {
+		row_t *row = &bl->rows[i];
+		if (row->index < 0 || row->index >= bl->count || row->thumb_settled) {
 			continue;
 		}
 
-		const char *source = NULL;
-		if (!row_at(row->index, NULL, &source) || !source[0]) {
+		winrow_t *w = NULL;
+		if (!row_at(bl, row->index, &w) || !w->path[0]) {
 			row->thumb_settled = true;
 			continue;
 		}
 
 		if (!row->thumb_requested) {
 			char first[512];
-			coverloader_request(row_slot(row), cover_source(source, first, sizeof(first)), THUMB_SIZE);
+			coverloader_request(row_slot(row), cover_source(w->path, first, sizeof(first)), bl->lead);
 			row->thumb_requested = true;
 		}
 
@@ -434,9 +470,9 @@ static void thumbs_update(void) {
 			row->thumb = image;
 			row->has_thumb = true;
 			row->thumb_settled = true;
-			row_show_cover(row, &row->thumb.dsc);
+			sx_row_set_thumb(row->obj, &row->thumb.dsc, sx_tone(SX_T_COVER_TONE, sx_palette_hue_of_name(w->name)));
 		} else if (finished) {
-			row->thumb_settled = true; // no jacket in this one; the book glyph stays
+			row->thumb_settled = true; // no jacket in this one; the plaque stays
 		} else {
 			anything_pending = true;
 		}
@@ -449,57 +485,91 @@ static void thumbs_update(void) {
 
 static void thumb_timer_cb(lv_timer_t *timer) {
 	lv_timer_pause(timer); // thumbs_update resumes it while work is pending
-	if (lv_screen_active() == books_screen) {
-		thumbs_update();
+	if (lv_screen_active() == shelf.screen) {
+		thumbs_update(&shelf);
+	} else if (lv_screen_active() == other.screen) {
+		thumbs_update(&other);
 	}
 }
 
-static void show_empty(lv_obj_t *label, int count) {
-	if (count == 0) {
-		lv_obj_set_hidden(label, false);
-	} else {
-		lv_obj_set_hidden(label, true);
+// Leaving the page: what the coverloader was still decoding for it is let go,
+// so the other list can have the slots. Pictures already on rows stay.
+static void list_let_go(booklist_t *bl) {
+	for (int i = 0; i < ROW_POOL; i++) {
+		row_t *row = &bl->rows[i];
+		if (row->thumb_requested && !row->has_thumb) {
+			coverloader_release(row_slot(row));
+			row->thumb_requested = false;
+			row->thumb_settled = false;
+		}
+	}
+}
+
+static void list_unload_cb(lv_event_t *e) { list_let_go(lv_event_get_user_data(e)); }
+
+// The rows' height follows Appearance > Large rows, read as the list is
+// (re)loaded; pictures of the other size are dropped with it.
+static void list_resize(booklist_t *bl) {
+	int height = sx_row_height(false);
+	if (height == bl->row_height) {
+		return;
+	}
+	bl->row_height = height;
+	bl->lead = height >= SX_ROW_H_BIG ? SX_ROW_THUMB_BIG : SX_ROW_THUMB;
+	for (int i = 0; i < ROW_POOL; i++) {
+		row_drop_thumb(&bl->rows[i]);
+		sx_row_set_compact(bl->rows[i].obj, false);
+		bl->rows[i].index = -2; // placed again at the new pitch
+	}
+}
+
+static void list_set_count(booklist_t *bl, int count) {
+	bl->count = count;
+	lv_obj_set_height(bl->body, count > 0 ? count * list_pitch(bl) : 1);
+	lv_obj_set_hidden(bl->empty, count != 0);
+	if (bl->group) {
+		lv_obj_set_hidden(bl->group, count == 0);
+		settingsrow_group_set(bl->group, "audiobook_books_group", count);
 	}
 }
 
 // A rescan, or a card change, or a book marked finished: the rows the handle
 // names have moved, so the list is rebuilt where it stands.
-static void refresh_stale(void) {
-	if (!book_index || !audiobookdb_index_stale(book_index)) {
+static void refresh_stale(booklist_t *bl) {
+	if (!bl->index || !audiobookdb_index_stale(bl->index)) {
 		return;
 	}
-	audiobookdb_index_t *fresh = books_index_open();
-	audiobookdb_index_close(book_index);
-	book_index = fresh;
-	entry_count = audiobookdb_index_count(fresh);
-	window_first = -1;
-	window_count = 0;
+	audiobookdb_index_t *fresh = list_index_open(bl);
+	audiobookdb_index_close(bl->index);
+	bl->index = fresh;
+	bl->window_first = -1;
+	bl->window_count = 0;
 
 	for (int i = 0; i < ROW_POOL; i++) {
-		row_drop_thumb(&rows[i]);
-		rows[i].index = -2; // every row now stands for a different book
+		row_drop_thumb(&bl->rows[i]);
+		bl->rows[i].index = -2; // every row now stands for a different book
 	}
-	lv_obj_set_height(book_body, entry_count > 0 ? entry_count * ROW_PITCH : 1);
-	show_empty(empty_label, entry_count);
+	list_set_count(bl, audiobookdb_index_count(fresh));
 }
 
-static void window_update(void) {
-	refresh_stale();
-	if (entry_count == 0) {
+static void window_update(booklist_t *bl) {
+	refresh_stale(bl);
+	if (bl->count == 0) {
 		for (int i = 0; i < ROW_POOL; i++) {
-			row_bind(&rows[i], -1);
+			row_bind(&bl->rows[i], -1);
 		}
 		return;
 	}
 
-	int scroll = lv_obj_get_scroll_y(book_list);
+	// The canvas starts under the heading, so the scroll is measured from it.
+	int scroll = lv_obj_get_scroll_y(bl->viewport) - lv_obj_get_y(bl->body);
 	if (scroll < 0) {
 		scroll = 0;
 	}
 
-	int first = (scroll / ROW_PITCH) - 1;
-	if (first + ROW_POOL > entry_count) {
-		first = entry_count - ROW_POOL;
+	int first = (scroll / list_pitch(bl)) - 1;
+	if (first + ROW_POOL > bl->count) {
+		first = bl->count - ROW_POOL;
 	}
 	if (first < 0) {
 		first = 0;
@@ -509,127 +579,103 @@ static void window_update(void) {
 	// rebinds exactly one row instead of renaming all twelve.
 	for (int i = 0; i < ROW_POOL; i++) {
 		int index = first + i;
-		row_bind(&rows[index % ROW_POOL], index < entry_count ? index : -1);
+		row_bind(&bl->rows[index % ROW_POOL], index < bl->count ? index : -1);
 	}
 
-	thumbs_update();
+	thumbs_update(bl);
 }
 
-static void books_scroll_cb(lv_event_t *e) {
-	(void)e;
-	window_update();
-}
+static void list_scroll_cb(lv_event_t *e) { window_update(lv_event_get_user_data(e)); }
 
 static bool window_fill_cb(const char *name, const char *path, void *user) {
-	int *filled = user;
-	if (*filled >= WINDOW_ROWS) {
+	booklist_t *bl = user;
+	if (bl->window_count >= WINDOW_ROWS) {
 		return false;
 	}
-	winrow_t *row = &window_rows[*filled];
+	winrow_t *row = &bl->window[bl->window_count];
 	snprintf(row->name, sizeof(row->name), "%s", name ? name : "");
 	snprintf(row->path, sizeof(row->path), "%s", path ? path : "");
-	(*filled)++;
+	row->author[0] = '\0';
+	row->author_read = false;
+	bl->window_count++;
 	return true;
 }
 
 // Brings `index` into the band, reading a windowful around it. The band starts
 // a pool's worth before the wanted row, so scrolling back up a little does not
 // send it to the database again.
-static bool window_cover(int index) {
-	if (!book_index || index < 0 || index >= entry_count) {
+static bool window_cover(booklist_t *bl, int index) {
+	if (!bl->index || index < 0 || index >= bl->count) {
 		return false;
 	}
-	if (!window_rows) {
-		window_rows = calloc(WINDOW_ROWS, sizeof(*window_rows));
-		if (!window_rows) {
+	if (!bl->window) {
+		bl->window = calloc(WINDOW_ROWS, sizeof(*bl->window));
+		if (!bl->window) {
 			return false;
 		}
 	}
-	if (window_first >= 0 && index >= window_first && index < window_first + window_count) {
+	if (bl->window_first >= 0 && index >= bl->window_first && index < bl->window_first + bl->window_count) {
 		return true;
 	}
 
 	int first = index - ROW_POOL;
-	if (first < 0) {
-		first = 0;
-	}
-	if (first + WINDOW_ROWS > entry_count) {
-		first = entry_count - WINDOW_ROWS;
+	if (first + WINDOW_ROWS > bl->count) {
+		first = bl->count - WINDOW_ROWS;
 	}
 	if (first < 0) {
 		first = 0;
 	}
 
-	int filled = 0;
-	audiobookdb_index_window(book_index, first, WINDOW_ROWS, window_fill_cb, &filled);
-	window_first = first;
-	window_count = filled;
-	return index >= first && index < first + filled;
+	bl->window_count = 0;
+	audiobookdb_index_window(bl->index, first, WINDOW_ROWS, window_fill_cb, bl);
+	bl->window_first = first;
+	return index >= first && index < first + bl->window_count;
 }
 
-// The name of a book and its path. False when the row is not there -- a stale
+// A book's row of the band. False when the row is not there -- a stale
 // handle, or an index past the end.
-static bool row_at(int index, const char **name_out, const char **path_out) {
-	if (index < 0 || index >= entry_count || !window_cover(index)) {
+static bool row_at(booklist_t *bl, int index, winrow_t **out) {
+	if (index < 0 || index >= bl->count || !window_cover(bl, index)) {
 		return false;
 	}
-	const winrow_t *row = &window_rows[index - window_first];
-	if (name_out) {
-		*name_out = row->name;
-	}
-	if (path_out) {
-		*path_out = row->path;
-	}
+	*out = &bl->window[index - bl->window_first];
 	return true;
 }
 
-static const char *books_empty_text(void) {
-	switch (books_list) {
+static const char *list_empty_text(list_id_t list) {
+	switch (list) {
 	case LIST_FINISHED:
 		return tr("audiobook_finished_empty");
 	case LIST_CONTINUE:
 		return tr("audiobook_continue_empty");
-	case LIST_LIBRARY:
-		return tr("audiobook_empty_note");
 	default:
 		return tr("audiobook_list_empty");
 	}
 }
 
-static void reload_books(void) {
+static void list_reload(booklist_t *bl) {
+	list_resize(bl);
 	// Unbind first, and set the index by hand afterwards: row_bind() is a no-op
 	// when the index has not moved, so switching between two lists of the same
 	// length would otherwise leave every row showing the old titles.
 	for (int i = 0; i < ROW_POOL; i++) {
-		row_bind(&rows[i], -1);
-		rows[i].index = -1;
+		row_bind(&bl->rows[i], -1);
+		bl->rows[i].index = -1;
 	}
 
-	audiobookdb_index_close(book_index);
-	book_index = books_index_open();
-	entry_count = audiobookdb_index_count(book_index);
-	window_first = -1;
-	window_count = 0;
+	audiobookdb_index_close(bl->index);
+	bl->index = list_index_open(bl);
+	bl->window_first = -1;
+	bl->window_count = 0;
 
-	lv_obj_set_height(book_body, entry_count > 0 ? entry_count * ROW_PITCH : 1);
-	lv_obj_scroll_to_y(book_list, 0, LV_ANIM_OFF);
+	list_set_count(bl, audiobookdb_index_count(bl->index));
+	lv_obj_scroll_to_y(bl->viewport, 0, LV_ANIM_OFF);
+	lv_label_set_text(bl->empty, list_empty_text(bl->list));
+	lv_image_set_src(bl->sort_icon, sort_icon(list_sort(bl->list)));
+	lv_obj_update_layout(bl->viewport); // where the canvas starts, for the band
 
-	lv_label_set_text(empty_label, books_empty_text());
-	show_empty(empty_label, entry_count);
-	lv_image_set_src(books_sort_icon, sort_icon(list_sort(books_list)));
-
-	refresh_playmarks();
-	window_update();
-}
-
-// Opens the books page on one of its lists. `value` is the author or the
-// series, `title` what the page is headed with.
-static void books_open(list_id_t list, const char *value, const char *title) {
-	books_list = list;
-	snprintf(books_value, sizeof(books_value), "%s", value ? value : "");
-	lv_label_set_text(books_title, title);
-	reload_books();
-	switch_screen(books_screen);
+	refresh_playmarks(bl);
+	window_update(bl);
 }
 
 // Plays a book from where it was left: a book in one file from its saved
@@ -709,123 +755,108 @@ void audiobooks_play_at(const char *book, const char *file, double seconds) {
 	player_refresh_now_playing();
 }
 
-static void book_clicked_cb(lv_event_t *e) {
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
-		return; // a swipe across the list, not a tap
-	}
-
-	lv_obj_t *button = lv_event_get_current_target(e);
-	int index = -1;
-	for (int i = 0; i < ROW_POOL; i++) {
-		if (rows[i].button == button) {
-			index = rows[i].index;
-			break;
-		}
-	}
-	const char *found = NULL;
-	if (!row_at(index, NULL, &found) || !found[0]) {
+static void book_tap(lv_obj_t *obj, void *user) {
+	(void)obj;
+	row_t *row = user;
+	winrow_t *w = NULL;
+	if (!row || !row_at(row->owner, row->index, &w) || !w->path[0]) {
 		return;
 	}
 	char book[512];
-	snprintf(book, sizeof(book), "%s", found);
+	snprintf(book, sizeof(book), "%s", w->path);
 	play_book(book);
 }
 
-static void books_sort_cb(lv_event_t *e) { sort_menu_show(lv_event_get_current_target(e), books_list, reload_books); }
+// The list coming on screen: read for the first time, or brought up to date
+// -- a scan, or a book reaching its end, may have happened since; Large rows
+// may have been switched.
+static void list_refresh(booklist_t *bl) {
+	if (!bl->index || bl->row_height != sx_row_height(false)) {
+		list_reload(bl);
+		return;
+	}
+	refresh_stale(bl);
+	refresh_playmarks(bl);
+	window_update(bl);
+}
 
-static void books_loaded_cb(lv_event_t *e) {
-	(void)e;
-	// A scan, or a book reaching its end, may have happened since.
-	refresh_stale();
-	refresh_playmarks();
-	window_update();
+static void list_loaded_cb(lv_event_t *e) { list_refresh(lv_event_get_user_data(e)); }
+
+static void sort_shelf_cb(lv_event_t *e);
+static void sort_other_cb(lv_event_t *e);
+
+static void list_reload_shelf(void) { list_reload(&shelf); }
+static void list_reload_other(void) { list_reload(&other); }
+
+static void sort_shelf_cb(lv_event_t *e) { sort_menu_show(lv_event_get_current_target(e), shelf.list, list_reload_shelf); }
+static void sort_other_cb(lv_event_t *e) { sort_menu_show(lv_event_get_current_target(e), other.list, list_reload_other); }
+
+// The list's widgets on `screen`, its header buttons from `slot` leftwards.
+static void list_build(booklist_t *bl, lv_obj_t *screen, gui_config_t *cfg, bool with_group, int sort_slot, lv_event_cb_t sort_cb) {
+	bl->screen = screen;
+	bl->window_first = -1;
+	lv_obj_t *sort_btn = corner_button(screen, cfg, sort_slot, &icon_sort_az, sort_cb);
+	bl->sort_icon = lv_obj_get_child(sort_btn, 0);
+
+	bl->viewport = make_viewport(screen, cfg, &bl->body, &bl->empty, list_scroll_cb, bl);
+	if (with_group) {
+		bl->group = settingsrow_group(bl->viewport, "audiobook_books_group", 0);
+		lv_obj_move_to_index(bl->group, 0);
+		lv_obj_set_hidden(bl->group, true);
+	}
+
+	static const sx_row_handlers_t handlers = {.on_tap = book_tap};
+	bl->row_height = sx_row_height(false);
+	bl->lead = bl->row_height >= SX_ROW_H_BIG ? SX_ROW_THUMB_BIG : SX_ROW_THUMB;
+	for (int i = 0; i < ROW_POOL; i++) {
+		row_t *row = &bl->rows[i];
+		row->owner = bl;
+		row->obj = sx_row_create(bl->body, &handlers, false);
+		sx_row_set_user(row->obj, row);
+		sx_row_set_trail(row->obj, SX_ROW_TRAIL_NONE);
+		lv_obj_set_hidden(row->obj, true);
+		row->index = -1;
+	}
+
+	player_sheet_attach_drag(screen, true);
+	switcher_attach_back_gesture(screen);
+	// The section page refreshes its list itself, after deciding whether it
+	// shows (section_loaded_cb).
+	if (bl != &shelf) {
+		lv_obj_add_event_cb(screen, list_loaded_cb, LV_EVENT_SCREEN_LOADED, bl);
+	}
+	lv_obj_add_event_cb(screen, list_unload_cb, LV_EVENT_SCREEN_UNLOAD_START, bl);
+}
+
+// Opens the other books page on one of its lists. `value` is the author or the
+// series, `title` what the page is headed with.
+static void books_open(list_id_t list, const char *value, const char *title) {
+	other.list = list;
+	snprintf(other.value, sizeof(other.value), "%s", value ? value : "");
+	lv_label_set_text(other.title, title);
+	list_reload(&other);
+	switch_screen(other.screen);
 }
 
 static void build_books_page(gui_config_t *cfg) {
 	lv_obj_add_style(books_screen, &theme_style_screen, 0);
-	books_title = settingsrow_title(books_screen, cfg, "audiobooks");
-	settingsrow_title_corner_slots(books_title, cfg, 1);
-	lv_obj_t *sort_btn = corner_button(books_screen, cfg, 0, &icon_sort_az, books_sort_cb);
-	books_sort_icon = lv_obj_get_child(sort_btn, 0);
-
-	row_width = cfg->screen_width - 2 * cfg->padding;
-	book_list = make_viewport(books_screen, cfg, &book_body, &empty_label, row_width, books_scroll_cb);
-
-	for (int i = 0; i < ROW_POOL; i++) {
-		row_t *row = &rows[i];
-
-		row->button = lv_btn_create(book_body);
-		lv_obj_set_size(row->button, row_width, ROW_HEIGHT);
-		lv_obj_set_x(row->button, 0);
-		lv_obj_add_style(row->button, &theme_style_card, 0);
-		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row->button, ROW_RADIUS, 0);
-		lv_obj_set_style_border_width(row->button, 0, 0);
-		lv_obj_set_style_shadow_width(row->button, 0, 0);
-		lv_obj_set_style_pad_all(row->button, ROW_PAD, 0);
-		lv_obj_set_style_pad_column(row->button, ROW_PAD, 0);
-		lv_obj_set_hidden(row->button, true);
-		lv_obj_set_event_bubble(row->button, true); // so the player sheet can be dragged in
-		lv_obj_add_event_cb(row->button, book_clicked_cb, LV_EVENT_CLICKED, NULL);
-		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
-		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-		row->icon = lv_image_create(row->button);
-		lv_obj_set_size(row->icon, THUMB_SIZE, THUMB_SIZE);
-		lv_image_set_inner_align(row->icon, LV_IMAGE_ALIGN_CENTER);
-
-		row->label = lv_label_create(row->button);
-		lv_label_set_long_mode(row->label, LV_LABEL_LONG_DOT);
-		lv_obj_set_flex_grow(row->label, 1);
-		lv_obj_add_style(row->label, &theme_style_text, 0);
-		lv_obj_set_style_text_font(row->label, &font_ui_24, 0);
-		// Two lines at most: the cap on the height is what makes LV_LABEL_LONG_DOT
-		// cut the name there, with the ellipsis. A cap and not a height, so a
-		// one-line name stays centred.
-		lv_obj_set_style_max_height(row->label, 2 * lv_font_get_line_height(&font_ui_24) + lv_obj_get_style_text_line_space(row->label, LV_PART_MAIN), 0);
-
-		// Out of the flex layout: it sits in the row's own left padding.
-		row->playmark = lv_obj_create(row->button);
-		lv_obj_set_ignore_layout(row->playmark, true);
-		lv_obj_set_size(row->playmark, PLAYMARK_WIDTH, PLAYMARK_HEIGHT);
-		lv_obj_align(row->playmark, LV_ALIGN_LEFT_MID, PLAYMARK_INSET - ROW_PAD, 0);
-		lv_obj_add_style(row->playmark, &theme_style_accent_bg, 0);
-		lv_obj_set_style_radius(row->playmark, LV_RADIUS_CIRCLE, 0);
-		lv_obj_set_style_border_width(row->playmark, 0, 0);
-		lv_obj_set_style_shadow_width(row->playmark, 0, 0);
-		lv_obj_set_style_pad_all(row->playmark, 0, 0);
-		lv_obj_set_scrollable(row->playmark, false);
-		lv_obj_set_clickable(row->playmark, false);
-		lv_obj_set_hidden(row->playmark, true);
-
-		row->index = -1;
-		row->has_thumb = false;
-		row->thumb_requested = false;
-		row->thumb_settled = false;
-	}
-
-	thumb_timer = lv_timer_create(thumb_timer_cb, THUMB_POLL_MS, NULL);
-	lv_timer_pause(thumb_timer);
-
-	player_sheet_attach_drag(books_screen, true);
-	switcher_attach_back_gesture(books_screen);
-	lv_obj_add_event_cb(books_screen, books_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	other.title = settingsrow_title(books_screen, cfg, "audiobooks");
+	settingsrow_title_corner_slots(other.title, cfg, 1);
+	other.list = LIST_CONTINUE;
+	list_build(&other, books_screen, cfg, false, 0, sort_other_cb);
 }
 
 // ---------------------------------------------------------------------------
 // the authors and series page
 //
-// The same windowed pool, with a name and a count of books on each row. The
-// names are few enough to hold -- one per author or series, not per book.
+// The same windowed pool, with a name and a count of books on each row: the
+// 2.0 row with the name's first letter on a plaque, "Books: 3" under it and a
+// chevron, as the artists are listed. The names are few enough to hold -- one
+// per author or series, not per book.
 // ---------------------------------------------------------------------------
 
-#define NAME_ROW_HEIGHT 88
-#define NAME_ROW_PITCH (NAME_ROW_HEIGHT + ROW_GAP)
-
 typedef struct {
-	lv_obj_t *button;
-	lv_obj_t *label;
-	lv_obj_t *count;
+	lv_obj_t *obj;
 	int index;
 } name_row_t;
 
@@ -843,6 +874,7 @@ static name_row_t name_rows[ROW_POOL];
 static name_entry_t *names;
 static int name_count;
 static int name_capacity;
+static int name_pitch;
 static list_id_t names_kind = LIST_AUTHORS;
 
 static void names_clear(void) {
@@ -881,13 +913,22 @@ static void name_row_bind(name_row_t *row, int index) {
 	}
 	row->index = index;
 	if (index < 0 || index >= name_count) {
-		lv_obj_set_hidden(row->button, true);
+		lv_obj_set_hidden(row->obj, true);
 		return;
 	}
-	lv_obj_set_hidden(row->button, false);
-	lv_obj_set_y(row->button, index * NAME_ROW_PITCH);
-	lv_label_set_text(row->label, shown_name(names[index].name));
-	lv_label_set_text_fmt(row->count, "%d", names[index].books);
+	lv_obj_set_hidden(row->obj, false);
+	lv_obj_set_y(row->obj, index * name_pitch);
+	const char *name = shown_name(names[index].name);
+	sx_row_set_title(row->obj, name);
+	char books[64];
+	lv_snprintf(books, sizeof(books), tr("audiobook_books_count"), names[index].books);
+	sx_row_set_subtitle(row->obj, books, NULL, NULL);
+	char letter[8] = "";
+	int n = (unsigned char)name[0] >= 0xF0 ? 4 : (unsigned char)name[0] >= 0xE0 ? 3 : (unsigned char)name[0] >= 0xC0 ? 2 : 1;
+	for (int i = 0; i < n && name[i]; i++) {
+		letter[i] = name[i];
+	}
+	sx_row_set_letter(row->obj, letter, sx_tone(SX_T_COVER_TONE, sx_palette_hue_of_name(name)), names_kind == LIST_AUTHORS);
 }
 
 static void names_window_update(void) {
@@ -895,7 +936,7 @@ static void names_window_update(void) {
 	if (scroll < 0) {
 		scroll = 0;
 	}
-	int first = (scroll / NAME_ROW_PITCH) - 1;
+	int first = (scroll / name_pitch) - 1;
 	if (first + ROW_POOL > name_count) {
 		first = name_count - ROW_POOL;
 	}
@@ -914,6 +955,14 @@ static void names_scroll_cb(lv_event_t *e) {
 }
 
 static void reload_names(void) {
+	// Large rows as it is now.
+	int height = sx_row_height(false);
+	if (height + SX_ROW_GAP != name_pitch) {
+		name_pitch = height + SX_ROW_GAP;
+		for (int i = 0; i < ROW_POOL; i++) {
+			sx_row_set_compact(name_rows[i].obj, false);
+		}
+	}
 	for (int i = 0; i < ROW_POOL; i++) {
 		name_row_bind(&name_rows[i], -1);
 		name_rows[i].index = -1;
@@ -925,10 +974,10 @@ static void reload_names(void) {
 	bool desc = choice == SORT_ZA || choice == SORT_NEW;
 	audiobookdb_names_for_each(names_kind == LIST_SERIES ? AUDIOBOOK_NAMES_SERIES : AUDIOBOOK_NAMES_AUTHORS, by_added, desc, names_add_cb, NULL);
 
-	lv_obj_set_height(names_body, name_count > 0 ? name_count * NAME_ROW_PITCH : 1);
+	lv_obj_set_height(names_body, name_count > 0 ? name_count * name_pitch : 1);
 	lv_obj_scroll_to_y(names_list, 0, LV_ANIM_OFF);
-	lv_label_set_text(names_empty, tr(names_kind == LIST_SERIES ? "audiobook_series_empty" : "audiobook_empty_note"));
-	show_empty(names_empty, name_count);
+	lv_label_set_text(names_empty, tr(names_kind == LIST_SERIES ? "audiobook_series_empty" : "audiobook_list_empty"));
+	lv_obj_set_hidden(names_empty, name_count != 0);
 	lv_image_set_src(names_sort_icon, sort_icon(choice));
 	names_window_update();
 }
@@ -940,30 +989,26 @@ static void names_open(list_id_t kind) {
 	switch_screen(names_screen);
 }
 
-static void name_clicked_cb(lv_event_t *e) {
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+static void name_tap(lv_obj_t *obj, void *user) {
+	(void)obj;
+	name_row_t *row = user;
+	int index = row ? row->index : -1;
+	if (index < 0 || index >= name_count) {
 		return;
 	}
-	lv_obj_t *button = lv_event_get_current_target(e);
-	for (int i = 0; i < ROW_POOL; i++) {
-		if (name_rows[i].button != button) {
-			continue;
-		}
-		int index = name_rows[i].index;
-		if (index < 0 || index >= name_count) {
-			return;
-		}
-		char value[256];
-		snprintf(value, sizeof(value), "%s", names[index].name);
-		books_open(names_kind == LIST_SERIES ? LIST_SERIES_BOOKS : LIST_AUTHOR_BOOKS, value, shown_name(value));
-		return;
-	}
+	char value[256];
+	snprintf(value, sizeof(value), "%s", names[index].name);
+	books_open(names_kind == LIST_SERIES ? LIST_SERIES_BOOKS : LIST_AUTHOR_BOOKS, value, shown_name(value));
 }
 
 static void names_sort_cb(lv_event_t *e) { sort_menu_show(lv_event_get_current_target(e), names_kind, reload_names); }
 
 static void names_loaded_cb(lv_event_t *e) {
 	(void)e;
+	if (name_pitch != sx_row_height(false) + SX_ROW_GAP) {
+		reload_names();
+		return;
+	}
 	names_window_update();
 }
 
@@ -974,37 +1019,16 @@ static void build_names_page(gui_config_t *cfg) {
 	lv_obj_t *sort_btn = corner_button(names_screen, cfg, 0, &icon_sort_az, names_sort_cb);
 	names_sort_icon = lv_obj_get_child(sort_btn, 0);
 
-	int width = cfg->screen_width - 2 * cfg->padding;
-	names_list = make_viewport(names_screen, cfg, &names_body, &names_empty, width, names_scroll_cb);
+	names_list = make_viewport(names_screen, cfg, &names_body, &names_empty, names_scroll_cb, NULL);
 
+	static const sx_row_handlers_t handlers = {.on_tap = name_tap};
+	name_pitch = sx_row_height(false) + SX_ROW_GAP;
 	for (int i = 0; i < ROW_POOL; i++) {
 		name_row_t *row = &name_rows[i];
-		row->button = lv_btn_create(names_body);
-		lv_obj_set_size(row->button, width, NAME_ROW_HEIGHT);
-		lv_obj_add_style(row->button, &theme_style_card, 0);
-		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row->button, ROW_RADIUS, 0);
-		lv_obj_set_style_border_width(row->button, 0, 0);
-		lv_obj_set_style_shadow_width(row->button, 0, 0);
-		lv_obj_set_style_pad_hor(row->button, 20, 0);
-		lv_obj_set_style_pad_column(row->button, 12, 0);
-		lv_obj_set_hidden(row->button, true);
-		lv_obj_set_event_bubble(row->button, true);
-		lv_obj_add_event_cb(row->button, name_clicked_cb, LV_EVENT_CLICKED, NULL);
-		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
-		lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-		row->label = lv_label_create(row->button);
-		lv_label_set_long_mode(row->label, LV_LABEL_LONG_DOT);
-		lv_obj_set_flex_grow(row->label, 1);
-		lv_obj_set_height(row->label, lv_font_get_line_height(&font_ui_24));
-		lv_obj_add_style(row->label, &theme_style_text, 0);
-		lv_obj_set_style_text_font(row->label, &font_ui_24, 0);
-
-		row->count = lv_label_create(row->button);
-		lv_obj_add_style(row->count, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(row->count, &font_ui_22, 0);
-
+		row->obj = sx_row_create(names_body, &handlers, false);
+		sx_row_set_user(row->obj, row);
+		sx_row_set_trail(row->obj, SX_ROW_TRAIL_CHEVRON);
+		lv_obj_set_hidden(row->obj, true);
 		row->index = -1;
 	}
 
@@ -1014,55 +1038,171 @@ static void build_names_page(gui_config_t *cfg) {
 }
 
 // ---------------------------------------------------------------------------
-// the section page: four tiles, the bookmarks, the finished books and the
-// options
+// the section page
+//
+// 2.0 (the handoff's "state -> progress -> list"): with nothing indexed, an
+// empty state that says where the books go -- the folder in force, by name --
+// and a Scan button that starts at once; while a scan runs, a card with what
+// it has found so far; then the books themselves, a tap plays one.
+//
+// Everything else the section had -- the lists to continue, the finished
+// books, authors, series, bookmarks, the options -- is one tap on the ⋮ in
+// the header away, in its sheet; the sort is the ⇅ beside it. Without a card
+// the page says so and looks for it once a second while it shows.
 // ---------------------------------------------------------------------------
 
-static void open_library(void) { books_open(LIST_LIBRARY, NULL, tr("audiobook_library")); }
-static void open_series(void) { names_open(LIST_SERIES); }
-static void open_authors(void) { names_open(LIST_AUTHORS); }
-static void open_continue(void) { books_open(LIST_CONTINUE, NULL, tr("audiobook_continue")); }
-
-static void finished_cb(lv_event_t *e) {
-	(void)e;
-	books_open(LIST_FINISHED, NULL, tr("audiobook_finished"));
+static void open_continue(void *user) {
+	(void)user;
+	books_open(LIST_CONTINUE, NULL, tr("audiobook_continue"));
+}
+static void open_finished(void *user) {
+	(void)user;
+	books_open(LIST_FINISHED, NULL, tr("audiobook_menu_finished"));
+}
+static void open_authors(void *user) {
+	(void)user;
+	names_open(LIST_AUTHORS);
+}
+static void open_series(void *user) {
+	(void)user;
+	names_open(LIST_SERIES);
+}
+static void open_bookmarks(void *user) {
+	(void)user;
+	audiobookextras_open_bookmarks();
+}
+static void open_options(void *user) {
+	(void)user;
+	switch_screen(audiobooksettings_screen);
 }
 
-static void bookmarks_cb(lv_event_t *e) {
+static void section_menu_cb(lv_event_t *e) {
 	(void)e;
-	audiobookextras_open_bookmarks();
+	bool any = audiobookdb_count() > 0 && !audiobookdb_scan_running();
+	sx_sheet_item_t items[7];
+	int n = 0;
+	if (any) {
+		items[n++] = (sx_sheet_item_t){tr("audiobook_continue"), &icon_sort_played, false, false, open_continue, NULL};
+		items[n++] = (sx_sheet_item_t){tr("audiobook_authors"), &icon_artist, false, false, open_authors, NULL};
+		items[n++] = (sx_sheet_item_t){tr("audiobook_series"), &icon_sort_series, false, false, open_series, NULL};
+		items[n++] = (sx_sheet_item_t){tr("audiobook_menu_finished"), &icon_book_finished, false, false, open_finished, NULL};
+		items[n++] = (sx_sheet_item_t){tr("bookmarks"), &icon_bookmark, false, false, open_bookmarks, NULL};
+	}
+	if (!audiobookdb_scan_running() && gui_card_available()) {
+		items[n++] = (sx_sheet_item_t){tr("audiobook_rescan"), &icon_refresh, false, false, start_scan, NULL};
+	}
+	items[n++] = (sx_sheet_item_t){tr("settings"), &icon_music_settings, false, false, open_options, NULL};
+	sx_sheet_menu(tr("audiobooks"), NULL, items, n);
 }
 
 // An index written by an older scan has no authors, series or folder books.
-// It is read again once, the first time the section is opened, through the
-// usual scan page.
+// It is read again once, the first time the section is opened.
 static bool upgrade_offered;
 
-// With no books indexed the page says a scan is needed instead of its tiles.
-static lv_obj_t *section_grid;
-static lv_obj_t *section_empty;
+// The empty state and the scan card.
+static lv_obj_t *section_sort_btn;
+static lv_obj_t *empty_panel;
+static lv_obj_t *empty_icon;
+static lv_obj_t *empty_title;
+static lv_obj_t *empty_text;
+static lv_obj_t *empty_button;
+static lv_obj_t *scan_box;	 // holds the scan card, under the header
+static lv_obj_t *scan_card;
+static lv_obj_t *scan_note;	 // "Found: 2"
+static lv_obj_t *scan_bar;
+static lv_timer_t *card_timer; // looks for the card while the page says it is missing
 
-static void section_scan_cb(lv_event_t *e) {
-	(void)e;
-	start_scan(NULL);
-}
+static void section_show(void);
 
-// The tiles, a note that the card is missing -- the books and their index are
-// on it -- or the scan panel while nothing is indexed.
-static void section_show(void) {
-	if (!gui_card_available()) {
-		gridpage_show_no_card(section_grid, section_empty, section_show);
+static void card_timer_cb(lv_timer_t *timer) {
+	// Only while the page is up; a page left behind looks again when it is
+	// opened.
+	if (lv_screen_active() != audiobooks_screen) {
+		lv_timer_pause(timer);
 		return;
 	}
-	gridpage_show_empty(section_grid, section_empty, !audiobookdb_scan_running() && audiobookdb_count() == 0);
+	if (gui_card_available()) {
+		lv_timer_pause(timer);
+		section_show();
+	}
 }
 
-static void section_loaded_cb(lv_event_t *e) {
+// The empty state's words: the folder in force by its name (the last part of
+// its path), so "put the books in the Audiobooks folder" says the folder this
+// player reads, not the one it reads by default.
+static void empty_say_folder(void) {
+	char folder[AUDIOBOOKDB_FOLDER_MAX];
+	audiobookdb_folder(folder, sizeof(folder));
+	const char *name = strrchr(folder, '/');
+	name = name ? name + 1 : folder;
+	char text[AUDIOBOOKDB_FOLDER_MAX + 256];
+	lv_snprintf(text, sizeof(text), tr("audiobook_empty_text"), name);
+	lv_label_set_text(empty_text, text);
+}
+
+// The empty state stands centred in what the mini player leaves of the page.
+static int section_top;
+static int section_height;
+
+static void section_layout(void) {
+	if (empty_panel) {
+		lv_obj_set_height(empty_panel, section_height - section_top - sx_frame_body_bottom());
+	}
+}
+
+static void section_show(void) {
+	section_layout();
+	bool card = gui_card_available();
+	bool scanning = audiobookdb_scan_running();
+	bool empty = card && !scanning && audiobookdb_count() == 0;
+
+	lv_obj_set_hidden(scan_box, !scanning);
+	lv_obj_set_hidden(empty_panel, card && !empty);
+	lv_obj_set_hidden(shelf.viewport, !card || scanning || empty);
+	lv_obj_set_hidden(section_sort_btn, !card || scanning || empty);
+
+	if (!card) {
+		lv_image_set_src(empty_icon, &icon_sd_card);
+		lv_image_set_scale(empty_icon, 256 * 40 / 128);
+		lv_label_set_text(empty_title, tr(usb_storage_active() ? "usb_storage_shared" : "sd_card_missing"));
+		lv_obj_set_hidden(empty_text, true);
+		lv_obj_set_hidden(empty_button, true);
+		if (!card_timer) {
+			card_timer = lv_timer_create(card_timer_cb, 1000, NULL);
+		}
+		lv_timer_resume(card_timer);
+		return;
+	}
+	if (card_timer) {
+		lv_timer_pause(card_timer);
+	}
+	if (empty) {
+		lv_image_set_src(empty_icon, &icon_files_audiobook);
+		lv_image_set_scale(empty_icon, 256 * 40 / 32);
+		lv_label_set_text(empty_title, tr("audiobook_empty_title"));
+		empty_say_folder();
+		lv_obj_set_hidden(empty_text, false);
+		lv_obj_set_hidden(empty_button, false);
+	}
+}
+
+// Before the slide in: which state the page is in, and the list read or
+// brought up to date, so the page arrives finished.
+static void section_load_start_cb(lv_event_t *e) {
 	(void)e;
 	section_show();
+	if (gui_card_available() && !lv_obj_is_hidden(shelf.viewport)) {
+		list_refresh(&shelf);
+	}
+}
+
+// On screen: the pictures (only the list on screen asks for them).
+static void section_loaded_cb(lv_event_t *e) {
+	(void)e;
 	if (!gui_card_available()) {
 		return;
 	}
+	thumbs_update(&shelf);
 	if (!upgrade_offered && audiobookdb_needs_rescan()) {
 		upgrade_offered = true;
 		// After this page's own load has finished, not inside it.
@@ -1070,143 +1210,126 @@ static void section_loaded_cb(lv_event_t *e) {
 	}
 }
 
+static void section_unloaded_cb(lv_event_t *e) {
+	(void)e;
+	if (card_timer) {
+		lv_timer_pause(card_timer);
+	}
+}
+
+static void empty_scan_cb(lv_event_t *e) {
+	(void)e;
+	start_scan(NULL);
+}
+
+static void build_empty_panel(gui_config_t *cfg) {
+	int top = settingsrow_content_top(cfg);
+	section_top = top;
+	section_height = cfg->screen_height;
+	empty_panel = lv_obj_create(audiobooks_screen);
+	lv_obj_remove_style_all(empty_panel);
+	sx_frame_exempt(empty_panel);
+	lv_obj_set_size(empty_panel, lv_pct(100), cfg->screen_height - top);
+	lv_obj_align(empty_panel, LV_ALIGN_TOP_LEFT, 0, top);
+	lv_obj_set_style_pad_hor(empty_panel, 36, 0);
+	lv_obj_set_scrollable(empty_panel, false);
+	lv_obj_set_flex_flow(empty_panel, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(empty_panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_hidden(empty_panel, true);
+	// A swipe back may start anywhere on it.
+	lv_obj_set_event_bubble(empty_panel, true);
+
+	// The glyph on a round surface, 84 across.
+	lv_obj_t *disc = lv_obj_create(empty_panel);
+	lv_obj_remove_style_all(disc);
+	lv_obj_set_size(disc, 84, 84);
+	lv_obj_add_style(disc, &sx_style_surface, 0);
+	lv_obj_set_style_radius(disc, LV_RADIUS_CIRCLE, 0);
+	lv_obj_set_style_margin_bottom(disc, 22, 0);
+	lv_obj_set_scrollable(disc, false);
+	empty_icon = lv_image_create(disc);
+	lv_obj_add_style(empty_icon, &sx_style_icon, 0);
+	lv_obj_center(empty_icon);
+
+	empty_title = lv_label_create(empty_panel);
+	lv_obj_set_width(empty_title, lv_pct(100));
+	lv_label_set_long_mode(empty_title, LV_LABEL_LONG_WRAP);
+	lv_obj_set_style_text_align(empty_title, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_add_style(empty_title, &sx_style_text, 0);
+	lv_obj_set_style_text_font(empty_title, &font_ui_26_bold, 0);
+	lv_obj_set_style_margin_bottom(empty_title, 8, 0);
+
+	empty_text = lv_label_create(empty_panel);
+	lv_obj_set_width(empty_text, lv_pct(100));
+	lv_label_set_long_mode(empty_text, LV_LABEL_LONG_WRAP);
+	lv_obj_set_style_text_align(empty_text, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_add_style(empty_text, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(empty_text, &font_ui_21, 0);
+	lv_obj_set_style_text_line_space(empty_text, 4, 0);
+	lv_obj_set_style_margin_bottom(empty_text, 34, 0);
+
+	// The accent pill, 68 tall: the one thing to do here.
+	empty_button = lv_btn_create(empty_panel);
+	lv_obj_remove_style_all(empty_button);
+	lv_obj_set_size(empty_button, LV_SIZE_CONTENT, SX_SHEET_BTN_H);
+	lv_obj_set_style_min_width(empty_button, 272, 0);
+	lv_obj_set_style_pad_hor(empty_button, 36, 0);
+	lv_obj_set_style_radius(empty_button, LV_RADIUS_CIRCLE, 0);
+	lv_obj_add_style(empty_button, &sx_style_accent, 0);
+	lv_obj_add_style(empty_button, &sx_style_press, LV_STATE_PRESSED);
+	lv_obj_add_event_cb(empty_button, empty_scan_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *label = lv_label_create(empty_button);
+	lv_label_set_text(label, tr("scan"));
+	lv_obj_set_style_text_font(label, &font_ui_26_bold, 0);
+	lv_obj_center(label);
+}
+
 static void build_section_page(gui_config_t *cfg) {
-	const grid_entry_t entries[] = {
-		{"audiobook_library", &icon_menu_audiobook_library, NULL, open_library},
-		{"audiobook_series", &icon_menu_audiobook_series, NULL, open_series},
-		{"audiobook_authors", &icon_menu_audiobook_author, NULL, open_authors},
-		{"audiobook_continue", &icon_menu_audiobook_continue, NULL, open_continue},
-	};
-	// The Music page's grid of two by three, so the tiles are the same size.
-	section_grid =
-		gridpage_build(audiobooks_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
-	section_empty =
-		gridpage_empty_panel(audiobooks_screen, cfg, &icon_book_headphones, "audiobook_no_database", section_scan_cb);
+	lv_obj_add_style(audiobooks_screen, &theme_style_screen, 0);
+	shelf.title = settingsrow_title(audiobooks_screen, cfg, "audiobooks");
+	settingsrow_title_corner_slots(shelf.title, cfg, 2);
+	corner_button(audiobooks_screen, cfg, 0, &icon_ellipsis_vertical, section_menu_cb);
+	shelf.list = LIST_LIBRARY;
+	list_build(&shelf, audiobooks_screen, cfg, true, 1, sort_shelf_cb);
+	section_sort_btn = lv_obj_get_parent(shelf.sort_icon);
 
-	// The options, to their left the finished books, and to the left of those
-	// the bookmarks -- the same glyph the ebook shelf opens its bookmarks with.
-	settingsrow_title_corner_slots(settingsrow_title(audiobooks_screen, cfg, "audiobooks"), cfg, 3);
-	lv_obj_t *options_btn = corner_button(audiobooks_screen, cfg, 0, &icon_music_settings, NULL);
-	lv_obj_add_event_cb(options_btn, switch_screen_cb, LV_EVENT_CLICKED, audiobooksettings_screen);
-	corner_button(audiobooks_screen, cfg, 1, &icon_book_finished, finished_cb);
-	corner_button(audiobooks_screen, cfg, 2, &icon_bookmark, bookmarks_cb);
+	build_empty_panel(cfg);
 
+	// The scan card, where the list starts.
+	int top = settingsrow_content_top(cfg);
+	scan_box = lv_obj_create(audiobooks_screen);
+	lv_obj_remove_style_all(scan_box);
+	lv_obj_set_size(scan_box, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_align(scan_box, LV_ALIGN_TOP_LEFT, 0, top);
+	lv_obj_set_style_pad_hor(scan_box, cfg->padding, 0);
+	lv_obj_set_scrollable(scan_box, false);
+	lv_obj_set_event_bubble(scan_box, true);
+	lv_obj_set_hidden(scan_box, true);
+	scan_card = sx_card_create(scan_box);
+	sx_card_title(scan_card, tr("audiobook_scanning"));
+	scan_note = sx_card_subtitle(scan_card, "", false);
+	scan_bar = sx_card_bar(scan_card, 0);
+	sx_card_action(scan_card, tr("audiobook_scan_stop"), scan_stop_cb, NULL);
+
+	lv_obj_add_event_cb(audiobooks_screen, section_load_start_cb, LV_EVENT_SCREEN_LOAD_START, NULL);
 	lv_obj_add_event_cb(audiobooks_screen, section_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	lv_obj_add_event_cb(audiobooks_screen, section_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 }
 
 // ---------------------------------------------------------------------------
 // the options page
 // ---------------------------------------------------------------------------
 
-static void scan_row_cb(lv_event_t *e);
-// A dim line under a row, explaining what the row does not say by itself.
+// A line under a card in the secondary colour, saying what the card does not
+// say by itself.
 static void option_note(lv_obj_t *parent, const char *text) {
 	lv_obj_t *note = lv_label_create(parent);
 	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(note, lv_pct(100));
-	lv_obj_add_style(note, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(note, &font_ui_22, 0);
+	lv_obj_add_style(note, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(note, &font_ui_21, 0);
+	lv_obj_set_style_pad_hor(note, 6, 0);
 	lv_label_set_text(note, tr(text));
-}
-
-static void paint_choice(lv_obj_t *btn, bool on);
-
-// ---------------------------------------------------------------------------
-// A toggle whose choices live on pills underneath it, and disappear with it.
-//
-// The same idea as automatic screen-off on the Display page -- options that
-// only mean something while the switch is on should not be sitting there while
-// it is off -- but with pills instead of a slider, because "end of chapter" is
-// not a point on a scale of minutes.
-//
-// The card is LV_SIZE_CONTENT rather than two fixed heights, so hiding the row
-// collapses it by exactly the right amount and five pills may wrap onto a
-// second line without anything having to be measured.
-// ---------------------------------------------------------------------------
-
-typedef struct {
-	lv_obj_t *card;
-	lv_obj_t *toggle;
-	lv_obj_t *pills;
-} toggle_pills_t;
-
-static void toggle_pills_expanded(const toggle_pills_t *tp, bool expanded) {
-	if (!tp || !tp->pills) {
-		return;
-	}
-	if (expanded) {
-		lv_obj_set_hidden(tp->pills, false);
-	} else {
-		lv_obj_set_hidden(tp->pills, true);
-	}
-}
-
-static void build_toggle_pills(lv_obj_t *parent, const char *title, lv_event_cb_t toggle_cb, toggle_pills_t *out) {
-	lv_obj_t *card = lv_obj_create(parent);
-	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, LV_SIZE_CONTENT);
-	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 18, 0);
-	lv_obj_set_scrollable(card, false);
-	lv_obj_set_event_bubble(card, true);
-	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-	// The name and the switch share the top line.
-	lv_obj_t *head = lv_obj_create(card);
-	lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(head, 0, 0);
-	lv_obj_set_style_border_width(head, 0, 0);
-	lv_obj_set_style_pad_all(head, 0, 0);
-	lv_obj_set_scrollable(head, false);
-	lv_obj_set_event_bubble(head, true);
-	lv_obj_set_flex_flow(head, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(head, LV_FLEX_ALIGN_SPACE_BETWEEN, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-	lv_obj_t *name = lv_label_create(head);
-	lv_label_set_text(name, tr(title));
-	lv_obj_add_style(name, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name, &font_ui_24, 0);
-
-	lv_obj_t *toggle = settingsrow_switch(head, toggle_cb);
-
-	lv_obj_t *pills = lv_obj_create(card);
-	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(pills, 0, 0);
-	lv_obj_set_style_border_width(pills, 0, 0);
-	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 10, 0);
-	lv_obj_set_scrollable(pills, false);
-	lv_obj_set_event_bubble(pills, true);
-	// Wrapping, because the four minute pills plus "end of chapter" are more
-	// than one line of this screen.
-	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
-	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
-
-	out->card = card;
-	out->toggle = toggle;
-	out->pills = pills;
-}
-
-static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value, lv_event_cb_t cb) {
-	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 56);
-	lv_obj_set_style_pad_hor(btn, 18, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)(intptr_t)value);
-
-	lv_obj_t *label = lv_label_create(btn);
-	lv_label_set_text(label, tr(text));
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_center(label);
-
-	return btn;
 }
 
 // ---------------------------------------------------------------------------
@@ -1220,9 +1343,10 @@ static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value, lv_eve
 // The card's root itself cannot be taken: the music scan leaves the audiobook
 // folder out, and leaving out the whole card would leave no music.
 //
-// Taking a new folder asks first, because it costs two scans: the audiobooks
-// are read again from the new folder, and the music library -- which passed
-// over the old folder and read the new one -- is scanned again without it.
+// Taking a new folder costs two scans: the audiobooks are read again from the
+// new folder, and the music library -- which passed over the old folder and
+// read the new one -- is scanned again without it. 2.0 starts them at once
+// and says so on the "Use this folder" card itself.
 //
 // The browser's rows are made here rather than with settingsrow_add(), whose
 // rows keep a small record for the life of the program: right for a settings
@@ -1246,9 +1370,6 @@ static char folder_at[AUDIOBOOKDB_FOLDER_MAX];
 static char **folder_names;
 static int folder_count;
 static bool folder_shown; // the rows on the page are those of folder_at
-
-// The folder the question is about, between the tap and the answer.
-static char folder_pending[AUDIOBOOKDB_FOLDER_MAX];
 
 static void folder_absolute(const char *rel, char *out, size_t size) {
 	snprintf(out, size, "%s%s%s", card_root ? card_root : "", rel[0] ? "/" : "", rel);
@@ -1376,52 +1497,45 @@ static bool folder_back_guard(void) {
 	return true;
 }
 
-static void folder_change_confirmed(void *user) {
-	(void)user;
-	if (!audiobookdb_set_folder(folder_pending)) {
+// A new folder costs two scans: the audiobooks are read again from it, and
+// the music library -- which passed over the old folder and read this one --
+// is scanned again without it. 2.0 starts them at once (scans need no "are
+// you sure?"); the row that does it says so under its name.
+static void folder_use_cb(lv_event_t *e) {
+	(void)e;
+	char current[AUDIOBOOKDB_FOLDER_MAX];
+	audiobookdb_folder(current, sizeof(current));
+	if (audiobookdb_folder_matches(current, folder_at)) {
+		// Nothing changes: no scans.
+		switch_screen_return_to(audiobooksettings_screen);
+		return;
+	}
+	if (!audiobookdb_set_folder(folder_at)) {
 		return;
 	}
 	folder_value_refresh();
 
-	// The music first, in the background: it was built passing over the old
-	// folder and reading this one. Not a library that was never scanned --
-	// building it is the Scan button's job -- and not under a scan already
-	// running, which goes on with the folder it started with.
+	// The music first, in the background. Not a library that was never
+	// scanned -- building it is the Scan button's job -- and not under a scan
+	// already running, which goes on with the folder it started with.
 	if (library_track_count() > 0 && card_root && card_root[0]) {
 		if (!library_scan_start(card_root)) {
 			printf("audiobooks: the music library is busy; it keeps the old folder until its next scan\n");
 		}
 	}
-	// Then the books, in front, on the page every audiobook scan shows.
+	// Then the books, on the section page.
 	start_scan(NULL);
 }
 
-static void folder_use_cb(lv_event_t *e) {
-	if (player_sheet_drag_active() || switcher_back_drag_active()) {
-		return;
-	}
-	(void)e;
-	char current[AUDIOBOOKDB_FOLDER_MAX];
-	audiobookdb_folder(current, sizeof(current));
-	if (audiobookdb_folder_matches(current, folder_at)) {
-		// Nothing changes: no question, no scans.
-		switch_screen_return_to(audiobooksettings_screen);
-		return;
-	}
-	snprintf(folder_pending, sizeof(folder_pending), "%s", folder_at);
-	char title[AUDIOBOOKDB_FOLDER_MAX + 96];
-	lv_snprintf(title, sizeof(title), tr("audiobook_folder_change"), folder_pending);
-	confirm_show(title, "audiobook_folder_change_note", "audiobook_folder_use_short", folder_change_confirmed, NULL);
-}
-
-static lv_obj_t *folder_row(const lv_image_dsc_t *glyph, const char *text, bool accent, lv_event_cb_t cb, int index) {
+// A 2.0 card with a glyph before its name: a folder (a chevron after it), or
+// the accent "Use this folder" with what taking it does under the name.
+static lv_obj_t *folder_row(const lv_image_dsc_t *glyph, const char *text, const char *note, bool accent, lv_event_cb_t cb, int index) {
 	lv_obj_t *row = lv_btn_create(folder_list);
-	lv_obj_set_size(row, lv_pct(100), FOLDER_ROW_HEIGHT);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 20, 0);
+	lv_obj_remove_style_all(row);
+	sx_card_style(row);
+	// A fixed height for a plain folder: LVGL places a content-sized row's
+	// single track at its top when a minimum height makes it taller.
+	lv_obj_set_size(row, lv_pct(100), note ? LV_SIZE_CONTENT : SX_CARD_MIN_H + 2 * SX_CARD_PAD_V);
 	lv_obj_set_style_pad_column(row, 16, 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -1432,20 +1546,31 @@ static lv_obj_t *folder_row(const lv_image_dsc_t *glyph, const char *text, bool 
 
 	lv_obj_t *icon = lv_image_create(row);
 	lv_image_set_src(icon, glyph);
-	lv_obj_add_style(icon, &theme_style_icon, 0);
-	if (accent) {
-		lv_obj_set_style_image_recolor(icon, theme()->accent, 0);
-		lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
-	}
+	lv_obj_add_style(icon, accent ? &sx_style_icon_accent : &sx_style_icon2, 0);
 
-	lv_obj_t *label = lv_label_create(row);
+	lv_obj_t *column = lv_obj_create(row);
+	lv_obj_remove_style_all(column);
+	lv_obj_set_height(column, LV_SIZE_CONTENT);
+	lv_obj_set_flex_grow(column, 1);
+	lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_style_pad_row(column, 4, 0);
+	lv_obj_set_event_bubble(column, true);
+	lv_obj_set_clickable(column, false);
+
+	lv_obj_t *label = lv_label_create(column);
+	lv_obj_set_width(label, lv_pct(100));
 	lv_label_set_text(label, text);
 	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
-	lv_obj_set_flex_grow(label, 1);
-	lv_obj_add_style(label, &theme_style_text, 0);
+	lv_obj_add_style(label, accent ? &sx_style_text_accent : &sx_style_text, 0);
 	lv_obj_set_style_text_font(label, &font_ui_24, 0);
-	if (accent) {
-		lv_obj_set_style_text_color(label, theme()->accent, 0);
+
+	if (note) {
+		lv_obj_t *sub = lv_label_create(column);
+		lv_obj_set_width(sub, lv_pct(100));
+		lv_label_set_long_mode(sub, LV_LABEL_LONG_WRAP);
+		lv_label_set_text(sub, note);
+		lv_obj_add_style(sub, &sx_style_text2, 0);
+		lv_obj_set_style_text_font(sub, &font_ui_21, 0);
 	}
 	return row;
 }
@@ -1459,18 +1584,16 @@ static void folder_show(void) {
 	audiobookdb_folder(current, sizeof(current));
 
 	if (folder_at[0]) {
-		folder_row(&icon_check, tr("audiobook_folder_use"), true, folder_use_cb, -1);
+		folder_row(&icon_check, tr("audiobook_folder_use"), tr("audiobook_folder_change_note"), true, folder_use_cb, -1);
 	}
 	for (int i = 0; i < folder_count; i++) {
 		char rel[AUDIOBOOKDB_FOLDER_MAX + 256];
 		snprintf(rel, sizeof(rel), "%s%s%s", folder_at, folder_at[0] ? "/" : "", folder_names[i]);
 		// The folder in force stands out, so the way back to it is plain.
-		lv_obj_t *row =
-			folder_row(&icon_folder, folder_names[i], audiobookdb_folder_matches(current, rel), folder_enter_cb, i);
+		lv_obj_t *row = folder_row(&icon_folder, folder_names[i], NULL, audiobookdb_folder_matches(current, rel), folder_enter_cb, i);
 		lv_obj_t *chev = lv_image_create(row);
 		lv_image_set_src(chev, &icon_chevron_right);
-		lv_obj_add_style(chev, &theme_style_icon, 0);
-		lv_obj_set_style_image_opa(chev, LV_OPA_60, 0);
+		lv_obj_add_style(chev, &sx_style_icon2, 0);
 	}
 	if (folder_count == 0) {
 		option_note(folder_list, "audiobook_folder_none");
@@ -1537,7 +1660,8 @@ static lv_obj_t *stop_chapter_switch;
 static lv_obj_t *duration_total_pill;
 static lv_obj_t *duration_chapter_pill;
 static settingsrow_duration_t sleep_row;
-static toggle_pills_t rewind_card;
+static lv_obj_t *rewind_switch;
+static lv_obj_t *rewind_pills;
 static lv_obj_t *rewind_pill[REWIND_CHOICES];
 static const int REWIND_VALUES[REWIND_CHOICES] = {3, 5, 7, 10};
 
@@ -1565,15 +1689,16 @@ static void refresh_settings_page(void) {
 
 	bool rewind_on = audiobook_rewind_enabled();
 	if (rewind_on) {
-		lv_obj_add_state(rewind_card.toggle, LV_STATE_CHECKED);
+		lv_obj_add_state(rewind_switch, LV_STATE_CHECKED);
 	} else {
-		lv_obj_remove_state(rewind_card.toggle, LV_STATE_CHECKED);
+		lv_obj_remove_state(rewind_switch, LV_STATE_CHECKED);
 	}
-	toggle_pills_expanded(&rewind_card, rewind_on);
+	// The seconds only mean something while it is on.
+	lv_obj_set_hidden(rewind_pills, !rewind_on);
 
 	int seconds = audiobook_rewind_seconds();
 	for (int i = 0; i < REWIND_CHOICES; i++) {
-		paint_choice(rewind_pill[i], REWIND_VALUES[i] == seconds);
+		settingsrow_pill_active(rewind_pill[i], REWIND_VALUES[i] == seconds);
 	}
 }
 
@@ -1619,6 +1744,11 @@ static void settings_loaded_cb(lv_event_t *e) {
 	refresh_settings_page();
 }
 
+static void scan_row_cb(lv_event_t *e) {
+	(void)e;
+	start_scan(NULL);
+}
+
 static void build_settings_page(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(audiobooksettings_screen, cfg, "audiobooks");
 	settingsrow_add(container, "change_controls", NULL, switch_screen_cb, audiobookcontrols_screen);
@@ -1638,13 +1768,14 @@ static void build_settings_page(gui_config_t *cfg) {
 	settingsrow_toggle_duration(container, "sleep_timer", sleep_toggle_cb, sleep_wheel_cb, &sleep_row);
 	settingsrow_duration_set_minutes(&sleep_row, sleeptimer_minutes(SLEEPTIMER_AUDIOBOOK));
 
-	build_toggle_pills(container, "audiobook_rewind_after_pause", rewind_toggle_cb, &rewind_card);
+	settingsrow_toggle_pills(container, "audiobook_rewind_after_pause", rewind_toggle_cb, &rewind_switch, &rewind_pills);
 	static const char *const REWIND_LABELS[REWIND_CHOICES] = {"audiobook_3_sec", "audiobook_5_sec", "audiobook_7_sec", "audiobook_10_sec"};
 	for (int i = 0; i < REWIND_CHOICES; i++) {
-		rewind_pill[i] = make_pill(rewind_card.pills, REWIND_LABELS[i], REWIND_VALUES[i], rewind_pick_cb);
+		rewind_pill[i] = settingsrow_pill(rewind_pills, REWIND_LABELS[i], REWIND_VALUES[i], rewind_pick_cb);
 	}
 
-	// An action, not a page: it asks before it starts, so no chevron.
+	// An action, not a page: it starts the scan and shows it on the section
+	// page, so no chevron.
 	settingsrow_action(container, "audiobook_scan_audiobooks_2", scan_row_cb, NULL);
 
 	// Where the books are read from, and the way to change it; the note under
@@ -1678,21 +1809,13 @@ static lv_obj_t *back_choice[SKIP_CHOICES];
 static lv_obj_t *forward_choice[SKIP_CHOICES];
 static const int SKIP_VALUES[SKIP_CHOICES] = {AUDIOBOOK_SKIP_SHORT, AUDIOBOOK_SKIP_LONG, AUDIOBOOK_SKIP_HUGE};
 
-static void paint_choice(lv_obj_t *btn, bool on) {
-	if (!btn) {
-		return;
-	}
-	lv_obj_set_style_bg_color(btn, on ? theme()->accent : theme()->surface_pressed, 0);
-	lv_obj_set_style_text_color(lv_obj_get_child(btn, 0), on ? lv_color_white() : theme()->text_primary, 0);
-}
-
 static void refresh_control_buttons(void) {
 	int back = audiobook_skip_back();
 	int forward = audiobook_skip_forward();
 
 	for (int i = 0; i < SKIP_CHOICES; i++) {
-		paint_choice(back_choice[i], SKIP_VALUES[i] == back);
-		paint_choice(forward_choice[i], SKIP_VALUES[i] == forward);
+		settingsrow_pill_active(back_choice[i], SKIP_VALUES[i] == back);
+		settingsrow_pill_active(forward_choice[i], SKIP_VALUES[i] == forward);
 	}
 }
 
@@ -1714,61 +1837,6 @@ static void pick_forward_cb(lv_event_t *e) {
 	player_refresh_now_playing();
 }
 
-static lv_obj_t *make_skip_choice(lv_obj_t *parent, const char *text, int seconds, lv_event_cb_t cb) {
-	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
-	// Three across the card instead of two, so tighter than the Appearance
-	// page's pair: enough that -60 does not fall off the right edge.
-	lv_obj_set_style_pad_hor(btn, 22, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)(intptr_t)seconds);
-
-	lv_obj_t *label = lv_label_create(btn);
-	lv_label_set_text(label, tr(text));
-	lv_obj_set_style_text_font(label, &font_ui_24, 0);
-	lv_obj_center(label);
-
-	return btn;
-}
-
-// One card per button: its name, then its pills. The same shape as the
-// Appearance page's theme card, because it is the same kind of choice.
-static lv_obj_t *make_control_card(lv_obj_t *parent, const char *title) {
-	lv_obj_t *card = lv_obj_create(parent);
-	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, LV_SIZE_CONTENT);
-	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_gap(card, 18, 0);
-	lv_obj_set_scrollable(card, false);
-	lv_obj_set_event_bubble(card, true);
-	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-
-	lv_obj_t *name = lv_label_create(card);
-	lv_label_set_text(name, tr(title));
-	lv_obj_add_style(name, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name, &font_ui_24, 0);
-
-	lv_obj_t *row = lv_obj_create(card);
-	lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_bg_opa(row, 0, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, 14, 0);
-	lv_obj_set_scrollable(row, false);
-	lv_obj_set_event_bubble(row, true);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-	return row;
-}
-
 static void controls_loaded_cb(lv_event_t *e) {
 	(void)e;
 	refresh_control_buttons();
@@ -1777,15 +1845,18 @@ static void controls_loaded_cb(lv_event_t *e) {
 static void build_controls_page(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(audiobookcontrols_screen, cfg, "change_controls");
 
-	lv_obj_t *back_row = make_control_card(container, "back_button");
-	back_choice[0] = make_skip_choice(back_row, "-10", AUDIOBOOK_SKIP_SHORT, pick_back_cb);
-	back_choice[1] = make_skip_choice(back_row, "-30", AUDIOBOOK_SKIP_LONG, pick_back_cb);
-	back_choice[2] = make_skip_choice(back_row, "-60", AUDIOBOOK_SKIP_HUGE, pick_back_cb);
+	// One pill card per button: its name, then the three jumps.
+	lv_obj_t *back_row = NULL;
+	settingsrow_pills(container, "back_button", &back_row);
+	back_choice[0] = settingsrow_pill_text(back_row, "-10", AUDIOBOOK_SKIP_SHORT, pick_back_cb);
+	back_choice[1] = settingsrow_pill_text(back_row, "-30", AUDIOBOOK_SKIP_LONG, pick_back_cb);
+	back_choice[2] = settingsrow_pill_text(back_row, "-60", AUDIOBOOK_SKIP_HUGE, pick_back_cb);
 
-	lv_obj_t *forward_row = make_control_card(container, "forward_button");
-	forward_choice[0] = make_skip_choice(forward_row, "+10", AUDIOBOOK_SKIP_SHORT, pick_forward_cb);
-	forward_choice[1] = make_skip_choice(forward_row, "+30", AUDIOBOOK_SKIP_LONG, pick_forward_cb);
-	forward_choice[2] = make_skip_choice(forward_row, "+60", AUDIOBOOK_SKIP_HUGE, pick_forward_cb);
+	lv_obj_t *forward_row = NULL;
+	settingsrow_pills(container, "forward_button", &forward_row);
+	forward_choice[0] = settingsrow_pill_text(forward_row, "+10", AUDIOBOOK_SKIP_SHORT, pick_forward_cb);
+	forward_choice[1] = settingsrow_pill_text(forward_row, "+30", AUDIOBOOK_SKIP_LONG, pick_forward_cb);
+	forward_choice[2] = settingsrow_pill_text(forward_row, "+60", AUDIOBOOK_SKIP_HUGE, pick_forward_cb);
 
 	refresh_control_buttons();
 	theme_register_refresh(refresh_control_buttons);
@@ -1793,161 +1864,97 @@ static void build_controls_page(gui_config_t *cfg) {
 }
 
 // ---------------------------------------------------------------------------
-// the scan page: the music scan's layout with its own icon and words
+// The scan
+//
+// 2.0 (principle 6): a scan starts at once, from the empty state's button, the
+// sheet or the options, with no question first -- it changes nothing that
+// cannot be had back by scanning again. It shows on the section page as a
+// card where the list starts: what has been found so far, a bar measured
+// against what the last scan found (none on a first scan: there is nothing to
+// measure against, and a bar that guesses would lie), and Stop. When it ends
+// the books come in where the card was, and a toast says how many.
+//
+// The progress is looked at twice a second while a scan runs, wherever the
+// user has gone meanwhile -- the scan holds the screen on, and only this
+// notices it end to let go -- and the card is written only while it shows.
+// Nothing runs once it is over.
 // ---------------------------------------------------------------------------
 
-#define SCAN_POLL_MS 200
+#define SCAN_POLL_MS 500
 
-static lv_obj_t *scan_count_label;
-static lv_obj_t *scan_status_label;
-static lv_obj_t *scan_ok_button;
-static lv_obj_t *scan_cancel_button;
 static lv_timer_t *scan_poll_timer;
-
+static int scan_expected; // books the last scan found: the bar's measure; 0 unknown
 static char scan_root[512];
 static const char *scan_card_root = "";
 
-static void scan_show_finished(int found) {
-	lv_label_set_text_fmt(scan_count_label, "%d", found);
-	lv_label_set_text(scan_status_label, found == 1 ? tr("audiobook_found") : tr("audiobook_found_count"));
-
-	lv_obj_set_hidden(scan_cancel_button, true);
-	lv_obj_set_hidden(scan_ok_button, false);
-	power_hold_screen_on(false);
+static void scan_card_update(int found) {
+	char text[96];
+	lv_snprintf(text, sizeof(text), tr("audiobook_scan_found"), found);
+	sx_card_subtitle(scan_card, text, false);
+	if (scan_expected > 0) {
+		// Short of the end until it is the end: a card may hold more books
+		// than last time.
+		int percent = found * 100 / scan_expected;
+		sx_card_bar_set(scan_bar, percent > 95 ? 95 : percent);
+	}
+	lv_obj_set_hidden(scan_bar, scan_expected <= 0);
 }
 
 static void scan_poll_cb(lv_timer_t *timer) {
 	int found = audiobookdb_scan_found();
-	lv_label_set_text_fmt(scan_count_label, "%d", found);
-
 	if (audiobookdb_scan_running()) {
+		if (lv_screen_active() == audiobooks_screen) {
+			scan_card_update(found);
+		}
 		return;
 	}
 
 	lv_timer_pause(timer);
-	scan_show_finished(found);
-}
-
-static void scan_ok_cb(lv_event_t *e) {
-	(void)e;
-	switch_screen(audiobooks_screen);
-	// The way here was menu -> Audiobooks -> options -> scan, and walking back
-	// through a finished scan would only confuse. From the list, back now means
-	// the menu.
-	screen_history_reset();
-}
-
-static void scan_cancel_cb(lv_event_t *e) {
-	(void)e;
-	audiobookdb_scan_stop();
-	lv_timer_pause(scan_poll_timer);
 	power_hold_screen_on(false);
-	switch_screen(audiobooks_screen);
-	screen_history_reset();
+	section_show(); // first: the list asks for its pictures only once it shows
+	list_reload(&shelf);
+	char text[96];
+	lv_snprintf(text, sizeof(text), tr("audiobook_scan_found"), found);
+	sx_toast(text);
 }
 
-static void scan_begin(void) {
-	// The folder in force now, which the settings may have just changed.
-	char rel[AUDIOBOOKDB_FOLDER_MAX];
-	audiobookdb_folder(rel, sizeof(rel));
-	snprintf(scan_root, sizeof(scan_root), "%s/%s", scan_card_root, rel);
-
-	lv_label_set_text(scan_count_label, "0");
-	lv_label_set_text(scan_status_label, tr("audiobook_found_count"));
-	lv_obj_set_hidden(scan_ok_button, true);
-	lv_obj_set_hidden(scan_cancel_button, false);
-
-	if (!audiobookdb_scan_start(scan_root)) {
-		lv_label_set_text(scan_status_label, tr("no_card_to_scan"));
-		lv_obj_set_hidden(scan_cancel_button, true);
-		lv_obj_set_hidden(scan_ok_button, false);
-		return;
-	}
-
-	power_hold_screen_on(true);
-	lv_timer_reset(scan_poll_timer);
-	lv_timer_resume(scan_poll_timer);
+static void scan_stop_cb(lv_event_t *e) {
+	(void)e;
+	// The poll sees it end and shows what was found until then.
+	audiobookdb_scan_stop();
 }
 
-// Same contract as the music scan: minutes of work, so it asks first.
 static void start_scan(void *user) {
 	(void)user;
-	switch_screen(audiobookscan_screen);
-	scan_begin();
+	if (!audiobookdb_scan_running()) {
+		// The folder in force now, which the options may have just changed.
+		char rel[AUDIOBOOKDB_FOLDER_MAX];
+		audiobookdb_folder(rel, sizeof(rel));
+		snprintf(scan_root, sizeof(scan_root), "%s/%s", scan_card_root, rel);
+
+		scan_expected = audiobookdb_count();
+		if (!audiobookdb_scan_start(scan_root)) {
+			toast_error("no_card_to_scan");
+			return;
+		}
+		power_hold_screen_on(true);
+		lv_timer_reset(scan_poll_timer);
+		lv_timer_resume(scan_poll_timer);
+	}
+	scan_card_update(audiobookdb_scan_found());
+	section_show();
+	// To the section page, where the scan shows: from the options or the
+	// folder browser, back to the page they were opened over.
+	if (lv_screen_active() != audiobooks_screen) {
+		switch_screen_return_to(audiobooks_screen);
+	}
 }
 
-static void scan_row_cb(lv_event_t *e) {
-	(void)e;
-	confirm_show("audiobook_scan_audiobooks",
-				 "audiobook_rescan_confirm_note",
-				 "scan", start_scan, NULL);
-}
-
-static lv_obj_t *scan_make_button(const char *text, lv_color_t colour, lv_event_cb_t cb, gui_config_t *cfg) {
-	lv_obj_t *button = lv_btn_create(audiobookscan_screen);
-	lv_obj_set_size(button, 240, 68);
-	lv_obj_align(button, LV_ALIGN_BOTTOM_MID, 0, -(cfg->padding * 2));
-	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_bg_color(button, colour, 0);
-	lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(button, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_shadow_width(button, 0, 0);
-	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
-
-	lv_obj_t *label = lv_label_create(button);
-	lv_label_set_text(label, tr(text));
-	lv_obj_set_style_text_font(label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(label, lv_color_white(), 0);
-	lv_obj_center(label);
-
-	return button;
-}
-
-static void build_scan_page(gui_config_t *cfg) {
+static void build_scan(gui_config_t *cfg) {
 	// The folder and not the whole card: see the note in audiobookdb.c. The
-	// folder itself is looked up at each scan (scan_begin), since the settings
+	// folder itself is looked up at each scan (start_scan), since the options
 	// can change it.
 	scan_card_root = cfg->sd_root_path ? cfg->sd_root_path : "";
-
-	lv_obj_add_style(audiobookscan_screen, &theme_style_screen, 0);
-
-	lv_obj_t *title = settingsrow_title(audiobookscan_screen, cfg, "scan_2");
-	lv_obj_set_style_text_align(title, LV_TEXT_ALIGN_CENTER, 0);
-
-	int content_top = settingsrow_content_top(cfg);
-
-	lv_obj_t *container = lv_obj_create(audiobookscan_screen);
-	lv_obj_set_size(container, lv_pct(100), cfg->screen_height - content_top);
-	lv_obj_align(container, LV_ALIGN_TOP_LEFT, 0, content_top);
-	lv_obj_set_style_bg_opa(container, 0, 0);
-	lv_obj_set_style_border_width(container, 0, 0);
-	lv_obj_set_style_radius(container, 0, 0);
-	lv_obj_set_style_pad_all(container, cfg->padding, 0);
-	lv_obj_set_style_pad_gap(container, 10, 0);
-	lv_obj_set_scrollable(container, false);
-	lv_obj_set_flex_flow(container, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_flex_align(container, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-	lv_obj_t *book = lv_image_create(container);
-	lv_image_set_src(book, &icon_book_headphones);
-	lv_obj_add_style(book, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(book, LV_OPA_COVER, 0);
-	lv_obj_set_style_pad_bottom(book, 16, 0);
-
-	scan_count_label = lv_label_create(container);
-	lv_label_set_text(scan_count_label, "0");
-	lv_obj_set_style_text_color(scan_count_label, theme()->accent, 0);
-	lv_obj_set_style_text_font(scan_count_label, &font_ui_32, 0);
-
-	scan_status_label = lv_label_create(container);
-	lv_label_set_text(scan_status_label, tr("audiobook_found_count"));
-	lv_obj_add_style(scan_status_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(scan_status_label, &font_ui_26, 0);
-
-	scan_cancel_button = scan_make_button("cancel", lv_color_make(210, 66, 58), scan_cancel_cb, cfg);
-	scan_ok_button = scan_make_button("ok", theme()->accent, scan_ok_cb, cfg);
-	lv_obj_set_hidden(scan_ok_button, true);
-
 	scan_poll_timer = lv_timer_create(scan_poll_cb, SCAN_POLL_MS, NULL);
 	lv_timer_pause(scan_poll_timer);
 }
@@ -1955,11 +1962,14 @@ static void build_scan_page(gui_config_t *cfg) {
 void audiobooks_init(gui_config_t *cfg) {
 	books_screen = lv_obj_create(NULL);
 	names_screen = lv_obj_create(NULL);
+	thumb_timer = lv_timer_create(thumb_timer_cb, THUMB_POLL_MS, NULL);
+	lv_timer_pause(thumb_timer);
 	build_section_page(cfg);
 	build_books_page(cfg);
 	build_names_page(cfg);
 	build_folder_page(cfg);
 	build_settings_page(cfg);
 	build_controls_page(cfg);
-	build_scan_page(cfg);
+	build_scan(cfg);
+	sx_frame_on_body_change(section_layout);
 }
