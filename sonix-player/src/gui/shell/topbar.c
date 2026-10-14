@@ -541,8 +541,8 @@ static void radio_timer_cb(lv_timer_t *timer) {
 	topbar_refresh_radios();
 }
 
-// The playback indicator: the play glyph while a track runs, the pause glyph
-// while one is loaded but stopped, nothing at all when there is no track. It
+// The playback indicator: the pause glyph while a track runs, nothing at all
+// while it is paused or there is no track (see refresh_play_icon). It
 // takes the same colour as everything else in the bar rather than the accent,
 // which would make it shout.
 void topbar_refresh_playback(void) {
@@ -593,16 +593,20 @@ static void refresh_play_icon(const device_state_t *state) {
 		return;
 	}
 
+	// 2.0 (the handoff's status bar): the two bars while a track runs and
+	// nothing while it is paused or there is none. The bar used to show the
+	// triangle while playing and the bars while paused -- the opposite of the
+	// mini player's button right under it, which reads "bars" while playing,
+	// so the two disagreed on every screen. A paused track is still there in
+	// the mini player.
 	if (state->status == AUDIO_STATUS_PLAYING) {
-		lv_image_set_src(play_icon, &icon_play_status);
-	} else if (state->current_file[0]) {
 		lv_image_set_src(play_icon, &icon_pause_status);
 	} else {
 		lv_obj_set_hidden(play_icon, true);
 		return;
 	}
 
-	// The play glyph turns blue while the sound is leaving over Bluetooth, so a
+	// The glyph turns blue while the sound is leaving over Bluetooth, so a
 	// glance at the bar says where the music is going, not just that it is
 	// going. A fixed Bluetooth blue rather than the accent colour, because it
 	// means wireless, not active.
@@ -946,8 +950,8 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_add_style(hp_icon, &theme_style_icon, 0);
 	lv_obj_set_hidden(hp_icon, true);
 
-	// What the player is doing, right of the jack indicator: play while a track
-	// runs, pause while one is loaded and stopped, hidden when nothing is loaded.
+	// What the player is doing, right of the jack indicator: the pause glyph
+	// while a track runs, hidden otherwise.
 	play_icon = lv_image_create(container_left);
 	lv_image_set_src(play_icon, &icon_play_status);
 	lv_obj_add_style(play_icon, &theme_style_icon, 0);
