@@ -15,7 +15,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
 
-typedef enum { LEAD_NONE, LEAD_THUMB, LEAD_NUMBER, LEAD_LETTER } lead_kind_t;
+typedef enum { LEAD_NONE, LEAD_THUMB, LEAD_NUMBER, LEAD_LETTER, LEAD_GLYPH } lead_kind_t;
 
 typedef struct {
 	sx_row_handlers_t h;
@@ -658,7 +658,7 @@ void sx_row_set_glyph(lv_obj_t *row, const lv_image_dsc_t *glyph, lv_color_t ton
 		return;
 	}
 	lead_reset(r);
-	r->lead_kind = LEAD_THUMB;
+	r->lead_kind = LEAD_GLYPH;
 	lv_obj_set_style_bg_color(r->lead, tone, 0);
 	lv_obj_set_style_bg_opa(r->lead, LV_OPA_COVER, 0);
 	if (glyph) {
@@ -794,8 +794,11 @@ static void eq_place(row_t *r) {
 		if (r->eq) {
 			lv_obj_set_hidden(r->eq, true);
 		}
-		if (r->lead_kind == LEAD_NUMBER) {
+		// What the bars stood in for comes back.
+		if (r->lead_kind == LEAD_NUMBER || r->lead_kind == LEAD_LETTER) {
 			lv_obj_set_hidden(r->lead_label, false);
+		} else if (r->lead_kind == LEAD_GLYPH && r->lead_image) {
+			lv_obj_set_hidden(r->lead_image, false);
 		}
 		return;
 	}
@@ -821,8 +824,12 @@ static void eq_place(row_t *r) {
 			lv_obj_set_style_bg_color(bar, lv_color_white(), 0);
 		}
 	}
-	if (r->lead_kind == LEAD_NUMBER) {
+	// A number, a letter or a glyph makes way for the bars (over a picture
+	// they stand on it): the two drawn over each other read as neither.
+	if (r->lead_kind == LEAD_NUMBER || r->lead_kind == LEAD_LETTER) {
 		lv_obj_set_hidden(r->lead_label, true);
+	} else if (r->lead_kind == LEAD_GLYPH && r->lead_image) {
+		lv_obj_set_hidden(r->lead_image, true);
 	}
 	eq_wake();
 }
