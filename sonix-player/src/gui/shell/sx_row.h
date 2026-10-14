@@ -68,6 +68,14 @@ typedef enum {
 	SX_ROW_TRAIL_NONE,
 	SX_ROW_TRAIL_STAR,
 	SX_ROW_TRAIL_CHEVRON,
+	// A chosen row in a list's selection mode: a tick in the accent, no button.
+	SX_ROW_TRAIL_CHECK,
+	// ...and a row not chosen: the tick's place kept empty, so the line under
+	// the title does not move as rows are chosen and let go of.
+	SX_ROW_TRAIL_BLANK,
+	// A playlist being put in order by hand: the grip, a handle the page drives
+	// itself (sx_row_trail() gives it the object to put its events on).
+	SX_ROW_TRAIL_GRIP,
 } sx_row_trail_t;
 
 // Builds a row in `parent` (a list: flex column, or the caller places it).
@@ -101,6 +109,17 @@ void sx_row_set_starred(lv_obj_t *row, bool starred);
 
 // The playing row: surface, accent title, equaliser bars.
 void sx_row_set_playing(lv_obj_t *row, bool playing);
+
+// A row on the album page, which is always dark whatever the theme (its
+// gradient, sx_palette album_grad): the title white, the lines under it white
+// at 78 %, the playing row and the pressed one a white wash over the gradient
+// instead of the theme's surfaces, and `page` -- the gradient's colour around
+// the rows -- under a row while it is pulled sideways. Off: the theme's look.
+void sx_row_set_lift(lv_obj_t *row, bool lift, lv_color_t page);
+
+// The trailing slot itself, for a page that drives the grip (its presses go to
+// whatever the page puts on it; the row's own star handling ignores them).
+lv_obj_t *sx_row_trail(lv_obj_t *row);
 
 // Turns the left swipe into the queue's "Remove" (or back), for one row: the
 // current track in the queue cannot be removed and passes NULL handlers

@@ -25,6 +25,8 @@ typedef struct {
 	bool compact;
 	bool playing;
 	bool starred;
+	bool lift;
+	lv_color_t lift_page;
 	lead_kind_t lead_kind;
 	sx_row_trail_t trail_kind;
 
@@ -87,7 +89,10 @@ static const uint8_t EQ_REST_PCT[3] = {50, 90, 35};
 static const uint16_t EQ_STEP_MS[3] = {200, 150, 250};
 static const uint16_t EQ_DELAY_MS[3] = {0, 150, 300};
 
-#define EQS_MAX 8
+// Every row that has ever played keeps its bars (made once, hidden after), and
+// a list's pool rows each come to play in turn as it scrolls: room for all of
+// them, or the later ones would stand still.
+#define EQS_MAX 96
 static lv_obj_t *eqs[EQS_MAX];
 static int eq_count;
 static bool eq_playing;
@@ -208,6 +213,9 @@ static void snapped_cb(lv_anim_t *a) {
 	if (r && r->dx == 0) {
 		lv_obj_set_hidden(r->underlay, true);
 		lv_obj_remove_style(r->content, &sx_style_page, 0);
+		if (r->lift && !r->playing) {
+			lv_obj_set_style_bg_opa(r->content, LV_OPA_TRANSP, 0);
+		}
 	}
 }
 
@@ -351,7 +359,12 @@ static void content_event_cb(lv_event_t *e) {
 			}
 			// Opaque while it slides, so the underlay shows only where the row
 			// has moved off it (the playing row is opaque already).
-			if (!r->playing) {
+			if (r->lift) {
+				// Over the gradient: its colour, the playing row's wash on top.
+				lv_obj_set_style_bg_color(r->content,
+										  r->playing ? lv_color_mix(lv_color_white(), r->lift_page, 41) : r->lift_page, 0);
+				lv_obj_set_style_bg_opa(r->content, LV_OPA_COVER, 0);
+			} else if (!r->playing) {
 				lv_obj_add_style(r->content, &sx_style_page, 0);
 			}
 			lv_obj_set_hidden(r->underlay, false);
@@ -503,6 +516,9 @@ lv_obj_t *sx_row_create(lv_obj_t *parent, const sx_row_handlers_t *handlers, boo
 
 	r->title = sx_label(text, &font_ui_26, &sx_style_text);
 	lv_obj_set_width(r->title, lv_pct(100));
+	// One line, always: LV_LABEL_LONG_DOT wraps before it truncates, and a long
+	// title on two lines pushes the line under it out of the row.
+	lv_obj_set_height(r->title, lv_font_get_line_height(&font_ui_26));
 
 	lv_obj_t *line = sx_box(text);
 	lv_obj_set_size(line, lv_pct(100), LV_SIZE_CONTENT);
@@ -511,6 +527,7 @@ lv_obj_t *sx_row_create(lv_obj_t *parent, const sx_row_handlers_t *handlers, boo
 	lv_obj_set_style_pad_column(line, 8, 0);
 	r->sub = sx_label(line, &font_ui_20, &sx_style_text2);
 	lv_obj_set_style_max_width(r->sub, lv_pct(75), 0);
+	lv_obj_set_height(r->sub, lv_font_get_line_height(&font_ui_20));
 	r->badge = sx_label(line, &font_ui_20, &sx_style_text_accent);
 	r->duration = sx_label(line, &font_ui_20, &sx_style_text2);
 	lv_obj_set_style_text_align(r->duration, LV_TEXT_ALIGN_RIGHT, 0);
@@ -592,11 +609,16 @@ static void lead_reset(row_t *r) {
 	lv_obj_remove_style(r->lead_label, &sx_style_text2, 0);
 	lv_obj_remove_style(r->lead_label, &sx_style_text_accent, 0);
 	lv_obj_remove_local_style_prop(r->lead_label, LV_STYLE_TEXT_COLOR, 0);
+	lv_obj_remove_local_style_prop(r->lead_label, LV_STYLE_TEXT_OPA, 0);
 	lv_label_set_text(r->lead_label, "");
 	lv_obj_set_hidden(r->lead, false);
 }
 
 static void eq_place(row_t *r);
+
+// The accent on the album page's always-dark gradient: the player's accent
+// (light, SX_T_NP_ACCENT) at the page's hue, whatever the theme.
+static lv_color_t lift_accent(void) { return sx_tone(SX_T_NP_ACCENT, sx_pal()->hue); }
 
 void sx_row_set_thumb(lv_obj_t *row, const lv_image_dsc_t *image, lv_color_t tone) {
 	row_t *r = row_of(row);
@@ -613,6 +635,10 @@ void sx_row_set_thumb(lv_obj_t *row, const lv_image_dsc_t *image, lv_color_t ton
 			lv_obj_center(r->lead_image);
 		}
 		lv_image_set_src(r->lead_image, image);
+		// A 56 px thumbnail on a large row's 68 px lead is drawn to its size.
+		int side = thumb_size(r->compact);
+		int32_t w = (int32_t)image->header.w;
+		lv_image_set_scale(r->lead_image, w > 0 && w != side ? (uint32_t)(side * LV_SCALE_NONE / w) : LV_SCALE_NONE);
 		lv_obj_set_hidden(r->lead_image, false);
 		lv_obj_set_style_clip_corner(r->lead, true, 0);
 	}
@@ -627,11 +653,20 @@ void sx_row_set_number(lv_obj_t *row, int number) {
 	}
 	lead_reset(r);
 	r->lead_kind = LEAD_NUMBER;
-	char text[12];
-	snprintf(text, sizeof(text), "%d", number);
+	// 0 or less: no number known (a track without one), an empty lead.
+	char text[12] = "";
+	if (number > 0) {
+		snprintf(text, sizeof(text), "%d", number);
+	}
 	lv_label_set_text(r->lead_label, text);
 	lv_obj_set_style_text_font(r->lead_label, &font_ui_22, 0);
-	lv_obj_add_style(r->lead_label, &sx_style_text2, 0);
+	if (r->lift) {
+		lv_obj_set_style_text_color(r->lead_label, lv_color_white(), 0);
+		lv_obj_set_style_text_opa(r->lead_label, LV_OPA_80, 0);
+	} else {
+		lv_obj_remove_local_style_prop(r->lead_label, LV_STYLE_TEXT_OPA, 0);
+		lv_obj_add_style(r->lead_label, &sx_style_text2, 0);
+	}
 	apply_sizes(r, row);
 	eq_place(r);
 }
@@ -672,19 +707,37 @@ void sx_row_set_trail(lv_obj_t *row, sx_row_trail_t trail) {
 	}
 	r->trail_kind = trail;
 	lv_obj_set_hidden(r->trail, trail == SX_ROW_TRAIL_NONE);
-	lv_obj_set_clickable(r->trail, trail == SX_ROW_TRAIL_STAR);
+	lv_obj_set_clickable(r->trail, trail == SX_ROW_TRAIL_STAR || trail == SX_ROW_TRAIL_GRIP);
+	// A grip is held and dragged: a drag on it must not scroll the list.
+	lv_obj_set_scroll_chain_ver(r->trail, trail != SX_ROW_TRAIL_GRIP);
 	lv_obj_remove_style(r->trail_icon, &sx_style_star_on, 0);
 	lv_obj_remove_style(r->trail_icon, &sx_style_icon, 0);
+	lv_obj_remove_style(r->trail_icon, &sx_style_icon_accent, 0);
 	lv_obj_remove_local_style_prop(r->trail_icon, LV_STYLE_IMAGE_RECOLOR, 0);
 	lv_obj_set_style_image_recolor_opa(r->trail_icon, LV_OPA_COVER, 0);
 	lv_obj_set_style_image_opa(r->trail_icon, LV_OPA_COVER, 0);
+	lv_obj_set_hidden(r->trail_icon, trail == SX_ROW_TRAIL_BLANK);
 	if (trail == SX_ROW_TRAIL_CHEVRON) {
 		lv_image_set_src(r->trail_icon, &icon_chevron_right);
 		lv_obj_add_style(r->trail_icon, &sx_style_icon, 0);
+		if (r->lift) {
+			lv_obj_set_style_image_recolor(r->trail_icon, lv_color_white(), 0);
+		}
 		lv_obj_set_style_image_opa(r->trail_icon, LV_OPA_60, 0);
+	} else if (trail == SX_ROW_TRAIL_CHECK) {
+		lv_image_set_src(r->trail_icon, &icon_check);
+		lv_obj_add_style(r->trail_icon, r->lift ? &sx_style_icon : &sx_style_icon_accent, 0);
+		if (r->lift) {
+			lv_obj_set_style_image_recolor(r->trail_icon, lv_color_white(), 0);
+		}
+	} else if (trail == SX_ROW_TRAIL_GRIP) {
+		lv_image_set_src(r->trail_icon, &icon_grip);
+		lv_obj_add_style(r->trail_icon, &sx_style_icon, 0);
 	} else if (trail == SX_ROW_TRAIL_STAR) {
 		lv_image_set_src(r->trail_icon, r->starred ? &icon_star_filled : &icon_star);
-		if (r->starred) {
+		if (r->starred && r->lift) {
+			lv_obj_set_style_image_recolor(r->trail_icon, lv_color_hex(SX_STAR_ON_DARK), 0);
+		} else if (r->starred) {
 			lv_obj_add_style(r->trail_icon, &sx_style_star_on, 0);
 		} else {
 			lv_obj_set_style_image_recolor(r->trail_icon, lv_color_hex(SX_STAR_OFF), 0);
@@ -727,7 +780,10 @@ static void eq_place(row_t *r) {
 	// a plaque they are white.
 	for (int i = 0; i < 3; i++) {
 		lv_obj_t *bar = lv_obj_get_child(r->eq, i);
-		if (r->lead_kind == LEAD_NUMBER) {
+		if (r->lead_kind == LEAD_NUMBER && r->lift) {
+			lv_obj_remove_style(bar, &sx_style_accent, 0);
+			lv_obj_set_style_bg_color(bar, lift_accent(), 0);
+		} else if (r->lead_kind == LEAD_NUMBER) {
 			lv_obj_remove_local_style_prop(bar, LV_STYLE_BG_COLOR, 0);
 			lv_obj_add_style(bar, &sx_style_accent, 0);
 		} else {
@@ -749,6 +805,19 @@ void sx_row_set_playing(lv_obj_t *row, bool playing) {
 	r->playing = playing;
 	lv_obj_remove_style(r->content, &sx_style_surface, 0);
 	lv_obj_remove_style(r->title, &sx_style_text_accent, 0);
+	if (r->lift) {
+		// White at 16 % over the gradient (a fixed wash: the platform cannot
+		// blend one live), the title in the always-dark accent.
+		lv_obj_set_style_bg_color(r->content, lv_color_white(), 0);
+		lv_obj_set_style_bg_opa(r->content, playing ? 41 : LV_OPA_TRANSP, 0);
+		if (playing) {
+			lv_obj_set_style_text_color(r->title, lift_accent(), 0);
+		} else {
+			lv_obj_set_style_text_color(r->title, lv_color_white(), 0);
+		}
+		eq_place(r);
+		return;
+	}
 	if (playing) {
 		// Under the pressed fill: added before it would lose to it, so the
 		// pressed style is put back on top.
@@ -766,4 +835,55 @@ void sx_row_set_swipes(lv_obj_t *row, bool next, bool end) {
 		r->swipe_next_on = next && r->h.on_swipe_next;
 		r->swipe_end_on = end && r->h.on_swipe_end;
 	}
+}
+
+void sx_row_set_lift(lv_obj_t *row, bool lift, lv_color_t page) {
+	row_t *r = row_of(row);
+	if (!r) {
+		return;
+	}
+	r->lift_page = page;
+	bool changed = r->lift != lift;
+	r->lift = lift;
+	lv_obj_t *lines[] = {r->sub, r->duration};
+	if (changed && lift) {
+		lv_obj_remove_style(r->content, &sx_style_press, LV_STATE_PRESSED);
+		lv_obj_remove_style(r->content, &sx_style_surface, 0);
+		lv_obj_set_style_bg_color(r->content, lv_color_white(), LV_STATE_PRESSED);
+		lv_obj_set_style_bg_opa(r->content, 56, LV_STATE_PRESSED);
+		lv_obj_set_style_text_color(r->title, lv_color_white(), 0);
+		for (size_t i = 0; i < sizeof(lines) / sizeof(lines[0]); i++) {
+			lv_obj_set_style_text_color(lines[i], lv_color_white(), 0);
+			lv_obj_set_style_text_opa(lines[i], LV_OPA_80, 0);
+		}
+	} else if (changed) {
+		lv_obj_remove_local_style_prop(r->content, LV_STYLE_BG_COLOR, LV_STATE_PRESSED);
+		lv_obj_remove_local_style_prop(r->content, LV_STYLE_BG_OPA, LV_STATE_PRESSED);
+		lv_obj_remove_local_style_prop(r->content, LV_STYLE_BG_COLOR, 0);
+		lv_obj_remove_local_style_prop(r->content, LV_STYLE_BG_OPA, 0);
+		lv_obj_add_style(r->content, &sx_style_press, LV_STATE_PRESSED);
+		lv_obj_remove_local_style_prop(r->title, LV_STYLE_TEXT_COLOR, 0);
+		for (size_t i = 0; i < sizeof(lines) / sizeof(lines[0]); i++) {
+			lv_obj_remove_local_style_prop(lines[i], LV_STYLE_TEXT_COLOR, 0);
+			lv_obj_remove_local_style_prop(lines[i], LV_STYLE_TEXT_OPA, 0);
+		}
+	}
+	if (!changed && !lift) {
+		return;
+	}
+	// The parts that look different on the gradient are painted again -- also
+	// when the page's hue moved under a row already lifted.
+	bool playing = r->playing;
+	r->playing = !playing;
+	sx_row_set_playing(row, playing);
+	sx_row_set_trail(row, r->trail_kind);
+	if (r->lead_kind == LEAD_NUMBER) {
+		const char *text = lv_label_get_text(r->lead_label);
+		sx_row_set_number(row, text && text[0] ? atoi(text) : 0);
+	}
+}
+
+lv_obj_t *sx_row_trail(lv_obj_t *row) {
+	row_t *r = row_of(row);
+	return r ? r->trail : NULL;
 }
