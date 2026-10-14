@@ -15,6 +15,8 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/touch.h"
+#include "src/gui/shell/sx_tokens.h"
+#include "src/gui/shell/sx_styles.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/lang.h"
 
@@ -58,7 +60,7 @@ static void refresh_range_buttons(void) {
 		bool on = RANGE_VALUES[i] == active;
 		lv_obj_set_style_bg_color(range_buttons[i], on ? theme()->accent : theme()->surface_pressed, 0);
 		lv_obj_set_style_text_color(lv_obj_get_child(range_buttons[i], 0),
-									on ? lv_color_white() : theme()->text_primary, 0);
+									on ? theme()->on_accent : theme()->text_primary, 0);
 	}
 }
 
@@ -164,7 +166,7 @@ static bool add_preset_row(const char *name, void *user) {
 	lv_obj_set_size(row, lv_pct(100), 84);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, 16, 0);
@@ -321,10 +323,13 @@ static void build_name_dialog(gui_config_t *cfg) {
 	lv_obj_set_scrollbar_mode(name_field, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 60);
 	lv_obj_add_style(name_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(name_field, 12, 0);
+	// The 2.0 input: a pill on the surface.
+	lv_obj_add_style(name_field, &sx_style_surface, 0);
+	lv_obj_set_style_radius(name_field, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_border_width(name_field, 0, 0);
 	lv_obj_set_style_shadow_width(name_field, 0, 0);
 	lv_obj_set_style_pad_all(name_field, 14, 0);
+	lv_obj_set_style_pad_hor(name_field, 22, 0);
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
@@ -362,7 +367,7 @@ static void build(gui_config_t *cfg) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 16, 0);

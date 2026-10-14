@@ -12,6 +12,9 @@
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/core/lang.h"
@@ -55,21 +58,18 @@ static void format_clock(double seconds, char *out, size_t size) {
 	}
 }
 
-// A card row in a column list, holding a column of labels.
+// A 2.0 card (sx_card's look) in a column list, holding a column of labels:
+// the name at 24, what it is under it at 21 in the secondary colour.
 static lv_obj_t *make_card(lv_obj_t *parent) {
 	lv_obj_t *row = lv_btn_create(parent);
+	lv_obj_remove_style_all(row);
+	sx_card_style(row);
 	lv_obj_set_width(row, lv_pct(100));
 	lv_obj_set_height(row, LV_SIZE_CONTENT);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_all(row, 18, 0);
-	lv_obj_set_style_min_height(row, 88, 0);
+	lv_obj_set_style_min_height(row, SX_CARD_MIN_H + 2 * SX_CARD_PAD_V, 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
-	lv_obj_set_style_pad_row(row, 6, 0);
+	lv_obj_set_style_pad_row(row, 4, 0);
 	lv_obj_set_event_bubble(row, true);
 	return row;
 }
@@ -79,8 +79,8 @@ static lv_obj_t *card_line(lv_obj_t *row, const char *text, bool dim) {
 	lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(label, lv_pct(100));
 	lv_label_set_text(label, text);
-	lv_obj_add_style(label, dim ? &theme_style_text_dim : &theme_style_text, 0);
-	lv_obj_set_style_text_font(label, dim ? &font_ui_18 : &font_ui_22, 0);
+	lv_obj_add_style(label, dim ? &sx_style_text2 : &sx_style_text, 0);
+	lv_obj_set_style_text_font(label, dim ? &font_ui_21 : &font_ui_24, 0);
 	lv_obj_set_event_bubble(label, true);
 	return label;
 }
@@ -89,8 +89,8 @@ static lv_obj_t *empty_note(lv_obj_t *parent, const char *text) {
 	lv_obj_t *label = lv_label_create(parent);
 	lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(label, lv_pct(100));
-	lv_obj_add_style(label, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(label, &font_ui_20, 0);
+	lv_obj_add_style(label, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(label, &font_ui_22, 0);
 	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_style_pad_top(label, 60, 0);
 	lv_label_set_text(label, tr(text));
@@ -103,7 +103,7 @@ static lv_obj_t *column_list(lv_obj_t *container) {
 	lv_obj_remove_style_all(list);
 	lv_obj_set_size(list, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(list, 10, 0);
+	lv_obj_set_style_pad_row(list, SX_CARD_GAP, 0);
 	lv_obj_set_scrollable(list, false);
 	// One step at a time: a row hands the press to this, and this to the
 	// container, which is where the swipe that goes back is watched.
@@ -371,15 +371,15 @@ static void summary_fill(void) {
 	}
 	if (summary) {
 		lv_label_set_text(summary_text, summary);
-		lv_obj_remove_style(summary_text, &theme_style_text_dim, 0);
-		lv_obj_add_style(summary_text, &theme_style_text, 0);
+		lv_obj_remove_style(summary_text, &sx_style_text2, 0);
+		lv_obj_add_style(summary_text, &sx_style_text, 0);
 		free(summary);
 	} else {
 		// A book scanned before summaries were read has none yet either; the
 		// rescan the section offers on its next opening fills it in.
 		lv_label_set_text(summary_text, tr("audiobook_summary_empty"));
-		lv_obj_remove_style(summary_text, &theme_style_text, 0);
-		lv_obj_add_style(summary_text, &theme_style_text_dim, 0);
+		lv_obj_remove_style(summary_text, &sx_style_text, 0);
+		lv_obj_add_style(summary_text, &sx_style_text2, 0);
 	}
 }
 
@@ -489,20 +489,20 @@ void audiobookextras_init(gui_config_t *cfg) {
 	summary_book = lv_label_create(container);
 	lv_label_set_long_mode(summary_book, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(summary_book, lv_pct(100));
-	lv_obj_add_style(summary_book, &theme_style_text, 0);
-	lv_obj_set_style_text_font(summary_book, &font_ui_24, 0);
+	lv_obj_add_style(summary_book, &sx_style_text, 0);
+	lv_obj_set_style_text_font(summary_book, &font_ui_26_bold, 0);
 
 	summary_author = lv_label_create(container);
 	lv_label_set_long_mode(summary_author, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(summary_author, lv_pct(100));
-	lv_obj_add_style(summary_author, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(summary_author, &font_ui_20, 0);
+	lv_obj_add_style(summary_author, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(summary_author, &font_ui_21, 0);
 
 	summary_text = lv_label_create(container);
 	lv_label_set_long_mode(summary_text, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(summary_text, lv_pct(100));
-	lv_obj_add_style(summary_text, &theme_style_text, 0);
-	lv_obj_set_style_text_font(summary_text, &font_ui_20, 0);
+	lv_obj_add_style(summary_text, &sx_style_text, 0);
+	lv_obj_set_style_text_font(summary_text, &font_ui_21, 0);
 	lv_obj_set_style_text_line_space(summary_text, 4, 0);
 	lv_obj_set_style_pad_top(summary_text, 12, 0);
 	lv_obj_set_event_bubble(summary_text, true);

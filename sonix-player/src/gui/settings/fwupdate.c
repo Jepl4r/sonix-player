@@ -8,6 +8,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/firmware.h"
 #include "src/system/device/ota.h"
@@ -154,7 +155,7 @@ static void build(void) {
 		lv_obj_t *btn = lv_btn_create(column);
 		lv_obj_set_width(btn, lv_pct(100));
 		lv_obj_set_height(btn, BUTTON_H);
-		lv_obj_set_style_radius(btn, 12, 0);
+		lv_obj_set_style_radius(btn, SX_CARD_R, 0);
 		lv_obj_set_style_border_width(btn, 0, 0);
 		lv_obj_set_style_shadow_width(btn, 0, 0);
 		lv_obj_add_event_cb(btn, button_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
@@ -182,7 +183,7 @@ static void set_button(int i, const char *key, bool accent, action_fn action) {
 	}
 
 	lv_label_set_text(button_labels[i], tr(key));
-	lv_obj_set_style_text_color(button_labels[i], accent ? lv_color_white() : theme()->text_primary, 0);
+	lv_obj_set_style_text_color(button_labels[i], accent ? theme()->on_accent : theme()->text_primary, 0);
 	button_actions[i] = action;
 	lv_obj_set_hidden(btn, false);
 }

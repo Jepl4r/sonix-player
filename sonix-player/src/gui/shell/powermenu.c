@@ -11,6 +11,8 @@
 #include "src/gui/shell/gui.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/device/clock.h"
 #include "src/system/playback/device_state.h"
@@ -23,10 +25,15 @@
 #include "src/system/streaming/radio.h"
 
 // ---------------------------------------------------------------------------
-// The power menu, iOS-style: two slide-to-confirm pills over a near-opaque
-// black veil, and a round cancel button at the bottom that turns red under the
-// finger. Sliding is the point: powering off a music player in a pocket must
-// take a deliberate gesture, not a stray tap.
+// The power menu: two slide-to-confirm pills and a round cancel button at the
+// bottom that turns red under the finger. Sliding is the point: powering off a
+// music player in a pocket must take a deliberate gesture, not a stray tap.
+//
+// 2.0: on the page's own colours, opaque -- the page background, the pills
+// and the cancel button on the surface, the hints in the secondary colour --
+// rather than a translucent black veil over whatever was on screen, which
+// the platform would have to blend over the whole panel. The knobs keep their
+// fixed colours: red to power off, blue to restart.
 // ---------------------------------------------------------------------------
 
 #define SLIDE_WIDTH 380
@@ -179,28 +186,27 @@ static void slide_event_cb(lv_event_t *e) {
 // slider inside it that is half a knob narrower on each side -- LVGL runs the
 // knob's centre from slider edge to slider edge, so insetting the slider is
 // what keeps the white disc inside the pill at both extremes.
-static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon, lv_color_t icon_tint,
+static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon, lv_color_t knob_colour,
 					   const char *text, void (*action)(void)) {
 	s->action = action;
 
-	// The visible pill: translucent white over the blur, like iOS.
+	// The visible pill: the surface, round.
 	s->pill = lv_obj_create(parent);
+	lv_obj_remove_style_all(s->pill);
 	lv_obj_set_size(s->pill, SLIDE_WIDTH, SLIDE_HEIGHT);
 	lv_obj_set_style_radius(s->pill, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_bg_color(s->pill, lv_color_white(), 0);
-	lv_obj_set_style_bg_opa(s->pill, LV_OPA_20, 0);
-	lv_obj_set_style_border_width(s->pill, 0, 0);
-	lv_obj_set_style_pad_all(s->pill, 0, 0);
+	lv_obj_add_style(s->pill, &sx_style_surface, 0);
 	lv_obj_set_scrollable(s->pill, false);
 
-	// The instruction, centred on the pill; it fades as the knob advances.
+	// The instruction, centred in what the knob leaves of the pill; it fades as
+	// the knob advances.
 	s->label = lv_label_create(s->pill);
 	lv_label_set_text(s->label, tr(text));
-	lv_obj_set_style_text_font(s->label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(s->label, lv_color_white(), 0);
-	lv_obj_center(s->label);
+	lv_obj_set_style_text_font(s->label, &font_ui_22, 0);
+	lv_obj_add_style(s->label, &sx_style_text2, 0);
+	lv_obj_align(s->label, LV_ALIGN_CENTER, SLIDE_HEIGHT / 2, 0);
 
-	// The working part: invisible track, white disc knob.
+	// The working part: invisible track, a coloured disc for a knob.
 	s->slider = lv_slider_create(s->pill);
 	lv_obj_set_size(s->slider, SLIDE_WIDTH - SLIDE_HEIGHT, SLIDE_HEIGHT);
 	lv_obj_center(s->slider);
@@ -213,12 +219,12 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	lv_obj_set_style_bg_opa(s->slider, LV_OPA_TRANSP, LV_PART_INDICATOR);
 
 	lv_obj_set_style_radius(s->slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-	lv_obj_set_style_bg_color(s->slider, lv_color_white(), LV_PART_KNOB);
+	lv_obj_set_style_bg_color(s->slider, knob_colour, LV_PART_KNOB);
 	lv_obj_set_style_bg_opa(s->slider, LV_OPA_COVER, LV_PART_KNOB);
 	lv_obj_set_style_pad_all(s->slider, (SLIDE_KNOB - SLIDE_HEIGHT) / 2, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(s->slider, 10, LV_PART_KNOB);
-	lv_obj_set_style_shadow_opa(s->slider, LV_OPA_40, LV_PART_KNOB);
-	lv_obj_set_style_shadow_color(s->slider, lv_color_black(), LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(s->slider, 0, LV_PART_KNOB);
+	lv_obj_set_style_outline_width(s->slider, 0, LV_PART_KNOB);
+	lv_obj_set_style_border_width(s->slider, 0, LV_PART_KNOB);
 
 	// Drag only, never tap. A plain LVGL slider jumps its value to wherever the
 	// finger presses, so one tap near the far end of the track would pass the
@@ -236,15 +242,15 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 	lv_obj_add_event_cb(s->slider, slide_event_cb, LV_EVENT_PRESS_LOST, s);
 
 	// The icon rides the knob, drawn in the pill's coordinate space (the knob
-	// itself cannot hold children).
+	// itself cannot hold children): white on the coloured disc.
 	s->knob_icon = lv_image_create(s->pill);
 	lv_image_set_src(s->knob_icon, icon);
 	// A touch smaller than the raw 56 px bitmap, so the disc keeps a clear
 	// rim around the glyph. Scaling happens about the centre, so the
 	// centring maths below is unaffected.
-	lv_image_set_scale(s->knob_icon, 200); // 200/256 = ~44 px
+	lv_image_set_scale(s->knob_icon, 180);
 	s->knob_icon_w = (int)icon->header.w;
-	lv_obj_set_style_image_recolor(s->knob_icon, icon_tint, 0);
+	lv_obj_set_style_image_recolor(s->knob_icon, lv_color_white(), 0);
 	lv_obj_set_style_image_recolor_opa(s->knob_icon, LV_OPA_COVER, 0);
 	lv_obj_set_ignore_layout(s->knob_icon, true);
 
@@ -253,60 +259,50 @@ static void make_slide(lv_obj_t *parent, slide_t *s, const lv_image_dsc_t *icon,
 
 void powermenu_init(gui_config_t *cfg) {
 	panel = lv_obj_create(lv_layer_top());
+	lv_obj_remove_style_all(panel);
 	lv_obj_set_size(panel, cfg->screen_width, cfg->screen_height);
 	lv_obj_align(panel, LV_ALIGN_TOP_LEFT, 0, 0);
-	// Nearly-opaque black: the page underneath is still just visible, but the
-	// menu clearly owns the screen.
-	lv_obj_set_style_bg_color(panel, lv_color_black(), 0);
-	lv_obj_set_style_bg_opa(panel, LV_OPA_80, 0);
-	lv_obj_set_style_border_width(panel, 0, 0);
-	lv_obj_set_style_radius(panel, 0, 0);
-	lv_obj_set_style_pad_all(panel, 0, 0);
+	// The page's own background, opaque: the menu owns the screen.
+	lv_obj_add_style(panel, &sx_style_page, 0);
 	lv_obj_set_scrollable(panel, false);
+	lv_obj_set_clickable(panel, true); // nothing under it answers while it is up
 	lv_obj_set_hidden(panel, true);
 
-	// The two pills, upper third of the screen, like the real thing.
+	// The two pills, upper third of the screen.
 	lv_obj_t *pills = lv_obj_create(panel);
+	lv_obj_remove_style_all(pills);
 	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_align(pills, LV_ALIGN_TOP_MID, 0, cfg->top_bar_height + 70);
-	lv_obj_set_style_bg_opa(pills, 0, 0);
-	lv_obj_set_style_border_width(pills, 0, 0);
-	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_gap(pills, 26, 0);
+	lv_obj_set_style_pad_row(pills, 26, 0);
 	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(pills, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
-	make_slide(pills, &slide_off, &icon_power_off, lv_color_make(224, 27, 36), "powermenu_slide_to_power_off", do_power_off);
+	make_slide(pills, &slide_off, &icon_power_off, lv_color_hex(SX_DANGER_BG), "powermenu_slide_to_power_off", do_power_off);
 	// A fixed blue, deliberately not the accent: the two slides are power off
-	// (red) and reboot (blue), and an accent set to red or orange would make
-	// them impossible to tell apart at a glance.
-	make_slide(pills, &slide_reboot, &icon_reboot, lv_color_make(0, 122, 255), "powermenu_slide_to_restart", do_reboot);
+	// (red) and reboot (blue), and an accent taken from a red or orange cover
+	// would make them impossible to tell apart at a glance.
+	make_slide(pills, &slide_reboot, &icon_reboot, lv_color_hex(SX_ACC_BLUE), "powermenu_slide_to_restart", do_reboot);
 
 	// Cancel: a round button at the bottom centre that goes red under the
-	// finger, with its label floating underneath.
+	// finger, with its label underneath.
 	lv_obj_t *cancel = lv_btn_create(panel);
+	lv_obj_remove_style_all(cancel);
 	lv_obj_set_size(cancel, CANCEL_SIZE, CANCEL_SIZE);
 	lv_obj_align(cancel, LV_ALIGN_BOTTOM_MID, 0, -84);
 	lv_obj_set_style_radius(cancel, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_bg_color(cancel, lv_color_white(), 0);
-	lv_obj_set_style_bg_opa(cancel, LV_OPA_30, 0);
-	lv_obj_set_style_bg_color(cancel, lv_color_make(224, 27, 36), LV_STATE_PRESSED);
-	lv_obj_set_style_bg_opa(cancel, LV_OPA_COVER, LV_STATE_PRESSED);
-	lv_obj_set_style_border_width(cancel, 0, 0);
-	lv_obj_set_style_shadow_width(cancel, 0, 0);
+	lv_obj_add_style(cancel, &sx_style_surface, 0);
+	lv_obj_set_style_bg_color(cancel, lv_color_hex(SX_DANGER_BG), LV_STATE_PRESSED);
 	lv_obj_add_event_cb(cancel, cancel_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *cancel_icon = lv_image_create(cancel);
 	lv_image_set_src(cancel_icon, &icon_close);
-	lv_obj_set_style_image_recolor(cancel_icon, lv_color_white(), 0);
-	lv_obj_set_style_image_recolor_opa(cancel_icon, LV_OPA_COVER, 0);
+	lv_obj_add_style(cancel_icon, &sx_style_icon, 0);
 	lv_obj_center(cancel_icon);
 
 	lv_obj_t *cancel_label = lv_label_create(panel);
 	lv_label_set_text(cancel_label, tr("cancel"));
-	lv_obj_set_style_text_font(cancel_label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(cancel_label, lv_color_white(), 0);
-	lv_obj_align(cancel_label, LV_ALIGN_BOTTOM_MID, 0, -44);
-
+	lv_obj_set_style_text_font(cancel_label, &font_ui_22, 0);
+	lv_obj_add_style(cancel_label, &sx_style_text2, 0);
+	lv_obj_align(cancel_label, LV_ALIGN_BOTTOM_MID, 0, -46);
 }

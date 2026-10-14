@@ -35,6 +35,14 @@ void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int butt
 // set the width itself.
 void settingsrow_title_fit_header(lv_obj_t *screen, gui_config_t *cfg);
 
+// 2.0: a section heading between cards ("AVAILABLE", "PAIRED · 2"): small
+// capitals in the secondary colour, spaced out, a little air above. `text` is
+// a tag, or with `count` >= 0 the tag followed by " · count". It is written
+// in capitals each time its page is shown, so a change of language reaches it
+// too. Call settingsrow_group_set() to change what it says.
+lv_obj_t *settingsrow_group(lv_obj_t *parent, const char *tag, int count);
+void settingsrow_group_set(lv_obj_t *group, const char *tag, int count);
+
 // The heading a settingsrow_page() built, for a page whose title changes after
 // it is built (Language names itself in two languages and one of them moves).
 lv_obj_t *settingsrow_page_title(lv_obj_t *screen);
@@ -77,6 +85,14 @@ lv_obj_t *settingsrow_toggle(lv_obj_t *parent, const char *name, lv_obj_t **swit
 // or a scroll that started on it. cb, if given, gets LV_EVENT_VALUE_CHANGED
 // with the new state already set, as with a plain lv_switch.
 lv_obj_t *settingsrow_switch(lv_obj_t *parent, lv_event_cb_t cb);
+
+// 2.0: a switch card with the explanation inside it -- the name, under it in
+// the secondary colour what the switch does (`note`, a tag; NULL for none),
+// the switch at the right. A tap anywhere on the card flips it, as on the
+// prototype's cards; `cb` gets LV_EVENT_VALUE_CHANGED with the new state
+// already set either way. Returns the card.
+lv_obj_t *settingsrow_switch_card(lv_obj_t *parent, const char *name, const char *note, lv_obj_t **switch_out,
+								  lv_event_cb_t cb);
 
 // Both on one card: the name and its switch on the top line, a stepped slider
 // (marks and all) with its value underneath. For an option whose "how long"

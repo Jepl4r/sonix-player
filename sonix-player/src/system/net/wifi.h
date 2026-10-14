@@ -48,6 +48,11 @@ typedef struct {
 	char mac[24];
 	int signal; // dBm of the live link, 0 when unknown
 	int bars;	// 0..3
+	// From the same signal_poll as the signal, so free: the channel's centre
+	// frequency in MHz (2412.., 5180..) and the link's rate in Mbit/s, 0 when
+	// unknown. The Wi-Fi page shows them on the network in use.
+	int freq_mhz;
+	int link_mbps;
 } wifi_status_t;
 
 // What the last operation the user asked for is doing. The pages show a

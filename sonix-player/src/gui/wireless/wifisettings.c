@@ -9,10 +9,12 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
-#include "src/gui/shell/popover.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_sheet.h"
+#include "src/gui/shell/sx_styles.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/topbar.h"
@@ -21,6 +23,155 @@
 #include "src/system/net/wifi.h"
 
 lv_obj_t *wifisettings_screen;
+
+// ---------------------------------------------------------------------------
+// The emulator's radio
+//
+// The host has no Wi-Fi, so the page could only ever be looked at switched
+// off. With SONIX_WIFI_FAKE set (host build only) the calls below answer for a
+// radio with four networks around, one of them joined, and joining, leaving
+// and forgetting move that around -- enough to see every state of the page.
+// On the device none of this exists: the names are the real ones.
+// ---------------------------------------------------------------------------
+
+#ifdef HOST_BUILD
+static bool fake_on(void) {
+	static int on = -1;
+	if (on < 0) {
+		const char *env = getenv("SONIX_WIFI_FAKE");
+		on = env && env[0] ? 1 : 0;
+	}
+	return on == 1;
+}
+
+static bool fake_enabled = true;
+static char fake_current[WIFI_SSID_MAX] = "Home_5G";
+static uint32_t fake_serial = 1;
+static wifi_op_t fake_op;
+static wifi_opkind_t fake_kind;
+static char fake_op_ssid[WIFI_SSID_MAX];
+
+static bool fake_wifi_available(void) { return fake_on() || wifi_available(); }
+static bool fake_wifi_get_enabled(void) { return fake_on() ? fake_enabled : wifi_get_enabled(); }
+static void fake_wifi_set_enabled(bool on) {
+	if (!fake_on()) {
+		wifi_set_enabled(on);
+		return;
+	}
+	fake_enabled = on;
+	fake_serial++;
+}
+static bool fake_wifi_busy(void) { return fake_on() ? false : wifi_busy(); }
+static bool fake_wifi_scan_running(void) { return fake_on() ? false : wifi_scan_running(); }
+static void fake_wifi_scan_start(void) {
+	if (!fake_on()) {
+		wifi_scan_start();
+	}
+}
+static uint32_t fake_wifi_networks_serial(void) { return fake_on() ? fake_serial : wifi_networks_serial(); }
+static void fake_wifi_get_status(wifi_status_t *out) {
+	if (!fake_on()) {
+		wifi_get_status(out);
+		return;
+	}
+	memset(out, 0, sizeof(*out));
+	out->state = !fake_enabled ? WIFI_STATE_OFF : fake_current[0] ? WIFI_STATE_CONNECTED : WIFI_STATE_ON;
+	if (out->state == WIFI_STATE_CONNECTED) {
+		snprintf(out->ssid, sizeof(out->ssid), "%s", fake_current);
+		snprintf(out->ip, sizeof(out->ip), "192.168.1.42");
+		snprintf(out->mac, sizeof(out->mac), "c0:84:7d:12:34:56");
+		bool five = strstr(fake_current, "5G") != NULL;
+		out->signal = five ? -52 : -61;
+		out->bars = 3;
+		out->freq_mhz = five ? 5180 : 2437;
+		out->link_mbps = five ? 433 : 72;
+	}
+}
+static int fake_wifi_get_networks(wifi_network_t *out, int max) {
+	if (!fake_on()) {
+		return wifi_get_networks(out, max);
+	}
+	static const struct {
+		const char *ssid;
+		int signal;
+		bool secured;
+		bool saved;
+	} NETS[] = {{"Home_5G", -52, true, true},
+				{"Home_2G", -58, true, true},
+				{"Sonix-Guest", -67, false, false},
+				{"MTS_Router_7B", -79, true, false}};
+	int n = 0;
+	for (size_t i = 0; i < sizeof(NETS) / sizeof(NETS[0]) && n < max; i++) {
+		wifi_network_t *net = &out[n++];
+		memset(net, 0, sizeof(*net));
+		snprintf(net->ssid, sizeof(net->ssid), "%s", NETS[i].ssid);
+		net->signal = NETS[i].signal;
+		net->bars = NETS[i].signal > -55 ? 3 : NETS[i].signal > -67 ? 2 : 1;
+		net->secured = NETS[i].secured;
+		net->saved = NETS[i].saved;
+		net->current = strcmp(fake_current, NETS[i].ssid) == 0;
+		net->id = net->saved ? (int)i : -1;
+	}
+	return n;
+}
+static void fake_result(wifi_opkind_t kind, const char *ssid) {
+	fake_op = WIFI_OP_OK;
+	fake_kind = kind;
+	snprintf(fake_op_ssid, sizeof(fake_op_ssid), "%s", ssid ? ssid : "");
+	fake_serial++;
+}
+static void fake_wifi_connect(const char *ssid, const char *psk) {
+	if (!fake_on()) {
+		wifi_connect(ssid, psk);
+		return;
+	}
+	snprintf(fake_current, sizeof(fake_current), "%s", ssid);
+	fake_result(WIFI_OPKIND_CONNECT, ssid);
+}
+static void fake_wifi_disconnect(void) {
+	if (!fake_on()) {
+		wifi_disconnect();
+		return;
+	}
+	fake_current[0] = '\0';
+	fake_result(WIFI_OPKIND_DISCONNECT, NULL);
+}
+static void fake_wifi_forget(const char *ssid) {
+	if (!fake_on()) {
+		wifi_forget(ssid);
+		return;
+	}
+	if (strcmp(fake_current, ssid) == 0) {
+		fake_current[0] = '\0';
+	}
+	fake_result(WIFI_OPKIND_FORGET, NULL);
+}
+static wifi_op_t fake_wifi_take_op_result(char *ssid_out, int ssid_size) {
+	if (!fake_on()) {
+		return wifi_take_op_result(ssid_out, ssid_size);
+	}
+	wifi_op_t op = fake_op;
+	fake_op = WIFI_OP_IDLE;
+	snprintf(ssid_out, (size_t)ssid_size, "%s", fake_op_ssid);
+	return op;
+}
+static wifi_opkind_t fake_wifi_last_op_kind(void) { return fake_on() ? fake_kind : wifi_last_op_kind(); }
+
+#define wifi_available fake_wifi_available
+#define wifi_get_enabled fake_wifi_get_enabled
+#define wifi_set_enabled fake_wifi_set_enabled
+#define wifi_busy fake_wifi_busy
+#define wifi_scan_running fake_wifi_scan_running
+#define wifi_scan_start fake_wifi_scan_start
+#define wifi_networks_serial fake_wifi_networks_serial
+#define wifi_get_status fake_wifi_get_status
+#define wifi_get_networks fake_wifi_get_networks
+#define wifi_connect fake_wifi_connect
+#define wifi_disconnect fake_wifi_disconnect
+#define wifi_forget fake_wifi_forget
+#define wifi_take_op_result fake_wifi_take_op_result
+#define wifi_last_op_kind fake_wifi_last_op_kind
+#endif
 
 // How often the page looks at what the radio module has found out. The work
 // itself happens on the wifi worker; this only redraws.
@@ -31,8 +182,10 @@ lv_obj_t *wifisettings_screen;
 
 static lv_obj_t *wifi_switch;
 static lv_obj_t *status_label;
-static lv_obj_t *current_label;
-static lv_obj_t *current_list;
+// The network in use: the plaque (sx_card_set_active) with its figures in the
+// mono line, built once and filled on every redraw, hidden with nothing joined.
+static lv_obj_t *current_card;
+static char current_ssid[WIFI_SSID_MAX];
 static lv_obj_t *section_label;
 static lv_obj_t *list;
 static lv_obj_t *scan_btn;
@@ -105,7 +258,7 @@ static lv_obj_t *details_mac_value;
 static lv_obj_t *details_signal_value;
 static lv_obj_t *details_security_value;
 
-// The network a popover is about. The row that owns the string outlives the
+// The network a sheet is about. The row that owns the string outlives the
 // menu, but copying it keeps the two independent.
 static char menu_ssid[WIFI_SSID_MAX];
 
@@ -159,24 +312,16 @@ static void refresh_status_label(void) {
 	wifi_status_t status;
 	wifi_get_status(&status);
 
-	// With the radio up this line stands down: the two headings below already
-	// say which network is in use and what else is around, and "Connected to X"
-	// over a section called "Current network" holding X is the same sentence
-	// twice.
-	switch (status.state) {
-	case WIFI_STATE_CONNECTED:
-	case WIFI_STATE_ON:
-		lv_obj_set_hidden(status_label, true);
+	// With the radio up this line stands down: the plaque says which network
+	// is in use and the list what else is around. Connecting is said on the
+	// plaque itself.
+	if (status.state == WIFI_STATE_OFF) {
+		// What being off costs, which is the reason to look at this page.
+		lv_label_set_text(status_label, tr("wifi_off_note"));
+		lv_obj_set_hidden(status_label, false);
 		return;
-	case WIFI_STATE_CONNECTING:
-		lv_label_set_text(status_label, tr("connecting"));
-		break;
-	case WIFI_STATE_OFF:
-	default:
-		lv_label_set_text(status_label, tr("wifi_wi_fi_off"));
-		break;
 	}
-	lv_obj_set_hidden(status_label, false);
+	lv_obj_set_hidden(status_label, true);
 }
 
 // ---------------------------------------------------------------------------
@@ -225,9 +370,24 @@ static void disconnect_action(void *user) {
 	wifi_disconnect();
 }
 
-static void forget_action(void *user) {
+static void forget_confirmed(void *user) {
 	(void)user;
 	wifi_forget(menu_ssid);
+}
+
+// Forgetting throws the password away, the one thing here that cannot be
+// taken back with a tap: it asks first, in the red of the irreversible.
+static void forget_action(void *user) {
+	(void)user;
+	sx_sheet_t sheet = {
+		.title = menu_ssid,
+		.subtitle = tr("wifi_forget_note"),
+		.cancel_label = tr("cancel"),
+		.action_label = tr("wifi_forget_network"),
+		.action_destructive = true,
+		.on_action = forget_confirmed,
+	};
+	sx_sheet_open(&sheet);
 }
 
 static void password_accept_cb(lv_event_t *e) {
@@ -251,96 +411,70 @@ static void ask_for_password(const char *ssid) {
 	switch_screen(password_screen);
 }
 
-// The menu behind the three dots, and behind a long press on any saved network,
-// so "forget" stays reachable without giving every row a button.
+// The sheet for a network that has something to say: the one in use (a tap on
+// its plaque), or a saved one (a long press), so "forget" stays reachable
+// without giving every row a button. Titled with the network's name.
 static void show_row_menu(lv_obj_t *anchor, bool current) {
+	(void)anchor;
 	if (current) {
-		static const popover_item_t items[] = {
-			{"details", details_action, NULL},
-			{"disconnect", disconnect_action, NULL},
-			{"wifi_forget_network", forget_action, NULL},
+		const sx_sheet_item_t items[] = {
+			{.label = tr("details"), .action = details_action},
+			{.label = tr("disconnect"), .action = disconnect_action},
+			{.label = tr("wifi_forget_network"), .destructive = true, .action = forget_action},
 		};
-		popover_show(anchor, items, 3);
+		sx_sheet_menu(menu_ssid, NULL, items, 3);
 	} else {
-		static const popover_item_t items[] = {
-			{"connect", connect_action, NULL},
-			{"wifi_forget_network", forget_action, NULL},
+		const sx_sheet_item_t items[] = {
+			{.label = tr("connect"), .action = connect_action},
+			{.label = tr("wifi_forget_network"), .destructive = true, .action = forget_action},
 		};
-		popover_show(anchor, items, 2);
+		sx_sheet_menu(menu_ssid, NULL, items, 2);
 	}
 }
 
-// What the row knows about itself, packed into its user data.
+// What a row knows about its network, handed to its callbacks (the card's own
+// user data belongs to sx_card).
 #define ROW_CURRENT 1u
 #define ROW_SAVED 2u
 #define ROW_SECURED 4u
+
+typedef struct {
+	unsigned flags;
+	char ssid[WIFI_SSID_MAX];
+} net_ref_t;
 
 // Which network the menu that is about to open is about. Copied rather than
 // pointed at, so the list can be rebuilt under it without any drama.
 static void remember_ssid(const char *ssid) { snprintf(menu_ssid, sizeof(menu_ssid), "%s", ssid); }
 
 static void row_clicked_cb(lv_event_t *e) {
-	if (switcher_back_drag_active()) {
-		return; // a swipe across the row, not a tap on it
-	}
-
-	lv_obj_t *row = lv_event_get_current_target(e);
-	const char *ssid = lv_event_get_user_data(e);
-	if (!ssid || !ssid[0]) {
+	const net_ref_t *ref = lv_event_get_user_data(e);
+	if (!ref || !ref->ssid[0]) {
 		return;
 	}
-	remember_ssid(ssid);
+	remember_ssid(ref->ssid);
 
-	uintptr_t flags = (uintptr_t)lv_obj_get_user_data(row);
-	bool current = (flags & ROW_CURRENT) != 0;
-	bool saved = (flags & ROW_SAVED) != 0;
-	bool secured = (flags & ROW_SECURED) != 0;
-
-	// A tap does the obvious thing; the menu lives behind the three dots.
-	if (current) {
-		show_row_menu(row, true);
+	// A tap does the obvious thing: join, or ask for the password first.
+	if (ref->flags & ROW_CURRENT) {
+		show_row_menu(NULL, true);
 		return;
 	}
-	if (saved || !secured) {
-		wifi_connect(ssid, NULL);
+	if ((ref->flags & ROW_SAVED) || !(ref->flags & ROW_SECURED)) {
+		wifi_connect(ref->ssid, NULL);
 		return;
 	}
-	ask_for_password(ssid);
+	ask_for_password(ref->ssid);
 }
 
-// A long press opens the menu on any row that has one to open -- the way to
+// A long press opens the sheet on any row that has one to open -- the way to
 // forget a saved network that is not the one currently joined.
 static void row_long_pressed_cb(lv_event_t *e) {
-	lv_obj_t *row = lv_event_get_current_target(e);
-	const char *ssid = lv_event_get_user_data(e);
-	if (!ssid || !ssid[0]) {
-		return;
-	}
-
-	uintptr_t flags = (uintptr_t)lv_obj_get_user_data(row);
-	if (!(flags & (ROW_CURRENT | ROW_SAVED))) {
+	const net_ref_t *ref = lv_event_get_user_data(e);
+	if (!ref || !ref->ssid[0] || !(ref->flags & (ROW_CURRENT | ROW_SAVED))) {
 		return; // nothing to say about a network never joined
 	}
-	remember_ssid(ssid);
-	show_row_menu(row, (flags & ROW_CURRENT) != 0);
-}
-
-// The three dots themselves. The button carries the same flags as its row, so
-// the menu is the right one whether the network is the connected one or merely
-// a saved one.
-static void row_menu_clicked_cb(lv_event_t *e) {
-	if (switcher_back_drag_active()) {
-		return;
-	}
-	const char *ssid = lv_event_get_user_data(e);
-	lv_obj_t *button = lv_event_get_current_target(e);
-	if (!ssid || !ssid[0]) {
-		return;
-	}
-	remember_ssid(ssid);
-
-	uintptr_t flags = (uintptr_t)lv_obj_get_user_data(button);
-	show_row_menu(button, (flags & ROW_CURRENT) != 0);
+	remember_ssid(ref->ssid);
+	show_row_menu(NULL, (ref->flags & ROW_CURRENT) != 0);
 }
 
 static void row_free_cb(lv_event_t *e) { free(lv_event_get_user_data(e)); }
@@ -349,195 +483,161 @@ static void row_free_cb(lv_event_t *e) { free(lv_event_get_user_data(e)); }
 // the list
 // ---------------------------------------------------------------------------
 
-// `parent` is the current-network box or the list of the others, and `with_menu`
-// says whether this row carries the three dots. Only the network being used
-// does: for the rest the menu would offer "connect", which is what tapping the
-// row already does, and "forget", which a long press still reaches.
-static void add_row(lv_obj_t *parent, const wifi_network_t *net, bool with_menu) {
-	char *ssid_copy = strdup(net->ssid);
-	if (!ssid_copy) {
+// One network nearby: a card with its name, what joining it takes on the
+// right ("Secured", "Open", "Saved"), and its signal bars after that, in the
+// place a chevron takes on other cards. A tap joins it (or asks for the
+// password); a long press on a saved one opens its sheet.
+static void add_row(lv_obj_t *parent, const wifi_network_t *net) {
+	net_ref_t *ref = malloc(sizeof(*ref));
+	if (!ref) {
 		return;
 	}
+	ref->flags = (net->current ? ROW_CURRENT : 0u) | (net->saved ? ROW_SAVED : 0u) | (net->secured ? ROW_SECURED : 0u);
+	snprintf(ref->ssid, sizeof(ref->ssid), "%.*s", WIFI_SSID_MAX - 1, net->ssid);
 
-	lv_obj_t *row = lv_btn_create(parent);
+	lv_obj_t *card = sx_card_create(parent);
+	lv_obj_t *title = sx_card_title(card, net->ssid);
+	// One line: an SSID is data, and a long one ends in an ellipsis rather
+	// than pushing the card to two lines.
+	lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+	lv_obj_set_height(title, lv_font_get_line_height(&font_ui_24));
+
+	const char *state;
+	if (net->saved) {
+		state = net->signal ? tr("wifi_saved") : tr("wifi_saved_out_of_range");
+	} else {
+		state = net->secured ? tr("wifi_secured") : tr("wifi_open");
+	}
+	sx_card_value(card, state);
+
+	lv_obj_t *bars = sx_card_chevron(card);
+	lv_image_set_src(bars, glyph_for_bars(net->bars));
+	// Saved but not on the air: "no bars" already, and fainter for "not here".
+	lv_obj_set_style_image_opa(bars, net->signal ? LV_OPA_60 : LV_OPA_20, 0);
+
+	sx_card_on_click(card, row_clicked_cb, ref);
+	lv_obj_add_event_cb(card, row_long_pressed_cb, LV_EVENT_LONG_PRESSED, ref);
+	lv_obj_add_event_cb(card, row_free_cb, LV_EVENT_DELETE, ref);
+}
+
+// "5 GHz · -52 dBm · 433 Mbit/s": what the link is, for the plaque. Each part
+// only when known.
+static void link_line(const wifi_status_t *status, char *out, size_t size) {
+	out[0] = '\0';
+	size_t used = 0;
+	const char *band = NULL;
+	if (status->freq_mhz >= 5925) {
+		band = tr("wifi_band_6");
+	} else if (status->freq_mhz >= 4900) {
+		band = tr("wifi_band_5");
+	} else if (status->freq_mhz > 0) {
+		band = tr("wifi_band_24");
+	}
+	if (band) {
+		used += (size_t)snprintf(out + used, size - used, "%s", band);
+	}
+	if (status->signal && used < size) {
+		used += (size_t)snprintf(out + used, size - used, "%s", used ? " \xC2\xB7 " : "");
+		if (used < size) {
+			used += (size_t)snprintf(out + used, size - used, tr("wifi_dbm"), status->signal);
+		}
+	}
+	if (status->link_mbps > 0 && used < size) {
+		used += (size_t)snprintf(out + used, size - used, "%s", used ? " \xC2\xB7 " : "");
+		if (used < size) {
+			snprintf(out + used, size - used, tr("wifi_mbps"), status->link_mbps);
+		}
+	}
+}
+
+// The plaque: the network joined, or being joined, with its figures.
+static void refresh_current_card(void) {
+	wifi_status_t status;
+	wifi_get_status(&status);
+	bool on = wifi_get_enabled() && wifi_available();
+	bool show = on && status.ssid[0] &&
+				(status.state == WIFI_STATE_CONNECTED || status.state == WIFI_STATE_CONNECTING);
+	lv_obj_set_hidden(current_card, !show);
+	if (!show) {
+		current_ssid[0] = '\0';
+		return;
+	}
+	snprintf(current_ssid, sizeof(current_ssid), "%s", status.ssid);
+	sx_card_title(current_card, status.ssid);
+	if (status.state == WIFI_STATE_CONNECTED) {
+		char line[96];
+		link_line(&status, line, sizeof(line));
+		sx_card_subtitle(current_card, line, true);
+		sx_card_value(current_card, tr("wifi_network_connected"));
+	} else {
+		sx_card_subtitle(current_card, "", true);
+		sx_card_value(current_card, tr("connecting"));
+	}
+}
+
+static void current_card_clicked_cb(lv_event_t *e) {
+	(void)e;
+	if (!current_ssid[0]) {
+		return;
+	}
+	remember_ssid(current_ssid);
+	show_row_menu(current_card, true);
+}
+
+// `spin` puts the spinner left of the text: without something moving,
+// "nothing here" and "still searching" read the same.
+static void add_placeholder(const char *text, bool spin) {
+	lv_obj_t *row = lv_obj_create(list);
+	lv_obj_remove_style_all(row);
 	lv_obj_set_width(row, lv_pct(100));
-	lv_obj_set_height(row, WIFI_ROW_H);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 18, 0);
-	// The button default carries vertical padding of its own, which cuts the
-	// second line of text off along the bottom edge of the row.
-	lv_obj_set_style_pad_ver(row, 0, 0);
-	lv_obj_set_event_bubble(row, true);
+	lv_obj_set_height(row, LV_SIZE_CONTENT);
+	lv_obj_set_style_pad_top(row, 6, 0);
+	lv_obj_set_style_pad_hor(row, 6, 0);
+	lv_obj_set_style_pad_column(row, 10, 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(row, 14, 0);
-
-	uintptr_t flags = (net->current ? ROW_CURRENT : 0u) | (net->saved ? ROW_SAVED : 0u) |
-					  (net->secured ? ROW_SECURED : 0u);
-	lv_obj_set_user_data(row, (void *)flags);
-
-	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, ssid_copy);
-	lv_obj_add_event_cb(row, row_long_pressed_cb, LV_EVENT_LONG_PRESSED, ssid_copy);
-	lv_obj_add_event_cb(row, row_free_cb, LV_EVENT_DELETE, ssid_copy);
-
-	lv_obj_t *icon = lv_image_create(row);
-	lv_image_set_src(icon, glyph_for_bars(net->bars));
-	lv_obj_add_style(icon, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
-	if (net->current) {
-		lv_obj_set_style_image_recolor(icon, theme()->accent, 0);
-	} else if (!net->signal) {
-		// Saved, but not on the air right now: the glyph says "no bars"
-		// already, the dimming says "and not here at all".
-		lv_obj_set_style_image_opa(icon, LV_OPA_40, 0);
+	if (spin) {
+		spinner_create(row, &icon_loader_small);
 	}
-
-	// Name over state, left-aligned, taking whatever width is left.
-	lv_obj_t *text = lv_obj_create(row);
-	lv_obj_set_flex_grow(text, 1);
-	lv_obj_set_height(text, lv_pct(100));
-	lv_obj_set_style_bg_opa(text, 0, 0);
-	lv_obj_set_style_border_width(text, 0, 0);
-	lv_obj_set_style_pad_all(text, 0, 0);
-	lv_obj_set_scrollable(text, false);
-	lv_obj_set_event_bubble(text, true);
-
-	lv_obj_t *name = lv_label_create(text);
-	lv_label_set_text(name, net->ssid);
-	lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(name, lv_pct(100));
-	// Pinned to one line's worth of height. LV_LABEL_LONG_DOT wraps first and
-	// only puts the dots at the end of the last line that fits, so an unpinned
-	// long SSID takes two lines and pushes the row's second line out of shape.
-	lv_obj_set_height(name, lv_font_get_line_height(&font_ui_24));
-	lv_obj_add_style(name, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name, &font_ui_24, 0);
-
-	const char *state = NULL;
-	if (net->current) {
-		state = tr("wifi_network_connected");
-	} else if (net->saved) {
-		state = net->signal ? tr("wifi_saved") : tr("wifi_saved_out_of_range");
-	} else if (net->secured) {
-		state = tr("wifi_secured");
-	}
-
-	if (state) {
-		lv_obj_t *sub = lv_label_create(text);
-		lv_label_set_text(sub, state);
-		lv_obj_add_style(sub, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(sub, &font_ui_20, 0);
-		if (net->current) {
-			lv_obj_set_style_text_color(sub, theme()->accent, 0);
-		}
-		// Measured from the middle rather than the top: the pair then sits
-		// centred in the row whatever padding the button style brings along.
-		lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, -15);
-		lv_obj_align(sub, LV_ALIGN_LEFT_MID, 0, 16);
-	} else {
-		lv_obj_align(name, LV_ALIGN_LEFT_MID, 0, 0);
-	}
-
-	if (with_menu) {
-		lv_obj_t *menu_btn = lv_btn_create(row);
-		lv_obj_set_size(menu_btn, 44, 56);
-		// A fingertip's worth (touch.h), kept within the row's own padding.
-		touch_grow(menu_btn, 44, 56, 14);
-		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_border_width(menu_btn, 0, 0);
-		lv_obj_set_style_shadow_width(menu_btn, 0, 0);
-		lv_obj_set_style_pad_all(menu_btn, 0, 0);
-		lv_obj_set_user_data(menu_btn, (void *)flags);
-		lv_obj_add_event_cb(menu_btn, row_menu_clicked_cb, LV_EVENT_CLICKED, ssid_copy);
-
-		lv_obj_t *dots = lv_image_create(menu_btn);
-		lv_image_set_src(dots, &icon_ellipsis_vertical);
-		lv_obj_add_style(dots, &theme_style_icon, 0);
-		lv_obj_set_style_image_opa(dots, LV_OPA_70, 0);
-		lv_obj_center(dots);
-	}
+	lv_obj_t *label = lv_label_create(row);
+	lv_label_set_text(label, tr(text));
+	lv_obj_add_style(label, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(label, &font_ui_21, 0);
 }
 
 static void rebuild_list(void) {
 	lv_obj_clean(list);
-	lv_obj_clean(current_list);
+	refresh_current_card();
 
 	bool on = wifi_get_enabled() && wifi_available();
+	lv_obj_set_hidden(section_label, !on);
+	lv_obj_set_hidden(list, !on);
 	if (!on) {
-		lv_obj_set_hidden(current_label, true);
-		lv_obj_set_hidden(current_list, true);
-		lv_obj_set_hidden(section_label, true);
-		lv_obj_set_hidden(list, true);
 		return;
-	}
-	lv_obj_set_hidden(section_label, false);
-	lv_obj_set_hidden(list, false);
-
-	wifi_network_t networks[WIFI_MAX_NETWORKS];
-	int count = wifi_get_networks(networks, WIFI_MAX_NETWORKS);
-
-	// The network in use gets a heading of its own, above the rest, rather than
-	// being left to be found among thirty others.
-	int current = -1;
-	for (int i = 0; i < count; i++) {
-		if (networks[i].current) {
-			current = i;
-			break;
-		}
-	}
-
-	if (current >= 0) {
-		lv_obj_set_hidden(current_label, false);
-		lv_obj_set_hidden(current_list, false);
-		add_row(current_list, &networks[current], true);
-	} else {
-		lv_obj_set_hidden(current_label, true);
-		lv_obj_set_hidden(current_list, true);
 	}
 
 	// A sweep replaces the list rather than sitting under it: the rows are the
 	// previous sweep's, and leaving them up while a new one runs invites a tap
 	// on a network that is no longer there.
 	if (searching_now()) {
-		lv_obj_t *row = lv_obj_create(list);
-		lv_obj_remove_style_all(row);
-		lv_obj_set_width(row, lv_pct(100));
-		lv_obj_set_height(row, LV_SIZE_CONTENT);
-		lv_obj_set_style_pad_top(row, 10, 0);
-		lv_obj_set_style_pad_column(row, 10, 0);
-		lv_obj_set_scrollable(row, false);
-		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-		spinner_create(row, &icon_loader_small);
-
-		lv_obj_t *searching = lv_label_create(row);
-		lv_label_set_text(searching, tr("wifi_searching_again"));
-		lv_obj_add_style(searching, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(searching, &font_ui_22, 0);
+		add_placeholder("wifi_searching_again", true);
 		return;
 	}
 
+	wifi_network_t networks[WIFI_MAX_NETWORKS];
+	int count = wifi_get_networks(networks, WIFI_MAX_NETWORKS);
 	int shown = 0;
 	for (int i = 0; i < count; i++) {
-		if (i == current) {
-			continue; // it has its own place above
+		// The network in use is the plaque above; so is one being joined.
+		if (networks[i].current || (current_ssid[0] && strcmp(networks[i].ssid, current_ssid) == 0)) {
+			continue;
 		}
-		add_row(list, &networks[i], false);
+		add_row(list, &networks[i]);
 		shown++;
 	}
-
 	if (shown == 0) {
-		lv_obj_t *none = lv_label_create(list);
-		lv_label_set_text(none, tr("wifi_no_networks_found"));
-		lv_obj_add_style(none, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(none, &font_ui_22, 0);
-		lv_obj_set_style_pad_top(none, 10, 0);
+		add_placeholder("wifi_no_networks_found", false);
 	}
 }
 
@@ -744,14 +844,17 @@ static void build_password_page(gui_config_t *cfg) {
 	password_field = lv_textarea_create(password_screen);
 	lv_textarea_set_one_line(password_field, true);
 	lv_textarea_set_placeholder_text(password_field, tr("password"));
-	lv_obj_set_size(password_field, cfg->screen_width - 2 * cfg->padding, 62);
+	// The 2.0 input: the search field's 60 px pill on the surface colour.
+	lv_obj_set_size(password_field, cfg->screen_width - 2 * cfg->padding, 60);
 	lv_obj_set_scrollbar_mode(password_field, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_align(password_field, LV_ALIGN_TOP_LEFT, cfg->padding, top + 36);
 	lv_obj_add_style(password_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(password_field, 12, 0);
+	lv_obj_add_style(password_field, &sx_style_surface, 0);
+	lv_obj_set_style_radius(password_field, 30, 0);
 	lv_obj_set_style_border_width(password_field, 0, 0);
 	lv_obj_set_style_shadow_width(password_field, 0, 0);
-	lv_obj_set_style_pad_all(password_field, 14, 0);
+	lv_obj_set_style_pad_ver(password_field, 13, 0);
+	lv_obj_set_style_pad_left(password_field, 22, 0);
 	lv_obj_set_style_text_font(password_field, &font_ui_24, 0);
 	keyboard_style_caret(password_field);
 
@@ -770,7 +873,7 @@ static void build_password_page(gui_config_t *cfg) {
 	// that clears the search box.
 	password_eye_btn = lv_btn_create(password_screen);
 	lv_obj_set_size(password_eye_btn, 56, 56);
-	lv_obj_align(password_eye_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + 36 + (62 - 56) / 2);
+	lv_obj_align(password_eye_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + 36 + (60 - 56) / 2);
 	lv_obj_set_style_bg_opa(password_eye_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(password_eye_btn, 0, 0);
 	lv_obj_set_style_border_width(password_eye_btn, 0, 0);
@@ -808,19 +911,6 @@ static void build_details_page(gui_config_t *cfg) {
 
 // ---------------------------------------------------------------------------
 
-// A section heading. Full width, so the page's centring flex leaves the text on
-// the left where every other heading in the interface sits.
-static lv_obj_t *make_heading(lv_obj_t *parent, const char *tag) {
-	lv_obj_t *heading = lv_label_create(parent);
-	lv_label_set_text(heading, tr(tag));
-	lv_obj_set_width(heading, lv_pct(100));
-	lv_obj_add_style(heading, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(heading, &font_ui_22, 0);
-	lv_obj_set_style_pad_top(heading, 6, 0);
-	lv_obj_set_style_pad_hor(heading, 4, 0);
-	return heading;
-}
-
 static lv_obj_t *make_rows(lv_obj_t *parent) {
 	lv_obj_t *box = lv_obj_create(parent);
 	lv_obj_set_width(box, lv_pct(100));
@@ -839,26 +929,35 @@ static lv_obj_t *make_rows(lv_obj_t *parent) {
 void wifisettings_init(gui_config_t *cfg) {
 	lv_obj_t *container = settingsrow_page(wifisettings_screen, cfg, "wi_fi");
 
-	settingsrow_toggle(container, "wi_fi", &wifi_switch, switch_changed_cb);
+	settingsrow_switch_card(container, "wi_fi", NULL, &wifi_switch, switch_changed_cb);
 	if (wifi_get_enabled()) {
 		lv_obj_add_state(wifi_switch, LV_STATE_CHECKED);
 	}
 
+	// The note under the switch: no radio, coming up, or off and what that
+	// costs. Hidden while the radio is up.
 	status_label = lv_label_create(container);
 	lv_obj_set_width(status_label, lv_pct(100));
-	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
+	lv_obj_add_style(status_label, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_20, 0);
-	lv_obj_set_style_pad_hor(status_label, 4, 0);
+	lv_obj_set_style_pad_hor(status_label, 6, 0);
+	lv_obj_set_style_pad_top(status_label, 4, 0);
 	lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
 
-	// Two sections, each a heading over a box of rows: the network being used,
-	// and everything else. Both boxes exist from the start and are hidden when
-	// they have nothing in them, so a refresh is one lv_obj_clean() and not a
-	// hunt through the page's children.
-	current_label = make_heading(container, "wifi_current_network");
-	current_list = make_rows(container);
+	// The network in use, as the plaque: the handoff's "active now".
+	current_card = sx_card_create(container);
+	sx_card_set_active(current_card, true);
+	lv_obj_t *current_title = sx_card_title(current_card, "");
+	lv_label_set_long_mode(current_title, LV_LABEL_LONG_DOT);
+	lv_obj_set_height(current_title, lv_font_get_line_height(&font_ui_24));
+	sx_card_on_click(current_card, current_card_clicked_cb, NULL);
+	lv_obj_add_event_cb(current_card, current_card_clicked_cb, LV_EVENT_LONG_PRESSED, NULL);
+	lv_obj_set_hidden(current_card, true);
 
-	section_label = make_heading(container, "wifi_available_networks");
+	// And everything else around, under a heading. The box exists from the
+	// start and is hidden with the radio off, so a refresh is one
+	// lv_obj_clean() and not a hunt through the page's children.
+	section_label = settingsrow_group(container, "wifi_available_networks", -1);
 	list = make_rows(container);
 
 	scan_btn = corner_button(wifisettings_screen, cfg, &icon_wifi_search, &scan_icon);

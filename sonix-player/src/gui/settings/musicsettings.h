@@ -14,6 +14,14 @@ void musicsettings_init(gui_config_t *cfg);
 // The EQ and MSEB pages, so the control centre's quick buttons can open them
 // on a long press. They are settings pages like any other -- switch_screen()
 // takes them.
+// The volume limit's page and the DAC filter's, for the control centre's holds.
+lv_obj_t *musicsettings_volume_limit_screen(void);
+lv_obj_t *musicsettings_filter_screen(void);
+// The DAC's digital filter, 0..3: in force, its name (a tag), and setting it
+// (saved, applied, the filter page's tick moved).
+int musicsettings_dac_filter(void);
+const char *musicsettings_dac_filter_name(int filter);
+void musicsettings_set_dac_filter(int filter);
 lv_obj_t *musicsettings_eq_screen(void);
 lv_obj_t *musicsettings_mseb_screen(void);
 

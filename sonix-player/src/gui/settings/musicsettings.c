@@ -24,6 +24,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/audio/audio.h"
@@ -64,14 +65,21 @@ static void refresh_filter_checks(void) {
 	}
 }
 
-static void filter_row_cb(lv_event_t *e) {
-	int filter = (int)(intptr_t)lv_event_get_user_data(e);
+int musicsettings_dac_filter(void) { return (int)config_get_int("audio", "dac_filter", 0); }
 
+const char *musicsettings_dac_filter_name(int filter) { return FILTER_NAMES[filter >= 0 && filter < 4 ? filter : 0]; }
+
+void musicsettings_set_dac_filter(int filter) {
+	if (filter < 0 || filter >= 4) {
+		return;
+	}
 	config_set_int("audio", "dac_filter", filter);
 	config_save();
 	set_dac_filter(filter);
 	refresh_filter_checks();
 }
+
+static void filter_row_cb(lv_event_t *e) { musicsettings_set_dac_filter((int)(intptr_t)lv_event_get_user_data(e)); }
 
 static void build_filter_page(gui_config_t *cfg) {
 	dacfilter_screen = lv_obj_create(NULL);
@@ -655,6 +663,8 @@ static void build_volume_limit_page(gui_config_t *cfg) {
 
 	vlimit_refresh();
 	lv_obj_add_event_cb(vlimit_screen, vlimit_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	// And when the control centre switches it with the page under the card.
+	lv_obj_add_event_cb(vlimit_screen, vlimit_loaded_cb, LV_EVENT_REFRESH, NULL);
 	switcher_attach_back_gesture(vlimit_screen);
 }
 
@@ -920,7 +930,7 @@ static void build_mseb_page(gui_config_t *cfg) {
 		lv_obj_set_width(card, lv_pct(100));
 		lv_obj_set_height(card, 104);
 		lv_obj_add_style(card, &theme_style_card, 0);
-		lv_obj_set_style_radius(card, 12, 0);
+		lv_obj_set_style_radius(card, SX_CARD_R, 0);
 		lv_obj_set_style_border_width(card, 0, 0);
 		lv_obj_set_style_shadow_width(card, 0, 0);
 		lv_obj_set_style_pad_hor(card, 20, 0);
@@ -1124,7 +1134,7 @@ static void build_eq_page(gui_config_t *cfg) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, 360);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 14, 0);
@@ -1206,6 +1216,8 @@ static void build_eq_page(gui_config_t *cfg) {
 // ---------------------------------------------------------------------------
 
 lv_obj_t *musicsettings_eq_screen(void) { return eq_screen; }
+lv_obj_t *musicsettings_volume_limit_screen(void) { return vlimit_screen; }
+lv_obj_t *musicsettings_filter_screen(void) { return dacfilter_screen; }
 lv_obj_t *musicsettings_mseb_screen(void) { return mseb_screen; }
 
 lv_obj_t *musicsettings_fade_screen(void) { return fade_screen; }
@@ -1297,11 +1309,30 @@ static void screen_loaded_cb(lv_event_t *e) {
 	refresh_active_chevrons();
 }
 
-// The row asks which folders first; the scan page opens only from there,
-// which is why it carries no chevron.
+// The row starts the scan at once (2.0: no question before a scan) with the
+// folders chosen on their own page; an action, so no chevron.
 static void scan_row_cb(lv_event_t *e) {
 	(void)e;
 	libraryscan_choose_folders();
+}
+
+// Which of the card's folders the scan reads: the whole card, or how many.
+static lv_obj_t *scan_folders_value;
+
+static void scan_folders_refresh(void) {
+	int count = 0;
+	char **names = library_scan_folders(&count);
+	library_scan_folders_free(names, count);
+	if (count == 0) {
+		lv_label_set_text(scan_folders_value, tr("libraryscan_folders_all"));
+	} else {
+		lv_label_set_text_fmt(scan_folders_value, "%d", count);
+	}
+}
+
+static void scan_folders_cb(lv_event_t *e) {
+	(void)e;
+	libraryscan_open_folders();
 }
 
 static void album_chain_cb(lv_event_t *e) {
@@ -1376,6 +1407,7 @@ static void retagged_show(void) {
 // (libraryscan.c), so the switch is read again each time the page comes up.
 static void scan_page_loading_cb(lv_event_t *e) {
 	(void)e;
+	scan_folders_refresh();
 	lv_obj_set_state(detect_changes_switch, LV_STATE_CHECKED, library_detect_changes());
 	retagged_show();
 }
@@ -1498,7 +1530,7 @@ static void join_albums_cb(lv_event_t *e) {
 static void organize_leave_cb(lv_event_t *e) {
 	(void)e;
 	lv_obj_t *next = lv_screen_active();
-	if (!organize_changed || next == scan_screen || next == artistexceptions_screen) {
+	if (!organize_changed || next == scan_screen || next == artistexceptions_screen || next == libraryscan_folders_screen) {
 		return;
 	}
 	organize_changed = false;
@@ -1514,6 +1546,8 @@ static void build_scan_page(gui_config_t *cfg) {
 	// Detect changes reads again only what changed, so an index from before the
 	// scan timed tracks keeps no lengths until the scan is run.
 	option_note(container, "musicsettings_scan_lengths_note");
+	// What it reads: once asked before every scan, now a page of its own.
+	settingsrow_add(container, "libraryscan_folders", &scan_folders_value, scan_folders_cb, NULL);
 
 	settingsrow_toggle(container, "musicsettings_do_not_ignore_articles", &keep_articles_switch, keep_articles_cb);
 	if (!library_skip_articles()) {

@@ -8,6 +8,9 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
 #include "src/system/device/clock.h"
@@ -46,12 +49,7 @@ static void dst_paint(void) {
 		if (!dst_pills[i]) {
 			continue;
 		}
-		bool active = (i == 1) == on;
-		lv_obj_set_style_bg_color(dst_pills[i], active ? theme()->accent : theme()->surface_pressed, 0);
-		lv_obj_t *label = lv_obj_get_child(dst_pills[i], 0);
-		if (label) {
-			lv_obj_set_style_text_color(label, active ? lv_color_white() : theme()->text_primary, 0);
-		}
+		sx_pill_set_active(dst_pills[i], (i == 1) == on);
 	}
 }
 
@@ -275,7 +273,6 @@ static const timezone_t TIMEZONES[] = {
 #define TIMEZONE_COUNT ((int)(sizeof(TIMEZONES) / sizeof(TIMEZONES[0])))
 
 // The green every list in this interface uses to mark the chosen entry.
-#define TZ_CHECK_GREEN lv_color_make(46, 194, 126)
 
 static lv_obj_t *tz_checks[TIMEZONE_COUNT];
 
@@ -413,11 +410,9 @@ static void tz_open_cb(lv_event_t *e) {
 // five free-floating rollers.
 static lv_obj_t *make_card(lv_obj_t *parent) {
 	lv_obj_t *card = lv_obj_create(parent);
+	lv_obj_remove_style_all(card);
+	sx_card_style(card);
 	lv_obj_set_size(card, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
-	lv_obj_set_style_border_width(card, 0, 0);
-	lv_obj_set_style_shadow_width(card, 0, 0);
 	lv_obj_set_style_pad_all(card, 14, 0);
 	lv_obj_set_style_pad_gap(card, 10, 0);
 	lv_obj_set_scrollable(card, false);
@@ -571,12 +566,6 @@ static void timeset_refresh_theme(void) {
 		lv_obj_set_style_text_color(rollers[i], theme()->accent, LV_PART_SELECTED);
 	}
 
-	// And the pill: its fill is set by hand when the page is built, so it holds
-	// whichever accent was live then.
-	if (confirm_btn) {
-		lv_obj_set_style_bg_color(confirm_btn, theme()->accent, 0);
-	}
-
 	// Standard time and daylight saving, for the same reason. Those two carry
 	// no shared style at all -- both the fill and the ink are decided in
 	// dst_paint() -- so each is a snapshot of the palette at the moment the page
@@ -632,7 +621,7 @@ static void build_timezone_panel(gui_config_t *cfg) {
 	lv_obj_t *head_title = lv_label_create(head);
 	lv_label_set_text(head_title, tr("timeset_time_zone"));
 	lv_obj_add_style(head_title, &theme_style_text, 0);
-	lv_obj_set_style_text_font(head_title, &font_ui_32, 0);
+	lv_obj_set_style_text_font(head_title, &font_ui_34_bold, 0);
 
 	tz_list = lv_obj_create(tz_panel);
 	lv_obj_set_width(tz_list, lv_pct(100));
@@ -649,12 +638,9 @@ static void build_timezone_panel(gui_config_t *cfg) {
 
 	for (int i = 0; i < TIMEZONE_COUNT; i++) {
 		lv_obj_t *row = lv_btn_create(tz_list);
+		lv_obj_remove_style_all(row);
+		sx_card_style(row);
 		lv_obj_set_size(row, lv_pct(100), 74);
-		lv_obj_add_style(row, &theme_style_card, 0);
-		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 12, 0);
-		lv_obj_set_style_border_width(row, 0, 0);
-		lv_obj_set_style_shadow_width(row, 0, 0);
 		lv_obj_set_style_pad_hor(row, 20, 0);
 		lv_obj_set_style_pad_ver(row, 0, 0);
 		lv_obj_set_style_pad_column(row, 12, 0);
@@ -685,8 +671,7 @@ static void build_timezone_panel(gui_config_t *cfg) {
 
 		tz_checks[i] = lv_image_create(row);
 		lv_image_set_src(tz_checks[i], &icon_check);
-		lv_obj_set_style_image_recolor(tz_checks[i], TZ_CHECK_GREEN, 0);
-		lv_obj_set_style_image_recolor_opa(tz_checks[i], LV_OPA_COVER, 0);
+		lv_obj_add_style(tz_checks[i], &sx_style_icon_accent, 0);
 		lv_obj_set_hidden(tz_checks[i], true);
 	}
 }
@@ -767,7 +752,7 @@ void timeset_init(gui_config_t *cfg) {
 	title_label = lv_label_create(header_row);
 	lv_label_set_text(title_label, tr("date_and_time"));
 	lv_obj_add_style(title_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(title_label, &font_ui_32, 0);
+	lv_obj_set_style_text_font(title_label, &font_ui_34_bold, 0);
 
 	// Everything else goes in a container that takes what is left and centres
 	// it: the cards sit in the middle of the space below the header, not in the
@@ -830,12 +815,9 @@ void timeset_init(gui_config_t *cfg) {
 	// it say. A single row with the value on the right, like any settings row;
 	// tapping it opens the list.
 	lv_obj_t *tz_card = lv_obj_create(content);
+	lv_obj_remove_style_all(tz_card);
+	sx_card_style(tz_card);
 	lv_obj_set_size(tz_card, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_add_style(tz_card, &theme_style_card, 0);
-	lv_obj_add_style(tz_card, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(tz_card, 12, 0);
-	lv_obj_set_style_border_width(tz_card, 0, 0);
-	lv_obj_set_style_shadow_width(tz_card, 0, 0);
 	lv_obj_set_style_pad_hor(tz_card, 20, 0);
 	lv_obj_set_style_pad_ver(tz_card, 16, 0);
 	lv_obj_set_scrollable(tz_card, false);
@@ -861,12 +843,10 @@ void timeset_init(gui_config_t *cfg) {
 	// on a different row, and that the list stays one list instead of two nearly
 	// identical ones.
 	lv_obj_t *dst_card = lv_obj_create(content);
+	lv_obj_remove_style_all(dst_card);
+	sx_card_style(dst_card);
 	lv_obj_set_size(dst_card, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_add_style(dst_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(dst_card, 12, 0);
-	lv_obj_set_style_border_width(dst_card, 0, 0);
-	lv_obj_set_style_shadow_width(dst_card, 0, 0);
-	lv_obj_set_style_pad_hor(dst_card, 20, 0);
+	lv_obj_set_style_pad_hor(dst_card, 12, 0); // room for "Standard time" in long languages
 	lv_obj_set_style_pad_ver(dst_card, 14, 0);
 	lv_obj_set_style_pad_gap(dst_card, 10, 0);
 	lv_obj_set_scrollable(dst_card, false);
@@ -875,17 +855,20 @@ void timeset_init(gui_config_t *cfg) {
 
 	for (int i = 0; i < 2; i++) {
 		lv_obj_t *pill = lv_btn_create(dst_card);
-		lv_obj_set_size(pill, LV_SIZE_CONTENT, 52);
+		lv_obj_remove_style_all(pill);
+		sx_pill_style(pill);
+		lv_obj_set_width(pill, LV_SIZE_CONTENT);
 		lv_obj_set_flex_grow(pill, 1);
-		lv_obj_set_style_pad_hor(pill, 14, 0);
-		lv_obj_set_style_radius(pill, LV_RADIUS_CIRCLE, 0);
-		lv_obj_set_style_shadow_width(pill, 0, 0);
-		lv_obj_set_style_border_width(pill, 0, 0);
+		lv_obj_set_style_pad_hor(pill, 6, 0);
 		lv_obj_add_event_cb(pill, dst_pick_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
 		lv_obj_t *label = lv_label_create(pill);
 		lv_label_set_text(label, tr(i == 0 ? "timeset_standard_time" : "timeset_daylight_saving"));
+		// 20 and not the pills' 22: "Standard time" in Russian or German fills
+		// half the card at 22.
 		lv_obj_set_style_text_font(label, &font_ui_20, 0);
+		lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+		lv_obj_set_style_max_width(label, lv_pct(100), 0);
 		lv_obj_center(label);
 		dst_pills[i] = pill;
 	}
@@ -894,11 +877,9 @@ void timeset_init(gui_config_t *cfg) {
 	// 24 hour: below the rollers and above Confirm, where it is looked for -- it
 	// is decided while looking at the time being entered, not on another page.
 	lv_obj_t *h24_card = lv_obj_create(content);
+	lv_obj_remove_style_all(h24_card);
+	sx_card_style(h24_card);
 	lv_obj_set_size(h24_card, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_add_style(h24_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(h24_card, 12, 0);
-	lv_obj_set_style_border_width(h24_card, 0, 0);
-	lv_obj_set_style_shadow_width(h24_card, 0, 0);
 	lv_obj_set_style_pad_hor(h24_card, 20, 0);
 	lv_obj_set_style_pad_ver(h24_card, 16, 0);
 	lv_obj_set_scrollable(h24_card, false);
@@ -915,20 +896,21 @@ void timeset_init(gui_config_t *cfg) {
 		lv_obj_add_state(h24_switch, LV_STATE_CHECKED);
 	}
 
+	// The accent pill, 68 tall: the page's one action.
 	lv_obj_t *confirm = lv_btn_create(content);
 	confirm_btn = confirm;
-	lv_obj_set_size(confirm, 230, 64);
-	lv_obj_add_style(confirm, &theme_style_card, 0);
-	lv_obj_add_style(confirm, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_bg_color(confirm, theme()->accent, 0);
-	lv_obj_set_style_radius(confirm, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
-	lv_obj_set_style_shadow_width(confirm, 0, 0);
+	lv_obj_remove_style_all(confirm);
+	lv_obj_set_size(confirm, LV_SIZE_CONTENT, SX_SHEET_BTN_H);
+	lv_obj_set_style_min_width(confirm, 240, 0);
+	lv_obj_set_style_pad_hor(confirm, 40, 0);
+	lv_obj_set_style_radius(confirm, LV_RADIUS_CIRCLE, 0);
+	lv_obj_add_style(confirm, &sx_style_accent, 0);
+	lv_obj_add_style(confirm, &sx_style_press, LV_STATE_PRESSED);
 	lv_obj_add_event_cb(confirm, confirm_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *confirm_label = lv_label_create(confirm);
 	lv_label_set_text(confirm_label, tr("confirm"));
-	lv_obj_set_style_text_font(confirm_label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(confirm_label, lv_color_white(), 0);
+	lv_obj_set_style_text_font(confirm_label, &font_ui_26_bold, 0);
 	lv_obj_center(confirm_label);
 
 	build_timezone_panel(cfg);

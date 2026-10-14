@@ -7,6 +7,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/shell/confirm.h"
+#include "src/gui/shell/sx_sheet.h"
 #include "src/gui/shell/easteregg.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/settings/fwupdate.h"
@@ -14,6 +15,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/core/config.h"
 #include "src/system/device/factoryreset.h"
 #include "src/system/audio/headset.h"
@@ -81,8 +83,16 @@ static void factory_second_confirmed(void *user) {
 
 static void factory_first_confirmed(void *user) {
 	(void)user;
-	confirm_show("system_are_you_sure", "system_reset_confirm_note",
-				 "system_reset_2", factory_second_confirmed, NULL);
+	// The second sheet's button is the irreversible one: red (2.0, principle 6).
+	sx_sheet_t sheet = {
+		.title = tr("system_are_you_sure"),
+		.subtitle = tr("system_reset_confirm_note"),
+		.cancel_label = tr("cancel"),
+		.action_label = tr("system_reset_2"),
+		.action_destructive = true,
+		.on_action = factory_second_confirmed,
+	};
+	sx_sheet_open(&sheet);
 }
 
 static void factory_clicked_cb(lv_event_t *e) {
@@ -240,7 +250,7 @@ static void build_sysinfo_page(gui_config_t *cfg) {
 	lv_obj_set_width(sd_card, lv_pct(100));
 	lv_obj_set_height(sd_card, 116);
 	lv_obj_add_style(sd_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(sd_card, 12, 0);
+	lv_obj_set_style_radius(sd_card, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(sd_card, 0, 0);
 	lv_obj_set_style_shadow_width(sd_card, 0, 0);
 	lv_obj_set_style_pad_hor(sd_card, 20, 0);

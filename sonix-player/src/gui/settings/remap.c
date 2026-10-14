@@ -16,6 +16,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/system/image/stb_image_decl.h"
 #include "src/system/input/keymap.h"
 #include "src/system/core/lang.h"
@@ -457,7 +458,7 @@ static void build_double_row(gui_config_t *cfg, int x, int y, int w) {
 	lv_obj_set_size(row, w, LV_SIZE_CONTENT);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 10, 0);
+	lv_obj_set_style_radius(row, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, 14, 0);
@@ -614,7 +615,7 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 		lv_obj_set_size(row, col_w, row_h);
 		lv_obj_add_style(row, &theme_style_card, 0);
 		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 10, 0);
+		lv_obj_set_style_radius(row, SX_CARD_R, 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
 		lv_obj_set_style_pad_hor(row, 14, 0);

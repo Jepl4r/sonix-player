@@ -309,7 +309,10 @@ void settingsrow_title_corner_slots(lv_obj_t *title, gui_config_t *cfg, int butt
 	fit_title(title, width);
 }
 
+static void groups_refresh(lv_obj_t *screen);
+
 void settingsrow_title_fit_header(lv_obj_t *screen, gui_config_t *cfg) {
+	groups_refresh(screen);
 	lv_obj_t *title = settingsrow_page_title(screen);
 	if (!title || lv_obj_get_style_width(title, LV_PART_MAIN) != title_width(cfg, 1)) {
 		return; // no heading of ours, or the page sized it itself
@@ -329,6 +332,162 @@ void settingsrow_title_fit_header(lv_obj_t *screen, gui_config_t *cfg) {
 		}
 	}
 	settingsrow_title_corner_slots(title, cfg, 0);
+}
+
+// ---------------------------------------------------------------------------
+// Section headings
+//
+// Capitals are made here rather than kept in the language files: one string
+// per heading serves the heading and anything else that names the same thing.
+// The text is rewritten on every page show (settingsrow_title_fit_header runs
+// then), because lang_set() re-labels a label only when its text is a whole
+// translation, which a capitalised one is not. Cheap: a handful of labels.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	const char *tag;
+	int count;
+} group_info_t;
+
+#define SETTINGSROW_MAX_GROUPS 32
+static lv_obj_t *groups[SETTINGSROW_MAX_GROUPS];
+static int group_count;
+
+// The capital of one code point, for the scripts the language files are in:
+// ASCII, Latin-1, Latin Extended-A, Greek and Cyrillic. Everything else (CJK,
+// ß, digits) has none and comes back as it is.
+static uint32_t upper_cp(uint32_t c) {
+	if (c >= 'a' && c <= 'z') {
+		return c - 32;
+	}
+	if (c >= 0xE0 && c <= 0xFE && c != 0xF7) {
+		return c - 32;
+	}
+	if (c >= 0x100 && c <= 0x17F) {
+		// Pairs, the capital first -- except two runs where it is second.
+		bool shifted = (c >= 0x139 && c <= 0x148) || (c >= 0x179 && c <= 0x17E);
+		if (c == 0x131 || c == 0x138 || c == 0x149 || c == 0x17F) {
+			return c;
+		}
+		return shifted ? ((c & 1) ? c : c - 1) : ((c & 1) ? c - 1 : c);
+	}
+	if (c >= 0x3B1 && c <= 0x3C9 && c != 0x3C2) {
+		return c - 32;
+	}
+	if (c >= 0x430 && c <= 0x44F) {
+		return c - 32;
+	}
+	if (c >= 0x450 && c <= 0x45F) {
+		return c - 80;
+	}
+	return c;
+}
+
+static void utf8_upper(const char *in, char *out, size_t size) {
+	size_t o = 0;
+	const unsigned char *p = (const unsigned char *)in;
+	while (*p && o + 4 < size) {
+		uint32_t c;
+		int n;
+		if (*p < 0x80) {
+			c = *p;
+			n = 1;
+		} else if ((*p & 0xE0) == 0xC0 && p[1]) {
+			c = ((uint32_t)(*p & 0x1F) << 6) | (p[1] & 0x3F);
+			n = 2;
+		} else {
+			// Three bytes and more: nothing in the scripts above, copied whole.
+			n = (*p & 0xF0) == 0xE0 ? 3 : (*p & 0xF8) == 0xF0 ? 4 : 1;
+			for (int i = 0; i < n && p[i]; i++) {
+				out[o++] = (char)p[i];
+			}
+			p += n;
+			continue;
+		}
+		c = upper_cp(c);
+		if (c < 0x80) {
+			out[o++] = (char)c;
+		} else {
+			out[o++] = (char)(0xC0 | (c >> 6));
+			out[o++] = (char)(0x80 | (c & 0x3F));
+		}
+		p += n;
+	}
+	out[o] = '\0';
+}
+
+static void group_write(lv_obj_t *label) {
+	group_info_t *info = lv_obj_get_user_data(label);
+	if (!info || !info->tag) {
+		return;
+	}
+	char text[128];
+	char upper[160];
+	if (info->count >= 0) {
+		snprintf(text, sizeof(text), "%s \xC2\xB7 %d", tr(info->tag), info->count);
+	} else {
+		snprintf(text, sizeof(text), "%s", tr(info->tag));
+	}
+	utf8_upper(text, upper, sizeof(upper));
+	if (strcmp(lv_label_get_text(label), upper) != 0) {
+		lv_label_set_text(label, upper);
+	}
+}
+
+static void groups_refresh(lv_obj_t *screen) {
+	for (int i = 0; i < group_count; i++) {
+		if (lv_obj_get_screen(groups[i]) == screen) {
+			group_write(groups[i]);
+		}
+	}
+}
+
+static void group_deleted_cb(lv_event_t *e) {
+	lv_obj_t *label = lv_event_get_target(e);
+	free(lv_obj_get_user_data(label));
+	for (int i = 0; i < group_count; i++) {
+		if (groups[i] == label) {
+			groups[i] = groups[--group_count];
+			return;
+		}
+	}
+}
+
+lv_obj_t *settingsrow_group(lv_obj_t *parent, const char *tag, int count) {
+	lv_obj_t *label = lv_label_create(parent);
+	lv_obj_set_width(label, lv_pct(100));
+	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
+	lv_obj_add_style(label, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(label, &font_ui_16, 0);
+	lv_obj_set_style_text_letter_space(label, 1, 0);
+	// 14 above and 6 below in the prototype, less the column's own gap.
+	lv_obj_set_style_pad_top(label, 14 - ROW_GAP, 0);
+	lv_obj_set_style_pad_bottom(label, 0, 0);
+	lv_obj_set_style_pad_hor(label, 6, 0);
+	lv_label_set_text(label, "");
+
+	group_info_t *info = malloc(sizeof(*info));
+	if (info) {
+		info->tag = tag;
+		info->count = count;
+		lv_obj_set_user_data(label, info);
+		lv_obj_add_event_cb(label, group_deleted_cb, LV_EVENT_DELETE, NULL);
+		if (group_count < SETTINGSROW_MAX_GROUPS) {
+			groups[group_count++] = label;
+		}
+	}
+	group_write(label);
+	return label;
+}
+
+void settingsrow_group_set(lv_obj_t *group, const char *tag, int count) {
+	group_info_t *info = group ? lv_obj_get_user_data(group) : NULL;
+	if (!info) {
+		return;
+	}
+	info->tag = tag;
+	info->count = count;
+	group_write(group);
 }
 
 // Returns the heading settingsrow_page() created, for pages whose title is not
@@ -553,6 +712,34 @@ lv_obj_t *settingsrow_toggle(lv_obj_t *parent, const char *name, lv_obj_t **swit
 
 	if (switch_out) {
 		*switch_out = toggle;
+	}
+	return card;
+}
+
+// A tap on the card's body is a tap on its switch. The switch's own tap stops
+// here too (it bubbles up from the head row), so it is told apart and left to
+// the switch.
+static void switch_card_clicked_cb(lv_event_t *e) {
+	lv_obj_t *sw = lv_event_get_user_data(e);
+	if (!sw || lv_event_get_target(e) == sw) {
+		return;
+	}
+	switch_tap_cb(e);
+}
+
+lv_obj_t *settingsrow_switch_card(lv_obj_t *parent, const char *name, const char *note, lv_obj_t **switch_out,
+								  lv_event_cb_t cb) {
+	lv_obj_t *card = sx_card_create(parent);
+	sx_card_title(card, tr(name));
+	if (note) {
+		sx_card_subtitle(card, tr(note), false);
+	}
+	lv_obj_t *sw = sx_card_switch(card, cb);
+	// The card is the button: pressed fill and all (sx_card_on_click), with the
+	// switch flipped by the same rule as a tap on the switch itself.
+	sx_card_on_click(card, switch_card_clicked_cb, sw);
+	if (switch_out) {
+		*switch_out = sw;
 	}
 	return card;
 }

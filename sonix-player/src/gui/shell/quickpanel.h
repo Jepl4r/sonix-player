@@ -5,10 +5,10 @@
 
 #include "lvgl/lvgl.h"
 
-// The pull-down control centre: dragging down from the status bar slides in a
-// sheet with the wifi and bluetooth buttons (tap to toggle, long press to open
-// the page), the transport controls and the brightness slider. Tap outside or
-// swipe up to put it away.
+// The pull-down control centre (2.0): dragging down from the status bar, or a
+// tap on it, brings a card down under the bar with the round buttons -- a tap
+// switches what one stands for, a hold opens its page -- and the brightness
+// slider. A tap outside or a swipe up of SX_CC_CLOSE_PX puts it away.
 void quickpanel_init(gui_config_t *cfg);
 void quickpanel_open(void);
 
@@ -34,7 +34,7 @@ void quickpanel_drag_end(void);
 // The panel holds up to sixteen, in a grid of sixteen places. A place can also
 // be empty: the panel simply draws one button fewer. The card shows the first
 // eight; past them a handle appears under the brightness slider, and dragging
-// the sheet down stretches the card over the now-playing one to show the rest.
+// the card down (or tapping the handle) stretches it to show the rest.
 //
 // Both the grid and the buttons left out of it live in [quickpanel] as lists of
 // names -- `order`, with "-" for an empty place, and `hidden`. Names and not
@@ -67,6 +67,11 @@ typedef enum {
 	QP_BTN_SLEEP_PODCAST,
 	QP_BTN_WIFI_TRANSFER,
 	QP_BTN_GAPLESS,
+	// 2.0: the volume limit (a switch), USB DAC mode (the way to its page) and
+	// the DAC's filter (a choice of four, in a sheet).
+	QP_BTN_VOLUME_LIMIT,
+	QP_BTN_DAC,
+	QP_BTN_DAC_FILTER,
 	QP_BTN_COUNT,
 	QP_BTN_NONE = QP_BTN_COUNT, // an empty place in the grid
 } quickpanel_button_t;

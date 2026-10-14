@@ -1208,6 +1208,10 @@ static void poll_status(void) {
 	ssid_unescape(status.ssid); // wpa_supplicant escapes this one too
 	status_field(buf, "ip_address", status.ip, sizeof(status.ip));
 	status_field(buf, "address", status.mac, sizeof(status.mac));
+	char freq[16];
+	if (status_field(buf, "freq", freq, sizeof(freq))) {
+		status.freq_mhz = atoi(freq); // signal_poll's FREQUENCY, below, has the last word
+	}
 
 	if (status.state == WIFI_STATE_CONNECTED) {
 		char signal_buf[512];
@@ -1215,6 +1219,13 @@ static void poll_status(void) {
 		if (wpa1("signal_poll", signal_buf, sizeof(signal_buf)) == 0 &&
 			status_field(signal_buf, "RSSI", rssi, sizeof(rssi))) {
 			status.signal = atoi(rssi);
+			char field[16];
+			if (status_field(signal_buf, "FREQUENCY", field, sizeof(field))) {
+				status.freq_mhz = atoi(field);
+			}
+			if (status_field(signal_buf, "LINKSPEED", field, sizeof(field))) {
+				status.link_mbps = atoi(field);
+			}
 		}
 		status.bars = status.signal ? bars_for(status.signal) : 3;
 
