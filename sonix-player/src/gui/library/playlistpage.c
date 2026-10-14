@@ -23,6 +23,7 @@
 #include "src/gui/shell/sx_sheet.h"
 #include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/sx_styles.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
@@ -1452,7 +1453,8 @@ void playlistpage_init(gui_config_t *cfg) {
 	import_action = lv_btn_create(import_layer);
 	lv_obj_set_size(import_action, cfg->screen_width - 2 * cfg->padding, 62);
 	lv_obj_align(import_action, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding);
-	lv_obj_set_style_bg_color(import_action, theme()->accent, 0);
+	// The accent and its own ink (white on a pale accent was barely there).
+	lv_obj_add_style(import_action, &sx_style_accent, 0);
 	lv_obj_set_style_border_width(import_action, 0, 0);
 	lv_obj_set_style_shadow_width(import_action, 0, 0);
 	lv_obj_set_style_radius(import_action, 12, 0);
@@ -1461,7 +1463,6 @@ void playlistpage_init(gui_config_t *cfg) {
 	import_action_label = lv_label_create(import_action);
 	lv_label_set_text(import_action_label, tr("playlist_import"));
 	lv_obj_set_style_text_font(import_action_label, &font_ui_24, 0);
-	lv_obj_set_style_text_color(import_action_label, lv_color_white(), 0);
 	lv_obj_center(import_action_label);
 
 	int import_top = content_top;

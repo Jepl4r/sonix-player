@@ -13,6 +13,7 @@ lv_style_t sx_style_accent;
 lv_style_t sx_style_icon;
 lv_style_t sx_style_icon2;
 lv_style_t sx_style_icon_accent;
+lv_style_t sx_style_icon_on_accent;
 lv_style_t sx_style_hairline;
 lv_style_t sx_style_swipe_end;
 lv_style_t sx_style_cover_tone;
@@ -49,6 +50,7 @@ void sx_styles_init(void) {
 	init_recolour(&sx_style_icon);
 	init_recolour(&sx_style_icon2);
 	init_recolour(&sx_style_icon_accent);
+	init_recolour(&sx_style_icon_on_accent);
 	lv_style_init(&sx_style_hairline);
 	init_bg(&sx_style_swipe_end);
 	init_bg(&sx_style_cover_tone);
@@ -85,6 +87,7 @@ void sx_styles_apply(void) {
 	lv_style_set_image_recolor(&sx_style_icon, p->text);
 	lv_style_set_image_recolor(&sx_style_icon2, p->text2);
 	lv_style_set_image_recolor(&sx_style_icon_accent, p->accent);
+	lv_style_set_image_recolor(&sx_style_icon_on_accent, p->on_accent);
 	lv_style_set_bg_color(&sx_style_hairline, p->hairline);
 	lv_style_set_bg_opa(&sx_style_hairline, p->hairline_opa);
 	lv_style_set_bg_color(&sx_style_swipe_end, p->swipe_end);

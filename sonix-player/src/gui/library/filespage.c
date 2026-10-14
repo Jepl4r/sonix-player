@@ -24,6 +24,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/sx_styles.h"
 #include "src/gui/shell/touch.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
@@ -1306,14 +1307,14 @@ void filespage_init(gui_config_t *cfg) {
 	lv_obj_set_size(pick_here_btn, cfg->screen_width - 2 * cfg->padding, 64);
 	lv_obj_align(pick_here_btn, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding);
 	lv_obj_set_style_radius(pick_here_btn, 14, 0);
-	lv_obj_set_style_bg_color(pick_here_btn, theme()->accent, 0);
+	// The accent and its own ink (white on a pale accent was barely there).
+	lv_obj_add_style(pick_here_btn, &sx_style_accent, 0);
 	lv_obj_set_style_border_width(pick_here_btn, 0, 0);
 	lv_obj_set_style_shadow_width(pick_here_btn, 0, 0);
 	lv_obj_add_event_cb(pick_here_btn, pick_here_cb, LV_EVENT_CLICKED, NULL);
 
 	pick_here_label = lv_label_create(pick_here_btn);
 	lv_label_set_text(pick_here_label, tr("files_move_here"));
-	lv_obj_set_style_text_color(pick_here_label, lv_color_white(), 0);
 	lv_obj_set_style_text_font(pick_here_label, &font_ui_24, 0);
 	lv_obj_center(pick_here_label);
 

@@ -26,6 +26,7 @@ extern lv_style_t sx_style_accent;	   // bg accent, text and glyphs in on_accent
 extern lv_style_t sx_style_icon;	   // image recolour: primary text
 extern lv_style_t sx_style_icon2;	   // image recolour: secondary text
 extern lv_style_t sx_style_icon_accent; // image recolour: the accent
+extern lv_style_t sx_style_icon_on_accent; // image recolour: the ink on an accent fill (dark on a pale accent)
 extern lv_style_t sx_style_hairline;   // bg: the 1 px line over a sheet or the mini player
 extern lv_style_t sx_style_swipe_end;  // bg + text: the underlay of a row pulled left
 extern lv_style_t sx_style_cover_tone; // bg: the plaque before a thumbnail, page hue

@@ -2337,8 +2337,14 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 	lv_obj_add_event_cb(p->sel_action_btn, sel_action_cb, LV_EVENT_CLICKED, p);
 	lv_obj_t *action_icon = lv_image_create(p->sel_action_btn);
 	lv_image_set_src(action_icon, p->feed ? &icon_download : &icon_trash);
-	lv_obj_set_style_image_recolor(action_icon, lv_color_white(), 0);
-	lv_obj_set_style_image_recolor_opa(action_icon, LV_OPA_COVER, 0);
+	// On the accent, the accent's own ink: white on a pale accent (the dark
+	// theme's, yellow) was barely there. White on the red of the bin.
+	if (p->feed) {
+		lv_obj_add_style(action_icon, &sx_style_icon_on_accent, 0);
+	} else {
+		lv_obj_set_style_image_recolor(action_icon, lv_color_white(), 0);
+		lv_obj_set_style_image_recolor_opa(action_icon, LV_OPA_COVER, 0);
+	}
 	lv_obj_center(action_icon);
 	lv_obj_set_hidden(p->sel_action_btn, true);
 
