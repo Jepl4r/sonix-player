@@ -6,6 +6,8 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/quickpanel.h"
 #include "src/gui/shell/settingsrow.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_styles.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/lang.h"
@@ -31,7 +33,6 @@ lv_obj_t *ccsettings_screen;
 #define ROW_HEIGHT 72
 #define ROW_GAP 8
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
 #define ROW_PAD 20
 #define ICON_BOX 56
 #define HEADING_H 40
@@ -117,7 +118,7 @@ static void refresh(void) {
 	}
 
 	lv_label_set_text_fmt(in_use_count, "%d/%d", in_n, QP_SLOT_COUNT);
-	lv_obj_set_y(others_heading, others_heading_y() + 10);
+	lv_obj_set_y(others_heading, others_heading_y() + 16);
 
 	int rows_below = out_n < LIST_MIN_ROWS ? LIST_MIN_ROWS : out_n;
 	lv_obj_set_height(body, others_top() + rows_below * ROW_PITCH + 8);
@@ -283,23 +284,21 @@ static void loaded_cb(lv_event_t *e) {
 	refresh();
 }
 
+// The 2.0 section heading (small capitals, secondary), placed by hand on the
+// canvas like the rows.
 static lv_obj_t *make_heading(lv_obj_t *parent, const char *tag, int y) {
-	lv_obj_t *label = lv_label_create(parent);
-	lv_label_set_text(label, tr(tag));
-	lv_obj_add_style(label, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_set_pos(label, 4, y + 10);
+	lv_obj_t *label = settingsrow_group(parent, tag, -1);
+	lv_obj_set_style_pad_top(label, 0, 0);
+	lv_obj_set_pos(label, 0, y + 16);
 	return label;
 }
 
 static void make_row(entry_t *entry, int width) {
 	lv_obj_t *row = lv_obj_create(body);
+	lv_obj_remove_style_all(row);
+	sx_card_style(row);
 	lv_obj_set_size(row, width, ROW_HEIGHT);
 	lv_obj_set_x(row, 0);
-	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
-	lv_obj_set_style_border_width(row, 0, 0);
-	lv_obj_set_style_shadow_width(row, 0, 0);
 	lv_obj_set_style_pad_hor(row, ROW_PAD, 0);
 	lv_obj_set_style_pad_ver(row, 0, 0);
 	lv_obj_set_scrollable(row, false);
@@ -371,9 +370,9 @@ void ccsettings_init(gui_config_t *cfg) {
 
 	// How many of the sixteen places are taken, level with the first heading.
 	in_use_count = lv_label_create(body);
-	lv_obj_add_style(in_use_count, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(in_use_count, &font_ui_22, 0);
-	lv_obj_align(in_use_count, LV_ALIGN_TOP_RIGHT, -4, 10);
+	lv_obj_add_style(in_use_count, &sx_style_text2, 0);
+	lv_obj_set_style_text_font(in_use_count, &font_ui_16, 0);
+	lv_obj_align(in_use_count, LV_ALIGN_TOP_RIGHT, -6, 16);
 
 	for (int i = 0; i < QP_BTN_COUNT; i++) {
 		make_row(&entries[i], width);
