@@ -740,8 +740,10 @@ static void play_book(const char *book) {
 	play_from(book, file, resume);
 
 	audiobookdb_touch(book); // the order by last listened moves it to the top
+	// 2.0: the page stays, as for a track, a station or an episode (the
+	// handoff: a tap on a book plays it in the mini player); the player is a
+	// tap on the mini player away.
 	player_refresh_now_playing();
-	player_sheet_open(true);
 }
 
 void audiobooks_play_at(const char *book, const char *file, double seconds) {
@@ -765,6 +767,7 @@ static void book_tap(lv_obj_t *obj, void *user) {
 	char book[512];
 	snprintf(book, sizeof(book), "%s", w->path);
 	play_book(book);
+	refresh_playmarks(row->owner); // the page stays: the book now playing is marked
 }
 
 // The list coming on screen: read for the first time, or brought up to date
