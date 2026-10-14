@@ -84,6 +84,10 @@
 // is not a reset -- and because a file nobody deletes is a file that outlives
 // the thing that made it.
 #define EBOOK_CONFIG_FILE "/usr/data/ebook_config.ini"
+// A streaming session imported from a file on the card (Zvuk's token): it is
+// an account, and a reset must not leave it signed in -- the recovery script
+// would empty /data too, but not on a rootfs without it (see above).
+#define ZVUK_SESSION_FILE "/usr/data/zvuk_session.ini"
 
 // The two functions below serve only the real procedure, which the host build
 // does not have; without this guard the compiler reports them as defined but
@@ -146,8 +150,8 @@ bool factoryreset_supported(void) {
 
 void factoryreset_run(void) {
 #ifdef HOST_BUILD
-	printf("factoryreset: (build host) would delete %s and %s, write the note and reboot\n", CONFIG_FILE,
-		   EBOOK_CONFIG_FILE);
+	printf("factoryreset: (build host) would delete %s, %s and %s, write the note and reboot\n", CONFIG_FILE,
+		   EBOOK_CONFIG_FILE, ZVUK_SESSION_FILE);
 #else
 	printf("factoryreset: starting the reset\n");
 
@@ -186,7 +190,7 @@ void factoryreset_run(void) {
 	unmount_card();
 
 	// This player's configuration goes now, without waiting for the reboot.
-	static const char *const OURS[] = {CONFIG_FILE, EBOOK_CONFIG_FILE};
+	static const char *const OURS[] = {CONFIG_FILE, EBOOK_CONFIG_FILE, ZVUK_SESSION_FILE};
 	for (size_t i = 0; i < sizeof(OURS) / sizeof(OURS[0]); i++) {
 		if (unlink(OURS[i]) == 0) {
 			printf("factoryreset: %s deleted\n", OURS[i]);

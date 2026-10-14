@@ -2,6 +2,7 @@
 
 #include <stdint.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 #include "lvgl/lvgl.h"
@@ -27,6 +28,11 @@
 #include "src/gui/shell/sx_toast.h"
 #include "src/gui/streaming/tidalpage.h"
 #include "src/gui/streaming/yandexpage.h"
+#ifdef SONIX_ZVUK
+#include "src/gui/streaming/zvukpage.h"
+#include "src/system/streaming/zvuk.h"
+#endif
+#include "src/system/streaming/cardimport.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/streaming/podcast.h"
@@ -64,6 +70,9 @@ typedef enum {
 	SVC_PODCASTS,
 	SVC_SUBSONIC,
 	SVC_YANDEX,
+#ifdef SONIX_ZVUK
+	SVC_ZVUK,
+#endif
 	SVC_COUNT,
 } service_t;
 
@@ -78,6 +87,10 @@ static const struct {
 	// The user's own server: Navidrome, Gonic, Airsonic...
 	[SVC_SUBSONIC] = {"subsonic", {"subsonic", &icon_menu_subsonic, &subsonic_screen, NULL}},
 	[SVC_YANDEX] = {"yandex", {"yandex", &icon_menu_yandex, &yandex_screen, NULL}},
+#ifdef SONIX_ZVUK
+	// Fork only (Makefile: SONIX_ZVUK).
+	[SVC_ZVUK] = {"zvuk", {"zvuk", &icon_menu_zvuk, &zvuk_screen, NULL}},
+#endif
 };
 
 static service_t added[SVC_COUNT];
@@ -114,6 +127,10 @@ static bool service_signed_in(service_t s) {
 		return subsonic_logged_in();
 	case SVC_YANDEX:
 		return yandex_logged_in();
+#ifdef SONIX_ZVUK
+	case SVC_ZVUK:
+		return zvuk_logged_in();
+#endif
 	default:
 		return false;
 	}
@@ -293,6 +310,9 @@ static const char *const ABOUT[SVC_COUNT] = {
 	[SVC_TIDAL] = "streaming_about_tidal",		 [SVC_QOBUZ] = "streaming_about_qobuz",
 	[SVC_RADIO] = "streaming_about_radio",		 [SVC_PODCASTS] = "streaming_about_podcasts",
 	[SVC_SUBSONIC] = "streaming_about_subsonic", [SVC_YANDEX] = "streaming_about_yandex",
+#ifdef SONIX_ZVUK
+	[SVC_ZVUK] = "streaming_about_zvuk",
+#endif
 };
 
 static void add_row_cb(lv_event_t *e) {
@@ -364,15 +384,67 @@ static void open_downloads_cb(lv_event_t *e) {
 	downloadspage_open(page_cfg);
 }
 
+// ---------------------------------------------------------------------------
+// Accounts brought on the card (cardimport.h): what became of the file, said
+// in a toast whatever page is up. When it signed a service in and its page is
+// the one on screen, the page is shown again, signed in. Not for the outcomes
+// that leave the file in place: the page would look for it again on being
+// shown, and round it would go.
+// ---------------------------------------------------------------------------
+
+typedef struct {
+	char service[16];
+	cardimport_result_t result;
+	char message[256];
+} import_note_t;
+
+static void import_note_async(void *user) {
+	import_note_t *n = user;
+	const char *text = n->message[0] ? n->message : tr("streaming_import_failed");
+	if (n->result == CARDIMPORT_OK) {
+		toast_success(text);
+		for (int s = 0; s < SVC_COUNT; s++) {
+			lv_obj_t *screen = SERVICES[s].entry.target ? *SERVICES[s].entry.target : NULL;
+			if (strcmp(SERVICES[s].id, n->service) == 0 && screen && lv_screen_active() == screen) {
+				lv_obj_send_event(screen, LV_EVENT_SCREEN_LOADED, NULL);
+			}
+		}
+	} else {
+		toast_error(text);
+	}
+	free(n);
+}
+
+static void import_listener(const char *service, cardimport_result_t result, const char *message) {
+	import_note_t *n = malloc(sizeof(*n));
+	if (!n) {
+		return;
+	}
+	snprintf(n->service, sizeof(n->service), "%s", service);
+	n->result = result;
+	snprintf(n->message, sizeof(n->message), "%s", message ? message : "");
+	if (!gui_post(import_note_async, n)) {
+		free(n);
+	}
+}
+
 void streaming_init(gui_config_t *cfg) {
 	qobuzpage_init(cfg);
 	tidalpage_init(cfg);
 	podcastpage_init(cfg);
 	subsonicpage_init(cfg);
 	yandexpage_init(cfg);
+#ifdef SONIX_ZVUK
+	zvukpage_init(cfg);
+#endif
+	cardimport_add_listener(import_listener);
 
 	page_cfg = cfg;
 	tile_grid = gridpage_build(streaming_screen, cfg, NULL, 0, 2, 3, true);
+#ifdef SONIX_ZVUK
+	// Seven services do not fit three rows of two: the rest scroll.
+	gridpage_set_scrolling(tile_grid);
+#endif
 
 	// With every tile taken off, the page says where they come back from.
 	empty_note = lv_label_create(streaming_screen);

@@ -40,6 +40,32 @@ static __thread char last_final_url[2600];
 
 const char *http_last_final_url(void) { return last_final_url; }
 
+// The Content-Type of this thread's last answer (http_last_content_type), and
+// the headers its streams carry on top of the usual ones
+// (http_set_thread_stream_headers). Both per thread, like everything above.
+static __thread char last_content_type[64];
+static __thread const char *thread_stream_headers;
+
+const char *http_last_content_type(void) { return last_content_type; }
+
+void http_set_thread_stream_headers(const char *headers) { thread_stream_headers = headers; }
+
+// Whether a block of "Name: value\r\n" lines carries `name` (any case). A
+// caller that sends its own User-Agent or Accept means it to replace ours:
+// two of them in one request read as a bot to the filters that look (the
+// anti-bot in front of zvuk.com answers 418 to anything but a browser's).
+static bool carries_header(const char *headers, const char *name) {
+	size_t len = strlen(name);
+	for (const char *line = headers; line && *line;) {
+		if (strncasecmp(line, name, len) == 0 && line[len] == ':') {
+			return true;
+		}
+		line = strchr(line, '\n');
+		line = line ? line + 1 : NULL;
+	}
+	return false;
+}
+
 static void clear_last_error(void) {
 	last_error[0] = '\0';
 }
@@ -723,14 +749,17 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 	int n = snprintf(request, sizeof(request),
 					 "%s %s HTTP/1.0\r\n"
 					 "Host: %s\r\n"
-					 "User-Agent: " HTTP_USER_AGENT "\r\n"
-					 "Accept: */*\r\n"
+					 "%s"
+					 "%s"
 					 "Accept-Encoding: identity\r\n"
 					 "Connection: close\r\n"
 					 "%s"
 					 "%s"
 					 "\r\n",
-					 method, u->path, host_header, body_headers, extra_headers ? extra_headers : "");
+					 method, u->path, host_header,
+					 carries_header(extra_headers, "User-Agent") ? "" : "User-Agent: " HTTP_USER_AGENT "\r\n",
+					 carries_header(extra_headers, "Accept") ? "" : "Accept: */*\r\n", body_headers,
+					 extra_headers ? extra_headers : "");
 	// Compare the length against the buffer, not just against zero: snprintf
 	// truncates but returns what it would have written, so an over-long
 	// request would put bytes from past the end of the stack on the wire. It
@@ -756,6 +785,9 @@ static bool get_once(const url_t *u, const http_req_t *req, char **out, size_t *
 	int lead_len = 0;
 	int status = read_headers(&conn, headers, sizeof(headers), lead, sizeof(lead), &lead_len);
 	*status_out = status;
+	if (!header_value(headers, "Content-Type", last_content_type, sizeof(last_content_type))) {
+		last_content_type[0] = '\0';
+	}
 
 	if (status >= 300 && status < 400) {
 		location[0] = '\0';
@@ -972,15 +1004,20 @@ static bool stream_open_once(http_stream_t *st, const char *url, long range_from
 		snprintf(range, sizeof(range), "Range: bytes=%ld-\r\n", range_from);
 	}
 
-	char request[2600];
+	const char *extra = thread_stream_headers;
+	char request[3200];
 	int n = snprintf(request, sizeof(request),
 					 "GET %s HTTP/1.0\r\n" // 1.0: no chunking, no keep-alive to argue about
 					 "Host: %s\r\n"
-					 "User-Agent: " HTTP_USER_AGENT "\r\n"
 					 "%s"
-					 "Accept: */*\r\n"
+					 "%s"
+					 "%s"
+					 "%s"
 					 "\r\n",
-					 u.path, host_header, range_from > 0 ? range : "Icy-MetaData: 1\r\n");
+					 u.path, host_header,
+					 carries_header(extra, "User-Agent") ? "" : "User-Agent: " HTTP_USER_AGENT "\r\n",
+					 range_from > 0 ? range : "Icy-MetaData: 1\r\n",
+					 carries_header(extra, "Accept") ? "" : "Accept: */*\r\n", extra ? extra : "");
 	// As above: snprintf returns what it would have written, not what it did.
 	if (n <= 0 || (size_t)n >= sizeof(request) || !conn_write_all(&conn, request, (size_t)n)) {
 		conn_close(&conn);

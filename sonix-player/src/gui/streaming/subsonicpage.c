@@ -38,6 +38,7 @@
 #include "src/system/streaming/streamerr.h"
 #include "src/system/streaming/streamturn.h"
 #include "src/system/streaming/subsonic.h"
+#include "src/system/streaming/cardimport.h"
 #include "src/system/streaming/subsoniccache.h"
 #include "src/system/streaming/subsonicsync.h"
 #include "src/system/device/system.h"
@@ -2421,6 +2422,8 @@ bool subsonicpage_open_album(const char *album_id, const char *title) {
 
 static void home_loaded_cb(lv_event_t *e) {
 	(void)e;
+	// A subsonic.txt brought on the card signs in from here too (cardimport.h).
+	cardimport_check("subsonic");
 	subsoniccache_set_root(storage_sd_root());
 	qobuzart_set_root(storage_sd_root());
 	rebuild_home();

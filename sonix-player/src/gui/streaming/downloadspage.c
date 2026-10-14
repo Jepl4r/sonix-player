@@ -29,6 +29,11 @@
 #include "src/system/streaming/yandex.h"
 #include "src/system/streaming/yandexcache.h"
 #include "src/system/streaming/yandexdl.h"
+#ifdef SONIX_ZVUK
+#include "src/system/streaming/zvuk.h"
+#include "src/system/streaming/zvukcache.h"
+#include "src/system/streaming/zvukdl.h"
+#endif
 
 // See downloadspage.h.
 
@@ -44,23 +49,53 @@
 
 static bool always(void) { return true; }
 
+// What a service's "Save to the card" queue is doing, for the card's line.
+typedef struct {
+	bool active;
+	int queued;
+	int percent; // -1 unknown
+	char title[96];
+} save_state_t;
+
 typedef struct {
 	const char *id;		  // the provider's id, and the translation key of its name
 	long limit;			  // the cache's ceiling, bytes
 	bool (*usable)(void); // the firmware has what the service needs
 	void (*clear)(void);  // the service's own clear of its cache
+	// A queue saving into the library (Yandex, Zvuk), NULL for none: its state
+	// and its stop.
+	void (*save_state)(save_state_t *out);
+	void (*save_stop)(void);
 } service_t;
 
+static void yandex_save_state(save_state_t *out) {
+	yandexdl_status_t st;
+	yandexdl_status(&st);
+	*out = (save_state_t){.active = st.active, .queued = st.queued, .percent = st.percent};
+	snprintf(out->title, sizeof(out->title), "%s", st.title);
+}
+
+#ifdef SONIX_ZVUK
+static void zvuk_save_state(save_state_t *out) {
+	zvukdl_status_t st;
+	zvukdl_status(&st);
+	*out = (save_state_t){.active = st.active, .queued = st.queued, .percent = st.percent};
+	snprintf(out->title, sizeof(out->title), "%s", st.title);
+}
+#endif
+
 static const service_t SERVICES[] = {
-	{"qobuz", QOBUZCACHE_MAX_BYTES, qobuz_configured, qobuzcache_clear},
-	{"tidal", TIDALCACHE_MAX_BYTES, tidal_configured, tidalcache_clear},
-	{"subsonic", SUBSONICCACHE_MAX_BYTES, always, subsoniccache_clear},
+	{"qobuz", QOBUZCACHE_MAX_BYTES, qobuz_configured, qobuzcache_clear, NULL, NULL},
+	{"tidal", TIDALCACHE_MAX_BYTES, tidal_configured, tidalcache_clear, NULL, NULL},
+	{"subsonic", SUBSONICCACHE_MAX_BYTES, always, subsoniccache_clear, NULL, NULL},
 	// Spares the file coming down (see yandexcache_clear). The save queue is
 	// not touched: it writes into the music library, not the cache.
-	{"yandex", YANDEXCACHE_MAX_BYTES, yandex_configured, yandexcache_clear},
+	{"yandex", YANDEXCACHE_MAX_BYTES, yandex_configured, yandexcache_clear, yandex_save_state, yandexdl_cancel_all},
+#ifdef SONIX_ZVUK
+	{"zvuk", ZVUKCACHE_MAX_BYTES, zvuk_configured, zvukcache_clear, zvuk_save_state, zvukdl_cancel_all},
+#endif
 };
 #define SERVICE_COUNT ((int)(sizeof(SERVICES) / sizeof(SERVICES[0])))
-#define YANDEX_INDEX 3
 
 static const stream_provider_t *provider_of(int index) {
 	for (int i = 0; i < stream_provider_count(); i++) {
@@ -223,7 +258,7 @@ typedef struct {
 	lv_obj_t *bar;	 // how full the cache is
 	lv_obj_t *clear; // "Clear cache", only while there is something to clear
 	lv_obj_t *now;
-	lv_obj_t *save;		// Yandex only: the "Save to library" queue
+	lv_obj_t *save;		// a service that saves to the library: its queue
 	lv_obj_t *stop;		// and its stop button
 	char now_path[512]; // the growing file `now_title` names
 	char now_title[200];
@@ -401,11 +436,14 @@ static void refresh_live(void) {
 		lv_obj_set_hidden(c->now, false);
 	}
 
-	// Yandex's "Save to library" queue: its own status, read-only.
-	card_t *y = &cards[YANDEX_INDEX];
-	if (y->save) {
-		yandexdl_status_t st;
-		yandexdl_status(&st);
+	// The "Save to library" queues: their own status, read-only.
+	for (int s = 0; s < SERVICE_COUNT; s++) {
+		card_t *y = &cards[s];
+		if (!y->save || !SERVICES[s].save_state) {
+			continue;
+		}
+		save_state_t st;
+		SERVICES[s].save_state(&st);
 		if (st.active) {
 			char what[200];
 			if (st.title[0] && st.percent >= 0) {
@@ -475,17 +513,21 @@ static void clear_cb(lv_event_t *e) {
 	sx_sheet_open(&sheet);
 }
 
+static int stopping; // the service whose save queue the sheet is about
+
 static void stop_saving_confirmed(void *user) {
 	(void)user;
-	yandexdl_cancel_all();
+	if (stopping >= 0 && stopping < SERVICE_COUNT && SERVICES[stopping].save_stop) {
+		SERVICES[stopping].save_stop();
+	}
 	refresh_live();
 }
 
 static void stop_saving_cb(lv_event_t *e) {
-	(void)e;
 	if (switcher_back_drag_active()) {
 		return;
 	}
+	stopping = (int)(intptr_t)lv_event_get_user_data(e);
 	sx_sheet_t sheet = {
 		.title = tr("downloads_stop_saving_question"),
 		.subtitle = tr("downloads_stop_saving_note"),
@@ -521,19 +563,19 @@ static void build_card(int s) {
 	c->bar = sx_card_bar(c->card, 0);
 	c->now = line_label(c->card);
 	lv_obj_set_hidden(c->now, true);
-	if (s == YANDEX_INDEX) {
+	if (SERVICES[s].save_state) {
 		c->save = line_label(c->card);
 		lv_obj_set_hidden(c->save, true);
 	}
 	c->clear = sx_card_action(c->card, tr("downloads_clear_cache"), clear_cb, (void *)(intptr_t)s);
 	lv_obj_set_hidden(c->clear, true);
 	lv_obj_set_hidden(lv_obj_get_parent(c->clear), true);
-	if (s == YANDEX_INDEX) {
+	if (SERVICES[s].save_state) {
 		// Beside "Clear cache", in the same row.
 		lv_obj_t *row = lv_obj_get_parent(c->clear);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW_WRAP);
 		lv_obj_set_style_pad_gap(row, 10, 0);
-		c->stop = sx_card_action(c->card, tr("downloads_stop_saving"), stop_saving_cb, NULL);
+		c->stop = sx_card_action(c->card, tr("downloads_stop_saving"), stop_saving_cb, (void *)(intptr_t)s);
 		lv_obj_t *own_row = lv_obj_get_parent(c->stop);
 		lv_obj_set_parent(c->stop, row);
 		lv_obj_delete(own_row);

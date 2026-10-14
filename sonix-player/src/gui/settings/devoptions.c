@@ -14,6 +14,9 @@
 #include "src/system/library/library.h"
 #include "src/system/core/logging.h"
 #include "src/system/core/config.h"
+#ifdef SONIX_ZVUK
+#include "src/gui/streaming/zvukpage.h"
+#endif
 
 lv_obj_t *devoptions_screen;
 
@@ -201,6 +204,11 @@ void devoptions_init(gui_config_t *cfg) {
 	settingsrow_add(container, "processes", NULL, switch_screen_cb, processespage_screen);
 	// The 2.0 components on one page, for checking them on the device.
 	settingsrow_add(container, "sx_demo_title", NULL, switch_screen_cb, sxdemo_screen);
+#ifdef SONIX_ZVUK
+	// The profile and one stream address, the answer in a sheet and the whole
+	// exchange in the log: what a first device log needs to say about Zvuk.
+	settingsrow_add(container, "zvuk_check_title", NULL, zvukpage_check_connection_cb, NULL);
+#endif
 
 	update_adb_row();
 	update_log_row();
