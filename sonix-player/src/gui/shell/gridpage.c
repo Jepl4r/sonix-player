@@ -65,6 +65,40 @@ void gridpage_set_tile(lv_obj_t *grid, int index, const lv_image_dsc_t *icon, co
 	}
 }
 
+// A short tile (the R3 Pro II's 720 px, under the 2.0 header and the mini
+// player's slot) with a caption on two lines ("Album-Interpreten") has no
+// room for the full picture: it is drawn smaller rather than the caption
+// being cut off at the tile's bottom edge, and at full size again when the
+// caption is back on one line.
+static void fit_icon(lv_obj_t *icon, int32_t tile_h, int32_t caption_h) {
+	const lv_image_dsc_t *dsc = lv_image_get_src(icon);
+	if (!dsc || lv_image_src_get_type(dsc) != LV_IMAGE_SRC_VARIABLE) {
+		return;
+	}
+	int32_t room = tile_h - 2 * 8 - 8 - caption_h;
+	int32_t ih = (int32_t)dsc->header.h;
+	if (room > 0 && room < ih) {
+		lv_image_set_scale(icon, (uint32_t)(room * LV_SCALE_NONE / ih));
+		lv_obj_set_size(icon, (int32_t)dsc->header.w * room / ih, room);
+		lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CENTER);
+	} else {
+		lv_image_set_scale(icon, LV_SCALE_NONE);
+		lv_obj_set_size(icon, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+	}
+}
+
+// The caption changed height after the tile was built -- the language chosen at
+// first start relabels the pages built in English, and "Album artists" becomes
+// "Album-Interpreten" on two lines: the picture is fitted again.
+static void caption_size_cb(lv_event_t *e) {
+	lv_obj_t *label = lv_event_get_target(e);
+	lv_obj_t *tile = lv_obj_get_parent(label);
+	lv_obj_t *icon = tile ? lv_obj_get_child(tile, TILE_ICON_CHILD) : NULL;
+	if (icon) {
+		fit_icon(icon, lv_obj_get_height(tile), lv_obj_get_height(label));
+	}
+}
+
 static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int height) {
 	lv_obj_t *tile = lv_btn_create(grid);
 	lv_obj_set_size(tile, width, height);
@@ -89,20 +123,13 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 	lv_obj_t *icon = lv_image_create(tile);
 	lv_image_set_src(icon, entry->icon);
 
-	// A short tile (the R3 Pro II's 720 px, under the 2.0 header and the mini
-	// player's slot) with a caption on two lines ("Album-Interpreten") has no
-	// room for the full picture: it is drawn smaller rather than the caption
-	// being cut off at the tile's bottom edge, as it was before.
+	// The picture's size for the caption under it (fit_icon), measured now --
+	// nothing has been laid out yet -- and again whenever the caption changes
+	// height (caption_size_cb).
 	if (entry->icon) {
 		lv_point_t text;
 		lv_text_get_size(&text, tr(entry->label), &font_ui_24_bold, 0, 0, width - 16, LV_TEXT_FLAG_NONE);
-		int32_t room = height - 2 * 8 - 8 - text.y;
-		int32_t ih = (int32_t)entry->icon->header.h;
-		if (room > 0 && room < ih) {
-			lv_image_set_scale(icon, (uint32_t)(room * LV_SCALE_NONE / ih));
-			lv_obj_set_size(icon, (int32_t)entry->icon->header.w * room / ih, room);
-			lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CENTER);
-		}
+		fit_icon(icon, height, text.y);
 	}
 
 	// The caption wraps rather than running out of the tile: a translated label
@@ -114,6 +141,9 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 	lv_obj_set_style_text_font(label, &font_ui_24_bold, 0);
 	lv_obj_set_width(label, lv_pct(100));
 	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+	if (entry->icon) {
+		lv_obj_add_event_cb(label, caption_size_cb, LV_EVENT_SIZE_CHANGED, NULL);
+	}
 
 	if (entry->target) {
 		lv_obj_add_event_cb(tile, switch_screen_cb, LV_EVENT_CLICKED, *entry->target);
