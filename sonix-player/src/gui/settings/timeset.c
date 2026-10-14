@@ -774,7 +774,7 @@ void timeset_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(content, LV_FLEX_FLOW_COLUMN);
 
 	// Scrollable, and vertically only: the cards together (the two rollers, the
-	// zone, daylight saving, 24 hour, Confirm) are taller than the room below
+	// zone, daylight saving, 24 hour) are taller than the room below
 	// the header, and without this the excess is simply cut off.
 	//
 	// The alignment is START and not CENTER: centring content taller than its
@@ -896,13 +896,20 @@ void timeset_init(gui_config_t *cfg) {
 		lv_obj_add_state(h24_switch, LV_STATE_CHECKED);
 	}
 
-	// The accent pill, 68 tall: the page's one action.
-	lv_obj_t *confirm = lv_btn_create(content);
+	// The accent pill, 68 tall: the page's one action. Under the scrolling
+	// cards rather than at their end, as on the language page before it: on
+	// the R1 the cards alone fill the room below the header, and at their end
+	// the button was cut by the bottom edge on first start until the page was
+	// scrolled.
+	lv_obj_t *confirm = lv_btn_create(panel);
 	confirm_btn = confirm;
 	lv_obj_remove_style_all(confirm);
 	lv_obj_set_size(confirm, LV_SIZE_CONTENT, SX_SHEET_BTN_H);
 	lv_obj_set_style_min_width(confirm, 240, 0);
 	lv_obj_set_style_pad_hor(confirm, 40, 0);
+	// A margin on the button, not on the cards: flex counts a growing item's
+	// margin nowhere, and the button would end flush with the screen.
+	lv_obj_set_style_margin_top(confirm, 12, 0);
 	lv_obj_set_style_radius(confirm, LV_RADIUS_CIRCLE, 0);
 	lv_obj_add_style(confirm, &sx_style_accent, 0);
 	lv_obj_add_style(confirm, &sx_style_press, LV_STATE_PRESSED);
