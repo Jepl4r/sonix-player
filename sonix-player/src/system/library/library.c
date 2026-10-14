@@ -3053,6 +3053,14 @@ static void track_order_sql(char *out, size_t size, library_order_t order, libra
 	} else if (order == LIBRARY_ORDER_YEAR || order == LIBRARY_ORDER_YEAR_DESC) {
 		snprintf(out, size, "%s, " ALBUM_ORDER_KEY ", " TRACK_ORDER_IN_ALBUM ", %s",
 				 order == LIBRARY_ORDER_YEAR ? YEAR_KEY_UP(TRACK_YEAR) : YEAR_KEY_DOWN(TRACK_YEAR), by_name);
+	} else if (order == LIBRARY_ORDER_ARTIST) {
+		// Every track by the artist its row shows, put through the sort key the
+		// artist lists use (so "The Beatles" files under B here as there), the
+		// tracks without one last; then each artist's records by name, each in
+		// disc order. Worked out when the list is opened, not as it scrolls.
+		snprintf(out, size, "(artist IS NULL OR artist = ''), sortkey(artist), " ALBUM_ORDER_KEY
+							", " TRACK_ORDER_IN_ALBUM ", %s",
+				 by_name);
 	} else if (in_album) {
 		snprintf(out, size, TRACK_ORDER_IN_ALBUM ", %s", by_name);
 	} else {

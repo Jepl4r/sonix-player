@@ -338,11 +338,13 @@ typedef enum {
 							   // that have no year last -- which is why it is an
 							   // order of its own and not the one above read
 							   // backwards
-	LIBRARY_ORDER_ARTIST,	   // all albums only: by the artist the album list
+	LIBRARY_ORDER_ARTIST,	   // all albums: by the artist the album list
 							   // shows under each record (its first track's
 							   // album artist, or artist), each artist's
 							   // records by year and then by name -- a shelf
-							   // filed the way a record shop files it
+							   // filed the way a record shop files it. All
+							   // tracks: by the track's artist, then record
+							   // by name, then disc order
 } library_order_t;
 int library_for_each_ordered(library_list_t kind, library_filter_t filter, const char *value, library_order_t order,
 							 library_row_cb cb, void *user);

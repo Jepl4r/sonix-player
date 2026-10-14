@@ -535,9 +535,10 @@ static void sort_set_artist(library_list_t kind, bool artist) {
 }
 
 // The lists that can run by artist: all the records, where it is how a shelf of
-// them is filed. A track list has its artist pages for that.
+// them is filed, and all the tracks (the handoff's "A-Z / by artist / recent"
+// on All tracks), each artist's tracks record by record.
 static bool sort_can_artist(library_list_t kind, library_filter_t filter) {
-	return kind == LIBRARY_LIST_ALBUMS && filter == LIBRARY_FILTER_NONE;
+	return (kind == LIBRARY_LIST_ALBUMS || kind == LIBRARY_LIST_TRACKS) && filter == LIBRARY_FILTER_NONE;
 }
 
 // The lists that can run by date as well as by name: every track, every
@@ -3025,8 +3026,7 @@ static void sort_picked(void *user) {
 
 // The sort sheet (⇅): every way this list can run, the one in force ticked.
 // A name list has two (A-Z and Z-A, and by date where it has one); all the
-// tracks and all the records have the years as well, and all the records the
-// artist.
+// tracks and all the records have the years as well, and the artist.
 static void sort_clicked_cb(lv_event_t *e) {
 	panel_t *p = lv_event_get_user_data(e);
 	if (!p) {
