@@ -1,5 +1,7 @@
 #include "sx_styles.h"
 
+#include <math.h>
+
 #include "src/gui/shell/sx_palette.h"
 
 lv_style_t sx_style_page;
@@ -70,6 +72,38 @@ void sx_styles_init(void) {
 	lv_style_set_pad_gap(&sx_style_flat, 0);
 }
 
+// WCAG relative luminance of an sRGB colour.
+static float luminance(lv_color_t c) {
+	const uint8_t channel[3] = {c.red, c.green, c.blue};
+	const float weight[3] = {0.2126f, 0.7152f, 0.0722f};
+	float sum = 0.0f;
+	for (int i = 0; i < 3; i++) {
+		float v = channel[i] / 255.0f;
+		v = v <= 0.04045f ? v / 12.92f : powf((v + 0.055f) / 1.055f, 2.4f);
+		sum += weight[i] * v;
+	}
+	return sum;
+}
+
+// The accent as writing. On the light theme the yellow preset (and the green
+// and orange, a little less) is a fill colour that text on white cannot be
+// read in -- the playing row's title, "24/96" -- so as text it is taken
+// towards the theme's ink until it stands 3:1 against a card, the large-text
+// minimum. Fills, pills and glyphs keep the accent itself; the dark theme and
+// the cover's own accent (made for it) are untouched. Runs on a palette
+// change only.
+static lv_color_t text_accent(const sx_palette_t *p) {
+	lv_color_t c = p->accent;
+	if (p->dark) {
+		return c;
+	}
+	float card = luminance(p->surface);
+	for (int pct = 90; pct >= 40 && (card + 0.05f) / (luminance(c) + 0.05f) < 3.0f; pct -= 10) {
+		c = sx_mix(p->accent, p->text, (uint8_t)pct);
+	}
+	return c;
+}
+
 void sx_styles_apply(void) {
 	const sx_palette_t *p = sx_pal();
 
@@ -80,7 +114,7 @@ void sx_styles_apply(void) {
 	lv_style_set_bg_color(&sx_style_active, p->active);
 	lv_style_set_text_color(&sx_style_text, p->text);
 	lv_style_set_text_color(&sx_style_text2, p->text2);
-	lv_style_set_text_color(&sx_style_text_accent, p->accent);
+	lv_style_set_text_color(&sx_style_text_accent, text_accent(p));
 	lv_style_set_bg_color(&sx_style_accent, p->accent);
 	lv_style_set_text_color(&sx_style_accent, p->on_accent);
 	lv_style_set_image_recolor(&sx_style_accent, p->on_accent);
