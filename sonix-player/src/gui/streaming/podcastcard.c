@@ -385,22 +385,18 @@ static bool is_now(const char *path, long long episode_id) {
 	return (path && path[0] && strcmp(path, now_path) == 0) || (episode_id > 0 && episode_id == now_episode);
 }
 
-// To the player, without starting the episode again: tapping the one already
-// in it would otherwise take it back to the second last written down.
-// `go_on` also lets a paused one carry on.
-// The episode already in the player. `go_on` (Resume): it plays on, and the
-// page stays -- the mini player shows it, as for any episode started here.
-// Otherwise (a tap on the episode playing) the player opens: what else could
-// that tap mean.
-static void show_player(bool go_on) {
+// The episode already in the player, tapped or resumed: it is not started
+// again (that would take it back to the second last written down), a paused
+// one carries on, and the page stays -- the mini player shows it, as for any
+// episode started here (the handoff: a tap on a row plays, it does not leave
+// the list). The player itself opens from the mini player, or from "Now
+// listening" on the podcasts' page.
+static void show_player(void) {
 	bool playing = false;
-	if (go_on && now_read(&playing) && !playing) {
+	if (now_read(&playing) && !playing) {
 		player_key_play_pause();
 	}
 	player_refresh_now_playing();
-	if (!go_on) {
-		switch_screen(player_screen);
-	}
 }
 
 // ---------------------------------------------------------------------------
@@ -863,9 +859,9 @@ static void format_minutes(double seconds, char *out, size_t size) {
 		minutes = 1;
 	}
 	if (minutes < 60) {
-		snprintf(out, size, "%d min", minutes);
+		snprintf(out, size, tr("podcast_duration_min"), minutes);
 	} else {
-		snprintf(out, size, "%d h %02d min", minutes / 60, minutes % 60);
+		snprintf(out, size, tr("podcast_duration_h_min"), minutes / 60, minutes % 60);
 	}
 }
 
@@ -1268,7 +1264,7 @@ static void row_clicked_cb(lv_event_t *e) {
 	}
 	episode_t *ep = &p->episodes[p->shown[index]];
 	if (is_now(ep->path, ep->id)) {
-		show_player(false);
+		show_player();
 		return;
 	}
 	if (p->feed) {
@@ -1292,7 +1288,7 @@ bool podcastcard_play(const podcaststate_t *state) {
 		return false;
 	}
 	if (is_now(state->path, state->episode_id)) {
-		show_player(true);
+		show_player();
 		return true;
 	}
 	if (!podcastdl_owns(state->path)) {
@@ -1345,7 +1341,7 @@ static void resume_cb(lv_event_t *e) {
 	}
 	podcaststate_t *st = &p->resume;
 	if (is_now(st->path, st->episode_id)) {
-		show_player(true);
+		show_player();
 		return;
 	}
 	if (!p->feed) {

@@ -959,9 +959,9 @@ static void format_duration(int seconds, char *out, size_t size) {
 	}
 	int minutes = (seconds + 30) / 60;
 	if (minutes < 60) {
-		snprintf(out, size, "%d min", minutes);
+		snprintf(out, size, tr("podcast_duration_min"), minutes);
 	} else {
-		snprintf(out, size, "%d h %02d min", minutes / 60, minutes % 60);
+		snprintf(out, size, tr("podcast_duration_h_min"), minutes / 60, minutes % 60);
 	}
 }
 
