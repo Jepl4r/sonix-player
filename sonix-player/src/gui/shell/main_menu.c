@@ -8,6 +8,7 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/morepage.h"
 #include "src/gui/library/music.h"
+#include "src/gui/library/shufflecard.h"
 #include "src/gui/settings/settings.h"
 #include "src/gui/streaming/streaming.h"
 #include "src/gui/wireless/wireless.h"
@@ -33,4 +34,8 @@ void main_menu_init(gui_config_t *cfg) {
 	};
 
 	gridpage_build(main_menu_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, false);
+
+	// While nothing has played: "Shuffle all music" where the mini player
+	// would be (the tiles are sized for the slot either way).
+	shufflecard_attach(main_menu_screen, cfg);
 }

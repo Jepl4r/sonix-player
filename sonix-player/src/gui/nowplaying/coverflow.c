@@ -1,6 +1,7 @@
 #include "coverflow.h"
 
 #include "src/gui/shell/sx_frame.h"
+#include "src/gui/shell/sx_tokens.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -1843,8 +1844,10 @@ static void edge_drag_cb(lv_event_t *e) {
 		return;
 	}
 	lv_event_code_t code = lv_event_get_code(e);
-	// Above the 2.0 mini player when it is up: the bottom of the screen is its.
-	int band = (int)(uintptr_t)lv_event_get_user_data(e) - sx_frame_body_bottom();
+	// Above the 2.0 bottom slot when something stands in it -- the mini
+	// player, or the "Shuffle all music" card while nothing has played: the
+	// bottom of the screen is theirs.
+	int band = (int)(uintptr_t)lv_event_get_user_data(e) - (sx_frame_slot_occupied() ? SX_MINI_SLOT_H : 0);
 
 	if (code == LV_EVENT_PRESSED) {
 		page_release();

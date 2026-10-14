@@ -4,6 +4,7 @@
 #include <stdbool.h>
 
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/sx_tokens.h"
 
 #include "lvgl/lvgl.h"
 
@@ -60,19 +61,21 @@ void touch_header(lv_obj_t *screen);
 // Large rows
 //
 // Interface settings > "Large rows": the rows of the library's lists and of
-// the folder browser stand 120 px instead of 100 -- fewer on a screen, each a
+// the folder browser stand 100 px instead of 80 (the 2.0 row, sx_row.h; the
+// compact rows of the queue 84 instead of 64) -- fewer on a screen, each a
 // bigger target and easier to read at arm's length. Kept as [ui] large_rows,
 // off by default. A list takes the height when it is opened; one already open
 // keeps the one it was opened with until it is opened again.
 // ---------------------------------------------------------------------------
 
-#define TOUCH_ROW_HEIGHT 100
-#define TOUCH_ROW_HEIGHT_LARGE 120
+#define TOUCH_ROW_HEIGHT SX_ROW_H
+#define TOUCH_ROW_HEIGHT_LARGE SX_ROW_H_BIG
 
 bool touch_large_rows(void);
 void touch_set_large_rows(bool on);
 
-// The height a list row is built at now: one of the two above.
+// The height a list row is built at now: one of the two above (the same as
+// sx_row_height(false)).
 int touch_row_height(void);
 
 #endif /* TOUCH_H */

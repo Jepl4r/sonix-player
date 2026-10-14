@@ -13,11 +13,13 @@
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/library/medialist.h"
-#include "src/gui/settings/musicsettings.h"
 #include "src/gui/library/playlistpage.h"
 #include "src/gui/library/search.h"
+#include "src/gui/library/shufflecard.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_frame.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
@@ -361,7 +363,10 @@ static void upgrade_build(void) {
 	upgrade_card = lv_obj_create(music_screen);
 	lv_obj_set_width(upgrade_card, grid_cfg->screen_width - 2 * grid_cfg->padding);
 	lv_obj_set_height(upgrade_card, LV_SIZE_CONTENT);
-	lv_obj_align(upgrade_card, LV_ALIGN_BOTTOM_MID, 0, -grid_cfg->padding);
+	// Above the bottom slot, which on this page always holds something: the
+	// mini player, or the "Shuffle all music" card while nothing has played.
+	lv_obj_align(upgrade_card, LV_ALIGN_BOTTOM_MID, 0, -grid_cfg->padding - SX_MINI_SLOT_H);
+	sx_frame_exempt(upgrade_card);
 	lv_obj_add_style(upgrade_card, &theme_style_card, 0);
 	lv_obj_set_style_radius(upgrade_card, 16, 0);
 	lv_obj_set_style_border_width(upgrade_card, 0, 0);
@@ -435,7 +440,9 @@ static void screen_loaded_cb(lv_event_t *e) {
 	upgrade_show(gui_card_available() && library_track_count() > 0);
 }
 
-// The corner buttons share everything but icon and action.
+// The header's one button: search. The music settings that sat beside it
+// are a row of the Settings page since 2.0 (principle 10: no button repeating
+// a tile or a row).
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph) {
 	lv_obj_t *button = lv_btn_create(music_screen);
 	lv_obj_set_size(button, 56, 56);
@@ -466,15 +473,20 @@ void music_init(gui_config_t *cfg) {
 	// the grid because that is where a tile's press stops bubbling.
 	coverflow_attach_edge(grid, cfg);
 
-	// Two buttons in the corner, so the heading has to be told to clear them.
-	settingsrow_title_corner_slots(settingsrow_title(music_screen, cfg, "music"), cfg, 2);
+	// The bottom slot always holds something on this page -- the mini player,
+	// or the "Shuffle all music" card while nothing has played -- so the last
+	// tiles can always be scrolled clear of it, whichever it is.
+	sx_frame_exempt(grid);
+	lv_obj_set_style_pad_bottom(grid, cfg->padding + SX_MINI_SLOT_H, 0);
 
-	lv_obj_t *settings_btn = corner_button(cfg, 0, &icon_music_settings);
-	lv_obj_add_event_cb(settings_btn, switch_screen_cb, LV_EVENT_CLICKED, musicsettings_screen);
+	// One button in the corner, so the heading has to be told to clear it.
+	settingsrow_title_corner_slots(settingsrow_title(music_screen, cfg, "music"), cfg, 1);
 
-	lv_obj_t *search_btn = corner_button(cfg, 1, &icon_search);
+	lv_obj_t *search_btn = corner_button(cfg, 0, &icon_search);
 	lv_obj_add_event_cb(search_btn, search_cb, LV_EVENT_CLICKED, NULL);
 
 	empty_panel = gridpage_empty_panel(music_screen, cfg, &icon_music_note, "music_no_database", scan_cb);
 	lv_obj_add_event_cb(music_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+
+	shufflecard_attach(music_screen, cfg);
 }
