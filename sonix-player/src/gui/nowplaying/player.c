@@ -6265,27 +6265,6 @@ void player_sleep_sheet_open(void) {
 	sx_sheet_menu(tr("np_sleep"), sub, items, n);
 }
 
-// ---------------------------------------------------------------------------
-// Shuffle all music: the idle state's one button (the queue page's, and the
-// home page's card once it is built)
-// ---------------------------------------------------------------------------
-
-bool player_shuffle_all_music(void) {
-	library_index_t *ix = library_index_open(LIBRARY_LIST_TRACKS, LIBRARY_FILTER_NONE, NULL, LIBRARY_ORDER_DEFAULT,
-											 false);
-	if (library_index_count(ix) <= 0) {
-		library_index_close(ix);
-		sx_toast(tr("np_no_music"));
-		return false;
-	}
-	if (!device_state_play_index_dealt(ix)) {
-		return false;
-	}
-	player_refresh_now_playing();
-	sx_toast(tr("np_shuffled_all"));
-	return true;
-}
-
 // Builds the player sheet: artwork, controls and the poll that drives them.
 void player_init(gui_config_t *cfg) {
 	// The artwork decodes on the shared worker; make sure it exists before

@@ -1265,20 +1265,6 @@ bool playlist_move_next(int index) {
 	return true;
 }
 
-bool playlist_deal_all(void) {
-	if (!order || entry_count == 0) {
-		return false;
-	}
-	for (size_t s = 0; s < entry_count; s++) {
-		entry_mark_queued_next(order[s], false);
-	}
-	order_shuffle_round();
-	chain_valid = false;
-	custom_queue = true;
-	revision++;
-	return true;
-}
-
 // ---------------------------------------------------------------------------
 // snapshots (playlist.h)
 // ---------------------------------------------------------------------------

@@ -87,10 +87,6 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 // started, and then nothing has changed.
 bool device_state_play_index(library_index_t *ix, int start_index);
 
-// The same, dealt in a random order first and played from the first of the
-// deal, the mode left as it is: "Shuffle all music". Takes ownership of `ix`.
-bool device_state_play_index_dealt(library_index_t *ix);
-
 // Play from an explicit list of full paths: a playlist file, a streaming album,
 // anything with no query behind it. The queue is the list itself, so next/prev
 // follow it instead of the file's folder.

@@ -8,6 +8,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/library/listacts.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/library/playlistpage.h"
@@ -799,7 +800,9 @@ static void queue_more_cb(lv_event_t *e) {
 
 static void queue_shuffle_all_cb(lv_event_t *e) {
 	(void)e;
-	if (player_shuffle_all_music()) {
+	// The one "Shuffle all music" (listacts.h): the idle cards on Home and
+	// Music start the same, with the same toast and the shuffle mode.
+	if (listacts_shuffle_all()) {
 		queue_layout();
 	}
 }

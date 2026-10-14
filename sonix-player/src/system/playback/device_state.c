@@ -965,20 +965,6 @@ bool device_state_play_index(library_index_t *ix, int start_index) {
 	return true;
 }
 
-bool device_state_play_index_dealt(library_index_t *ix) {
-	parked_drop();
-	if (!playlist_load_index(ix, 0)) {
-		return false;
-	}
-	playlist_deal_all();
-	char path[512];
-	if (!playlist_current_path(path, sizeof(path))) {
-		return false;
-	}
-	load_and_play(path);
-	return true;
-}
-
 void device_state_play_list(const char *const *list, int count, int start_index) {
 	if (!list || count <= 0) {
 		return;

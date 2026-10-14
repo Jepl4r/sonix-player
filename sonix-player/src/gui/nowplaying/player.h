@@ -198,9 +198,4 @@ void player_lyrics_toggle(void);
 const char *player_sleep_label(void);
 void player_sleep_sheet_open(void);
 
-// The idle state's one button, "Shuffle all music": every track of the
-// library, dealt, played from the first of the deal. False (with a toast)
-// when the library is empty.
-bool player_shuffle_all_music(void);
-
 #endif

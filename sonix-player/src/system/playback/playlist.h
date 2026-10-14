@@ -106,11 +106,6 @@ bool playlist_shuffle_upcoming(void);
 // False on the playing entry itself, or an index out of range.
 bool playlist_move_next(int index);
 
-// Deals the whole queue in a random order and puts playback on the first of
-// the deal, once, without changing the mode: "Shuffle all music". False on an
-// empty queue.
-bool playlist_deal_all(void);
-
 // ---------------------------------------------------------------------------
 // Snapshots, for "Undo"
 //
