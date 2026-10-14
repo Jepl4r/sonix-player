@@ -148,8 +148,16 @@ static int status_tracks, status_ms;
 static bool page_more;
 static bool page_loading;
 
+// When the server card's line was last asked for (GUI thread; see status_ask).
+static uint32_t status_asked_ms;
+
 static void submit(const job_t *job) {
 	pthread_mutex_lock(&job_lock);
+	// The server card's question, pushed out by a tap before the worker took
+	// it: asked again at the next visit rather than a minute later.
+	if (have_pending && pending.kind == JOB_STATUS && job->kind != JOB_STATUS) {
+		status_asked_ms = 0;
+	}
 	pending = *job;
 	have_pending = true;
 	job_serial++;
@@ -2133,7 +2141,6 @@ static void update_corner_buttons(void) {
 // ---------------------------------------------------------------------------
 
 #define STATUS_EVERY_MS 60000
-static uint32_t status_asked_ms;
 static bool status_known;
 static bool status_last_ok;
 static int status_last_tracks, status_last_ms;

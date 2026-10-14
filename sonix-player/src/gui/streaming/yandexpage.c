@@ -1817,7 +1817,7 @@ static void build_login_page(gui_config_t *cfg) {
 	lv_label_set_long_mode(login_message, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(login_message, lv_pct(100));
 	lv_obj_set_style_text_align(login_message, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_add_style(login_message, &theme_style_text_dim, 0);
+	lv_obj_add_style(login_message, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(login_message, &font_ui_20, 0);
 	lv_label_set_text(login_message, "");
 
@@ -1847,12 +1847,17 @@ static void build_search_page(gui_config_t *cfg) {
 	search_field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(search_field, true);
 	lv_textarea_set_placeholder_text(search_field, tr("artist_album_or_track"));
-	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, 62);
-	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
-	lv_obj_add_style(search_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(search_field, 12, 0);
+	// The handoff's text field: 60 px, the surface of a card, its radius.
+	lv_obj_set_size(search_field, cfg->screen_width - 2 * SX_BODY_PAD_L, 60);
+	lv_obj_set_scrollbar_mode(search_field, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, SX_BODY_PAD_L, top);
+	lv_obj_add_style(search_field, &sx_style_surface, 0);
+	lv_obj_add_style(search_field, &sx_style_text, 0);
+	lv_obj_set_style_radius(search_field, SX_CARD_R, 0);
 	lv_obj_set_style_border_width(search_field, 0, 0);
-	lv_obj_set_style_pad_all(search_field, 14, 0);
+	lv_obj_set_style_shadow_width(search_field, 0, 0);
+	lv_obj_set_style_pad_ver(search_field, 14, 0);
+	lv_obj_set_style_pad_hor(search_field, SX_CARD_PAD_H, 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 	keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok", search_accept_cb, NULL);
