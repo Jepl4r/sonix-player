@@ -60,7 +60,7 @@ static void refresh_range_buttons(void) {
 		bool on = RANGE_VALUES[i] == active;
 		lv_obj_set_style_bg_color(range_buttons[i], on ? theme()->accent : theme()->surface_pressed, 0);
 		lv_obj_set_style_text_color(lv_obj_get_child(range_buttons[i], 0),
-									on ? lv_color_white() : theme()->text_primary, 0);
+									on ? theme()->on_accent : theme()->text_primary, 0);
 	}
 }
 

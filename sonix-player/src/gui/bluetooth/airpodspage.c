@@ -187,7 +187,7 @@ static void tab_clicked_cb(lv_event_t *e) {
 
 static void set_tab_active(int index, bool active) {
 	lv_obj_set_style_bg_color(tabs[index], active ? theme()->accent : theme()->surface_pressed, 0);
-	lv_obj_set_style_image_recolor(tab_icons[index], active ? lv_color_white() : theme()->text_primary, 0);
+	lv_obj_set_style_image_recolor(tab_icons[index], active ? theme()->on_accent : theme()->text_primary, 0);
 }
 
 static void redraw_tabbar(const airpods_state_t *state) {

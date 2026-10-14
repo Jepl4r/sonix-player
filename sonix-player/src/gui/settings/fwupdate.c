@@ -183,7 +183,7 @@ static void set_button(int i, const char *key, bool accent, action_fn action) {
 	}
 
 	lv_label_set_text(button_labels[i], tr(key));
-	lv_obj_set_style_text_color(button_labels[i], accent ? lv_color_white() : theme()->text_primary, 0);
+	lv_obj_set_style_text_color(button_labels[i], accent ? theme()->on_accent : theme()->text_primary, 0);
 	button_actions[i] = action;
 	lv_obj_set_hidden(btn, false);
 }
