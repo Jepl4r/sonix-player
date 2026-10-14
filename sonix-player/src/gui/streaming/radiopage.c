@@ -545,7 +545,7 @@ static void station_sheet(const radio_station_t *s, bool from_hub) {
 	snprintf(subtitle, sizeof(subtitle), "%s%s%s", sub, sub[0] ? " \xC2\xB7 " : "", tr("radio_live"));
 	bool fav = radio_fav_contains(s->uuid);
 	sx_sheet_item_t items[] = {
-		{.label = tr("radio_listen"), .icon = &icon_play_small, .action = sheet_listen},
+		{.label = tr("radio_listen"), .icon = &icon_play_status, .action = sheet_listen},
 		{.label = tr(fav ? "remove_from_favourites" : "medialist_add_to_favourites"),
 		 .icon = fav ? &icon_star_filled : &icon_star,
 		 .action = sheet_star},

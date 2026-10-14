@@ -3425,8 +3425,8 @@ static int play_menu_items(panel_t *p, sx_sheet_item_t *items) {
 	int n = 0;
 	items[n++] = (sx_sheet_item_t){tr("medialist_play_in_random_order"), &icon_shuffle, false, false,
 								   play_menu_shuffle_cb, NULL};
-	items[n++] = (sx_sheet_item_t){tr("medialist_play_in_sequence"), &icon_play, false, false, play_menu_sequence_cb,
-								   NULL};
+	items[n++] = (sx_sheet_item_t){tr("medialist_play_in_sequence"), &icon_play_status, false, false,
+								   play_menu_sequence_cb, NULL};
 	// Records in random order only where there are records to choose between,
 	// and only with the option that plays one record after another: without it
 	// the choice would be one record at random and then silence.

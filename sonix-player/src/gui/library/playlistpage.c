@@ -452,7 +452,7 @@ static void row_hold_cb(lv_obj_t *row, void *user) {
 	}
 	snprintf(menu_name, sizeof(menu_name), "%s", name);
 	sx_sheet_item_t items[] = {
-		{tr("medialist_play"), &icon_play, false, false, menu_play_action, NULL},
+		{tr("medialist_play"), &icon_play_status, false, false, menu_play_action, NULL},
 		{tr("lists_shuffle"), &icon_shuffle, false, false, menu_play_action, (void *)(intptr_t)1},
 		{tr("queue_play_next"), &icon_list_start, false, false, menu_queue_action,
 		 (void *)(intptr_t)PLAYLIST_QUEUE_NEXT},

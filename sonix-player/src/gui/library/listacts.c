@@ -401,7 +401,7 @@ void listacts_album_sheet(const char *album_value, const char *artist, const cha
 
 	sx_sheet_item_t items[SHEET_ITEMS_MAX];
 	int n = 0;
-	items[n++] = (sx_sheet_item_t){tr("medialist_play"), &icon_play, false, false, album_play_cb, NULL};
+	items[n++] = (sx_sheet_item_t){tr("medialist_play"), &icon_play_status, false, false, album_play_cb, NULL};
 	items[n++] = (sx_sheet_item_t){tr("lists_shuffle"), &icon_shuffle, false, false, album_play_cb,
 								   (void *)(intptr_t)1};
 	items[n++] = (sx_sheet_item_t){tr("queue_play_next"), &icon_list_start, false, false, album_queue_cb,
