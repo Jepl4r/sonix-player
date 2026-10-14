@@ -139,8 +139,11 @@ static void start_if_sender(void) {
 }
 
 static void poll_cb(lv_timer_t *timer) {
-	(void)timer;
+	// Only while the page is up: it sleeps from the first tick after the page
+	// has gone, and the page wakes it when it comes back (loaded_cb), instead
+	// of waking the player twice a second all day to find nobody looking.
 	if (lv_screen_active() != btreceiverpage_screen) {
+		lv_timer_pause(timer);
 		return;
 	}
 	start_if_sender();
@@ -250,6 +253,7 @@ static bool back_guard(void) {
 
 static void loaded_cb(lv_event_t *e) {
 	(void)e;
+	lv_timer_resume(poll_timer);
 	// The A2DP sink exists only while this page is open (bluetooth.h): a phone
 	// connects to it from here on.
 	bluetooth_set_receiver_profile(true);
@@ -343,5 +347,5 @@ void btreceiverpage_init(gui_config_t *cfg) {
 	switcher_set_back_guard(btreceiverpage_screen, back_guard);
 
 	poll_timer = lv_timer_create(poll_cb, POLL_MS, NULL);
-	(void)poll_timer;
+	lv_timer_pause(poll_timer); // loaded_cb starts it
 }
