@@ -593,6 +593,11 @@ void sx_row_set_subtitle(lv_obj_t *row, const char *subtitle, const char *badge,
 	lv_obj_set_flex_grow(r->duration, has_badge ? 0 : 1);
 	lv_obj_set_hidden(r->duration, !duration || !duration[0]);
 	lv_label_set_text(r->duration, duration ? duration : "");
+	// Nothing at all under the title (a folder, an artist whose count is not
+	// known yet): the line goes, and the title stands in the middle of the
+	// row instead of at the top of an empty pair.
+	bool empty = (!subtitle || !subtitle[0]) && !has_badge && (!duration || !duration[0]);
+	lv_obj_set_hidden(lv_obj_get_parent(r->sub), empty);
 }
 
 // The lead's look for each kind; what the others left is taken off first, so

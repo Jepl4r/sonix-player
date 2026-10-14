@@ -13,6 +13,8 @@
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/shell/sx_palette.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/sx_toast.h"
 #include "src/system/core/lang.h"
 #include "src/system/playback/device_state.h"
@@ -432,4 +434,115 @@ void listacts_album_sheet(const char *album_value, const char *artist, const cha
 	}
 	n = add_extra(items, n, extra, extra_count);
 	sx_sheet_menu(sheet_title, sheet_subtitle[0] ? sheet_subtitle : NULL, items, n);
+}
+
+// ---------------------------------------------------------------------------
+// What a row shows
+// ---------------------------------------------------------------------------
+
+// A track's badge and length, from one lookup by path. The badge (accent,
+// after the artist): "24/96" on a hi-res file and "DSD" on DSD, always -- the
+// handoff marks what is better than a CD and nothing else. With Quality
+// badges on (Music settings), a CD says "16/44.1" and a lossy file its format
+// as well. A track the index has no length for shows none.
+void listacts_track_badge(const char *path, char *badge, size_t badge_size, char *length, size_t length_size) {
+	badge[0] = '\0';
+	length[0] = '\0';
+	if (!path || !path[0]) {
+		return;
+	}
+	uint32_t length_ms = 0;
+	library_quality_t quality = library_track_quality_length(path, &length_ms);
+	if (length_ms > 0) {
+		// m:ss, and h:mm:ss for the hour-long track a live set or a mix is.
+		unsigned seconds = (unsigned)((length_ms + 500) / 1000);
+		if (seconds >= 3600) {
+			snprintf(length, length_size, "%u:%02u:%02u", seconds / 3600, seconds / 60 % 60, seconds % 60);
+		} else {
+			snprintf(length, length_size, "%u:%02u", seconds / 60, seconds % 60);
+		}
+	}
+	bool wanted = quality == LIBRARY_QUALITY_HIFI || quality == LIBRARY_QUALITY_DSD ||
+				  (medialist_quality_badges() && (quality == LIBRARY_QUALITY_CD || quality == LIBRARY_QUALITY_LOSSY));
+	if (!wanted) {
+		return;
+	}
+	if (quality == LIBRARY_QUALITY_DSD) {
+		snprintf(badge, badge_size, "DSD");
+		return;
+	}
+	if (quality == LIBRARY_QUALITY_LOSSY) {
+		// The format by its extension: what the file is, said in three letters.
+		const char *dot = strrchr(path, '.');
+		const char *q = strchr(path, '?'); // a cue sheet's track: name?track=N
+		if (dot && (!q || dot < q)) {
+			size_t n = 0;
+			for (const char *c = dot + 1; *c && *c != '?' && n + 1 < badge_size && n < 5; c++) {
+				badge[n++] = (char)(*c >= 'a' && *c <= 'z' ? *c - 32 : *c);
+			}
+			badge[n] = '\0';
+		}
+		return;
+	}
+	int rate = 0, bits = 0;
+	library_track_quality(path, &rate, &bits);
+	if (rate > 0 && bits > 0) {
+		if (rate % 1000 == 0) {
+			snprintf(badge, badge_size, "%d/%d", bits, rate / 1000);
+		} else {
+			snprintf(badge, badge_size, "%d/%d.%d", bits, rate / 1000, rate % 1000 / 100);
+		}
+	}
+}
+
+// The first letter of a name, upper case, as UTF-8: what an artist's or a
+// genre's plaque shows. Latin and Cyrillic are raised; anything else is shown
+// as it is.
+void listacts_first_letter(const char *name, char *out, size_t size) {
+	out[0] = '\0';
+	if (!name || !name[0] || size < 5) {
+		return;
+	}
+	const unsigned char *s = (const unsigned char *)name;
+	// Past the punctuation a name may open with: "(Untitled)", "'Til Tuesday".
+	while (*s && *s < 0x80 && !((*s >= '0' && *s <= '9') || (*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z'))) {
+		s++;
+	}
+	if (!*s) {
+		s = (const unsigned char *)name;
+	}
+	int len = *s < 0x80 ? 1 : (*s >> 5) == 0x6 ? 2 : (*s >> 4) == 0xE ? 3 : (*s >> 3) == 0x1E ? 4 : 1;
+	for (int i = 1; i < len; i++) {
+		if ((s[i] & 0xC0) != 0x80) {
+			len = 1;
+			break;
+		}
+	}
+	if (len == 1) {
+		out[0] = (char)(*s >= 'a' && *s <= 'z' ? *s - 32 : *s);
+		out[1] = '\0';
+		return;
+	}
+	if (len == 2) {
+		unsigned cp = ((unsigned)(s[0] & 0x1F) << 6) | (s[1] & 0x3F);
+		if (cp >= 0x430 && cp <= 0x44F) {
+			cp -= 0x20; // а..я
+		} else if (cp >= 0x450 && cp <= 0x45F) {
+			cp -= 0x50; // ё and the rest of that row
+		} else if (cp >= 0xE0 && cp <= 0xFE && cp != 0xF7) {
+			cp -= 0x20; // à..þ
+		}
+		out[0] = (char)(0xC0 | (cp >> 6));
+		out[1] = (char)(0x80 | (cp & 0x3F));
+		out[2] = '\0';
+		return;
+	}
+	memcpy(out, s, (size_t)len);
+	out[len] = '\0';
+}
+
+// A plaque's colour for a name with no cover of its own: an artist, a genre,
+// a year.
+lv_color_t listacts_name_tone(const char *name) {
+	return sx_oklch(SX_T_COVER_TONE.L, SX_T_COVER_TONE.C, sx_palette_hue_of_name(name ? name : ""));
 }

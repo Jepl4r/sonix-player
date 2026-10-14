@@ -902,58 +902,6 @@ static void row_drop_thumb(panel_t *p, row_t *row) {
 	row->count = -1;
 }
 
-// The first letter of a name, upper case, as UTF-8: what an artist's or a
-// genre's plaque shows. Latin and Cyrillic are raised; anything else is shown
-// as it is.
-static void first_letter(const char *name, char *out, size_t size) {
-	out[0] = '\0';
-	if (!name || !name[0] || size < 5) {
-		return;
-	}
-	const unsigned char *s = (const unsigned char *)name;
-	// Past the punctuation a name may open with: "(Untitled)", "'Til Tuesday".
-	while (*s && *s < 0x80 && !((*s >= '0' && *s <= '9') || (*s >= 'A' && *s <= 'Z') || (*s >= 'a' && *s <= 'z'))) {
-		s++;
-	}
-	if (!*s) {
-		s = (const unsigned char *)name;
-	}
-	int len = *s < 0x80 ? 1 : (*s >> 5) == 0x6 ? 2 : (*s >> 4) == 0xE ? 3 : (*s >> 3) == 0x1E ? 4 : 1;
-	for (int i = 1; i < len; i++) {
-		if ((s[i] & 0xC0) != 0x80) {
-			len = 1;
-			break;
-		}
-	}
-	if (len == 1) {
-		out[0] = (char)(*s >= 'a' && *s <= 'z' ? *s - 32 : *s);
-		out[1] = '\0';
-		return;
-	}
-	if (len == 2) {
-		unsigned cp = ((unsigned)(s[0] & 0x1F) << 6) | (s[1] & 0x3F);
-		if (cp >= 0x430 && cp <= 0x44F) {
-			cp -= 0x20; // а..я
-		} else if (cp >= 0x450 && cp <= 0x45F) {
-			cp -= 0x50; // ё and the rest of that row
-		} else if (cp >= 0xE0 && cp <= 0xFE && cp != 0xF7) {
-			cp -= 0x20; // à..þ
-		}
-		out[0] = (char)(0xC0 | (cp >> 6));
-		out[1] = (char)(0x80 | (cp & 0x3F));
-		out[2] = '\0';
-		return;
-	}
-	memcpy(out, s, (size_t)len);
-	out[len] = '\0';
-}
-
-// A plaque's colour for a name with no cover of its own: an artist, a genre,
-// a year.
-static lv_color_t name_tone(const char *name) {
-	return sx_oklch(SX_T_COVER_TONE.L, SX_T_COVER_TONE.C, sx_palette_hue_of_name(name ? name : ""));
-}
-
 // ---------------------------------------------------------------------------
 // The now-playing mark
 //
@@ -1067,66 +1015,12 @@ void medialist_notify_now_playing(void) {
 	panel_refresh_playmarks(&panel_names);
 	panel_refresh_playmarks(&panel_tracks);
 	panel_refresh_playmarks(&panel_artist_albums);
+	search_notify_now_playing();
 }
 
 // ---------------------------------------------------------------------------
 // The line under a row's title
 // ---------------------------------------------------------------------------
-
-// A track's badge and length, from one lookup by path. The badge (accent,
-// after the artist): "24/96" on a hi-res file and "DSD" on DSD, always -- the
-// handoff marks what is better than a CD and nothing else. With Quality
-// badges on (Music settings), a CD says "16/44.1" and a lossy file its format
-// as well. A track the index has no length for shows none.
-static void track_badge(const char *path, char *badge, size_t badge_size, char *length, size_t length_size) {
-	badge[0] = '\0';
-	length[0] = '\0';
-	if (!path || !path[0]) {
-		return;
-	}
-	uint32_t length_ms = 0;
-	library_quality_t quality = library_track_quality_length(path, &length_ms);
-	if (length_ms > 0) {
-		// m:ss, and h:mm:ss for the hour-long track a live set or a mix is.
-		unsigned seconds = (unsigned)((length_ms + 500) / 1000);
-		if (seconds >= 3600) {
-			snprintf(length, length_size, "%u:%02u:%02u", seconds / 3600, seconds / 60 % 60, seconds % 60);
-		} else {
-			snprintf(length, length_size, "%u:%02u", seconds / 60, seconds % 60);
-		}
-	}
-	bool wanted = quality == LIBRARY_QUALITY_HIFI || quality == LIBRARY_QUALITY_DSD ||
-				  (quality_badges && (quality == LIBRARY_QUALITY_CD || quality == LIBRARY_QUALITY_LOSSY));
-	if (!wanted) {
-		return;
-	}
-	if (quality == LIBRARY_QUALITY_DSD) {
-		snprintf(badge, badge_size, "DSD");
-		return;
-	}
-	if (quality == LIBRARY_QUALITY_LOSSY) {
-		// The format by its extension: what the file is, said in three letters.
-		const char *dot = strrchr(path, '.');
-		const char *q = strchr(path, '?'); // a cue sheet's track: name?track=N
-		if (dot && (!q || dot < q)) {
-			size_t n = 0;
-			for (const char *c = dot + 1; *c && *c != '?' && n + 1 < badge_size && n < 5; c++) {
-				badge[n++] = (char)(*c >= 'a' && *c <= 'z' ? *c - 32 : *c);
-			}
-			badge[n] = '\0';
-		}
-		return;
-	}
-	int rate = 0, bits = 0;
-	library_track_quality(path, &rate, &bits);
-	if (rate > 0 && bits > 0) {
-		if (rate % 1000 == 0) {
-			snprintf(badge, badge_size, "%d/%d", bits, rate / 1000);
-		} else {
-			snprintf(badge, badge_size, "%d/%d.%d", bits, rate / 1000, rate % 1000 / 100);
-		}
-	}
-}
 
 // Whether this list is one "Show artist" is on for: all the tracks, the albums
 // and the tracks inside one, a year's or a genre's albums and tracks, the
@@ -1163,7 +1057,10 @@ static bool panel_shows_artist(const panel_t *p) {
 static void row_update_detail(panel_t *p, row_t *row, int index, const char *path) {
 	row_kind_t kind = panel_row_kind(p);
 	if (kind == RK_PERSON || kind == RK_GENRE || kind == RK_YEAR) {
-		char text[64] = "";
+		// A space while the count is still to come: the line keeps its place,
+		// so the title does not jump up when the count lands (an empty line
+		// is taken away, sx_row_set_subtitle).
+		char text[64] = " ";
 		if (row->count >= 0) {
 			snprintf(text, sizeof(text), tr(kind == RK_GENRE ? "lists_tracks_n" : "lists_albums_n"), row->count);
 		}
@@ -1183,7 +1080,7 @@ static void row_update_detail(panel_t *p, row_t *row, int index, const char *pat
 	}
 	char badge[24];
 	char length[16];
-	track_badge(path, badge, sizeof(badge), length, sizeof(length));
+	listacts_track_badge(path, badge, sizeof(badge), length, sizeof(length));
 	char badge_text[32] = "";
 	if (badge[0]) {
 		snprintf(badge_text, sizeof(badge_text), artist ? "\xC2\xB7 %s" : "%s", badge);
@@ -1786,9 +1683,9 @@ static void row_update_lead(panel_t *p, row_t *row, int index, const char *name,
 		size_t n = name ? strlen(name) : 0;
 		snprintf(letter, sizeof(letter), "%s", n >= 2 ? name + n - 2 : (name ? name : ""));
 	} else {
-		first_letter(name, letter, sizeof(letter));
+		listacts_first_letter(name, letter, sizeof(letter));
 	}
-	sx_row_set_letter(row->row, letter, name_tone(name), kind == RK_PERSON);
+	sx_row_set_letter(row->row, letter, listacts_name_tone(name), kind == RK_PERSON);
 }
 
 static void row_bind(panel_t *p, row_t *row, int index) {

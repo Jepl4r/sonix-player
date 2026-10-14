@@ -2,6 +2,7 @@
 #define LISTACTS_H
 
 #include <stdbool.h>
+#include <stddef.h>
 
 #include "src/gui/shell/sx_sheet.h"
 #include "src/system/library/library.h"
@@ -80,5 +81,23 @@ void listacts_play_album(const char *album_value, bool shuffled);
 // array. At most `max`.
 int listacts_collect(library_index_t *ix, char ***paths_out, int max);
 void listacts_paths_free(char **paths, int count);
+
+// ---------------------------------------------------------------------------
+// What a row shows, the same on every list
+// ---------------------------------------------------------------------------
+
+// A track's badge and length, from one lookup by path. The badge: "24/96" on a
+// hi-res file and "DSD" on DSD, always -- the handoff marks what is better
+// than a CD and nothing else; with Quality badges on, a CD's "16/44.1" and a
+// lossy file's format as well. Empty strings for what is not known.
+void listacts_track_badge(const char *path, char *badge, size_t badge_size, char *length, size_t length_size);
+
+// The first letter of a name, upper case, as UTF-8: what an artist's or a
+// genre's plaque shows. `size` at least 5.
+void listacts_first_letter(const char *name, char *out, size_t size);
+
+// A plaque's colour for a name with no cover of its own (an artist, a genre, a
+// year, a playlist): a hue of its own from the name.
+lv_color_t listacts_name_tone(const char *name);
 
 #endif /* LISTACTS_H */
