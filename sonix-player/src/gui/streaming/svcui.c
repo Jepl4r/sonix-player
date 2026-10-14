@@ -42,7 +42,7 @@ lv_obj_t *svcui_header_button(lv_obj_t *screen, gui_config_t *cfg, int slot, con
 lv_obj_t *svcui_group(lv_obj_t *parent, const char *text) {
 	lv_obj_t *label = sx_label(parent, &font_ui_17, &sx_style_text2);
 	lv_obj_set_style_text_letter_space(label, 1, 0);
-	lv_obj_set_width(label, lv_pct(100));
+	lv_obj_set_size(label, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_style_pad_top(label, 14, 0);
 	lv_obj_set_style_pad_bottom(label, 6, 0);
 	lv_obj_set_style_pad_left(label, 6, 0);

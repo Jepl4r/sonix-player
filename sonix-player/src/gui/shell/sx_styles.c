@@ -114,6 +114,11 @@ lv_obj_t *sx_label(lv_obj_t *parent, const lv_font_t *font, lv_style_t *colour_s
 	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 	if (font) {
 		lv_obj_set_style_text_font(label, font, 0);
+		// One line, and the height is what says so: LV_LABEL_LONG_DOT wraps
+		// first and puts the dots in only where the wrapped text runs past
+		// the height it is given -- left to its content, a long row title
+		// took two lines and ran over the subtitle under it.
+		lv_obj_set_height(label, lv_font_get_line_height(font));
 	}
 	if (colour_style) {
 		lv_obj_add_style(label, colour_style, 0);
