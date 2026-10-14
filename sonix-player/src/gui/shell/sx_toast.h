@@ -55,4 +55,9 @@ void sx_toast_dismiss(void);
 
 bool sx_toast_showing(void);
 
+// The bottom slot or the player changed under a toast that is up (the player
+// collapsed, the mini player came or went): it moves to stand over what is
+// there now. From sx_frame_slot_changed(); cheap when no toast is up.
+void sx_toast_follow_slot(void);
+
 #endif /* GUI_SX_TOAST_H */

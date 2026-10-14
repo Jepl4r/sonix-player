@@ -152,7 +152,7 @@ void sx_toast_init(void) {
 	lv_obj_set_style_pad_left(toast, 22, 0);
 	lv_obj_set_style_pad_right(toast, 8, 0);
 	lv_obj_set_style_pad_ver(toast, 8, 0);
-	lv_obj_set_style_pad_column(toast, 10, 0);
+	lv_obj_set_style_pad_column(toast, 8, 0);
 	lv_obj_set_flex_flow(toast, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(toast, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_clickable(toast, true);
@@ -227,6 +227,12 @@ static void place(void) {
 	lv_obj_align(toast, LV_ALIGN_BOTTOM_MID, 0, -bottom);
 }
 
+void sx_toast_follow_slot(void) {
+	if (sx_toast_showing()) {
+		place();
+	}
+}
+
 static void show(const lv_image_dsc_t *glyph, lv_color_t colour, const char *text, void (*undo)(void *),
 				 void *user, bool is_busy, bool dismissable) {
 	sx_toast_init();
@@ -264,10 +270,15 @@ static void show(const lv_image_dsc_t *glyph, lv_color_t colour, const char *tex
 	}
 
 	const char *shown = text ? text : "";
+	// With "Undo" beside it the line is the handoff's one line, ending in
+	// "..." when it is too long: what changed is named in a few words, and a
+	// wrap beside the button made a short name break over two lines and the
+	// toast grow taller than the slot it stands over. Without the button a
+	// longer sentence wraps rather than losing its end, as the old centred
+	// card let it.
+	lv_label_set_long_mode(label, undo ? LV_LABEL_LONG_DOT : LV_LABEL_LONG_WRAP);
+	lv_obj_set_style_max_height(label, (undo ? 1 : MAX_LINES) * lv_font_get_line_height(&font_ui_22), 0);
 	lv_label_set_text(label, shown);
-	// One line when it fits; a longer sentence wraps rather than losing its
-	// end, as the old centred card let it.
-	lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
 
 	lv_obj_set_hidden(undo_btn, undo == NULL);
 	if (undo) {

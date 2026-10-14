@@ -3,6 +3,7 @@
 #include <stdlib.h>
 
 #include "src/gui/shell/sx_mini.h"
+#include "src/gui/shell/sx_toast.h"
 #include "src/gui/shell/sx_tokens.h"
 
 static gui_config_t *frame_cfg;
@@ -230,6 +231,9 @@ void sx_frame_slot_changed(void) {
 		}
 	}
 	place_idle_cards(lv_screen_active());
+	// A toast stands over whatever is at the bottom: over the player's panel
+	// while that is up, over the slot after it collapses.
+	sx_toast_follow_slot();
 }
 
 void sx_frame_init(gui_config_t *cfg) {
