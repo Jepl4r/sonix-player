@@ -70,3 +70,29 @@ void onscreen_bind(lv_obj_t *obj, void (*show)(lv_obj_t *obj), void (*hide)(lv_o
 	lv_obj_add_event_cb(screen, screen_event_cb, LV_EVENT_SCREEN_UNLOADED, b);
 	lv_obj_add_event_cb(obj, obj_delete_cb, LV_EVENT_DELETE, b);
 }
+
+bool onscreen_covered(lv_obj_t *obj) {
+	if (!obj) {
+		return false;
+	}
+	lv_obj_t *top = lv_layer_top();
+	if (!top || lv_obj_get_screen(obj) == top) {
+		return false; // on the layer itself: the order there is its own business
+	}
+	lv_area_t area;
+	lv_obj_get_coords(obj, &area);
+	uint32_t n = lv_obj_get_child_count(top);
+	for (uint32_t i = 0; i < n; i++) {
+		lv_obj_t *c = lv_obj_get_child(top, (int32_t)i);
+		if (lv_obj_is_hidden(c) || lv_obj_get_style_bg_opa(c, LV_PART_MAIN) < LV_OPA_MAX ||
+			lv_obj_get_style_opa(c, LV_PART_MAIN) < LV_OPA_MAX) {
+			continue;
+		}
+		lv_area_t over;
+		lv_obj_get_coords(c, &over);
+		if (area.x1 >= over.x1 && area.y1 >= over.y1 && area.x2 <= over.x2 && area.y2 <= over.y2) {
+			return true;
+		}
+	}
+	return false;
+}

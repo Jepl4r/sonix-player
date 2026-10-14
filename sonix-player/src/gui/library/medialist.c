@@ -2055,6 +2055,8 @@ static void index_show_bar(panel_t *p, bool shown) {
 // nothing of it any more; kept as the one place a future fade would go.
 static void index_flash(panel_t *p) { (void)p; }
 
+static lv_timer_t *index_timer; // see index_timer_cb
+
 static void index_hint_show(panel_t *p, int shown) {
 	if (!p->index_hint || shown < 0 || shown >= p->index_shown) {
 		return;
@@ -2063,6 +2065,9 @@ static void index_hint_show(panel_t *p, int shown) {
 	lv_obj_set_hidden(p->index_hint, false);
 	lv_obj_move_foreground(p->index_hint);
 	p->index_hint_at = lv_tick_get();
+	if (index_timer && lv_timer_get_paused(index_timer)) {
+		lv_timer_resume(index_timer);
+	}
 }
 
 // The rows' width: the body's right margin is the lane's when there is one.
@@ -2344,13 +2349,21 @@ static void index_tick(panel_t *p) {
 	}
 }
 
+// Runs only while a big letter is up: index_hint_show() starts it and it
+// stops itself once all three are hidden again (it used to run five times a
+// second for as long as the screen was on, from the first list page built).
 static void index_timer_cb(lv_timer_t *timer) {
-	(void)timer;
 	// All three: the artist's albums has a strip of its own, and a panel left
 	// out here has nothing to hide its strip again once it has shown.
-	index_tick(&panel_names);
-	index_tick(&panel_tracks);
-	index_tick(&panel_artist_albums);
+	panel_t *const panels[] = {&panel_names, &panel_tracks, &panel_artist_albums};
+	bool showing = false;
+	for (size_t i = 0; i < sizeof(panels) / sizeof(panels[0]); i++) {
+		index_tick(panels[i]);
+		showing = showing || (panels[i]->index_hint && !lv_obj_is_hidden(panels[i]->index_hint));
+	}
+	if (!showing) {
+		lv_timer_pause(timer);
+	}
 }
 
 // The reorder button's glyph: the accent while the list is being reordered,
@@ -5056,7 +5069,8 @@ void medialist_init(gui_config_t *cfg) {
 	// Registered for standby: with the screen dark there is no strip to take
 	// away and nobody to see it go, and five wake-ups a second all night is
 	// exactly the sort of thing power_screen_off() exists to stop.
-	lv_timer_t *index_timer = lv_timer_create(index_timer_cb, 200, NULL);
+	index_timer = lv_timer_create(index_timer_cb, 200, NULL);
+	lv_timer_pause(index_timer); // until a letter is shown
 	power_pause_in_standby(index_timer);
 	theme_register_refresh(index_theme_refresh);
 	theme_register_refresh(head_theme_refresh);

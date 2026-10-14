@@ -6,6 +6,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/shell/onscreen.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/sx_palette.h"
 #include "src/gui/shell/sx_styles.h"
@@ -119,23 +120,23 @@ static void eq_paint(lv_obj_t *eq) {
 
 static bool eq_any_shown(void) {
 	for (int i = 0; i < eq_count; i++) {
-		if (!lv_obj_is_hidden(eqs[i]) && lv_obj_is_visible(eqs[i])) {
+		if (!lv_obj_is_hidden(eqs[i]) && lv_obj_is_visible(eqs[i]) && !onscreen_covered(eqs[i])) {
 			return true;
 		}
 	}
 	return false;
 }
 
-// Runs while the music plays and a set of bars exists; steps them only while
-// one of them is on screen. Pausing it when none is on screen would leave the
-// bars standing still on coming back to their page until the next change of
-// play state -- the visibility check is the cheaper price.
+// Runs while the music plays and a set of bars is on screen. With none in
+// sight -- the player up over the list (onscreen_covered), another page, a
+// dark panel -- it
+// stops, and the first set drawn again starts it (eq_drawn_cb): being drawn
+// is the sure sign of being seen, and a page coming back is drawn whole. It
+// used to keep ticking ten times a second, looking for bars to move, for as
+// long as anything played anywhere.
 static void eq_timer_cb(lv_timer_t *t) {
-	if (!eq_playing || eq_count == 0) {
+	if (!eq_playing || eq_count == 0 || !eq_any_shown()) {
 		lv_timer_pause(t);
-		return;
-	}
-	if (!eq_any_shown()) {
 		return;
 	}
 	eq_clock_ms += SX_EQ_FRAME_MS;
@@ -158,6 +159,14 @@ static void eq_wake(void) {
 		lv_timer_resume(eq_timer);
 	} else {
 		lv_timer_pause(eq_timer);
+	}
+}
+
+// From a draw: only a flag is touched, which is allowed there.
+static void eq_drawn_cb(lv_event_t *e) {
+	(void)e;
+	if (eq_timer && eq_playing && lv_timer_get_paused(eq_timer)) {
+		lv_timer_resume(eq_timer);
 	}
 }
 
@@ -189,6 +198,7 @@ lv_obj_t *sx_eq_create(lv_obj_t *parent) {
 	if (eq_count < EQS_MAX) {
 		eqs[eq_count++] = eq;
 		lv_obj_add_event_cb(eq, eq_deleted_cb, LV_EVENT_DELETE, NULL);
+		lv_obj_add_event_cb(eq, eq_drawn_cb, LV_EVENT_DRAW_MAIN_BEGIN, NULL);
 	}
 	eq_wake();
 	return eq;

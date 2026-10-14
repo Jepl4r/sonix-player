@@ -27,4 +27,12 @@
 // Thread contract: UI thread only.
 void onscreen_bind(lv_obj_t *obj, void (*show)(lv_obj_t *obj), void (*hide)(lv_obj_t *obj));
 
+// True when something opaque on the top layer lies over the whole of `obj`:
+// the player sheet up over a list, a full-screen panel. LVGL's own
+// lv_obj_is_visible() says yes to an object of the active screen whatever is
+// drawn over it, and the screens stay active under the 2.0 sheets. Only
+// direct children of the top layer are looked at, each by its own background
+// and opacity; translucent veils do not count. UI thread.
+bool onscreen_covered(lv_obj_t *obj);
+
 #endif /* ONSCREEN_H */
