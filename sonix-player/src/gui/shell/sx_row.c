@@ -567,6 +567,10 @@ void sx_row_set_subtitle(lv_obj_t *row, const char *subtitle, const char *badge,
 		return;
 	}
 	lv_label_set_text(r->sub, subtitle ? subtitle : "");
+	// The subtitle leaves room for a badge or a length only when there is
+	// one: alone it takes the line ("Author · 30 episodes" was cut at 75 %).
+	bool beside = (badge && badge[0]) || (duration && duration[0]);
+	lv_obj_set_style_max_width(r->sub, beside ? lv_pct(75) : lv_pct(100), 0);
 	lv_obj_set_hidden(r->badge, !badge || !badge[0]);
 	lv_label_set_text(r->badge, badge ? badge : "");
 	// Whatever follows the subtitle takes the rest of the line, so the
