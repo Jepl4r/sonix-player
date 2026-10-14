@@ -21,6 +21,10 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
+#include "src/gui/shell/sx_card.h"
+#include "src/gui/shell/sx_palette.h"
+#include "src/gui/shell/sx_styles.h"
+#include "src/gui/shell/sx_tokens.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/streaming/podcastpage.h"
@@ -383,13 +387,19 @@ static bool is_now(const char *path, long long episode_id) {
 // To the player, without starting the episode again: tapping the one already
 // in it would otherwise take it back to the second last written down.
 // `go_on` also lets a paused one carry on.
+// The episode already in the player. `go_on` (Resume): it plays on, and the
+// page stays -- the mini player shows it, as for any episode started here.
+// Otherwise (a tap on the episode playing) the player opens: what else could
+// that tap mean.
 static void show_player(bool go_on) {
 	bool playing = false;
 	if (go_on && now_read(&playing) && !playing) {
 		player_key_play_pause();
 	}
 	player_refresh_now_playing();
-	switch_screen(player_screen);
+	if (!go_on) {
+		switch_screen(player_screen);
+	}
 }
 
 // ---------------------------------------------------------------------------
@@ -894,8 +904,8 @@ static void row_paint_choice(page_t *p, ep_row_t *row) {
 		lv_obj_set_hidden(row->dot, true);
 		lv_obj_set_hidden(row->arc, true);
 		lv_obj_set_hidden(row->check, true);
-		lv_obj_set_style_image_recolor(row->mark, theme()->accent, 0);
-		lv_obj_set_style_border_color(row->ring, theme()->text_primary, 0);
+		lv_obj_set_style_image_recolor(row->mark, sx_pal()->accent, 0);
+		lv_obj_set_style_border_color(row->ring, sx_pal()->text, 0);
 	}
 	lv_obj_set_hidden(row->mark, !on);
 	lv_obj_set_hidden(row->ring, !p->selecting || on);
@@ -937,6 +947,9 @@ static void row_bind(page_t *p, ep_row_t *row, int index) {
 			permille = 1000;
 		}
 		lv_arc_set_value(row->arc, permille / 10);
+		// The palette as it is now: it follows the cover playing.
+		lv_obj_set_style_arc_color(row->arc, sx_pal()->press, LV_PART_MAIN);
+		lv_obj_set_style_arc_color(row->arc, sx_pal()->accent, LV_PART_INDICATOR);
 		lv_bar_set_value(row->bar, permille, LV_ANIM_OFF);
 	}
 	// A heard episode is quieter than one waiting.
@@ -1220,8 +1233,8 @@ static void play_paths(const char *const *paths, int count) {
 		return;
 	}
 	device_state_play_list_ordered(paths, count, 0);
+	// 2.0: the page stays, the mini player comes up with the episode.
 	player_refresh_now_playing();
-	switch_screen(player_screen);
 }
 
 static int page_row_index(page_t *p, lv_obj_t *button) {
@@ -1860,13 +1873,14 @@ static void online_cb(lv_event_t *e) {
 static void build_rows(page_t *p, int width) {
 	for (int i = 0; i < EP_ROW_POOL; i++) {
 		ep_row_t *row = &p->rows[i];
+		// The 2.0 row's look (sx_row.h): transparent on the page, the pressed
+		// fill under a finger, the row's radius -- an episode is a row of a
+		// list, not a card of its own.
 		row->button = lv_btn_create(p->body);
+		lv_obj_remove_style_all(row->button);
 		lv_obj_set_size(row->button, width, EP_ROW_HEIGHT);
-		lv_obj_add_style(row->button, &theme_style_card, 0);
-		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row->button, 12, 0);
-		lv_obj_set_style_border_width(row->button, 0, 0);
-		lv_obj_set_style_shadow_width(row->button, 0, 0);
+		lv_obj_add_style(row->button, &sx_style_press, LV_STATE_PRESSED);
+		lv_obj_set_style_radius(row->button, SX_ROW_R, 0);
 		lv_obj_set_style_pad_left(row->button, 12, 0);
 		lv_obj_set_style_pad_right(row->button, 4, 0);
 		lv_obj_set_style_pad_ver(row->button, 0, 0);
@@ -1891,8 +1905,8 @@ static void build_rows(page_t *p, int width) {
 		lv_obj_remove_style_all(row->dot);
 		lv_obj_set_size(row->dot, 12, 12);
 		lv_obj_set_style_radius(row->dot, LV_RADIUS_CIRCLE, 0);
+		lv_obj_add_style(row->dot, &sx_style_accent, 0);
 		lv_obj_set_style_bg_opa(row->dot, LV_OPA_COVER, 0);
-		lv_obj_set_style_bg_color(row->dot, theme()->accent, 0);
 		lv_obj_center(row->dot);
 		lv_obj_set_event_bubble(row->dot, true);
 
@@ -1905,8 +1919,6 @@ static void build_rows(page_t *p, int width) {
 		lv_obj_remove_style(row->arc, NULL, LV_PART_KNOB);
 		lv_obj_set_style_arc_width(row->arc, 4, LV_PART_MAIN);
 		lv_obj_set_style_arc_width(row->arc, 4, LV_PART_INDICATOR);
-		lv_obj_set_style_arc_color(row->arc, theme()->surface_pressed, LV_PART_MAIN);
-		lv_obj_set_style_arc_color(row->arc, theme()->accent, LV_PART_INDICATOR);
 		lv_obj_set_style_pad_all(row->arc, 0, 0);
 		lv_obj_set_clickable(row->arc, false);
 		lv_obj_set_event_bubble(row->arc, true);
@@ -1947,23 +1959,23 @@ static void build_rows(page_t *p, int width) {
 		row->title = lv_label_create(texts);
 		lv_label_set_long_mode(row->title, LV_LABEL_LONG_DOT);
 		lv_obj_set_width(row->title, lv_pct(100));
-		lv_obj_set_height(row->title, lv_font_get_line_height(&font_ui_22));
-		lv_obj_add_style(row->title, &theme_style_text, 0);
-		lv_obj_set_style_text_font(row->title, &font_ui_22, 0);
+		lv_obj_set_height(row->title, lv_font_get_line_height(&font_ui_24));
+		lv_obj_add_style(row->title, &sx_style_text, 0);
+		lv_obj_set_style_text_font(row->title, &font_ui_24, 0);
 
 		row->detail = lv_label_create(texts);
 		lv_label_set_long_mode(row->detail, LV_LABEL_LONG_DOT);
 		lv_obj_set_width(row->detail, lv_pct(100));
-		lv_obj_set_height(row->detail, lv_font_get_line_height(&font_ui_18));
-		lv_obj_add_style(row->detail, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(row->detail, &font_ui_18, 0);
+		lv_obj_set_height(row->detail, lv_font_get_line_height(&font_ui_20));
+		lv_obj_add_style(row->detail, &sx_style_text2, 0);
+		lv_obj_set_style_text_font(row->detail, &font_ui_20, 0);
 
 		row->bar = lv_bar_create(texts);
 		lv_obj_set_size(row->bar, lv_pct(100), 5);
 		lv_bar_set_range(row->bar, 0, 1000);
-		lv_obj_set_style_bg_color(row->bar, theme()->surface_pressed, LV_PART_MAIN);
+		lv_obj_add_style(row->bar, &sx_style_press, LV_PART_MAIN);
 		lv_obj_set_style_bg_opa(row->bar, LV_OPA_COVER, LV_PART_MAIN);
-		lv_obj_set_style_bg_color(row->bar, theme()->accent, LV_PART_INDICATOR);
+		lv_obj_add_style(row->bar, &sx_style_accent, LV_PART_INDICATOR);
 		lv_obj_set_style_radius(row->bar, LV_RADIUS_CIRCLE, LV_PART_MAIN);
 		lv_obj_set_style_radius(row->bar, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
 		lv_obj_set_event_bubble(row->bar, true);
@@ -1977,7 +1989,7 @@ static void build_rows(page_t *p, int width) {
 		lv_obj_add_event_cb(row->menu_btn, row_menu_cb, LV_EVENT_CLICKED, p);
 		lv_obj_t *dots = lv_image_create(row->menu_btn);
 		lv_image_set_src(dots, &icon_ellipsis_vertical);
-		lv_obj_add_style(dots, &theme_style_icon, 0);
+		lv_obj_add_style(dots, &sx_style_icon2, 0);
 		lv_obj_set_style_image_recolor_opa(dots, LV_OPA_COVER, 0);
 		lv_obj_center(dots);
 
@@ -1992,15 +2004,10 @@ static void repaint_page(page_t *p) {
 		if (!p->rows[i].button) {
 			continue;
 		}
-		lv_obj_set_style_bg_color(p->rows[i].dot, theme()->accent, 0);
-		lv_obj_set_style_arc_color(p->rows[i].arc, theme()->surface_pressed, LV_PART_MAIN);
-		lv_obj_set_style_arc_color(p->rows[i].arc, theme()->accent, LV_PART_INDICATOR);
-		lv_obj_set_style_bg_color(p->rows[i].bar, theme()->surface_pressed, LV_PART_MAIN);
-		lv_obj_set_style_bg_color(p->rows[i].bar, theme()->accent, LV_PART_INDICATOR);
+		lv_obj_set_style_arc_color(p->rows[i].arc, sx_pal()->press, LV_PART_MAIN);
+		lv_obj_set_style_arc_color(p->rows[i].arc, sx_pal()->accent, LV_PART_INDICATOR);
 	}
-	if (p->resume_btn) {
-		lv_obj_set_style_bg_color(p->resume_btn, theme()->accent, 0);
-	}
+
 	if (p->page) {
 		paint_pills(p);
 	}
@@ -2108,11 +2115,9 @@ void podcastcard_open(const podcastcard_show_t *show) {
 static lv_obj_t *make_filter_pill(page_t *p, lv_obj_t *parent, filter_t which) {
 	(void)p;
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 48);
+	sx_pill_style(btn);
+	lv_obj_set_width(btn, LV_SIZE_CONTENT);
 	lv_obj_set_style_pad_hor(btn, 16, 0);
-	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_add_event_cb(btn, filter_cb, LV_EVENT_CLICKED, (void *)(intptr_t)which);
 	lv_obj_t *label = lv_label_create(btn);
 	lv_label_set_text(label, "");
@@ -2208,15 +2213,15 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 		lv_label_set_long_mode(p->hero_author, LV_LABEL_LONG_DOT);
 		lv_obj_set_width(p->hero_author, lv_pct(100));
 		lv_obj_set_style_max_height(p->hero_author, 2 * lv_font_get_line_height(&font_ui_18), 0);
-		lv_obj_add_style(p->hero_author, &theme_style_text_dim, 0);
-		lv_obj_set_style_text_font(p->hero_author, &font_ui_18, 0);
+		lv_obj_add_style(p->hero_author, &sx_style_text2, 0);
+		lv_obj_set_style_text_font(p->hero_author, &font_ui_20, 0);
 		lv_label_set_text(p->hero_author, "");
 	}
 
 	p->hero_counts = lv_label_create(texts);
 	lv_label_set_long_mode(p->hero_counts, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(p->hero_counts, lv_pct(100));
-	lv_obj_add_style(p->hero_counts, &theme_style_text, 0);
+	lv_obj_add_style(p->hero_counts, &sx_style_text, 0);
 	lv_obj_set_style_text_font(p->hero_counts, &font_ui_20, 0);
 	lv_label_set_text(p->hero_counts, "");
 
@@ -2224,31 +2229,31 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 		p->hero_left = lv_label_create(texts);
 		lv_label_set_long_mode(p->hero_left, LV_LABEL_LONG_WRAP);
 		lv_obj_set_width(p->hero_left, lv_pct(100));
-		lv_obj_add_style(p->hero_left, &theme_style_text, 0);
+		lv_obj_add_style(p->hero_left, &sx_style_text, 0);
 		lv_obj_set_style_text_font(p->hero_left, &font_ui_20, 0);
 		lv_label_set_text(p->hero_left, "");
 		lv_obj_set_hidden(p->hero_left, true);
 	}
 
-	// The big button: the episode left halfway most recently.
+	// The big button: the episode left halfway most recently. The accent pill
+	// of 2.0, its glyph and words in the accent's own ink.
 	p->resume_btn = lv_btn_create(p->page);
-	lv_obj_set_size(p->resume_btn, width, 56);
-	lv_obj_set_style_radius(p->resume_btn, LV_RADIUS_CIRCLE, 0);
-	lv_obj_set_style_shadow_width(p->resume_btn, 0, 0);
-	lv_obj_set_style_border_width(p->resume_btn, 0, 0);
-	lv_obj_set_style_bg_color(p->resume_btn, theme()->accent, 0);
+	sx_pill_style(p->resume_btn);
+	lv_obj_set_size(p->resume_btn, width, SX_PILL_H + 4);
+	sx_pill_set_active(p->resume_btn, true);
 	lv_obj_set_style_pad_column(p->resume_btn, 8, 0);
 	lv_obj_set_flex_flow(p->resume_btn, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(p->resume_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_add_event_cb(p->resume_btn, resume_cb, LV_EVENT_CLICKED, p);
-	lv_obj_t *play_icon = lv_image_create(p->resume_btn);
-	lv_image_set_src(play_icon, &icon_play_small);
-	lv_obj_set_style_image_recolor(play_icon, lv_color_white(), 0);
-	lv_obj_set_style_image_recolor_opa(play_icon, LV_OPA_COVER, 0);
 	lv_obj_t *play_label = lv_label_create(p->resume_btn);
 	lv_label_set_text(play_label, tr("podcast_resume_listening"));
 	lv_obj_set_style_text_font(play_label, &font_ui_22, 0);
-	lv_obj_set_style_text_color(play_label, lv_color_white(), 0);
+	// The glyph before the words; both take the accent's ink from the pill.
+	lv_obj_t *play_icon = lv_image_create(p->resume_btn);
+	lv_image_set_src(play_icon, &icon_play_small);
+	lv_obj_add_style(play_icon, &sx_style_accent, 0);
+	lv_obj_set_style_bg_opa(play_icon, LV_OPA_TRANSP, 0);
+	lv_obj_move_to_index(play_icon, 0);
 	lv_obj_set_hidden(p->resume_btn, true);
 
 	if (!p->feed) {
@@ -2298,7 +2303,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 	lv_label_set_long_mode(p->empty_label, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(p->empty_label, width);
 	lv_obj_set_style_text_align(p->empty_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_add_style(p->empty_label, &theme_style_text_dim, 0);
+	lv_obj_add_style(p->empty_label, &sx_style_text2, 0);
 	lv_obj_set_style_text_font(p->empty_label, &font_ui_22, 0);
 	lv_obj_set_hidden(p->empty_label, true);
 
@@ -2309,7 +2314,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 	lv_obj_set_size(p->sel_action_btn, SEL_FAB_SIZE, SEL_FAB_SIZE);
 	lv_obj_set_style_radius(p->sel_action_btn, LV_RADIUS_CIRCLE, 0);
 	if (p->feed) {
-		lv_obj_add_style(p->sel_action_btn, &theme_style_accent_bg, 0);
+		lv_obj_add_style(p->sel_action_btn, &sx_style_accent, 0);
 	} else {
 		lv_obj_set_style_bg_color(p->sel_action_btn, lv_color_make(224, 27, 36), 0);
 		lv_obj_set_style_bg_color(p->sel_action_btn, lv_color_make(192, 28, 40), LV_STATE_PRESSED);
