@@ -4091,7 +4091,7 @@ static void album_page_enter(panel_t *p) {
 	}
 	p->hue_pushed = true;
 	sx_palette_push_hue(p->album_hue, p->album_chroma);
-	back_btn_hide_on_screen(p->screen, true);
+	back_btn_own_on_screen(p->screen, true); // its floating one; the edge still goes back
 	album_paint(p);
 }
 
@@ -4121,7 +4121,7 @@ static void album_page_leave(panel_t *p) {
 	if (sx_mini_obj()) {
 		lv_obj_remove_local_style_prop(sx_mini_obj(), LV_STYLE_BG_COLOR, 0);
 	}
-	back_btn_hide_on_screen(p->screen, false);
+	back_btn_own_on_screen(p->screen, false);
 	topbar_tint_on_screen(p->screen, false, lv_color_black(), lv_color_white());
 }
 

@@ -194,6 +194,8 @@ bool switcher_back_drag_active(void) { return back_drag_click_guard; }
 
 static bool back_stays_in_page(void);
 static bool page_has_no_chevron(lv_obj_t *screen);
+// A page that draws a back button of its own (back_btn_own_on_screen()).
+static lv_obj_t *chevron_own_on;
 static bool chevron_forced_hidden;
 
 static void back_drag_click_guard_clear_cb(void *unused) {
@@ -382,7 +384,10 @@ static bool edge_back_allowed(void) {
 	if (player_sheet_is_open() || sx_sheet_is_open() || quickpanel_is_open()) {
 		return false;
 	}
-	return !page_has_no_chevron(lv_screen_active());
+	// A page that draws its own back button (the album page's floating one)
+	// has no chevron but a way back all the same: the edge goes back there too.
+	lv_obj_t *active = lv_screen_active();
+	return !page_has_no_chevron(active) || (active && active == chevron_own_on);
 }
 
 // The press the strip has taken: the object under the finger is told it is
@@ -693,7 +698,7 @@ static lv_obj_t *chevron_hidden_on;
 // a dialog with a close button already has its way out.
 static bool page_has_no_chevron(lv_obj_t *screen) {
 	return screen == main_menu_screen || screen == libraryscan_screen || screen == audiobookscan_screen ||
-		   (screen && screen == chevron_hidden_on);
+		   (screen && (screen == chevron_hidden_on || screen == chevron_own_on));
 }
 
 static void load_screen_dir(lv_obj_t *target_screen, nav_dir_t dir) {
@@ -959,6 +964,15 @@ void back_btn_hide_on_screen(lv_obj_t *screen, bool hidden) {
 		chevron_hidden_on = screen;
 	} else if (chevron_hidden_on == screen) {
 		chevron_hidden_on = NULL;
+	}
+	back_btn_sync_visibility();
+}
+
+void back_btn_own_on_screen(lv_obj_t *screen, bool own) {
+	if (own) {
+		chevron_own_on = screen;
+	} else if (chevron_own_on == screen) {
+		chevron_own_on = NULL;
 	}
 	back_btn_sync_visibility();
 }

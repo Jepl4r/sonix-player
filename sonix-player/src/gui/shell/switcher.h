@@ -103,6 +103,13 @@ void back_btn_force_hidden(bool hidden);
 // different screen than the one recorded leaves the record alone.
 void back_btn_hide_on_screen(lv_obj_t *screen, bool hidden);
 
+// Hides the chevron while `screen` is the page on screen, for a page that
+// draws a back button of its own (the album page's floating one over its
+// gradient). Unlike back_btn_hide_on_screen() the page still has the way back
+// the chevron stands for, so the swipe from the left edge goes back there as
+// on any page. Pass false with the same screen to put the chevron back.
+void back_btn_own_on_screen(lv_obj_t *screen, bool own);
+
 // Suspends the drag-to-go-back gesture. For a page that owns the whole panel
 // and needs horizontal touch for itself: a Lua app running full screen, where
 // a sideways drag is the app's input, not a request to leave.
