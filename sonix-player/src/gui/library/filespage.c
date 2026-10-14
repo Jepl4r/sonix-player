@@ -11,6 +11,7 @@
 
 #include "lvgl/lvgl.h"
 
+#include "src/gui/shell/sx_mini.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
@@ -660,11 +661,13 @@ static void name_layer_show(const char *heading, const char *initial) {
 	keyboard_reset(name_keyboard);
 	keyboard_set_field(name_keyboard, name_field);
 	lv_obj_set_hidden(name_layer, false);
+	sx_mini_update_visibility(); // its keyboard comes or goes with it
 	lv_obj_move_foreground(name_layer);
 }
 
 static void name_layer_hide(void) {
 	lv_obj_set_hidden(name_layer, true);
+	sx_mini_update_visibility(); // its keyboard comes or goes with it
 	acting_on[0] = '\0';
 	naming_new_folder = false;
 }

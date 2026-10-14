@@ -7,6 +7,7 @@
 #include <strings.h>
 
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/sx_mini.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/settingsrow.h"
@@ -104,7 +105,10 @@ static void load(void) {
 	names = library_artist_exceptions(&name_count);
 }
 
-static void name_layer_hide(void) { lv_obj_set_hidden(name_layer, true); }
+static void name_layer_hide(void) {
+	lv_obj_set_hidden(name_layer, true);
+	sx_mini_update_visibility(); // its keyboard goes with it
+}
 
 static void add_cb(lv_event_t *e) {
 	(void)e;
@@ -118,6 +122,7 @@ static void add_cb(lv_event_t *e) {
 	lv_obj_add_state(name_field, LV_STATE_FOCUSED);
 	lv_obj_send_event(name_field, LV_EVENT_FOCUSED, NULL);
 	lv_obj_set_hidden(name_layer, false);
+	sx_mini_update_visibility(); // its keyboard comes or goes with it
 	lv_obj_move_foreground(name_layer);
 }
 

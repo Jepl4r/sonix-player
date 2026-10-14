@@ -11,6 +11,7 @@
 #include "src/gui/bluetooth/btaudio.h"
 #include "src/gui/bluetooth/btreceiverpage.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/sx_mini.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
@@ -550,6 +551,7 @@ static char rename_mac[BT_MAC_MAX];
 static void rename_layer_hide(void) {
 	if (rename_layer) {
 		lv_obj_set_hidden(rename_layer, true);
+		sx_mini_update_visibility(); // its keyboard comes or goes with it
 	}
 	back_btn_force_hidden(false);
 }
@@ -590,6 +592,7 @@ static void rename_action(void *user) {
 	lv_textarea_set_text(rename_field, current);
 	keyboard_reset(rename_keyboard);
 	lv_obj_set_hidden(rename_layer, false);
+	sx_mini_update_visibility(); // its keyboard comes or goes with it
 	lv_obj_move_foreground(rename_layer);
 	// The sheet has its own close in the corner, and the chevron under it would
 	// leave the page without putting the keyboard away.
@@ -707,6 +710,12 @@ static void paired_long_pressed_cb(lv_event_t *e) {
 	const dev_ref_t *ref = lv_event_get_user_data(e);
 	if (!ref || !ref->mac[0]) {
 		return;
+	}
+	// The lift that ends this hold would otherwise arrive as a tap as well and
+	// connect the headphones under the sheet just opened about them.
+	lv_indev_t *indev = lv_indev_active();
+	if (indev) {
+		lv_indev_wait_release(indev);
 	}
 	remember(ref);
 	show_device_menu(ref->connected);

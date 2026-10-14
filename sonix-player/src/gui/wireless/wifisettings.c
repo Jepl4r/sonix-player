@@ -473,6 +473,12 @@ static void row_long_pressed_cb(lv_event_t *e) {
 	if (!ref || !ref->ssid[0] || !(ref->flags & (ROW_CURRENT | ROW_SAVED))) {
 		return; // nothing to say about a network never joined
 	}
+	// The lift that ends this hold would otherwise arrive as a tap as well:
+	// joining a saved network under the sheet just opened to forget it.
+	lv_indev_t *indev = lv_indev_active();
+	if (indev) {
+		lv_indev_wait_release(indev);
+	}
 	remember_ssid(ref->ssid);
 	show_row_menu(NULL, (ref->flags & ROW_CURRENT) != 0);
 }
@@ -576,9 +582,14 @@ static void refresh_current_card(void) {
 }
 
 static void current_card_clicked_cb(lv_event_t *e) {
-	(void)e;
 	if (!current_ssid[0]) {
 		return;
+	}
+	// A tap and a hold both open the sheet; after a hold, the lift is not a
+	// second tap opening it again.
+	lv_indev_t *indev = lv_indev_active();
+	if (lv_event_get_code(e) == LV_EVENT_LONG_PRESSED && indev) {
+		lv_indev_wait_release(indev);
 	}
 	remember_ssid(current_ssid);
 	show_row_menu(current_card, true);

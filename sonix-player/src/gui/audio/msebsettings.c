@@ -4,6 +4,7 @@
 #include <stdlib.h>
 #include <string.h>
 
+#include "src/gui/shell/sx_mini.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
@@ -238,6 +239,7 @@ static void open_preset_list_cb(lv_event_t *e) {
 static void name_layer_hide(void) {
 	if (name_layer) {
 		lv_obj_set_hidden(name_layer, true);
+		sx_mini_update_visibility(); // its keyboard comes or goes with it
 	}
 }
 
@@ -280,6 +282,7 @@ static void open_name_dialog_cb(lv_event_t *e) {
 	lv_obj_add_state(name_field, LV_STATE_FOCUSED);
 	lv_obj_send_event(name_field, LV_EVENT_FOCUSED, NULL);
 	lv_obj_set_hidden(name_layer, false);
+	sx_mini_update_visibility(); // its keyboard comes or goes with it
 	lv_obj_move_foreground(name_layer);
 }
 

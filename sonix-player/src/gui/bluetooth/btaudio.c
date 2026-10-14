@@ -9,6 +9,7 @@
 
 #include "src/gui/bluetooth/airpodspage.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/sx_mini.h"
 #include "src/gui/shell/gui.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
@@ -479,6 +480,7 @@ static void refresh_name_row(void) {
 static void name_layer_hide(void) {
 	if (name_layer) {
 		lv_obj_set_hidden(name_layer, true);
+		sx_mini_update_visibility(); // its keyboard comes or goes with it
 	}
 	back_btn_force_hidden(false);
 }
@@ -510,6 +512,7 @@ static void name_row_cb(lv_event_t *e) {
 	lv_textarea_set_text(name_field, bluetooth_local_name());
 	keyboard_reset(name_keyboard);
 	lv_obj_set_hidden(name_layer, false);
+	sx_mini_update_visibility(); // its keyboard comes or goes with it
 	lv_obj_move_foreground(name_layer);
 	// The sheet has its own close in the corner, and the chevron under it would
 	// leave the page without putting the keyboard away.

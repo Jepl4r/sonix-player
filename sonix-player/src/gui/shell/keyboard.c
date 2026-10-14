@@ -1203,7 +1203,21 @@ void keyboard_set_visible(keyboard_t *kb, bool visible) {
 	sx_mini_update_visibility();
 }
 
-bool keyboard_is_visible(keyboard_t *kb) { return kb && kb->tray && !lv_obj_is_hidden(kb->tray); }
+// Shown means drawn: the tray and every object it sits in. A page that keeps
+// its keyboard inside a layer it hides (the Bluetooth page's rename) leaves the
+// tray itself unhidden, and counting that as shown took the mini player off
+// the page for good (keyboard_shown_on).
+bool keyboard_is_visible(keyboard_t *kb) {
+	if (!kb || !kb->tray) {
+		return false;
+	}
+	for (lv_obj_t *o = kb->tray; o; o = lv_obj_get_parent(o)) {
+		if (lv_obj_is_hidden(o)) {
+			return false;
+		}
+	}
+	return true;
+}
 
 bool keyboard_shown_on(lv_obj_t *screen) {
 	if (!screen) {
