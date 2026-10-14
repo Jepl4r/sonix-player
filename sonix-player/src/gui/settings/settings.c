@@ -10,6 +10,7 @@
 #include "src/gui/shell/confirm.h"
 #include "src/gui/settings/devoptions.h"
 #include "src/gui/settings/language.h"
+#include "src/gui/settings/musicsettings.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/settings/kblayoutpage.h"
 #include "src/gui/shell/keyboard.h"
@@ -535,6 +536,11 @@ void settings_init(gui_config_t *cfg) {
 	build_other_page(cfg);
 
 	nav_card(container, "appearance", switch_screen_cb, appearance_screen, &appearance_value);
+	// Music's own settings (playback, EQ, DAC filters, scan options...). The
+	// gear in the Music header that used to lead there is gone in 2.0 (no
+	// header button repeating a page), so this row is the way in now -- next
+	// to Appearance, the other page people come to Settings for.
+	nav_card(container, "music", switch_screen_cb, musicsettings_screen, NULL);
 	nav_card(container, "settings_screen", switch_screen_cb, screensettings_screen, &screen_value);
 	nav_card(container, "date_and_time", clock_clicked_cb, NULL, NULL);
 	nav_card(container, "power", switch_screen_cb, powersettings_screen, NULL);
