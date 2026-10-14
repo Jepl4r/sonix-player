@@ -640,12 +640,37 @@ void sx_row_set_thumb(lv_obj_t *row, const lv_image_dsc_t *image, lv_color_t ton
 			lv_obj_center(r->lead_image);
 		}
 		lv_image_set_src(r->lead_image, image);
+		lv_obj_set_style_image_recolor_opa(r->lead_image, LV_OPA_TRANSP, 0);
 		// A 56 px thumbnail on a large row's 68 px lead is drawn to its size.
 		int side = thumb_size(r->compact);
 		int32_t w = (int32_t)image->header.w;
 		lv_image_set_scale(r->lead_image, w > 0 && w != side ? (uint32_t)(side * LV_SCALE_NONE / w) : LV_SCALE_NONE);
 		lv_obj_set_hidden(r->lead_image, false);
 		lv_obj_set_style_clip_corner(r->lead, true, 0);
+	}
+	apply_sizes(r, row);
+	eq_place(r);
+}
+
+void sx_row_set_glyph(lv_obj_t *row, const lv_image_dsc_t *glyph, lv_color_t tone) {
+	row_t *r = row_of(row);
+	if (!r) {
+		return;
+	}
+	lead_reset(r);
+	r->lead_kind = LEAD_THUMB;
+	lv_obj_set_style_bg_color(r->lead, tone, 0);
+	lv_obj_set_style_bg_opa(r->lead, LV_OPA_COVER, 0);
+	if (glyph) {
+		if (!r->lead_image) {
+			r->lead_image = lv_image_create(r->lead);
+			lv_obj_center(r->lead_image);
+		}
+		lv_image_set_src(r->lead_image, glyph);
+		lv_image_set_scale(r->lead_image, LV_SCALE_NONE); // a glyph at its own size, in the middle
+		lv_obj_set_style_image_recolor(r->lead_image, lv_color_white(), 0);
+		lv_obj_set_style_image_recolor_opa(r->lead_image, LV_OPA_COVER, 0);
+		lv_obj_set_hidden(r->lead_image, false);
 	}
 	apply_sizes(r, row);
 	eq_place(r);

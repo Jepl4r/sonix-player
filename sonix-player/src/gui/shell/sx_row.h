@@ -100,6 +100,9 @@ void sx_row_set_subtitle(lv_obj_t *row, const char *subtitle, const char *badge,
 // The lead. A thumbnail (`image` NULL: the tone plaque in `tone`), a track
 // number, or a letter or two on a tone plaque (`round` for an artist).
 void sx_row_set_thumb(lv_obj_t *row, const lv_image_dsc_t *image, lv_color_t tone);
+// A glyph (white, at its own size) on a tone plaque: a folder, a file that has
+// no picture of its own.
+void sx_row_set_glyph(lv_obj_t *row, const lv_image_dsc_t *glyph, lv_color_t tone);
 void sx_row_set_number(lv_obj_t *row, int number);
 void sx_row_set_letter(lv_obj_t *row, const char *letter, lv_color_t tone, bool round);
 void sx_row_set_no_lead(lv_obj_t *row);
