@@ -257,8 +257,9 @@ static void poll_cb(lv_timer_t *timer) {
 }
 
 // Where the card waits while it is shut: its whole height above the top edge,
-// whatever it is stretched to.
-static int parked_y(void) { return -lv_obj_get_height(panel) - 4; }
+// whatever it is stretched to. The height as set, not as last laid out: a
+// stretch changes it in the same breath as this is asked.
+static int parked_y(void) { return -(int)lv_obj_get_style_height(panel, LV_PART_MAIN) - 4; }
 
 // ---------------------------------------------------------------------------
 // open / close
