@@ -844,12 +844,21 @@ void yandexplay_signed_out(void) {
 
 // What the wave watch is told every second: the wave track loaded now, and
 // how many are queued after it.
+//
+// "Ours" is too strict a test here: it holds while the player's queue is
+// exactly the wave's list, and a track sent next or to the end from the wave's
+// own rows, or an Undo, changes the queue without changing the list. The wave
+// then took the playing track as left ("skip" to Yandex) and stopped asking for
+// more, so My Wave ran dry after a single "Play next". What matters to the wave
+// is narrower: the queue is not a library one, and what plays is one of its
+// tracks. A library album started over it fails the first, anything else the
+// second, and the wave hears that the track was left, as before.
 static void wave_watch(bool ours_now) {
 	if (!yandexplay_is_wave()) {
 		return;
 	}
 	yandex_track_t t;
-	if (!ours_now || !yandexplay_current(&t)) {
+	if ((!ours_now && playlist_is_library_backed()) || !yandexplay_current(&t)) {
 		yandexwave_watch(NULL, false, 0);
 		return;
 	}
