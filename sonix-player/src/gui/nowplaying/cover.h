@@ -99,6 +99,12 @@ bool cover_picture_known(const char *filepath);
 bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, cover_image_t *cover_out,
 							  int backdrop_w, int backdrop_h, cover_image_t *backdrop_out);
 
+// Makes the player's cover of `filepath` at cover_w x cover_h and keeps it in
+// the thumbnail database, as cover_load_player_images() does, so that the
+// track's cover later comes out of the cache. Does nothing when the track has no
+// artwork or its cover is already kept at that size. Loader thread only.
+void cover_prefetch_player(const char *filepath, int cover_w, int cover_h);
+
 // The two pictures the screensaver needs from one photograph: the picture
 // itself filling the screen, and the blurred block along the bottom that the
 // clock and the track name sit on.

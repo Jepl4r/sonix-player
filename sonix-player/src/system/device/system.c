@@ -39,6 +39,7 @@
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
+#include "src/system/streaming/podcaststate.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/library/library.h"
@@ -290,6 +291,19 @@ void sync_battery_from_sysfs(void) {
 }
 
 char *read_battery_percent() { return battery_cache; }
+
+int read_battery_millivolts(void) {
+	if (g_battery_cfg && g_battery_cfg->battery_capacity_file) {
+		return -1;
+	}
+	char text[24];
+	if (!battery_source[0] || !read_sysfs_line(POWER_SUPPLY_DIR, battery_source, "voltage_now", text, sizeof(text)) ||
+		text[0] < '0' || text[0] > '9') {
+		return -1;
+	}
+	long microvolts = atol(text);
+	return microvolts > 0 ? (int)(microvolts / 1000) : -1;
+}
 
 // Set while something has deliberately stopped the charger -- DAC mode with
 // charging switched off. The hardware may still report a healthy charger on
@@ -794,6 +808,7 @@ static void card_databases_detach(void) {
 	// of play would otherwise read as "the track ended, start it again".
 	device_state_note_storage_gone();
 	audio_stop();
+	podcaststate_set_root(NULL);
 
 	logging_suspend_for_usb(); // closes the on-card log file
 	btlog_card_release();
@@ -838,6 +853,7 @@ static void card_databases_attach(const char *root) {
 	tidalcache_set_root(root);
 	podcastcache_set_root(root);
 	podcastsubs_set_root(root);
+	podcaststate_set_root(root);
 	dlna_set_root(root);
 	gbdb_set_root(root);
 

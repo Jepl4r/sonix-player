@@ -42,6 +42,7 @@
 #include "src/system/device/usb.h"
 #include "src/system/audio/usbdac.h"
 #include "src/system/gearboy/gearboy.h"
+#include "src/system/audio/metronome.h"
 #include "src/system/device/led.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/device/axpcharge.h"
@@ -822,6 +823,9 @@ static void unpark_radios(void) {
 // [power] standby_mem_seconds (60 by default, like the stock firmware).
 // ---------------------------------------------------------------------------
 
+// The shortest wait before standby that is accepted, in seconds.
+#define STANDBY_MEM_MIN_SECONDS 15
+
 static bool g_mem_enabled;
 // Raised by a suspend that failed or that came straight back. It stops the
 // countdown for THIS dark-screen spell only, and power_screen_on() clears it, so
@@ -841,6 +845,13 @@ void power_set_standby_enabled(bool enabled) {
 	g_mem_enabled = enabled && g_cfg.power_state_path != NULL;
 	g_mem_blocked_this_dark = false;
 	g_mem_instant_wakes = 0;
+}
+
+void power_set_standby_after(uint32_t seconds) {
+	if (seconds < STANDBY_MEM_MIN_SECONDS) {
+		seconds = STANDBY_MEM_MIN_SECONDS; // any lower risks the device sleeping under the fingers
+	}
+	g_mem_after_ms = seconds * 1000u;
 }
 
 // What the kernel says about the last suspend: counters and, above all, the
@@ -891,17 +902,37 @@ static void mem_skip(const char *why) {
 // the RTC is what wakes the device (no user: the deadline arrived), it really
 // shuts down. If the user wakes it first, turning the screen on disarms the
 // alarm, and the next suspend re-arms it with the new deadline.
+//
+// The same alarm looks in on the battery. A cell that runs out during the sleep
+// leaves the device restarting itself into an empty battery, so on battery
+// power the sleep is also broken now and then, more often the lower the level:
+// awake for a short while with the screen dark, lowbattery.c reads the level
+// and switches the player off at 1 %, and otherwise the device goes back to
+// sleep. Whichever of the two moments comes first is the one programmed.
 // ---------------------------------------------------------------------------
 #define RTC_WAKEALARM_PATH "/sys/class/rtc/rtc0/wakealarm"
 
+// How long the sleep lasts before the battery is looked at, by level.
+#define BATTERY_CHECK_LOW_S (20 * 60)	   // at 5 % or under
+#define BATTERY_CHECK_MID_S (60 * 60)	   // at 15 % or under
+#define BATTERY_CHECK_HIGH_S (4 * 60 * 60) // above
+// Awake for this long after such a wake, enough for lowbattery.c's readings,
+// before the device goes back to sleep.
+#define BATTERY_CHECK_AWAKE_MS 40000
+
 static bool g_rtc_alarm_armed;
-static time_t g_rtc_alarm_at;
-// The same deadline on CLOCK_BOOTTIME. The wall clock is not usable for this:
-// it does not count the sleep, and clock_resync() -- the one thing that would
-// fix it -- refuses to do anything until the date has been set by hand or by
-// ntpdate, so on a device that has seen neither the deadline check never comes
-// true. CLOCK_BOOTTIME counts suspended time and needs nobody's permission.
+// Whether the automatic shutdown has a deadline in this sleep, and whether the
+// alarm programmed is the battery's.
+static bool g_rtc_auto_off_armed;
+static bool g_rtc_battery_armed;
+// The automatic shutdown's deadline on CLOCK_BOOTTIME. The wall clock is not
+// usable for this: it does not count the sleep, and clock_resync() -- the one
+// thing that would fix it -- refuses to do anything until the date has been set
+// by hand or by ntpdate, so on a device that has seen neither the deadline check
+// never comes true. CLOCK_BOOTTIME counts suspended time and needs nobody's
+// permission.
 static uint32_t g_rtc_alarm_boot_at;
+static uint32_t g_rtc_battery_boot_at;
 
 static bool rtc_wakealarm_write(const char *val) {
 #ifdef HOST_BUILD
@@ -922,31 +953,50 @@ static void rtc_alarm_disarm(void) {
 		return;
 	}
 	g_rtc_alarm_armed = false;
+	g_rtc_auto_off_armed = false;
+	g_rtc_battery_armed = false;
 	rtc_wakealarm_write("0");
 	printf("power: RTC wake alarm disarmed\n");
 }
 
-static void rtc_alarm_arm_for_auto_off(void) {
+// Seconds of sleep before the battery is looked at; 0 on the charger or with
+// no level to read.
+static long battery_check_after_s(void) {
+	const char *text = read_battery_percent();
+	if (usb_vbus_present() || !text || text[0] < '0' || text[0] > '9') {
+		return 0;
+	}
+	int level = atoi(text);
+	return level <= 5 ? BATTERY_CHECK_LOW_S : level <= 15 ? BATTERY_CHECK_MID_S : BATTERY_CHECK_HIGH_S;
+}
+
+static void rtc_alarm_arm(void) {
 	g_rtc_alarm_armed = false;
+	g_rtc_auto_off_armed = false;
+	g_rtc_battery_armed = false;
+
+	long auto_off_s = 0;
+	if (g_auto_off_enabled && g_auto_off_ms > 0) {
+		uint32_t idle_wall = boottime_ms() - g_last_active_boot_ms;
+		// Already expired: the normal awake tick handles it.
+		if (idle_wall < g_auto_off_ms) {
+			auto_off_s = (long)((g_auto_off_ms - idle_wall) / 1000u) + 5; // margin
+		}
+	}
+	long battery_s = battery_check_after_s();
+
 	// Cleared on every path, not only when a new one is written: an alarm left
 	// over from an earlier suspend outlives the setting that armed it, and fires
 	// later to wake a device that has no reason to wake -- with the software
 	// flag down, so nothing acts on it and it simply burns battery in the dark.
-	if (!g_auto_off_enabled || g_auto_off_ms == 0) {
-		rtc_wakealarm_write("0");
+	// Cleared first also because the kernel rejects a new alarm over a pending
+	// one.
+	if (!rtc_wakealarm_write("0") || (auto_off_s == 0 && battery_s == 0)) {
 		return;
 	}
-	uint32_t idle_wall = boottime_ms() - g_last_active_boot_ms;
-	if (idle_wall >= g_auto_off_ms) {
-		rtc_wakealarm_write("0");
-		return; // already expired: the normal awake tick handles it
-	}
-	long remaining_s = (long)((g_auto_off_ms - idle_wall) / 1000u) + 5; // margin
-	// Cleared first (the kernel rejects a new alarm over a pending one), then
-	// the absolute time in epoch seconds, which is how the RTC keeps it.
-	if (!rtc_wakealarm_write("0")) {
-		return;
-	}
+	bool battery_first = battery_s > 0 && (auto_off_s == 0 || battery_s < auto_off_s);
+	long remaining_s = battery_first ? battery_s : auto_off_s;
+	// The absolute time in epoch seconds, which is how the RTC keeps it.
 	char buf[32];
 	time_t at = time(NULL) + remaining_s;
 	snprintf(buf, sizeof(buf), "%lld", (long long)at);
@@ -954,9 +1004,12 @@ static void rtc_alarm_arm_for_auto_off(void) {
 		return;
 	}
 	g_rtc_alarm_armed = true;
-	g_rtc_alarm_at = at;
-	g_rtc_alarm_boot_at = boottime_ms() + (uint32_t)remaining_s * 1000u;
-	printf("power: mem: RTC wake in %ld s for the automatic shutdown\n", remaining_s);
+	g_rtc_auto_off_armed = auto_off_s > 0;
+	g_rtc_battery_armed = battery_first;
+	g_rtc_alarm_boot_at = boottime_ms() + (uint32_t)auto_off_s * 1000u;
+	g_rtc_battery_boot_at = boottime_ms() + (uint32_t)battery_s * 1000u;
+	printf("power: mem: RTC wake in %ld s %s\n", remaining_s,
+		   battery_first ? "to look at the battery" : "for the automatic shutdown");
 }
 
 void power_shutdown(void) {
@@ -1056,8 +1109,9 @@ static void suspend_to_ram(void) {
 	sync();
 
 	// 4-ter. The RTC alarm: if the automatic shutdown deadline falls during the
-	//        sleep, it is what wakes the device to actually shut down.
-	rtc_alarm_arm_for_auto_off();
+	//        sleep, it is what wakes the device to actually shut down; on
+	//        battery power it also wakes it to look at the level.
+	rtc_alarm_arm();
 
 	// 5. The write that stops the SoC. Blocks until the wake: everything after
 	//    it already runs on the other side.
@@ -1169,8 +1223,16 @@ static void suspend_to_ram(void) {
 	bool user_woke_it = g_power_button_pending;
 	pthread_mutex_unlock(&g_lock);
 
-	if (rc == 0 && g_rtc_alarm_armed && !user_woke_it && (int32_t)(boottime_ms() - g_rtc_alarm_boot_at) >= 0) {
+	bool rtc_woke_it = rc == 0 && g_rtc_alarm_armed && !user_woke_it;
+	if (rtc_woke_it && g_rtc_auto_off_armed && (int32_t)(boottime_ms() - g_rtc_alarm_boot_at) >= 0) {
 		power_auto_off_now("RTC wake after mem: the idle time has run out");
+	}
+	// The battery's own wake: a few seconds of slack, as the RTC counts whole
+	// seconds and the wake takes a moment.
+	bool battery_wake =
+		rtc_woke_it && g_rtc_battery_armed && (int32_t)(boottime_ms() - g_rtc_battery_boot_at) >= -5000;
+	if (battery_wake) {
+		printf("power: mem: RTC wake to look at the battery\n");
 	}
 
 	// No recovery of the old stream: there is nothing left to recover -- the
@@ -1187,6 +1249,11 @@ static void suspend_to_ram(void) {
 	g_screen_off_at = lv_tick_get();
 	g_mem_last_attempt_ms = lv_tick_get();
 	g_mem_skip_logged[0] = '\0';
+	// After a look at the battery, back to sleep sooner: only the readings were
+	// waited for.
+	if (battery_wake && g_mem_after_ms > BATTERY_CHECK_AWAKE_MS) {
+		g_mem_active_ms -= g_mem_after_ms - BATTERY_CHECK_AWAKE_MS;
+	}
 }
 
 // Every condition in one place, each of them logged, so the log explains why
@@ -1474,6 +1541,30 @@ void power_screen_off(void) {
 	fprintf(stderr, "power: screen off\n");
 }
 
+// LVGL starts the refresh timer again from its own handler of this event, sent
+// whenever anything is invalidated -- the elapsed time in the player, a title
+// that changes -- so the pause put on it at the blank lasted only until the
+// first of those, and from there every change was drawn into a framebuffer
+// nobody could see. Added after LVGL's handler, this puts the pause back at
+// once. Nothing is lost: the areas stay marked, and power_screen_on() redraws
+// the whole screen anyway; lv_refr_now() does not depend on the timer.
+static void refr_request_cb(lv_event_t *e) {
+	(void)e;
+	if (!g_screen_on && g_refr_timer) {
+		lv_timer_pause(g_refr_timer);
+	}
+}
+
+void power_keep_animations_paused(void) {
+	if (g_screen_on) {
+		return;
+	}
+	lv_timer_t *anim_timer = lv_anim_get_timer();
+	if (anim_timer && !lv_timer_get_paused(anim_timer)) {
+		lv_timer_pause(anim_timer);
+	}
+}
+
 void power_screen_on(void) {
 	waveform_set_screen_on(true);
 	if (g_screen_on) {
@@ -1518,6 +1609,14 @@ void power_screen_on(void) {
 		(void)g_wake_hook();
 	}
 
+	// Nothing is drawn while the panel is dark (refr_request_cb), and the
+	// unblank below presents whatever the framebuffer holds: the page as it was
+	// at the blank, with the last track's title and time on it, until the
+	// repaint further down. What changed in the meantime is drawn now, while the
+	// panel is still off -- only the areas that changed, as the dark used to
+	// draw them as they came.
+	lv_refr_now(g_disp);
+
 	screen_power(true);			 // panel, backlight and touch controller back up
 	usleep(SCREEN_ON_SETTLE_US); // let the panel + backlight finish re-initializing
 	set_indevs_enabled(true);
@@ -1536,6 +1635,11 @@ void power_screen_on(void) {
 	if (anim_timer) {
 		lv_timer_resume(anim_timer);
 	}
+	// Animations started or left running in the dark have been standing still
+	// (see power_keep_animations_paused). One pass brings each to where its
+	// clock says it is, and runs the completion of the ones already over, so
+	// the wake frame below shows a closed sheet closed rather than half way.
+	lv_anim_refr_now();
 	// ... and force an immediate, full repaint of the framebuffer. The blank
 	// cleared the panel to black, so the whole UI must be redrawn; this is not
 	// gated on g_refr_timer, and lv_refr_now() draws even if the timer is paused.
@@ -1622,7 +1726,10 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// comes in over A2DP, so neither of the first two answers says anything
 	// about it. Streaming rather than merely active, because the mode left on
 	// with the phone paused is exactly the idle state the timer exists for.
-	bool playing = (audio_get_status() == AUDIO_STATUS_PLAYING) || radio_is_playing() || btreceiver_is_streaming();
+	// The metronome counts as music: a player clicking in a pocket with the
+	// screen dark must not go to sleep under it.
+	bool playing = (audio_get_status() == AUDIO_STATUS_PLAYING) || radio_is_playing() || btreceiver_is_streaming() ||
+				   metronome_running();
 	if (playing) {
 		g_last_playing_ms = now;
 	}
@@ -1670,9 +1777,9 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// 4a-bis. the shutdown timer, once it has run out.
 	//
 	//     Before the suspend, not after it: on a tick where both are ready,
-	//     suspending first would leave rtc_alarm_arm_for_auto_off() with a
-	//     deadline already past, so it would arm nothing, that sleep would carry
-	//     no alarm and the shutdown would slip by a whole period.
+	//     suspending first would leave rtc_alarm_arm() with a deadline already
+	//     past, so that sleep would carry no alarm for it and the shutdown would
+	//     slip by a whole period.
 	if (g_auto_off_enabled && g_auto_off_ms > 0 && off_idle_wall >= g_auto_off_ms) {
 		char why[64];
 		snprintf(why, sizeof(why), "%u minutes idle", g_auto_off_ms / 60000u);
@@ -1811,6 +1918,9 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_disp = disp;
 	g_refr_timer = disp ? lv_display_get_refr_timer(disp) : NULL;
 	g_screen_on = true;
+	if (disp) {
+		lv_display_add_event_cb(disp, refr_request_cb, LV_EVENT_REFR_REQUEST, NULL);
+	}
 
 	// discover the panel's maximum backlight level
 	g_max_brightness = g_cfg.max_brightness_path ? read_long_from_file(g_cfg.max_brightness_path) : -1;
@@ -1843,10 +1953,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	if (g_mem_instant_wakes_max < 1) {
 		g_mem_instant_wakes_max = 1;
 	}
-	if (mem_secs < 15) {
-		mem_secs = 15; // any lower risks the device sleeping under the fingers
-	}
-	g_mem_after_ms = (uint32_t)mem_secs * 1000u;
+	power_set_standby_after(mem_secs > 0 ? (uint32_t)mem_secs : 0);
 
 	// The radios go down on their own clock, not the Standby toggle's: they are
 	// worth switching off whether or not the SoC is going to sleep.

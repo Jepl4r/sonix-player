@@ -6,21 +6,18 @@
 
 // Podcast Index, the catalogue behind the Podcasts section.
 //
-// Why this and not the RSS feeds directly: a podcast is an RSS feed, and in
-// theory downloading it would be enough. In practice it is not, for two
-// reasons:
+// A podcast is an RSS feed, yet the catalogue comes first, for two reasons:
 //
 //   * search. Without a catalogue, the only way to find a podcast is to know
-//     its URL by heart and type it on an on-screen keyboard. Nobody does that.
+//     its URL by heart and type it on an on-screen keyboard;
 //   * the format. Podcast RSS is XML with four namespaces on it (itunes:,
-//     podcast:, media:, content:), and the wild contains everything -- feeds
-//     with broken XML, dates in five formats, duplicated tags. This tree has no
-//     XML parser, and writing one that survives the real world is a far bigger
-//     job than it looks.
+//     podcast:, media:, content:), and the wild contains everything -- broken
+//     XML, dates in five formats, duplicated tags.
 //
 // Podcast Index does both jobs: it searches, and it returns already normalized
-// JSON, for which a parser is already here. It is also an open catalogue with
-// no advertising, which in 2026 is not a given.
+// JSON. It is also an open catalogue with no advertising. The feeds it does not
+// have are read directly (podcastrss.h), with ids of their own that the calls
+// below send there.
 //
 // The signature: every request carries three headers -- the key, the time, and
 // the SHA-1 of key+secret+time in hex. The time must be the real one to within
@@ -36,6 +33,10 @@
 #define PODCAST_AUTHOR_MAX 120
 #define PODCAST_URL_MAX 512
 #define PODCAST_PAGE_LIMIT 60
+// The feed's own address, the RSS. Shorter than the other addresses: it is
+// kept for every followed podcast and in every list of podcasts, and a feed
+// address is rarely a third of this.
+#define PODCAST_FEED_URL_MAX 384
 
 // The ids are 64-bit, and not out of generosity: on this device `long` is
 // 32-bit, and Podcast Index numbers episodes with eleven digits (16795090626
@@ -50,7 +51,8 @@ typedef struct {
 	char title[PODCAST_TITLE_MAX];
 	char author[PODCAST_AUTHOR_MAX];
 	char image[PODCAST_URL_MAX];
-	int episode_count; // 0 when the catalogue does not say
+	char url[PODCAST_FEED_URL_MAX]; // the RSS feed; "" when not known
+	int episode_count;				 // 0 when the catalogue does not say
 } podcast_feed_t;
 
 typedef struct {
@@ -79,6 +81,9 @@ const char *podcast_last_error(void);
 int podcast_last_raw_count(void);
 
 // Searches podcasts by name. Returns how many it put in `out`, -1 on error.
+// A query that is an address (http://, https://) finds that podcast: the
+// catalogue's when it has it, otherwise the feed read directly
+// (podcastrss.h).
 int podcast_search(const char *query, podcast_feed_t *out, int max);
 
 // The current chart.
@@ -91,9 +96,21 @@ int podcast_episodes(long long feed_id, podcast_episode_t *out, int max);
 // than titles, so a podcast that is renamed stays the right one.
 bool podcast_feed(long long feed_id, podcast_feed_t *out);
 
+// A podcast found by the address of its feed, the way an OPML file names it.
+// 1 when found, 0 when the catalogue does not have it, -1 when the catalogue
+// could not be asked (podcast_last_error() says why).
+int podcast_feed_by_url(const char *url, podcast_feed_t *out);
+
 // A single episode. Needed by the player, which has the id from the sidecar and
 // wants to know which podcast it belongs to.
 bool podcast_episode(long long episode_id, podcast_episode_t *out);
+
+// The same when the podcast is known too, which is what an episode read from a
+// feed needs: there is no catalogue to ask by its id alone.
+bool podcast_episode_in_feed(long long feed_id, long long episode_id, podcast_episode_t *out);
+
+// For podcastrss.c, which reports its failures through podcast_last_error().
+void podcast_set_last_error(const char *what);
 
 // ---------------------------------------------------------------------------
 // The two skip buttons, which on podcasts are their own and not the audiobook

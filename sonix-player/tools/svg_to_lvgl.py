@@ -113,6 +113,8 @@ ICONS = [
     # Power menu.
     ("power-off.svg", "power_off", 56),
     ("reboot.svg", "reboot", 56),
+    # The low battery warning and the countdown to the shutdown at 1 %.
+    ("battery-warning.svg", "battery_warning", 56),
     # Library pages. One glyph per index, and the stand-in for artwork that is
     # not there: they ride inside the 72 px thumbnail box on a library row and
     # the 56 px one on a search hit.
@@ -153,7 +155,6 @@ ICONS = [
     ("list-x.svg", "list_x", 34),
     ("star-x.svg", "star_x", 34),
     ("search.svg", "search", 34),
-    ("podcast-downloaded.svg", "podcast_downloaded", 34), # podcasts corner: the downloaded episodes
     ("wifi.svg", "wifi", 46),
     ("bluetooth.svg", "bluetooth", 46),
     # Status bar radios. The wifi glyph is the same arc with none, one, two or
@@ -182,6 +183,8 @@ ICONS = [
     ("delete.svg", "delete", 30),
     ("space.svg", "space", 34),
     ("chevron-up.svg", "chevron_up", 32), # built, and currently unused
+    # The Music page's "more below", shown for a moment when the page opens.
+    ("chevron-down.svg", "chevron_down", 36),
     # The control centre's close hint, drawn the way iOS draws its home
     # indicator. Big because the glyph's line spans only the middle 14 of its
     # 24 units, so 56 px of bitmap is a ~33 px bar.
@@ -234,13 +237,32 @@ ICONS = [
     ("grip-horizontal.svg", "grip", 36),
     ("move-vertical.svg", "reorder", 34), # turns on reordering in a playlist
     ("now-playing.svg", "now_playing", 32), # the playing row in the queue
+    # The queue's corner, after a long press on a row: choose rows to take out.
+    # Moving them by hand is arrow_down_up, next to it.
+    ("circle-dashed-check.svg", "select_mode", 34),
     ("plus.svg", "plus", 36),
+    ("minus.svg", "minus", 36),             # the metronome: one beat per minute slower
     ("import.svg", "import", 34), # brings an .m3u from the card into the player's folder
     ("reset.svg", "reset", 36),             # MSEB / equalizer: back to flat
     ("circle-check.svg", "circle_check", 64), # the confirmation popup
     ("circle-alert.svg", "circle_alert", 64), # ...and what a failure shows instead
     ("book-headphones.svg", "book_headphones", 128),
     ("book-headphones.svg", "book_headphones_row", 64), # audiobook rows with no cover
+    # Music and Audiobooks with no card in the slot, or the card at a computer.
+    ("sd-card.svg", "sd_card", 128),
+    # Podcasts on the card: the badge on a cover (copied in, or downloaded by
+    # Sonix), the line without a network, the empty folder, the OPML files.
+    ("sd-card.svg", "sd_card_badge", 16),
+    ("arrow-down-to-line.svg", "download_badge", 16),
+    # Downloading the chosen episodes, on the disc of a podcast's page.
+    ("arrow-down-to-line.svg", "download", 34),
+    ("wifi-off.svg", "wifi_off", 30),
+    ("folder-open.svg", "folder_open", 80),
+    ("file-down.svg", "file_down", 34),
+    # An episode's state in its row, and the play and pause buttons of the podcast pages.
+    ("check.svg", "check_small", 22),
+    ("play.svg", "play_small", 26),
+    ("pause.svg", "pause_small", 26),
     # The same glyph the podcast rows use, at the size the three the player
     # stands in with are drawn: an episode with no artwork gets this one.
     ("podcast-list.svg", "podcast_cover", 128),
@@ -420,6 +442,7 @@ COLOR_ICONS = [
     ("flappy-bird.png", "menu_flappy_bird", SECTION_ICON_SIZE),
     ("ebook.png", "menu_books", SECTION_ICON_SIZE),
     ("file-explorer.png", "menu_file_explorer", SECTION_ICON_SIZE),
+    ("metronome.png", "menu_metronome", SECTION_ICON_SIZE),
 
     # The service badges in the player's top right corner, where the radio puts
     # its LIVE mark. They sit over the cover art, so these are the outlined

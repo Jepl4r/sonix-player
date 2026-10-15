@@ -43,6 +43,7 @@
 #include "src/system/streaming/podcast.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
+#include "src/system/streaming/podcaststate.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/qobuzsync.h"
 #include "src/system/streaming/tidalcache.h"
@@ -110,6 +111,21 @@ static void bar_over_player_update(void);
 static double progress_anchor_secs;
 static uint32_t progress_anchor_tick;
 static bool progress_running;
+
+// The smoothing runs only while there is a bar moving on a sheet that can be
+// seen: sixteen wake-ups a second for a panel that is closed or dark are pure
+// drain. Asked again by every poll, which is how it comes back after a wake,
+// and at every opening and closing of the sheet.
+static void smooth_timer_sync(void) {
+	if (!smooth_timer) {
+		return;
+	}
+	if (progress_running && sheet_open && power_screen_is_on()) {
+		lv_timer_resume(smooth_timer);
+	} else {
+		lv_timer_pause(smooth_timer);
+	}
+}
 
 // How often the UI reconciles itself against the playback thread. It polls
 // slowly rather than not at all while stopped: the audio thread can report
@@ -886,6 +902,16 @@ static enum {
 	COVER_ID_MEASURE,   // what is the picture that just went up?
 } cover_id_state;
 
+// How often the loader's answers are looked for while one is outstanding. The
+// progress poll comes round only every half second (two seconds when paused),
+// and a track change asks twice -- what the picture is, then the picture -- so
+// waiting for it added up to a second, or four, on top of the work itself.
+// This timer runs only while a question is out and stops itself after.
+#define COVER_POLL_MS 30
+static lv_timer_t *cover_poll_timer;
+static void cover_poll_start(void);
+static void prefetch_next_cover(void);
+
 // With artwork loaded the controls sit on the always-dark blurred backdrop,
 // so the chrome -- titles, clocks, transport glyphs, the chevron -- must be
 // light in both themes. Local style props are laid over the theme styles
@@ -1018,7 +1044,7 @@ static void reload_cover(const char *filepath);
 // and doing it on this thread at every track change -- including the automatic
 // one when a song ends -- froze whatever the user was doing at that moment,
 // the file browser most of all. The finished pictures are collected by
-// apply_cover_result() from the progress timer tick.
+// apply_cover_result(), from cover_poll_cb() and the progress timer tick.
 // Rec. 601 luma, which is what "how bright does this look" means to an eye and
 // not to a sum of three channels.
 static int luma_of(int r, int g, int b) { return (r * 299 + g * 587 + b * 114) / 1000; }
@@ -2839,6 +2865,30 @@ static void wave_refresh(const char *path, double position) {
 	wave_paint(px);
 }
 
+// The size the sleeve is asked for in the arrangement in force (see
+// reload_cover()).
+static void cover_request_size(int *w, int *h) {
+	*w = layout_studio_now ? studio_cover_geometry(NULL) : cover_box_w;
+	*h = layout_studio_now ? *w : cover_box_h;
+}
+
+// The next track's cover, made and kept in the cache while this one plays, so
+// that skipping to it, or reaching it, finds it ready instead of decoding it
+// then. Only with the screen on: with it off nobody sees the cover arrive, and
+// the decode would be battery spent on a guess.
+static void prefetch_next_cover(void) {
+	if (!power_screen_is_on() || live_mode) {
+		return;
+	}
+	char next[512];
+	if (!playlist_peek_auto(next, sizeof(next)) || strcmp(next, cover_shown_path) == 0) {
+		return;
+	}
+	int w, h;
+	cover_request_size(&w, &h);
+	coverloader_prefetch_player(next, w, h);
+}
+
 // Throws away what is on screen and asks for the artwork of `filepath`. The
 // half of refresh_cover() that runs once it is known that the picture really is
 // changing.
@@ -2889,15 +2939,16 @@ static void reload_cover(const char *filepath) {
 		// Studio the picture is decoded at the width of the screen and shown
 		// at two thirds of it, and that resampling is the interface's core
 		// being spent again and again on an answer that never changes.
-		int cover_w = backdrop_is_studio ? studio_cover_geometry(NULL) : cover_box_w;
-		int cover_h = backdrop_is_studio ? cover_w : cover_box_h;
+		int cover_w, cover_h;
+		cover_request_size(&cover_w, &cover_h);
 		coverloader_request_player(filepath, cover_w, cover_h, backdrop_w,
 								   backdrop_is_studio ? backdrop_studio_h : backdrop_h);
 		cover_request_outstanding = true;
 
-		// The collector rides on the progress timer; make sure it is ticking
-		// even when nothing is playing (paused player, theme change).
+		// The collector rides on the progress timer too; make sure it is
+		// ticking even when nothing is playing (paused player, theme change).
 		lv_timer_resume(progress_slider_timer);
+		cover_poll_start();
 	} else {
 		cover_request_outstanding = false;
 	}
@@ -2925,6 +2976,7 @@ static void refresh_cover(const char *filepath) {
 		cover_id_state = COVER_ID_NEW_TRACK;
 		coverloader_request_player_id(filepath);
 		lv_timer_resume(progress_slider_timer);
+		cover_poll_start();
 		return;
 	}
 
@@ -2991,6 +3043,7 @@ static void apply_cover_result(void) {
 		if (cover_shown_id == 0 && cover_shown_path[0]) {
 			cover_id_state = COVER_ID_MEASURE;
 			coverloader_request_player_id(cover_shown_path);
+			cover_poll_start();
 		}
 
 		current_cover = new_cover;
@@ -3050,6 +3103,25 @@ static void apply_cover_result(void) {
 		studio_refresh_cover();
 	}
 	// No artwork: the placeholder is already showing.
+
+	prefetch_next_cover();
+}
+
+// Collects whatever the loader has answered, quickly, for as long as anything
+// is outstanding; then the timer stops until the next question.
+static void cover_poll_cb(lv_timer_t *timer) {
+	apply_cover_id_result();
+	apply_cover_result();
+	if (!cover_request_outstanding && cover_id_state == COVER_ID_IDLE) {
+		lv_timer_pause(timer);
+	}
+}
+
+static void cover_poll_start(void) {
+	if (!cover_poll_timer) {
+		cover_poll_timer = lv_timer_create(cover_poll_cb, COVER_POLL_MS, NULL);
+	}
+	lv_timer_resume(cover_poll_timer);
 }
 
 // The artwork the player has already decoded for the loaded track, lent to
@@ -3758,13 +3830,7 @@ static void update_progress(void) {
 	progress_anchor_secs = state.progress_current_secs;
 	progress_anchor_tick = lv_tick_get();
 	progress_running = state.status == AUDIO_STATUS_PLAYING && state.progress_total_secs > 0;
-	if (smooth_timer) {
-		if (progress_running) {
-			lv_timer_resume(smooth_timer);
-		} else {
-			lv_timer_pause(smooth_timer);
-		}
-	}
+	smooth_timer_sync();
 
 	set_progress_label(state.progress_current_secs, current_total_length);
 	wave_refresh(cover_shown_path, state.progress_current_secs);
@@ -3810,6 +3876,17 @@ static void update_progress(void) {
 			audiobook_note_position(state.progress_current_secs, state.progress_total_secs,
 									changed || state.status != AUDIO_STATUS_PLAYING);
 		}
+	}
+
+	// Where a podcast episode got to, kept per episode in the same spirit:
+	// throttled inside podcaststate_note(), forced when the playback state
+	// changes.
+	if (!state.live && podcastcache_is_episode(state.current_file)) {
+		static audio_status_t episode_last_status = AUDIO_STATUS_STOPPED;
+		bool episode_changed = state.status != episode_last_status;
+		episode_last_status = state.status;
+		podcaststate_note(state.current_file, state.progress_current_secs, state.progress_total_secs,
+						  episode_changed);
 	}
 
 	// "Remember track". The decision, and the writing, live in device_state.c:
@@ -4409,6 +4486,7 @@ void player_sheet_open(bool animate) {
 		sheet_under = lv_screen_active();
 	}
 	sheet_open = true;
+	smooth_timer_sync();
 	back_btn_player_mode(true);
 	lyrics_screen_hold_update();
 
@@ -4445,6 +4523,7 @@ static void sheet_hidden_anim_ready_cb(lv_anim_t *a) {
 void player_sheet_close(bool animate) {
 	bool was_open = sheet_open;
 	sheet_open = false;
+	smooth_timer_sync();
 	back_btn_player_mode(false);
 	lyrics_screen_hold_update();
 	topbar_set_over_artwork(false, false);

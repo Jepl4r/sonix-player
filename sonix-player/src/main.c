@@ -50,6 +50,7 @@
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
+#include "src/system/streaming/podcaststate.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/streaming/streamkeys.h"
 #include "src/system/lastfm/lastfm.h"
@@ -962,8 +963,9 @@ static void install_signal_guards(void) {
 // screen. Two knobs, both per-indev:
 //
 //   * scroll_throw: the percentage the velocity drops on each frame of the
-//     throw animation. The default 10 kills the glide in half a second; at 5
-//     it lasts about twice as long and travels about twice as far.
+//     throw animation. The default 10 kills the glide in half a second; at 7
+//     it lasts a little longer and travels about 1.4 times as far. Lower than
+//     that, a flick sends a long list sailing past what was being looked for.
 //   * scroll_limit: how many pixels the finger must move before LVGL calls it
 //     a scroll rather than a tap. The default 10 is a lot on a 480x720 panel
 //     and the scroll starts late; at 4 the list latches on immediately.
@@ -972,7 +974,7 @@ static void install_signal_guards(void) {
 // feel the same.
 // ---------------------------------------------------------------------------
 
-#define SCROLL_THROW_DECAY_PCT 5
+#define SCROLL_THROW_DECAY_PCT 7
 #define SCROLL_START_LIMIT_PX 4
 
 // ---------------------------------------------------------------------------
@@ -2168,6 +2170,7 @@ int main(int argc, char **argv) {
 	tidalcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastsubs_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
+	podcaststate_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	// And where a track arriving over DLNA lands: same card, same reason.
 	dlna_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	// And where the emulator looks for Games/GB and Games/GBC. Unlike the
@@ -2380,6 +2383,7 @@ int main(int argc, char **argv) {
 	while (running) {
 		ui_heartbeat++;
 		uint32_t time_till_next = lv_timer_handler();
+		power_keep_animations_paused();
 		if (time_till_next > MAIN_LOOP_MAX_SLEEP_MS) {
 			time_till_next = MAIN_LOOP_MAX_SLEEP_MS; // also catches LV_NO_TIMER_READY
 		}

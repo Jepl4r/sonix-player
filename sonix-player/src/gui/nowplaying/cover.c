@@ -1604,6 +1604,7 @@ static uint64_t source_id_uncached(const char *filepath, int *index) {
 // The player's cover cache, further down with the other tables.
 static uint64_t player_source_id(const char *filepath, int *index);
 static bool player_cover_load(uint64_t id, int w, int h, cover_image_t *out);
+static bool player_cover_kept(uint64_t id, int w, int h);
 static void player_cover_store(uint64_t id, int w, int h, const cover_image_t *img);
 static void cover_tone_attach(uint64_t id, cover_image_t *img);
 
@@ -1686,6 +1687,21 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 		*backdrop_out = results[backdrop_index];
 
 	return ok;
+}
+
+void cover_prefetch_player(const char *filepath, int cover_w, int cover_h) {
+	if (!filepath || !filepath[0] || cover_w <= 0 || cover_h <= 0) {
+		return;
+	}
+	// Nothing to make: no artwork, or the cover is already kept at this size.
+	int source_index = -1;
+	uint64_t id = player_source_id(filepath, &source_index);
+	if (!id || player_cover_kept(id, cover_w, cover_h)) {
+		return;
+	}
+	cover_image_t cover;
+	cover_load_player_images(filepath, cover_w, cover_h, &cover, 0, 0, NULL);
+	cover_free(&cover);
 }
 
 bool cover_load_shared(const char *filepath, int player_w, int player_h, int size, cover_image_t *out) {
@@ -2529,6 +2545,23 @@ static bool player_cover_load(uint64_t id, int w, int h, cover_image_t *out) {
 		free(blob);
 	}
 	return hit;
+}
+
+// Whether the cover of picture `id` is kept at w x h, without reading it.
+static bool player_cover_kept(uint64_t id, int w, int h) {
+	char key[64];
+	player_cover_key(key, sizeof(key), id, w, h);
+	bool kept = false;
+	pthread_mutex_lock(&thumb_db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (thumb_db &&
+		sqlite3_prepare_v2(thumb_db, "SELECT 1 FROM player_covers WHERE key = ?1", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, key, -1, SQLITE_STATIC);
+		kept = sqlite3_step(stmt) == SQLITE_ROW;
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&thumb_db_lock);
+	return kept;
 }
 
 static void player_cover_store(uint64_t id, int w, int h, const cover_image_t *img) {
