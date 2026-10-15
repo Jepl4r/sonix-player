@@ -35,6 +35,16 @@
 void playlists_init(const char *sd_root);
 const char *playlists_dir(void);
 
+// The card folder: when on, the playlists are the .m3u and .m3u8 files in
+// <sd_root>/Playlists instead of the index's own, which are left as they are
+// and come back when it is turned off. Listing reads the folder again (a file
+// is only read when it has changed). They are read only: the files are kept on
+// a computer and copied over, so create, add, remove, move, rename and delete
+// all refuse while this is on. Import and Backup are the index's and have no
+// part in it.
+void playlists_set_card_folder_mode(bool on);
+bool playlists_card_folder_mode(void);
+
 // Every playlist, by name, alphabetically. Return false from the callback to
 // stop early. Returns how many were delivered. The first call on a card is also
 // what moves the old .m3u files into the index.
@@ -50,6 +60,12 @@ bool playlists_create(const char *name);
 // Appends a track, creating the playlist if it is not there yet. Duration and
 // display name come from the file's tags, like the stock player's entries.
 bool playlists_add_track(const char *name, const char *track_path);
+
+// The same for many. Returns how many went in.
+int playlists_add_tracks(const char *name, const char *const *track_paths, int count);
+
+// One entry moved, as library_playlist_move().
+bool playlists_move(const char *name, int from, int to);
 
 // The name and artist a track is listed under: the index's, else the file's
 // tags, else the file name for the title. The artist may come back empty, the

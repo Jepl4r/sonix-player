@@ -110,11 +110,7 @@ static void *batch_worker(void *arg) {
 	batch_t *b = arg;
 	thread_be_low_priority("playlistadd");
 	pthread_mutex_lock(&batch_lock);
-	for (int i = 0; i < b->count; i++) {
-		if (playlists_add_track(b->name, b->paths[i])) {
-			b->added++;
-		}
-	}
+	b->added = playlists_add_tracks(b->name, (const char *const *)b->paths, b->count);
 	pthread_mutex_unlock(&batch_lock);
 	gui_post(batch_done_cb, b);
 	return NULL;
@@ -501,6 +497,9 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 
 	if (qobuz_id > 0 || uuid) {
 		return sub; // no ellipsis: account playlists cannot be deleted from here
+	}
+	if (playlists_card_folder_mode()) {
+		return sub; // nor card folder ones, which are edited on a computer
 	}
 
 	// The ellipsis on the right edge, as on every track row.
@@ -1211,12 +1210,8 @@ static void new_playlist_cb(lv_event_t *e) {
 // page checks, on the way in, whether anything it drew has moved since.
 static unsigned rows_revision;
 
-static void rebuild_rows(void) {
-	rows_revision = library_revision(LIBRARY_LIST_PLAYLIST);
-	lv_obj_clean(list);
-
-	// The "new playlist" row comes first in both modes: it is the only way the
-	// first playlist can be made.
+// The "new playlist" row at the top of the list.
+static void add_new_row(void) {
 	lv_obj_t *new_row = lv_btn_create(list);
 	lv_obj_set_size(new_row, lv_pct(100), ROW_HEIGHT);
 	lv_obj_add_style(new_row, &theme_style_card, 0);
@@ -1242,6 +1237,20 @@ static void rebuild_rows(void) {
 	lv_obj_add_style(new_label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(new_label, &font_ui_24, 0);
 	lv_obj_set_style_text_color(new_label, theme()->accent, 0);
+}
+
+static void rebuild_rows(void) {
+	rows_revision = library_revision(LIBRARY_LIST_PLAYLIST);
+	lv_obj_clean(list);
+
+	// The "new playlist" row comes first in both modes: it is the only way the
+	// first playlist can be made. Not over the card folder, which is read only;
+	// an account's playlists can still be made from here.
+	bool can_create = !playlists_card_folder_mode() || (picking && (pending_qobuz_id > 0 || pending_tidal_id > 0));
+	if (can_create) {
+		add_new_row();
+	}
+
 
 	int count = 0;
 	if (picking && pending_qobuz_id > 0) {
@@ -1277,6 +1286,8 @@ static void rebuild_rows(void) {
 	}
 
 	if (count == 0) {
+		lv_label_set_text(empty_label, tr(playlists_card_folder_mode() && !picking ? "playlist_empty_note_card"
+																				  : "playlist_empty_note"));
 		lv_obj_set_hidden(empty_label, false);
 	} else {
 		lv_obj_set_hidden(empty_label, true);
@@ -1292,7 +1303,9 @@ void playlistpage_open(void) {
 	lv_label_set_text(title_label, tr("playlists"));
 	name_layer_hide();
 	import_layer_hide();
-	lv_obj_set_hidden(import_btn, false);
+	// Import makes playlists of the index's own, which the card folder hides:
+	// with it on, a playlist comes in by being copied into the folder.
+	lv_obj_set_hidden(import_btn, playlists_card_folder_mode());
 	rebuild_rows();
 	switch_screen(playlistpage_screen);
 }

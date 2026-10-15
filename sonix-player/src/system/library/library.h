@@ -622,6 +622,12 @@ int library_search(const char *query, int per_category, library_search_cb_t cb, 
 
 #define LIBRARY_PLAYLIST_PREFIX "M3U_"
 
+// The tables mirroring the .m3u files in the card's Playlists folder, when the
+// player is set to use those instead of its own. Every library_playlist_*()
+// call below acts on one set or the other, never both: this switches which.
+#define LIBRARY_CARD_PLAYLIST_PREFIX "SDM3U_"
+void library_playlists_use_card_folder(bool on);
+
 typedef struct {
 	char path[1024];
 	char title[512];
@@ -718,7 +724,8 @@ void library_playlists_set_migrated(void);
 // returns -1 unless they still match, so an edited playlist is counted again
 // rather than answered from a stale row.
 //
-// Unused, since a playlist in the index answers its count from a column.
+// Used for the files in the card's Playlists folder; a playlist in the index
+// answers its count from a column instead.
 int library_playlist_count_get(const char *path, long mtime, long size);
 void library_playlist_count_save(const char *path, long mtime, long size, int tracks);
 
