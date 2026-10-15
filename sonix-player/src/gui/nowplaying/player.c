@@ -3758,6 +3758,9 @@ static void handle_track_finished(void) {
 
 	if (device_state_advance_auto(NULL, 0)) {
 		refresh_now_playing();
+	} else {
+		// The queue ran out: the track it ended on went into the history.
+		trackmenu_notify_now_playing();
 	}
 }
 

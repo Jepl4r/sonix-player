@@ -4426,8 +4426,16 @@ void audio_seek(double seconds) {
 	pthread_mutex_lock(&audio_mutex);
 	progress_current_secs = seconds; // the bar follows the finger, not the decoder
 	progress_floor_secs = -1.0;		// and a deliberate jump outranks the pause floor
-	seek_target_secs = seconds;
-	seek_request = true;
+	if (restart_fresh_pending) {
+		// Paused through a suspend: there is no track context to take the
+		// seek, and the play that follows rebuilds one at the saved point.
+		// The point is moved instead, or that play would carry on from where
+		// the pause was and not from where the bar was put.
+		restart_fresh_pos = seconds;
+	} else {
+		seek_target_secs = seconds;
+		seek_request = true;
+	}
 	pthread_mutex_unlock(&audio_mutex);
 }
 
