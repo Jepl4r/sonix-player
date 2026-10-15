@@ -68,12 +68,12 @@
 #define LV_FREETYPE_USE_LVGL_PORT 0
 #define LV_FREETYPE_CACHE_FT_GLYPH_CNT 256
 
-/* Song titles, tags and station names in Arabic. The text is kept in the
- * order it is written in and LVGL draws each line right to left where the
- * letters ask for it. A label takes its direction from its first letter that
- * has one: in a box wider than the text an Arabic line sits on the right, a
- * Latin one on the left as before. It costs a pass over every line each time
- * it is drawn, a few microseconds for a title. */
+/* Song titles, tags and station names in Arabic and Hebrew. The text is kept
+ * in the order it is written in and LVGL draws each line right to left where
+ * the letters ask for it. A label takes its direction from its first letter
+ * that has one: in a box wider than the text an Arabic or Hebrew line sits on
+ * the right, a Latin one on the left as before. It costs a pass over every
+ * line each time it is drawn, a few microseconds for a title. */
 #define LV_USE_BIDI 1
 #define LV_BIDI_BASE_DIR_DEF LV_BASE_DIR_AUTO
 
