@@ -22,6 +22,7 @@
 #include "src/gui/shell/corners.h"
 #include "src/gui/settings/bootlogopage.h"
 #include "src/gui/settings/kblayoutpage.h"
+#include "src/gui/settings/parentalpage.h"
 #include "src/gui/settings/screensaver.h"
 #include "src/gui/library/audiobookextras.h"
 #include "src/gui/library/audiobooks.h"
@@ -706,6 +707,7 @@ void gui_init(gui_config_t *cfg) {
 	remap_init(cfg);
 	ccsettings_init(cfg);
 	kblayoutpage_init(cfg); // the keyboard-language row on the same page
+	parentalpage_init(cfg); // and the parental controls row
 	settings_init(cfg);
 	devoptions_init(cfg);
 	processespage_init(cfg); // the processes page the devoptions entry opens

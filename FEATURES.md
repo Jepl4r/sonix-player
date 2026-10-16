@@ -156,6 +156,9 @@ certificate checking, and HLS.
   Dutch, Polish, Brazilian Portuguese, Czech and Russian.
 - **Screenshots** - under More: volume up and the power key save the screen to
   the card.
+- **Parental controls** - under More, opened by tapping the row five times in
+  quick succession: a switch that takes the games (Game Boy and Flappy Bird)
+  off the More page.
 - **System** - device, DAC, serial number, card space, OS version, firmware
   update from a `.upt` on the card, and factory reset.
 - **Developer options** - unlocked by tapping the build number: ADB, log to the

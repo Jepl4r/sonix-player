@@ -19,4 +19,11 @@ extern lv_obj_t *morepage_screen;
 
 void morepage_init(gui_config_t *cfg);
 
+// Whether the games -- the Game Boy emulator and Flappy Bird -- have tiles on
+// this page, which is the only way in to either. [parental] show_games, on
+// unless turned off in Settings > More > Parental controls. Setting it saves
+// it and lays the tiles out again.
+bool morepage_games_shown(void);
+void morepage_set_games_shown(bool shown);
+
 #endif /* GUI_MOREPAGE_H */

@@ -14,6 +14,7 @@
 #include "src/gui/settings/kblayoutpage.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/settings/parentalpage.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/remap.h"
 #include "src/gui/settings/screensaver.h"
@@ -522,6 +523,9 @@ static void build_other_page(gui_config_t *cfg) {
 	if (screenshot_enabled()) {
 		lv_obj_add_state(screenshot_switch, LV_STATE_CHECKED);
 	}
+
+	// Last, where a parent looks for it and a child is least likely to tap.
+	parentalpage_add_row(container);
 
 	switcher_attach_back_gesture(othersettings_screen);
 }
