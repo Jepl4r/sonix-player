@@ -666,16 +666,19 @@ static bool ascii_alnum(uint8_t c) {
 // Cyrillic word written as 1251 runs from one space to the next without an
 // ASCII letter in sight. Two letters is enough of a word; the high bytes that
 // are punctuation in both code pages are neither evidence nor objection.
-static bool looks_like_cp1251(const uint8_t *data, size_t len) {
+//
+// `in_word` says which bytes make up a word, so the Hebrew test below asks the
+// same question of its own letters.
+static bool has_free_word(const uint8_t *data, size_t len, bool (*in_word)(uint8_t)) {
 	size_t i = 0;
 	while (i < len && data[i]) {
-		if (!cp1251_is_letter(data[i])) {
+		if (!in_word(data[i])) {
 			i++;
 			continue;
 		}
 
 		size_t start = i;
-		while (i < len && data[i] && cp1251_is_letter(data[i])) {
+		while (i < len && data[i] && in_word(data[i])) {
 			i++;
 		}
 
@@ -688,11 +691,173 @@ static bool looks_like_cp1251(const uint8_t *data, size_t len) {
 	return false;
 }
 
-// The same bytes as UTF-8, read through the code page.
-static void cp1251_to_utf8(const uint8_t *data, size_t len, char *out, size_t out_size) {
+static bool looks_like_cp1251(const uint8_t *data, size_t len) { return has_free_word(data, len, cp1251_is_letter); }
+
+// ---------------------------------------------------------------------------
+// Windows-1255 in a Latin-1 frame
+//
+// Hebrew taggers did what the Russian ones did: Windows-1255 behind an
+// encoding byte of zero, and every ID3v1 tag the same. Its 27 letters sit at
+// 0xE0-0xFA, which in 1251 is а-ъ, so the test above takes a Hebrew word for
+// a Cyrillic one and "שלום" comes out as "щьех". This test runs first, and
+// claims the text only when nothing in it says Cyrillic. Four things do:
+//
+//   * a byte from 0xC0 to 0xD8 that does not follow a letter. 1251 has its
+//     capitals there, and a capital opens a word; 1255 has the vowel points,
+//     the maqaf and the geresh, and each of those comes after a letter.
+//   * a byte 1255 leaves empty: 0xCA, 0xD9 to 0xDF, 0xFB, 0xFC, 0xFF. The last
+//     three are ы, ь and я in 1251.
+//   * a final letter with another letter after it. ך ם ן ף ץ only ever end a
+//     word; in 1251 their bytes are к, н, п, у and х, all over the middle of
+//     Russian words.
+//   * 0xA8 or 0xB8 touching a letter: Ё and ё in 1251, and in 1255 the
+//     diaeresis and the cedilla, which nobody puts beside a Hebrew letter.
+//
+// What is left is Russian written all in lower case, or Hebrew, and the
+// letters themselves decide: CP1255_WEIGHT below. "мама", "лето" and "город"
+// get past all four rules; read as Hebrew they are לאלא, כועמ and דמנמה,
+// strings no Hebrew word looks like.
+// ---------------------------------------------------------------------------
+
+// From 0x80 to the letters: the punctuation, the sheqel sign, the points and
+// the Yiddish ligatures. 0 means "not in the page".
+static const uint16_t CP1255_HIGH[96] = {
+	0x20AC, 0x0000, 0x201A, 0x0192, 0x201E, 0x2026, 0x2020, 0x2021, // 80-87
+	0x02C6, 0x2030, 0x0000, 0x2039, 0x0000, 0x0000, 0x0000, 0x0000, // 88-8F
+	0x0000, 0x2018, 0x2019, 0x201C, 0x201D, 0x2022, 0x2013, 0x2014, // 90-97
+	0x02DC, 0x2122, 0x0000, 0x203A, 0x0000, 0x0000, 0x0000, 0x0000, // 98-9F
+	0x00A0, 0x00A1, 0x00A2, 0x00A3, 0x20AA, 0x00A5, 0x00A6, 0x00A7, // A0-A7
+	0x00A8, 0x00A9, 0x00D7, 0x00AB, 0x00AC, 0x00AD, 0x00AE, 0x00AF, // A8-AF
+	0x00B0, 0x00B1, 0x00B2, 0x00B3, 0x00B4, 0x00B5, 0x00B6, 0x00B7, // B0-B7
+	0x00B8, 0x00B9, 0x00F7, 0x00BB, 0x00BC, 0x00BD, 0x00BE, 0x00BF, // B8-BF
+	0x05B0, 0x05B1, 0x05B2, 0x05B3, 0x05B4, 0x05B5, 0x05B6, 0x05B7, // C0-C7
+	0x05B8, 0x05B9, 0x0000, 0x05BB, 0x05BC, 0x05BD, 0x05BE, 0x05BF, // C8-CF
+	0x05C0, 0x05C1, 0x05C2, 0x05C3, 0x05F0, 0x05F1, 0x05F2, 0x05F3, // D0-D7
+	0x05F4, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, 0x0000, // D8-DF
+};
+
+static uint32_t cp1255_code(uint8_t c) {
+	if (c < 0x80) {
+		return c;
+	}
+	if (c >= 0xE0 && c <= 0xFA) {
+		return (uint32_t)(0x05D0 + (c - 0xE0)); // א-ת, in one stretch
+	}
+	if (c == 0xFD || c == 0xFE) {
+		return (uint32_t)(0x200E + (c - 0xFD)); // the left-to-right and right-to-left marks
+	}
+	uint16_t mapped = c < 0xE0 ? CP1255_HIGH[c - 0x80] : 0;
+	return mapped ? mapped : (uint32_t)c;
+}
+
+static bool cp1255_is_letter(uint8_t c) { return c >= 0xE0 && c <= 0xFA; }
+
+// What comes after a letter and never before one: the points, the maqaf, the
+// geresh and gershayim.
+static bool cp1255_is_mark(uint8_t c) { return c >= 0xC0 && c <= 0xD8 && c != 0xCA; }
+
+static bool cp1255_in_word(uint8_t c) { return cp1255_is_letter(c) || cp1255_is_mark(c); }
+
+// ך ם ן ף ץ
+static bool cp1255_is_final(uint8_t c) { return c == 0xEA || c == 0xED || c == 0xEF || c == 0xF3 || c == 0xF5; }
+
+// How much more often each byte stands where it does in Hebrew than in
+// Russian: four times the natural log of the one frequency over the other,
+// counted in some 70,000 words of each language from Wikipedia. Hebrew is
+// thick with י ש ר ת, whose bytes are й щ ш ъ, rare in Russian; Russian with
+// и с т, whose bytes are ט ס ע, rarer in Hebrew. Where in the word matters
+// too: Hebrew ends a word with ם and ן, so מ and נ in last place are Russian
+// о and р, and Russian ends words in а (א) far more than Hebrew does.
+//
+// The columns are the bytes 0xE0 to 0xFA in order: alef to tav in 1255, а to
+// ъ in 1251.
+static const int8_t CP1255_WEIGHT[3][27] = {
+	{3, 6, -7, -6, 7, 6, 1, 0, -11, 19, -20, 2, 2, -20, 2, -25, -2, -8, -1, -21, 1, -21, -1, -1, 5, 25, 20},		// first letter
+	{-3, 5, -4, 1, -1, 2, 1, 2, -6, 16, -31, -4, 4, -31, -4, -25, -1, -4, -3, -31, 9, -22, 2, 3, 9, 10, 16}, // inside
+	{-8, 9, -7, 8, 9, -2, 6, -2, -8, 0, -1, -18, 1, 5, -21, 8, -15, -7, -7, -4, 0, -6, -2, 8, 16, 7, 26},	// last letter
+};
+
+// The text is Hebrew when its letters add up to more than this. Below zero,
+// because what reaches the sum is either Hebrew or Russian with no capital in
+// it, and the second is the rarer. On words the weights were not counted
+// from, 95 in 100 single Hebrew words come out as Hebrew (99.4 in 100 pairs
+// of words; most of the rest are one letter long, too short for any test),
+// and 5 in 100 single Russian words in lower case come out as Hebrew too
+// (0.9 in 100 pairs). A Russian word with a capital always stays Russian.
+#define CP1255_HEBREW_ABOVE (-6)
+
+// A geresh or gershayim typed as ' or " between two letters, which keeps the
+// word whole: צה"ל and תנ"ך are one word each, and the ך of the second is its
+// last letter, not a word that opens with a final one.
+static bool cp1255_joins(const uint8_t *data, size_t len, size_t i) {
+	return (data[i] == '"' || data[i] == '\'') && i > 0 && cp1255_in_word(data[i - 1]) && i + 1 < len &&
+		   cp1255_is_letter(data[i + 1]);
+}
+
+// The sum of CP1255_WEIGHT over every letter of `data`, the points between
+// them skipped.
+static int cp1255_score(const uint8_t *data, size_t len) {
+	int score = 0;
+	size_t i = 0;
+	while (i < len && data[i]) {
+		if (!cp1255_in_word(data[i])) {
+			i++;
+			continue;
+		}
+		size_t end = i;
+		while (end < len && data[end] && (cp1255_in_word(data[end]) || cp1255_joins(data, len, end))) {
+			end++;
+		}
+		size_t last = end;
+		while (last > i && !cp1255_is_letter(data[last - 1])) {
+			last--;
+		}
+		bool first = true;
+		for (size_t k = i; k < last; k++) {
+			if (!cp1255_is_letter(data[k])) {
+				continue;
+			}
+			int where = first ? 0 : (k == last - 1 ? 2 : 1);
+			score += CP1255_WEIGHT[where][data[k] - 0xE0];
+			first = false;
+		}
+		i = end;
+	}
+	return score;
+}
+
+static bool looks_like_cp1255(const uint8_t *data, size_t len) {
+	for (size_t i = 0; i < len && data[i]; i++) {
+		uint8_t c = data[i];
+		if (c == 0xCA || (c >= 0xD9 && c <= 0xDF) || c == 0xFB || c == 0xFC || c == 0xFF) {
+			return false;
+		}
+		if (cp1255_is_mark(c) && (i == 0 || !cp1255_in_word(data[i - 1]))) {
+			return false;
+		}
+		if ((c == 0xA8 || c == 0xB8) && ((i > 0 && data[i - 1] >= 0xC0) || (i + 1 < len && data[i + 1] >= 0xC0))) {
+			return false;
+		}
+		if (cp1255_is_final(c)) {
+			size_t next = i + 1;
+			while (next < len && cp1255_is_mark(data[next])) {
+				next++;
+			}
+			if (next < len && cp1255_is_letter(data[next])) {
+				return false;
+			}
+		}
+	}
+	return has_free_word(data, len, cp1255_in_word) && cp1255_score(data, len) > CP1255_HEBREW_ABOVE;
+}
+
+// The same bytes as UTF-8, read through a code page: `code_of` is cp1251_code
+// or cp1255_code.
+static void codepage_to_utf8(const uint8_t *data, size_t len, uint32_t (*code_of)(uint8_t), char *out,
+							 size_t out_size) {
 	size_t oi = 0;
 	for (size_t i = 0; i < len && data[i]; i++) {
-		uint32_t code = cp1251_code(data[i]);
+		uint32_t code = code_of(data[i]);
 		if (code < 0x80) {
 			if (oi + 1 >= out_size) {
 				break;
@@ -725,7 +890,7 @@ static void id3_decode_text(uint8_t encoding, const uint8_t *data, size_t len, c
 		return;
 
 	switch (encoding) {
-	case 0x00: { // ISO-8859-1 (Latin-1), or UTF-8 or Windows-1251 pretending to be it
+	case 0x00: { // ISO-8859-1 (Latin-1), or UTF-8, Windows-1255 or 1251 pretending to be it
 		if (text_is_wide_utf8(data, len)) {
 			size_t copy_len = strnlen((const char *)data, len);
 			if (copy_len > out_size - 1) {
@@ -735,8 +900,13 @@ static void id3_decode_text(uint8_t encoding, const uint8_t *data, size_t len, c
 			out[copy_len] = '\0';
 			break;
 		}
+		// Hebrew first: every 1255 word is also a 1251 one.
+		if (looks_like_cp1255(data, len)) {
+			codepage_to_utf8(data, len, cp1255_code, out, out_size);
+			break;
+		}
 		if (looks_like_cp1251(data, len)) {
-			cp1251_to_utf8(data, len, out, out_size);
+			codepage_to_utf8(data, len, cp1251_code, out, out_size);
 			break;
 		}
 		size_t oi = 0;
@@ -1735,7 +1905,7 @@ static void read_flac_metadata(const char *filepath, song_metadata_t *out) {
 //
 // RIFF INFO, the native AIFF and .dff text: taken as UTF-8 when it is
 // well-formed UTF-8, and otherwise as the single-byte text an ID3v1 tag holds
-// (Latin-1, or Windows-1251 -- see id3_decode_text).
+// (Latin-1, or Windows-1255 or 1251 -- see id3_decode_text).
 // ---------------------------------------------------------------------------
 
 // One value into `out` as UTF-8. The value is usually NUL-terminated and

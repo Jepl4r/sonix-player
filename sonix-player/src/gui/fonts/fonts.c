@@ -75,6 +75,9 @@ static script_face_t scripts[] = {
 	{"Korean", FACE_FILES("korean"), FACE_FILES("korean-bold"), 0, NULL, NULL, false},
 	{"Thai", FACE_FILES("thai"), FACE_FILES("thai-bold"), 0, NULL, NULL, false},
 	{"Arabic", FACE_FILES("arabic"), FACE_FILES("arabic-bold"), ARABIC_RAISE, NULL, NULL, false},
+	// Noto Sans Hebrew needs no raise: its letters stand as tall as the Latin
+	// lower case and the lowest of its points ends at 0.21 em, inside the line.
+	{"Hebrew", FACE_FILES("hebrew"), FACE_FILES("hebrew-bold"), 0, NULL, NULL, false},
 };
 
 #define SCRIPT_COUNT (sizeof(scripts) / sizeof(scripts[0]))

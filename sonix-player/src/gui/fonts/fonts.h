@@ -18,20 +18,23 @@
 //                 matched to MiSans
 //   thai.otf      MiSans Thai
 //   arabic.otf    MiSans Arabic
+//   hebrew.ttf    Noto Sans Hebrew (OFL): there is no MiSans Hebrew
 //   japanese.otf  FOT-Rodin, for kana, kanji and CJK punctuation when the
 //                 interface is in Japanese
 //
-// The last four each have a -bold file for the bold sizes, optional like
+// The last five each have a -bold file for the bold sizes, optional like
 // bold.otf. fonts_init() opens them once and builds one fallback chain per
-// size: default answers first, Korean, Thai and Arabic fill in what it lacks.
-// In Japanese, Rodin answers the CJK letters ahead of default (see fonts.c).
+// size: default answers first, Korean, Thai, Arabic and Hebrew fill in what it
+// lacks. In Japanese, Rodin answers the CJK letters ahead of default (see
+// fonts.c).
 // FreeType maps the files -- nothing is decoded up front -- and rendered
 // glyphs live in the shared FTC cache (LV_FREETYPE_CACHE_FT_GLYPH_CNT), so
 // memory stays flat no matter how much text is on screen.
 //
 // Arabic is drawn right to left and in its joined forms by LVGL itself
 // (LV_USE_BIDI and LV_USE_ARABIC_PERSIAN_CHARS in lv_conf.h); the face only
-// has to carry the presentation forms, which MiSans Arabic does.
+// has to carry the presentation forms, which MiSans Arabic does. Hebrew goes
+// right to left through the same LV_USE_BIDI and has no joined forms.
 //
 // These are real objects, not pointers, so `&font_ui_24` is a valid
 // lv_font_t * at every call site.
@@ -89,7 +92,7 @@ void fonts_register_change(void (*cb)(void));
 void fonts_set_language(const char *name);
 
 // For the developer options page: which font files are in use, e.g.
-// "default.otf, bold.otf, Korean + Thai + Arabic". Never NULL.
+// "default.otf, bold.otf, Korean + Thai + Arabic + Hebrew". Never NULL.
 const char *fonts_summary(void);
 
 #endif // FONTS_H
