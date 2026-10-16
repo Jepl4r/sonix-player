@@ -284,6 +284,12 @@ static int cover_box_w, cover_box_h;   // the artwork spans the full screen widt
 #define ALT_FAV_SIZE 64
 #define ALT_PILL_PAD_H 18 // what a pill keeps to the left and right of its text
 #define ALT_PILL_PAD_V 8
+// How far past its own edges a transport button takes a press in this
+// arrangement: into the gaps between them. The star takes the whole of its disc
+// instead (apply_layout()).
+#define ALT_EXT_CLICK 14
+#define FAV_BTN_W 48
+#define FAV_BTN_H 44
 
 // What the sleeve's colour becomes once it has to be painted rather than
 // thrown.
@@ -2883,6 +2889,20 @@ static void apply_layout(void) {
 		}
 	}
 
+	// Bigger targets in this arrangement. The star's button is as big as the
+	// disc it sits in, which is what a finger aims at; a press beyond the disc
+	// could not reach it anyway, since LVGL looks for a child only inside its
+	// parent.
+	if (fav_btn_obj) {
+		lv_obj_set_size(fav_btn_obj, layout_alt_now ? ALT_FAV_SIZE : FAV_BTN_W, layout_alt_now ? ALT_FAV_SIZE : FAV_BTN_H);
+	}
+	lv_obj_t *const transport[] = {prev_btn_obj, play_btn, next_btn_obj};
+	for (size_t i = 0; i < sizeof(transport) / sizeof(transport[0]); i++) {
+		if (transport[i]) {
+			lv_obj_set_ext_click_area(transport[i], layout_alt_now ? ALT_EXT_CLICK : 0);
+		}
+	}
+
 	if (layout_studio_now) {
 		studio_put();
 	} else {
@@ -3780,15 +3800,15 @@ static void update_format_label(const device_state_t *state) {
 	}
 
 	if (state->live) {
-		// No bit depth to quote on a stream: what a station is, is its
-		// bitrate. Nothing at all until the first frame has been decoded.
+		// A lossy station is quoted by its bitrate, a lossless one by depth and
+		// rate like a track from the card ("16/44.1 FLAC"). The codec is the
+		// decoder's, not the directory's claim. Nothing at all until the first
+		// frame has been decoded.
 		radio_now_t now;
 		radio_get_now(&now);
-		// The format was written "MP3" because that was the only thing the
-		// stream path could decode. It reads AAC too now, and a station that
-		// says MP3 while an AAC decoder is running on it is a lie the log
-		// cannot correct.
-		if (now.bitrate > 0) {
+		if (now.bits > 0 && now.sample_rate > 0 && now.codec[0]) {
+			lv_label_set_text_fmt(format_label, "%d/%g %s", now.bits, now.sample_rate / 1000.0, now.codec);
+		} else if (now.bitrate > 0) {
 			lv_label_set_text_fmt(format_label, "%d kbps %s", now.bitrate, now.codec[0] ? now.codec : "MP3");
 		} else if (now.codec[0]) {
 			lv_label_set_text(format_label, now.codec);
@@ -5089,7 +5109,7 @@ void player_init(gui_config_t *cfg) {
 
 	lv_obj_t *fav_btn = lv_btn_create(song_side);
 	fav_btn_obj = fav_btn;
-	lv_obj_set_size(fav_btn, 48, 44);
+	lv_obj_set_size(fav_btn, FAV_BTN_W, FAV_BTN_H);
 	lv_obj_set_style_bg_opa(fav_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(fav_btn, 0, 0);
 	lv_obj_set_style_shadow_width(fav_btn, 0, 0);
