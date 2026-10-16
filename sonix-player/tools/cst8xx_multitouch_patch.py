@@ -37,7 +37,7 @@ simply be copied next to it.
 Both files are backed up next to themselves with a .orig suffix before anything
 is written, and --revert puts them back.
 
-PATCHES.md has the full account, this driver and the R3 Pro II's.
+doc/PATCHES.md has the full account, this driver and the R3 Pro II's.
 """
 
 import argparse

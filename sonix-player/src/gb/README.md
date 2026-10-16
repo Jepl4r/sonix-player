@@ -65,7 +65,7 @@ The target link carries `-static-libstdc++ -static-libgcc`. The device has `libs
 
 **Audio.** `audio_external_begin_latency()` opens the PCM at 46. Writing one frame's samples to a blocking PCM is also the metronome: the DAC's crystal sets the pace, so picture and sound cannot drift apart. The panel runs at 60 Hz and the game at 59.73, and frames that fall between two vsyncs are not seen.
 
-**Input.** LVGL's indev is a pointer device - one contact, one position. While a game runs, `panel_touch_enable(false)` parks it and `gbinput.c` reads the evdev node itself in the multitouch protocol, tracking up to five contacts. This needs the touch driver patch in [PATCHES.md](../../PATCHES.md); without it the emulator says so and falls back to one finger at a time.
+**Input.** LVGL's indev is a pointer device - one contact, one position. While a game runs, `panel_touch_enable(false)` parks it and `gbinput.c` reads the evdev node itself in the multitouch protocol, tracking up to five contacts. This needs the touch driver patch in [PATCHES.md](../../../doc/PATCHES.md); without it the emulator says so and falls back to one finger at a time.
 On the host build the LVGL buttons stay.
 
 ## Updating Gearboy

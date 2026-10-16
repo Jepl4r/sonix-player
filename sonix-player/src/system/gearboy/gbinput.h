@@ -13,7 +13,7 @@
 // owner: panel_touch_enable(false) parks LVGL's indev, and this module opens
 // the same evdev node itself and reads the real multitouch protocol, which the
 // patched touch driver reports -- gt9xx_touch.ko on the R3 Pro II,
-// cst8xx_touch.ko on the R1. Both are uncapped by a script in tools/; PATCHES.md
+// cst8xx_touch.ko on the R1. Both are uncapped by a script in tools/; doc/PATCHES.md
 // has the account of each.
 //
 // Zones come from outside in screen coordinates, and the reader thread decides

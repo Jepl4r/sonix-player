@@ -549,9 +549,9 @@ sonix-player/
 │   ├── lv_conf.h                    
 │   └── Makefile                     
 │
-├── FEATURES.md                      
+├── doc/FEATURES.md                  
 ├── LICENSE                          
-├── PATCHES.md                       
+├── doc/PATCHES.md                   
 └── README.md
 ```
 
