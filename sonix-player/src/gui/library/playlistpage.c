@@ -12,6 +12,7 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/library/medialist.h"
+#include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/popover.h"
 #include "src/gui/shell/confirm.h"
@@ -38,6 +39,42 @@ lv_obj_t *playlistpage_screen;
 #define ROW_GAP 8
 #define ROW_RADIUS 12
 #define PLAYLIST_NAME_MAX 200
+
+// The grid, under "Album grid" (Music > Library) and only while browsing: the
+// picker keeps its rows, which is where the account playlists come in and they
+// have no file to take a cover from. A tile is the medialist's -- two to a
+// line, a cover over the name -- and its cover is the first track's, decoded
+// at the size the album grid and Cover Flow share on the card.
+#define GRID_COLUMNS 2
+#define GRID_COVER 210
+#define GRID_GAP 12
+#define GRID_TEXT_GAP 8
+#define GRID_TEXT_ROW 2 // between the name and the count under it
+#define TILE_POLL_MS 150
+
+// The rows are built all at once, so the covers are what is windowed: a tile
+// within a line of the screen has its cover, or a request for it, and one
+// further away gives its pixels back. Four lines can be in sight, so with a
+// line either side a dozen covers is the most ever held -- about 1 MB -- and a
+// dozen requests the most ever queued.
+typedef struct {
+	lv_obj_t *row;
+	lv_obj_t *icon;
+	char path[512]; // the first track, empty when the playlist shows nothing
+	int slot;		// the coverloader slot of a request in flight, -1 without
+	bool settled;	// asked and answered: the cover is up, or there is none
+	bool has_image;
+	cover_image_t image;
+} tile_t;
+
+static bool grid_mode;
+static int tile_w, tile_h, tile_pad;
+static bool tiles_refit; // Large text changed since the tiles were measured
+static tile_t *tiles;
+static int tile_count;
+static int tile_cap;
+static bool slot_taken[COVERLOADER_PLAYLISTS_COUNT];
+static lv_timer_t *tile_timer;
 
 static gui_config_t *config;
 static lv_obj_t *list;
@@ -427,25 +464,40 @@ static void menu_btn_cb(lv_event_t *e) {
 // the index can shift, and the track would land in a different playlist from
 // the one on screen. A uuid attached to the row cannot slide.
 // Returns the subtitle label, for a caller that has to correct it later.
-static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_dsc_t *glyph, long qobuz_id,
-						 const char *tidal_uuid) {
+//
+// In the grid the row is a tile instead, and `row_out` and `icon_out` (either
+// may be NULL) receive it and its picture, for the cover to be put on.
+static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_dsc_t *glyph, long qobuz_id, const char *tidal_uuid, lv_obj_t **row_out, lv_obj_t **icon_out) {
 	char *owned = strdup(name);
 	if (!owned) {
 		return NULL;
 	}
 
+	bool tile = grid_mode && qobuz_id <= 0 && !(tidal_uuid && tidal_uuid[0]);
+
 	lv_obj_t *row = lv_btn_create(list);
-	lv_obj_set_size(row, lv_pct(100), ROW_HEIGHT);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_ver(row, 10, 0);
-	lv_obj_set_style_pad_column(row, 14, 0);
-	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	if (tile) {
+		lv_obj_set_size(row, tile_w, tile_h);
+		lv_obj_set_style_pad_all(row, tile_pad, 0);
+		lv_obj_set_style_pad_row(row, GRID_TEXT_GAP, 0);
+		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+	} else {
+		lv_obj_set_size(row, lv_pct(100), ROW_HEIGHT);
+		lv_obj_set_style_pad_hor(row, 16, 0);
+		lv_obj_set_style_pad_ver(row, 10, 0);
+		lv_obj_set_style_pad_column(row, 14, 0);
+		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	}
+	if (row_out) {
+		*row_out = row;
+	}
 	lv_obj_set_event_bubble(row, true); // the player sheet drags from here too
 	char *uuid = NULL;
 	if (qobuz_id > 0) {
@@ -470,10 +522,22 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_image_set_src(icon, glyph);
 	lv_obj_add_style(icon, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
+	if (tile) {
+		lv_obj_set_size(icon, GRID_COVER, GRID_COVER);
+		lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CENTER);
+	}
+	if (icon_out) {
+		*icon_out = icon;
+	}
 
 	lv_obj_t *texts = lv_obj_create(row);
-	lv_obj_set_flex_grow(texts, 1);
-	lv_obj_set_height(texts, lv_pct(100));
+	if (tile) {
+		lv_obj_set_size(texts, lv_pct(100), LV_SIZE_CONTENT);
+		lv_obj_set_style_pad_row(texts, GRID_TEXT_ROW, 0);
+	} else {
+		lv_obj_set_flex_grow(texts, 1);
+		lv_obj_set_height(texts, lv_pct(100));
+	}
 	lv_obj_set_style_bg_opa(texts, 0, 0);
 	lv_obj_set_style_border_width(texts, 0, 0);
 	lv_obj_set_style_pad_all(texts, 0, 0);
@@ -507,6 +571,15 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_obj_t *menu_btn = lv_btn_create(row);
 	lv_obj_set_size(menu_btn, 44, 44);
 	lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
+	if (tile) {
+		// Over the cover's corner, on a disc of the card's colour so it reads
+		// on any sleeve.
+		lv_obj_set_ignore_layout(menu_btn, true);
+		lv_obj_align(menu_btn, LV_ALIGN_TOP_RIGHT, -6, 6);
+		lv_obj_add_style(menu_btn, &theme_style_card, 0); // follows the theme
+		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_COVER, 0);
+		lv_obj_set_style_radius(menu_btn, LV_RADIUS_CIRCLE, 0);
+	}
 	lv_obj_set_style_border_width(menu_btn, 0, 0);
 	lv_obj_set_style_shadow_width(menu_btn, 0, 0);
 	lv_obj_set_style_pad_all(menu_btn, 0, 0);
@@ -591,13 +664,154 @@ static void tidal_playlists_ready_async(void *user) {
 
 static void tidal_playlists_changed(void) { gui_post(tidal_playlists_ready_async, NULL); }
 
+// --- the grid's covers ------------------------------------------------------
+
+static void tile_show_glyph(tile_t *t) {
+	lv_image_set_src(t->icon, &icon_list_music);
+	lv_obj_set_style_image_recolor_opa(t->icon, LV_OPA_COVER, 0);
+}
+
+static void tile_drop(tile_t *t, bool widgets_alive) {
+	if (t->slot >= 0) {
+		coverloader_release(COVERLOADER_PLAYLISTS_BASE + t->slot);
+		slot_taken[t->slot] = false;
+		t->slot = -1;
+	}
+	if (t->has_image) {
+		if (widgets_alive) {
+			tile_show_glyph(t); // stop pointing at the pixels before they go
+		}
+		cover_free(&t->image);
+		t->has_image = false;
+	}
+	t->settled = false;
+}
+
+// Gives every cover and request back. Just before lv_obj_clean(), which takes
+// the tiles' widgets with it: nothing draws in between.
+static void tiles_reset(void) {
+	for (int i = 0; i < tile_count; i++) {
+		tile_drop(&tiles[i], false);
+	}
+	tile_count = 0;
+}
+
+static void tile_add(const char *name, lv_obj_t *row, lv_obj_t *icon) {
+	if (tile_count == tile_cap) {
+		int cap = tile_cap ? tile_cap * 2 : 16;
+		tile_t *grown = realloc(tiles, (size_t)cap * sizeof(*tiles));
+		if (!grown) {
+			return; // the tile stays a glyph
+		}
+		tiles = grown;
+		tile_cap = cap;
+	}
+	tile_t *t = &tiles[tile_count++];
+	memset(t, 0, sizeof(*t));
+	t->row = row;
+	t->icon = icon;
+	t->slot = -1;
+	library_playlist_first_path(name, t->path, sizeof(t->path));
+}
+
+static int slot_claim(void) {
+	for (int i = 0; i < COVERLOADER_PLAYLISTS_COUNT; i++) {
+		if (!slot_taken[i]) {
+			slot_taken[i] = true;
+			return i;
+		}
+	}
+	return -1;
+}
+
+// Asks for the covers of the tiles near the screen, collects what has come in,
+// and lets go of the ones that have scrolled well away.
+static void tiles_update(void) {
+	if (!grid_mode || tile_count == 0) {
+		if (tile_timer) {
+			lv_timer_pause(tile_timer);
+		}
+		return;
+	}
+	int scroll = lv_obj_get_scroll_y(list);
+	int top = scroll - tile_h - GRID_GAP;
+	int bottom = scroll + lv_obj_get_height(list) + tile_h + GRID_GAP;
+
+	bool pending = false;
+	for (int i = 0; i < tile_count; i++) {
+		tile_t *t = &tiles[i];
+		int y = lv_obj_get_y(t->row);
+		bool near = y + tile_h >= top && y <= bottom;
+		if (!near) {
+			if (t->slot >= 0 || t->has_image) {
+				tile_drop(t, true);
+			}
+			continue;
+		}
+		if (t->settled || !t->path[0]) {
+			continue;
+		}
+		if (t->slot < 0) {
+			t->slot = slot_claim();
+			if (t->slot < 0) {
+				pending = true; // every slot is busy: next tick
+				continue;
+			}
+			coverloader_request(COVERLOADER_PLAYLISTS_BASE + t->slot, t->path, GRID_COVER);
+		}
+		bool finished = false;
+		cover_image_t image;
+		if (coverloader_take(COVERLOADER_PLAYLISTS_BASE + t->slot, &image, &finished)) {
+			t->image = image;
+			t->has_image = true;
+			lv_image_set_src(t->icon, &t->image.dsc);
+			lv_obj_set_style_image_recolor_opa(t->icon, LV_OPA_TRANSP, 0);
+		}
+		if (finished) {
+			// Answered, picture or not: the slot is free for the next tile.
+			slot_taken[t->slot] = false;
+			t->slot = -1;
+			t->settled = true;
+		} else {
+			pending = true;
+		}
+	}
+
+	if (tile_timer) {
+		if (pending) {
+			lv_timer_resume(tile_timer);
+		} else {
+			lv_timer_pause(tile_timer);
+		}
+	}
+}
+
+static void tile_timer_cb(lv_timer_t *timer) {
+	(void)timer;
+	if (lv_screen_active() == playlistpage_screen) {
+		tiles_update();
+	} else {
+		lv_timer_pause(timer);
+	}
+}
+
+static void list_scroll_cb(lv_event_t *e) {
+	(void)e;
+	tiles_update();
+}
+
 static bool collect_row_cb(const char *name, void *user) {
 	int *count = user;
 
 	char subtitle[48];
 	int tracks = playlists_count_tracks(name);
 	snprintf(subtitle, sizeof(subtitle), tr(tracks == 1 ? "playlist_track_2" : "playlist_tracks"), tracks);
-	add_row(name, subtitle, &icon_list_music, 0, NULL);
+	lv_obj_t *row = NULL;
+	lv_obj_t *icon = NULL;
+	add_row(name, subtitle, &icon_list_music, 0, NULL, &row, &icon);
+	if (grid_mode && row && icon) {
+		tile_add(name, row, icon);
+	}
 
 	(*count)++;
 	return true;
@@ -1213,7 +1427,29 @@ static unsigned rows_revision;
 
 static void rebuild_rows(void) {
 	rows_revision = library_revision(LIBRARY_LIST_PLAYLIST);
+	// The tiles are let go of before the rows are deleted, not after: cleaning
+	// scrolls the list back to the top, and the scroll event would otherwise
+	// reach tiles_update() with tiles whose widgets are already gone.
+	tiles_reset();
+	grid_mode = false;
+	tiles_refit = false;
 	lv_obj_clean(list);
+
+	grid_mode = !picking && medialist_album_grid();
+	if (grid_mode) {
+		int width = config->screen_width - 2 * config->padding;
+		tile_w = (width - (GRID_COLUMNS - 1) * GRID_GAP) / GRID_COLUMNS;
+		tile_pad = tile_w > GRID_COVER ? (tile_w - GRID_COVER) / 2 : 0;
+		tile_h = 2 * tile_pad + GRID_COVER + GRID_TEXT_GAP + lv_font_get_line_height(&font_ui_24) + GRID_TEXT_ROW + lv_font_get_line_height(&font_ui_16);
+		// Rows wrap two to a line; the "new playlist" row, full width, keeps a
+		// line to itself.
+		lv_obj_set_flex_flow(list, LV_FLEX_FLOW_ROW_WRAP);
+		lv_obj_set_style_pad_column(list, GRID_GAP, 0);
+		lv_obj_set_style_pad_row(list, GRID_GAP, 0);
+	} else {
+		lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
+		lv_obj_set_style_pad_gap(list, ROW_GAP, 0);
+	}
 
 	// The "new playlist" row comes first in both modes: it is the only way the
 	// first playlist can be made.
@@ -1251,7 +1487,7 @@ static void rebuild_rows(void) {
 			char subtitle[48];
 			snprintf(subtitle, sizeof(subtitle), tr(got[i].track_count == 1 ? "playlist_track_2" : "playlist_tracks"),
 					 got[i].track_count);
-			add_row(got[i].name, subtitle, &icon_list_music, got[i].id, NULL);
+			add_row(got[i].name, subtitle, &icon_list_music, got[i].id, NULL, NULL, NULL);
 			count++;
 		}
 		// Nothing has arrived yet: ask for it, and the callback calls this
@@ -1266,7 +1502,7 @@ static void rebuild_rows(void) {
 			char subtitle[48];
 			snprintf(subtitle, sizeof(subtitle), tr(got[i].track_count == 1 ? "playlist_track_2" : "playlist_tracks"),
 					 got[i].track_count);
-			add_row(got[i].name, subtitle, &icon_list_music, 0, got[i].id);
+			add_row(got[i].name, subtitle, &icon_list_music, 0, got[i].id, NULL, NULL);
 			count++;
 		}
 		if (!tidalsync_playlists_known()) {
@@ -1281,6 +1517,10 @@ static void rebuild_rows(void) {
 	} else {
 		lv_obj_set_hidden(empty_label, true);
 	}
+
+	// The tiles' places, before the covers near the screen are asked for.
+	lv_obj_update_layout(list);
+	tiles_update();
 }
 
 void playlistpage_open(void) {
@@ -1354,10 +1594,29 @@ void playlistpage_add_tracks(const char *const *paths, int count) {
 
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
-	if (rows_revision != library_revision(LIBRARY_LIST_PLAYLIST)) {
+	// Rebuilt as well when "Album grid" or Large text changed since the rows
+	// were made.
+	if (rows_revision != library_revision(LIBRARY_LIST_PLAYLIST) || grid_mode != (!picking && medialist_album_grid()) || (grid_mode && tiles_refit)) {
 		rebuild_rows();
+	} else {
+		tiles_update();
 	}
 }
+
+// The covers and the requests still queued are let go of, as the library's
+// grids do: the worker would otherwise decode for a page nobody is looking at,
+// and the covers would stay decoded behind the playlist opened from here.
+// Coming back asks for them again, from the thumbnail cache.
+static void screen_unloaded_cb(lv_event_t *e) {
+	(void)e;
+	for (int i = 0; i < tile_count; i++) {
+		tile_drop(&tiles[i], true);
+	}
+}
+
+// A tile's height comes from the fonts; the page is never the one on screen
+// while Large text is switched, so it is measured again on the way back in.
+static void fonts_changed(void) { tiles_refit = true; }
 
 void playlistpage_init(gui_config_t *cfg) {
 	config = cfg;
@@ -1524,6 +1783,11 @@ void playlistpage_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(import_body, LV_FLEX_FLOW_COLUMN);
 
 	lv_obj_add_event_cb(playlistpage_screen, screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	lv_obj_add_event_cb(playlistpage_screen, screen_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+	lv_obj_add_event_cb(list, list_scroll_cb, LV_EVENT_SCROLL, NULL);
+	fonts_register_change(fonts_changed);
+	tile_timer = lv_timer_create(tile_timer_cb, TILE_POLL_MS, NULL);
+	lv_timer_pause(tile_timer);
 	switcher_attach_back_gesture(playlistpage_screen);
 	player_sheet_attach_drag(playlistpage_screen, true);
 }

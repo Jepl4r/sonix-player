@@ -714,6 +714,10 @@ bool library_playlist_move(const char *name, int from, int to);
 // How many entries are shown (see above). No card is touched.
 int library_playlist_count(const char *name);
 
+// The path of the first entry shown, for a cover to be taken from. False, with
+// `out` empty, when the playlist shows nothing. No card is touched.
+bool library_playlist_first_path(const char *name, char *out, size_t size);
+
 // True once per card: whether the .m3u files that were the playlists have
 // already been taken into the index. See playlists_init().
 bool library_playlists_migrated(void);

@@ -44,9 +44,10 @@ bool medialist_album_head(void);
 void medialist_set_album_head(bool on);
 
 // "Album grid": the lists of albums -- Albums, and an artist's, a genre's or a
-// year's records -- and of artists are laid out two to a line, each a big
-// cover with the name (and an album's artist) under it, instead of one row
-// each. An artist's cover is one of their records'. Off by default;
+// year's records -- and of artists are laid out two, three or four to a line
+// (below), each a cover with the name (and an album's artist) under it,
+// instead of one row each. An artist's cover is one of their records'. The
+// Playlists page reads the same switch (playlistpage.c). Off by default;
 // Music > Library.
 bool medialist_album_grid(void);
 void medialist_set_album_grid(bool on);

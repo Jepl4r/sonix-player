@@ -7620,6 +7620,32 @@ int library_playlist_count(const char *name) {
 	return count;
 }
 
+bool library_playlist_first_path(const char *name, char *out, size_t size) {
+	if (!out || size == 0) {
+		return false;
+	}
+	out[0] = '\0';
+	char quoted[PLAYLIST_TABLE_MAX];
+	if (!playlist_table(name, quoted, sizeof(quoted))) {
+		return false;
+	}
+	pthread_mutex_lock(&db_lock);
+	if (db && playlist_table_exists_locked(name)) {
+		char sql[PLAYLIST_TABLE_MAX + 160];
+		snprintf(sql, sizeof(sql), "SELECT p.path FROM %s p WHERE " PLAYLIST_SHOWN " ORDER BY p.idx LIMIT 1", quoted);
+		sqlite3_stmt *stmt = NULL;
+		if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
+			if (sqlite3_step(stmt) == SQLITE_ROW) {
+				const char *path = (const char *)sqlite3_column_text(stmt, 0);
+				snprintf(out, size, "%s", path ? path : "");
+			}
+			sqlite3_finalize(stmt);
+		}
+	}
+	pthread_mutex_unlock(&db_lock);
+	return out[0] != '\0';
+}
+
 bool library_playlists_migrated(void) {
 	pthread_mutex_lock(&db_lock);
 	bool done = false;
