@@ -43,6 +43,13 @@ void medialist_set_album_view(bool on);
 bool medialist_album_head(void);
 void medialist_set_album_head(bool on);
 
+// "Album grid": the lists of albums -- Albums, and an artist's, a genre's or a
+// year's records -- are laid out two to a line, each a big cover with the
+// title and the artist under it, instead of one row each. Off by default;
+// Music > Library.
+bool medialist_album_grid(void);
+void medialist_set_album_grid(bool on);
+
 // "Go to the current track": All tracks, Albums, Artists, Album artists and
 // Genres open scrolled to the row of what is playing -- the track itself in
 // All tracks, its album, artist, album artist or genre in the others. Off by

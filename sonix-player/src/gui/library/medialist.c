@@ -46,6 +46,18 @@ lv_obj_t *medialist_albums_screen;
 #define QUALITY_GAP 4 // between a title and the badge under it
 #define ROW_POOL 12
 
+// "Album grid": the lists of albums two to a line, a cover over its title and
+// artist. The cover is decoded at the size Cover Flow asks for (CF_MID_W), so
+// the two share the thumbnails on the card rather than each filling it with a
+// size of their own. Twelve of those in the pool is about 1 MB at RGB565, and
+// twelve is still enough: a tile is near 300 px tall, so the screen shows parts
+// of four lines of two at most, and the pool covers those and a line above.
+#define GRID_COLUMNS 2
+#define GRID_COVER 210
+#define GRID_GAP 12		// between two tiles, either way
+#define GRID_TEXT_GAP 8 // between the cover and the title under it
+#define GRID_MARK_ROOM 12 // under the text: the playing mark and a gap above it
+
 // How many rows are held in RAM for a query-backed list: the twelve on screen
 // plus enough either side that a flick does not fetch on every frame. At about
 // 770 bytes a row this is 36 KB, whatever the size of the library.
@@ -238,6 +250,11 @@ typedef struct {
 	bool reorder_moved;	   // whether anything actually moved while it was
 	gui_config_t *cfg;	 // kept for the heading, which is re-measured per list
 	row_t rows[ROW_POOL];
+	// The rows are tiles of a grid (see panel_wants_grid), and the size of one.
+	bool grid;
+	bool grid_detail; // ...and whether a tile has a line under its name
+	int grid_tile_w;
+	int grid_tile_h;
 
 	// A list is either a query -- which is held as a handle over its row ids,
 	// four bytes a row, with the rows themselves read back a windowful at a
@@ -426,6 +443,9 @@ static int artist_lists = MEDIALIST_ARTIST_ALL;
 // covers. Off by default.
 static bool album_head;
 
+// "Album grid": the lists of albums as a grid of covers. Off by default.
+static bool album_grid;
+
 // Both are read on first use rather than in medialist_init(): the music
 // settings page is built before it (see gui_init), so a switch built from these
 // at init time would show the default rather than what the user chose, and then
@@ -442,6 +462,7 @@ static void load_view_settings(void) {
 	show_artist = config_get_int("library", "show_artist", 0) != 0;
 	go_to_current = config_get_int("library", "go_to_current", 0) != 0;
 	album_head = config_get_int("library", "album_head", 0) != 0;
+	album_grid = config_get_int("library", "album_grid", 0) != 0;
 	allow_delete = config_get_int("library", "allow_delete", 0) != 0;
 	artist_lists = (int)config_get_int("library", "artist_lists", artist_lists);
 }
@@ -807,6 +828,10 @@ static int disc_heads_through(const panel_t *p, int index) {
 // The top of row `index` on the page. `index` may be p->count: the end of the
 // last row, gap included.
 static int row_y(const panel_t *p, int index) {
+	if (p->grid) {
+		// A line of tiles; the albums lists have neither a head nor discs.
+		return (index / GRID_COLUMNS) * (p->grid_tile_h + GRID_GAP);
+	}
 	return p->head_height + index * ROW_PITCH + disc_heads_through(p, index) * DISC_HEAD_PITCH;
 }
 
@@ -817,7 +842,11 @@ static int row_at_y(const panel_t *p, int y) {
 		return 0;
 	}
 	int index;
-	if (p->disc_count == 0) {
+	if (p->grid) {
+		// The first tile of the line: what a viewport opens on, and close enough
+		// for a finger, which only the playlists' drag asks about.
+		index = (y < 0 ? 0 : y / (p->grid_tile_h + GRID_GAP)) * GRID_COLUMNS;
+	} else if (p->disc_count == 0) {
 		index = y < p->head_height ? 0 : (y - p->head_height) / ROW_PITCH;
 	} else {
 		int lo = 0;
@@ -836,7 +865,95 @@ static int row_at_y(const panel_t *p, int y) {
 }
 
 // The height of everything the list scrolls over.
-static int body_height(const panel_t *p) { return p->count > 0 ? row_y(p, p->count) : p->head_height + ROW_PITCH; }
+static int body_height(const panel_t *p) {
+	if (p->grid) {
+		// A last line with one tile on it is still a line.
+		int lines = p->count > 0 ? (p->count + GRID_COLUMNS - 1) / GRID_COLUMNS : 1;
+		return lines * (p->grid_tile_h + GRID_GAP);
+	}
+	return p->count > 0 ? row_y(p, p->count) : p->head_height + ROW_PITCH;
+}
+
+// How tall one row is: what centring a row on the screen centres.
+static int row_height(const panel_t *p) { return p->grid ? p->grid_tile_h : ROW_HEIGHT; }
+
+// The lists that are laid out as a grid when "Album grid" is on: the ones whose
+// rows are albums, read from the index.
+static bool panel_wants_grid(const panel_t *p) { return album_grid && !p->is_tracks && !p->from_paths && p->kind == LIBRARY_LIST_ALBUMS; }
+
+// Lays the pool out as rows or as tiles. The same widgets serve both: a tile is
+// a row turned on its side -- the cover on top, the title and artist under it
+// -- with the chevron gone and the tick and the playing mark moved over the
+// cover. Call it with the pool unbound (index -2), since the artwork already
+// on the rows is the wrong size for the other shape.
+static void panel_apply_shape(panel_t *p, bool grid) {
+	// A line under the name only where there is something to put on it: an
+	// album's artist -- but not on one artist's own records, whose page title
+	// names them already. A tile with nothing to put there is shorter.
+	bool detail = grid && p->kind == LIBRARY_LIST_ALBUMS && p->filter != LIBRARY_FILTER_ARTIST && p->filter != LIBRARY_FILTER_ALBUM_ARTIST;
+	if (p->grid == grid && p->grid_tile_w > 0 && p->grid_detail == detail) {
+		return;
+	}
+	p->grid = grid;
+	p->grid_detail = detail;
+
+	int width = p->cfg->screen_width - 2 * p->cfg->padding;
+	int tile_w = (width - (GRID_COLUMNS - 1) * GRID_GAP) / GRID_COLUMNS;
+	int pad = (tile_w - GRID_COVER) / 2;
+	if (pad < 0) {
+		pad = 0;
+	}
+	p->grid_tile_w = tile_w;
+	p->grid_tile_h = 2 * pad + GRID_COVER + GRID_TEXT_GAP + lv_font_get_line_height(&font_ui_24) + (detail ? QUALITY_GAP + lv_font_get_line_height(&font_ui_20) : 0) + GRID_MARK_ROOM;
+
+	for (int i = 0; i < ROW_POOL; i++) {
+		row_t *row = &p->rows[i];
+		if (grid) {
+			lv_obj_set_size(row->button, tile_w, p->grid_tile_h);
+			lv_obj_set_style_pad_all(row->button, pad, 0);
+			lv_obj_set_style_pad_row(row->button, GRID_TEXT_GAP, 0);
+			lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_COLUMN);
+			lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
+			lv_obj_set_size(row->icon, GRID_COVER, GRID_COVER);
+			lv_obj_set_flex_grow(row->text, 0);
+			lv_obj_set_width(row->text, LV_PCT(100));
+			if (row->chevron) {
+				lv_obj_set_hidden(row->chevron, true);
+			}
+			// Over the cover's top right corner, where a tick reads on any sleeve
+			// with the card's colour behind it -- the card's style, so the disc
+			// follows a change of theme.
+			lv_obj_set_ignore_layout(row->check, true);
+			lv_obj_align(row->check, LV_ALIGN_TOP_RIGHT, -6, 6);
+			lv_obj_add_style(row->check, &theme_style_card, 0);
+			lv_obj_set_style_radius(row->check, LV_RADIUS_CIRCLE, 0);
+			// A bar along the bottom instead of the left edge, in the room kept for
+			// it under the text, so it does not read as the text's underline.
+			lv_obj_set_size(row->playmark, PLAYMARK_HEIGHT, PLAYMARK_WIDTH);
+			lv_obj_align(row->playmark, LV_ALIGN_BOTTOM_MID, 0, 0);
+		} else {
+			lv_obj_set_size(row->button, width, ROW_HEIGHT);
+			lv_obj_set_x(row->button, 0);
+			lv_obj_remove_local_style_prop(row->button, LV_STYLE_PAD_TOP, 0);
+			lv_obj_remove_local_style_prop(row->button, LV_STYLE_PAD_BOTTOM, 0);
+			lv_obj_remove_local_style_prop(row->button, LV_STYLE_PAD_LEFT, 0);
+			lv_obj_remove_local_style_prop(row->button, LV_STYLE_PAD_RIGHT, 0);
+			lv_obj_remove_local_style_prop(row->button, LV_STYLE_PAD_ROW, 0);
+			lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
+			lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+			lv_obj_set_size(row->icon, THUMB_SIZE, THUMB_SIZE);
+			lv_obj_set_flex_grow(row->text, 1);
+			if (row->chevron) {
+				lv_obj_set_hidden(row->chevron, false);
+			}
+			lv_obj_set_ignore_layout(row->check, false);
+			lv_obj_remove_style(row->check, &theme_style_card, 0);
+			lv_obj_remove_local_style_prop(row->check, LV_STYLE_RADIUS, 0);
+			lv_obj_set_size(row->playmark, PLAYMARK_WIDTH, PLAYMARK_HEIGHT);
+			lv_obj_align(row->playmark, LV_ALIGN_LEFT_MID, PLAYMARK_INSET - ROW_PAD, 0);
+		}
+	}
+}
 
 // One album's tracks, read from the index: the one list that can have a head
 // and disc headings.
@@ -1113,7 +1230,7 @@ static bool panel_shows_artist(const panel_t *p) {
 static void row_update_detail(panel_t *p, row_t *row, int index, const char *path) {
 	row_update_quality(p, row, path);
 
-	const char *artist = panel_shows_artist(p) ? row_artist_at(p, index) : NULL;
+	const char *artist = panel_shows_artist(p) || p->grid_detail ? row_artist_at(p, index) : NULL;
 	// Inside an album, only a track by someone other than the album's artist.
 	if (artist && p->kind == LIBRARY_LIST_TRACKS && p->filter == LIBRARY_FILTER_ALBUM &&
 		(!artist[0] || strcasecmp(artist, p->album_artist) == 0)) {
@@ -1187,7 +1304,7 @@ static void row_update_selection(panel_t *p, row_t *row, const char *name, const
 		lv_obj_set_hidden(row->check, true);
 	}
 	lv_obj_t *usual = row->menu_btn ? row->menu_btn : row->chevron;
-	if (usual) {
+	if (usual && !p->grid) {
 		if (p->selecting) {
 			lv_obj_set_hidden(usual, true);
 		} else {
@@ -1777,7 +1894,7 @@ static void row_bind(panel_t *p, row_t *row, int index) {
 	}
 
 	lv_obj_set_hidden(row->button, false);
-	lv_obj_set_y(row->button, row_y(p, index));
+	lv_obj_set_pos(row->button, p->grid ? (index % GRID_COLUMNS) * (p->grid_tile_w + GRID_GAP) : 0, row_y(p, index));
 	// An album row is named by its value -- name and key, see library.h -- and
 	// only the name is for reading.
 	char shown[sizeof(((winrow_t *)0)->name)];
@@ -1847,7 +1964,7 @@ static void thumbs_update(panel_t *p) {
 				continue;
 			}
 			int y = row_y(p, row->index);
-			bool on_screen = y + ROW_HEIGHT > top && y < bottom;
+			bool on_screen = y + row_height(p) > top && y < bottom;
 			if (on_screen != (pass == 0)) {
 				continue;
 			}
@@ -1873,7 +1990,7 @@ static void thumbs_update(panel_t *p) {
 					anything_pending = true; // its turn comes on a later tick
 					continue;
 				}
-				coverloader_request(row_slot(p, row), source, THUMB_SIZE);
+				coverloader_request(row_slot(p, row), source, p->grid ? GRID_COVER : THUMB_SIZE);
 				row->thumb_requested = true;
 				snprintf(row->thumb_path, sizeof(row->thumb_path), "%s", source);
 			}
@@ -1936,7 +2053,7 @@ static void window_update(panel_t *p) {
 		scroll = 0;
 	}
 
-	int first = row_at_y(p, scroll) - 1;
+	int first = row_at_y(p, scroll) - (p->grid ? GRID_COLUMNS : 1);
 	if (first + ROW_POOL > p->count) {
 		first = p->count - ROW_POOL;
 	}
@@ -2961,9 +3078,20 @@ static void panel_abandon_thumbs(panel_t *p) {
 }
 
 static void screen_unloaded_cb(lv_event_t *e) {
-	reorder_stop(lv_event_get_user_data(e));
-	selection_stop(lv_event_get_user_data(e));
-	panel_abandon_thumbs(lv_event_get_user_data(e));
+	panel_t *p = lv_event_get_user_data(e);
+	reorder_stop(p);
+	selection_stop(p);
+	if (p->grid) {
+		// A grid's covers are up to a megabyte, so they do not stay decoded
+		// behind the page that was opened from it, as Cover Flow's do not. The
+		// rows keep their places; coming back asks for the covers again, and
+		// they come from the thumbnail cache.
+		for (int i = 0; i < ROW_POOL; i++) {
+			row_drop_thumb(p, &p->rows[i]);
+		}
+	} else {
+		panel_abandon_thumbs(p);
+	}
 }
 
 // Set while a list is reopened under a new ordering: it comes back at the top,
@@ -4709,6 +4837,40 @@ void medialist_set_album_head(bool on) {
 	window_update(p);
 }
 
+bool medialist_album_grid(void) {
+	load_view_settings();
+	return album_grid;
+}
+
+void medialist_set_album_grid(bool on) {
+	load_view_settings();
+	if (album_grid == on) {
+		return;
+	}
+	album_grid = on;
+	config_set_int("library", "album_grid", on ? 1 : 0);
+	config_save();
+
+	// A list of albums left open behind the settings is laid out again, from
+	// the top, so going back to it shows the change.
+	panel_t *const panels[] = {&panel_names, &panel_artist_albums};
+	for (size_t i = 0; i < sizeof(panels) / sizeof(panels[0]); i++) {
+		panel_t *p = panels[i];
+		if (!p->rows[0].button || p->grid == panel_wants_grid(p)) {
+			continue;
+		}
+		for (int r = 0; r < ROW_POOL; r++) {
+			row_drop_thumb(p, &p->rows[r]);
+			p->rows[r].index = -2;
+		}
+		panel_apply_shape(p, panel_wants_grid(p));
+		lv_obj_set_height(p->body, body_height(p));
+		lv_obj_scroll_to_y(p->list, 0, LV_ANIM_OFF);
+		p->saved_scroll = 0;
+		window_update(p);
+	}
+}
+
 // ---------------------------------------------------------------------------
 // opening
 // ---------------------------------------------------------------------------
@@ -5005,6 +5167,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 		row_drop_thumb(p, &p->rows[i]);
 		p->rows[i].index = -2; // force a rebind (indices may look unchanged)
 	}
+	panel_apply_shape(p, panel_wants_grid(p));
 
 	model_clear(p);
 	library_order_t order = LIBRARY_ORDER_DEFAULT;
@@ -5069,7 +5232,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	if (current >= 0) {
 		// In the middle of the screen rather than at the top, so the rows
 		// around it show where in the list it is.
-		target_scroll = row_y(p, current) - (view_height - ROW_HEIGHT) / 2;
+		target_scroll = row_y(p, current) - (view_height - row_height(p)) / 2;
 		if (target_scroll < 0) {
 			target_scroll = 0;
 		}
@@ -5129,6 +5292,7 @@ void medialist_open_paths(const char *title, const char *const *paths, const cha
 		row_drop_thumb(p, &p->rows[i]);
 		p->rows[i].index = -2;
 	}
+	panel_apply_shape(p, false);
 
 	model_clear(p);
 	load_ctx_t ctx = {.panel = p, .capacity = 0};
