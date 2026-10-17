@@ -2923,9 +2923,26 @@ static void reorder_stop(panel_t *p) {
 	}
 }
 
+// Lets go of the artwork a panel asked for and has not got yet. The worker
+// takes requests lowest slot first, and the name lists' slots come before the
+// track lists': left queued, a page of covers nobody can see any more is
+// decoded before the rows of the album just opened. Coming back to the panel
+// asks for them again (screen_loaded_cb), and what was finished meanwhile is
+// in the thumbnail cache by then.
+static void panel_abandon_thumbs(panel_t *p) {
+	for (int i = 0; i < ROW_POOL; i++) {
+		row_t *row = &p->rows[i];
+		if (row->thumb_requested && !row->thumb_settled) {
+			coverloader_release(row_slot(p, row));
+			row->thumb_requested = false;
+		}
+	}
+}
+
 static void screen_unloaded_cb(lv_event_t *e) {
 	reorder_stop(lv_event_get_user_data(e));
 	selection_stop(lv_event_get_user_data(e));
+	panel_abandon_thumbs(lv_event_get_user_data(e));
 }
 
 // Set while a list is reopened under a new ordering: it comes back at the top,
