@@ -2141,7 +2141,70 @@ static void thumb_db_store(const char *key, const cover_image_t *img, bool has_i
 // browser thumbnails
 // ---------------------------------------------------------------------------
 
+// A key for a picture rather than a file: the bytes' id (bytes_id) and the box.
+// The two kinds never meet: a file's key is sixteen hex digits, and this one
+// starts with a letter that is not one.
+static void thumb_picture_key(char *out, size_t out_size, uint64_t id, int box) { snprintf(out, out_size, "p%016llx|%d", (unsigned long long)id, box); }
+
+// A track's thumbnail, decoded at most once per picture.
+//
+// The file keys are per path, so the dozen tracks of an album that all carry
+// the same embedded cover would otherwise be a dozen decodes the first time
+// the album is opened -- seconds each for a large progressive JPEG, which
+// TJpgDec cannot scale and stb_image decodes whole. Here the bytes the decode
+// would start from are identified first, and a thumbnail already made from the
+// same picture at the same size is taken instead. The candidates are walked
+// exactly as build_from_sources_at() walks them, and a picture key is only
+// written for the bytes an image was actually built from, so the answer is
+// the one the decode would have given.
+static cover_build_t thumb_build_track(const char *path, int size, cover_image_t *out) {
+	image_request_t req = {.w = size, .h = size, .fit = COVER_FIT_CONTAIN, .backdrop = false};
+	bool cacheable = size <= THUMB_DISK_MAX_SIZE;
+	bool had_bytes = false;
+
+	crumb_set_artwork(path);
+	memset(out, 0, sizeof(*out));
+
+	for (int i = 0; i < ALBUMART_CANDIDATES; i++) {
+		albumart_t art;
+		if (!albumart_load_candidate(path, i, &art)) {
+			continue;
+		}
+		had_bytes = true;
+
+		// No id for bytes a pulled card may have zeroed: they name nothing.
+		uint64_t id = cacheable && art.size && !albumart_faulted(&art) ? bytes_id(art.data, art.size) : 0;
+		char picture_key[40];
+		if (id) {
+			thumb_picture_key(picture_key, sizeof(picture_key), id, size);
+			bool has_image = false;
+			if (thumb_db_load(picture_key, out, &has_image) && has_image) {
+				albumart_free(&art);
+				crumb_set_artwork(NULL);
+				return COVER_BUILD_OK;
+			}
+		}
+
+		bool ok = build_images_safely(art.data, art.size, &req, 1, out) && !albumart_faulted(&art);
+		albumart_free(&art);
+		if (ok) {
+			if (id) {
+				thumb_db_store(picture_key, out, true);
+			}
+			crumb_set_artwork(NULL);
+			return COVER_BUILD_OK;
+		}
+		cover_free(out);
+	}
+
+	crumb_set_artwork(NULL);
+	return had_bytes ? COVER_BUILD_FAILED : COVER_BUILD_NONE;
+}
+
 static cover_build_t thumb_load_uncached(const char *path, bool is_dir, int size, cover_image_t *out) {
+	if (!is_dir) {
+		return thumb_build_track(path, size, out);
+	}
 	image_request_t req = {.w = size, .h = size, .fit = COVER_FIT_CONTAIN, .backdrop = false};
 	return build_from_sources(path, is_dir, &req, 1, out);
 }
@@ -2168,7 +2231,8 @@ bool cover_thumb_load(const char *path, bool is_dir, int size, cover_image_t *ou
 	// Asking the folder first -- the "an album shares one picture" shortcut --
 	// breaks as soon as a folder holds tracks from different albums, since every
 	// row below the first would show the first track's cover. The per-file disk
-	// cache keeps the cost at one decode per file, ever.
+	// cache keeps the cost at one decode per file, ever, and tracks that carry
+	// the same picture share one decode (thumb_build_track).
 
 	char key[32];
 	bool cacheable = thumb_key(key, sizeof(key), path, size, is_dir);
