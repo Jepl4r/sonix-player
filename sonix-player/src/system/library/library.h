@@ -554,6 +554,11 @@ bool library_index_buckets(const library_index_t *ix, int counts[LIBRARY_INDEX_B
 // with a `path` (a track to take the cover from) and an `artist` (the album's).
 int library_index_window(const library_index_t *ix, int offset, int count, library_row_cb cb, void *user);
 
+// Artist and album artist rows come with a `path` as well while this is on:
+// one of the artist's tracks, for the album grid to take a cover from. Off by
+// default, since it is two lookups a row that a list of names does not need.
+void library_index_set_covers(library_index_t *ix, bool on);
+
 // A second handle over the same rows, without asking the database for the
 // sort again: the row ids are simply copied. What the playback queue is given
 // when a list is started, so the queue does not have to be a second copy of the

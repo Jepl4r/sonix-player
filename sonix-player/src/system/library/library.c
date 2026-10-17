@@ -2546,6 +2546,7 @@ struct library_index {
 	char value[256];
 
 	bool desc; // the list reads backwards; the rows are always stored ascending
+	bool covers; // artist rows come with a track to take a cover from
 	gen_domain_t domain;
 	unsigned generation;
 
@@ -2820,7 +2821,8 @@ static void list_sql(char *sql, size_t size, const char *select, library_list_t 
 //
 // `out` is only written for the kinds whose table is named by the list itself,
 // which today is the playlists; everything else answers with a literal.
-static const char *row_by_id_sql(library_list_t kind, const char *value, char *out, size_t out_size) {
+// `covers` is library_index_set_covers().
+static const char *row_by_id_sql(library_list_t kind, const char *value, bool covers, char *out, size_t out_size) {
 	if (kind == LIBRARY_LIST_PLAYLIST) {
 		char quoted[PLAYLIST_TABLE_MAX];
 		if (!playlist_table(value, quoted, sizeof(quoted))) {
@@ -2847,10 +2849,26 @@ static const char *row_by_id_sql(library_list_t kind, const char *value, char *o
 		return "SELECT " ALBUM_GROUP_VALUE ", " ALBUM_GROUP_FIRST("m.path") ","
 			   " " ALBUM_GROUP_FIRST("COALESCE(NULLIF(m.album_artist,''), m.artist)")
 			   " FROM ALBUM_GROUP_TABLE g WHERE rowid=?";
+	// An artist has no picture of its own, so when asked the row hands out one
+	// of their tracks for the grid to take a cover from: the first they have,
+	// or, for a name only a split tag produced, the first file linked to it.
+	// Both lookups run on an index, and only for the rows of the window.
 	case LIBRARY_LIST_ARTISTS:
-		return "SELECT artist, NULL, NULL FROM ARTIST_TABLE WHERE rowid=?";
+		if (!covers) {
+			return "SELECT artist, NULL, NULL FROM ARTIST_TABLE WHERE rowid=?";
+		}
+		return "SELECT a.artist, COALESCE("
+			   "(SELECT m.path FROM MEDIA_TABLE m WHERE m.artist = a.artist ORDER BY m.ctime LIMIT 1),"
+			   " (SELECT l.path FROM ARTIST_LINK l WHERE l.artist = a.artist LIMIT 1)), NULL"
+			   " FROM ARTIST_TABLE a WHERE rowid=?";
 	case LIBRARY_LIST_ALBUM_ARTISTS:
-		return "SELECT album_artist, NULL, NULL FROM ALBUM_ARTIST_TABLE WHERE rowid=?";
+		if (!covers) {
+			return "SELECT album_artist, NULL, NULL FROM ALBUM_ARTIST_TABLE WHERE rowid=?";
+		}
+		return "SELECT a.album_artist, COALESCE("
+			   "(SELECT m.path FROM MEDIA_TABLE m WHERE m.album_artist = a.album_artist ORDER BY m.ctime LIMIT 1),"
+			   " (SELECT l.path FROM ALBUM_ARTIST_LINK l WHERE l.album_artist = a.album_artist LIMIT 1)), NULL"
+			   " FROM ALBUM_ARTIST_TABLE a WHERE rowid=?";
 	case LIBRARY_LIST_GENRES:
 		return "SELECT genre, NULL, NULL FROM GENRE_TABLE WHERE rowid=?";
 	case LIBRARY_LIST_YEARS:
@@ -3083,6 +3101,12 @@ static int row_slot(const struct library_index *ix, int index) {
 	return ix->desc ? ix->count - 1 - index : index;
 }
 
+void library_index_set_covers(library_index_t *ix, bool on) {
+	if (ix) {
+		ix->covers = on;
+	}
+}
+
 int library_index_window(const library_index_t *ix, int offset, int count, library_row_cb cb, void *user) {
 	if (!ix || !cb || offset < 0 || count <= 0 || offset >= ix->count) {
 		return 0;
@@ -3092,7 +3116,7 @@ int library_index_window(const library_index_t *ix, int offset, int count, libra
 	}
 
 	char sql_buf[PLAYLIST_TABLE_MAX + 384];
-	const char *sql = row_by_id_sql(ix->kind, ix->value, sql_buf, sizeof(sql_buf));
+	const char *sql = row_by_id_sql(ix->kind, ix->value, ix->covers, sql_buf, sizeof(sql_buf));
 	if (!sql) {
 		return 0;
 	}
