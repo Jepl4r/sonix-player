@@ -42,21 +42,17 @@ lv_obj_t *playlistpage_screen;
 
 // The grid, under "Album grid" (Music > Library) and only while browsing: the
 // picker keeps its rows, which is where the account playlists come in and they
-// have no file to take a cover from. A tile is the medialist's -- two to a
-// line, a cover over the name -- and its cover is the first track's, decoded
-// at the size the album grid and Cover Flow share on the card.
-#define GRID_COLUMNS 2
-#define GRID_COVER 210
-#define GRID_GAP 12
-#define GRID_TEXT_GAP 8
+// have no file to take a cover from. A tile is shaped as the library's are
+// (medialist_grid_layout) -- two, three or four to a line, a cover over the
+// name -- and its cover is the first track's, decoded at the same size.
 #define GRID_TEXT_ROW 2 // between the name and the count under it
 #define TILE_POLL_MS 150
 
 // The rows are built all at once, so the covers are what is windowed: a tile
 // within a line of the screen has its cover, or a request for it, and one
-// further away gives its pixels back. Four lines can be in sight, so with a
-// line either side a dozen covers is the most ever held -- about 1 MB -- and a
-// dozen requests the most ever queued.
+// further away gives its pixels back. With a line either side that is about
+// 1 MB of covers at most, at any number of columns. Slots are only held by
+// requests in flight, so a dozen is enough however many tiles are near.
 typedef struct {
 	lv_obj_t *row;
 	lv_obj_t *icon;
@@ -68,7 +64,8 @@ typedef struct {
 } tile_t;
 
 static bool grid_mode;
-static int tile_w, tile_h, tile_pad;
+static medialist_grid_t grid; // the tiles' shape, while grid_mode
+static int tile_h;
 static bool tiles_refit; // Large text changed since the tiles were measured
 static tile_t *tiles;
 static int tile_count;
@@ -482,9 +479,9 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
 	if (tile) {
-		lv_obj_set_size(row, tile_w, tile_h);
-		lv_obj_set_style_pad_all(row, tile_pad, 0);
-		lv_obj_set_style_pad_row(row, GRID_TEXT_GAP, 0);
+		lv_obj_set_size(row, grid.tile_w, tile_h);
+		lv_obj_set_style_pad_all(row, grid.pad, 0);
+		lv_obj_set_style_pad_row(row, grid.text_gap, 0);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_START);
 	} else {
@@ -523,7 +520,7 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_obj_add_style(icon, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(icon, LV_OPA_COVER, 0);
 	if (tile) {
-		lv_obj_set_size(icon, GRID_COVER, GRID_COVER);
+		lv_obj_set_size(icon, grid.cover, grid.cover);
 		lv_image_set_inner_align(icon, LV_IMAGE_ALIGN_CENTER);
 	}
 	if (icon_out) {
@@ -550,10 +547,11 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_label_set_text(name_label, name);
 	lv_label_set_long_mode(name_label, LV_LABEL_LONG_DOT);
 	lv_obj_set_width(name_label, lv_pct(100));
-	// One line, cut with dots past it.
-	lv_obj_set_height(name_label, lv_font_get_line_height(&font_ui_24));
+	// One line, cut with dots past it, smaller on the narrower tiles.
+	const lv_font_t *name_font = tile ? grid.name_font : &font_ui_24;
+	lv_obj_set_height(name_label, lv_font_get_line_height(name_font));
 	lv_obj_add_style(name_label, &theme_style_text, 0);
-	lv_obj_set_style_text_font(name_label, &font_ui_24, 0);
+	lv_obj_set_style_text_font(name_label, name_font, 0);
 
 	lv_obj_t *sub = NULL;
 	if (subtitle && subtitle[0]) {
@@ -573,9 +571,12 @@ static lv_obj_t *add_row(const char *name, const char *subtitle, const lv_image_
 	lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
 	if (tile) {
 		// Over the cover's corner, on a disc of the card's colour so it reads
-		// on any sleeve.
+		// on any sleeve -- a smaller one on the narrower covers.
+		int side = grid.columns > 2 ? 36 : 44;
+		int inset = grid.columns > 2 ? 4 : 6;
+		lv_obj_set_size(menu_btn, side, side);
 		lv_obj_set_ignore_layout(menu_btn, true);
-		lv_obj_align(menu_btn, LV_ALIGN_TOP_RIGHT, -6, 6);
+		lv_obj_align(menu_btn, LV_ALIGN_TOP_RIGHT, -inset, inset);
 		lv_obj_add_style(menu_btn, &theme_style_card, 0); // follows the theme
 		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_COVER, 0);
 		lv_obj_set_style_radius(menu_btn, LV_RADIUS_CIRCLE, 0);
@@ -734,8 +735,8 @@ static void tiles_update(void) {
 		return;
 	}
 	int scroll = lv_obj_get_scroll_y(list);
-	int top = scroll - tile_h - GRID_GAP;
-	int bottom = scroll + lv_obj_get_height(list) + tile_h + GRID_GAP;
+	int top = scroll - tile_h - grid.gap;
+	int bottom = scroll + lv_obj_get_height(list) + tile_h + grid.gap;
 
 	bool pending = false;
 	for (int i = 0; i < tile_count; i++) {
@@ -757,7 +758,7 @@ static void tiles_update(void) {
 				pending = true; // every slot is busy: next tick
 				continue;
 			}
-			coverloader_request(COVERLOADER_PLAYLISTS_BASE + t->slot, t->path, GRID_COVER);
+			coverloader_request(COVERLOADER_PLAYLISTS_BASE + t->slot, t->path, grid.cover);
 		}
 		bool finished = false;
 		cover_image_t image;
@@ -1437,15 +1438,13 @@ static void rebuild_rows(void) {
 
 	grid_mode = !picking && medialist_album_grid();
 	if (grid_mode) {
-		int width = config->screen_width - 2 * config->padding;
-		tile_w = (width - (GRID_COLUMNS - 1) * GRID_GAP) / GRID_COLUMNS;
-		tile_pad = tile_w > GRID_COVER ? (tile_w - GRID_COVER) / 2 : 0;
-		tile_h = 2 * tile_pad + GRID_COVER + GRID_TEXT_GAP + lv_font_get_line_height(&font_ui_24) + GRID_TEXT_ROW + lv_font_get_line_height(&font_ui_16);
-		// Rows wrap two to a line; the "new playlist" row, full width, keeps a
-		// line to itself.
+		medialist_grid_layout(config->screen_width - 2 * config->padding, &grid);
+		tile_h = 2 * grid.pad + grid.cover + grid.text_gap + lv_font_get_line_height(grid.name_font) + GRID_TEXT_ROW + lv_font_get_line_height(&font_ui_16);
+		// Rows wrap into lines of tiles; the "new playlist" row, full width,
+		// keeps a line to itself.
 		lv_obj_set_flex_flow(list, LV_FLEX_FLOW_ROW_WRAP);
-		lv_obj_set_style_pad_column(list, GRID_GAP, 0);
-		lv_obj_set_style_pad_row(list, GRID_GAP, 0);
+		lv_obj_set_style_pad_column(list, grid.gap, 0);
+		lv_obj_set_style_pad_row(list, grid.gap, 0);
 	} else {
 		lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_style_pad_gap(list, ROW_GAP, 0);
@@ -1594,9 +1593,9 @@ void playlistpage_add_tracks(const char *const *paths, int count) {
 
 static void screen_loaded_cb(lv_event_t *e) {
 	(void)e;
-	// Rebuilt as well when "Album grid" or Large text changed since the rows
-	// were made.
-	if (rows_revision != library_revision(LIBRARY_LIST_PLAYLIST) || grid_mode != (!picking && medialist_album_grid()) || (grid_mode && tiles_refit)) {
+	// Rebuilt as well when "Album grid", its columns or Large text changed
+	// since the rows were made.
+	if (rows_revision != library_revision(LIBRARY_LIST_PLAYLIST) || grid_mode != (!picking && medialist_album_grid()) || (grid_mode && (grid.columns != medialist_grid_columns() || tiles_refit))) {
 		rebuild_rows();
 	} else {
 		tiles_update();

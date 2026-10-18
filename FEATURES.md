@@ -33,7 +33,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Join albums** - tracks of the same album in the same folder become one album, even if the artists are different.
 - **Detect changes** - new tracks are added by themselves when the player starts, when the microSD goes back in, after USB or after Wi-Fi transfer. It can also pick up tracks you retagged.
 - **Alternative album view** - the album opens with its big cover on top, with title, artist, genre and year, and the tracks underneath.
-- **Album grid** - Albums, Artists, Album artists and Playlists, and the albums of an artist, a genre or a year, as a grid of big covers, two to a line. An artist shows the cover of one of their albums, a playlist the cover of its first track.
+- **Album grid** - Albums, Artists, Album artists and Playlists, and the albums of an artist, a genre or a year, as a grid of covers, two, three or four to a line. An artist shows the cover of one of their albums, a playlist the cover of its first track.
 - **Tapping an artist, a genre or a year** can open its albums instead of its tracks.
 - **Show artist** under the title in the lists you choose.
 - **Quality badge** under the title: lossy, CD, Hi-Res or DSD.

@@ -1248,7 +1248,10 @@ static lv_obj_t *allow_delete_switch;
 static lv_obj_t *library_screen;
 static lv_obj_t *album_view_switch;
 static lv_obj_t *album_head_switch;
-static lv_obj_t *album_grid_switch;
+static lv_obj_t *album_grid_switch, *album_grid_pills;
+// Under the switch: 2, 3 or 4 tiles to a line.
+#define GRID_COLUMN_PILLS 3
+static lv_obj_t *grid_column_pill[GRID_COLUMN_PILLS];
 static lv_obj_t *quality_badges_switch;
 static lv_obj_t *go_to_current_switch;
 
@@ -1500,7 +1503,35 @@ static void album_head_cb(lv_event_t *e) {
 	medialist_set_album_head(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
 }
 
-static void album_grid_cb(lv_event_t *e) { medialist_set_album_grid(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED)); }
+static void album_grid_refresh(void) {
+	if (!album_grid_switch) {
+		return;
+	}
+	if (medialist_album_grid()) {
+		lv_obj_add_state(album_grid_switch, LV_STATE_CHECKED);
+		lv_obj_set_hidden(album_grid_pills, false);
+	} else {
+		lv_obj_remove_state(album_grid_switch, LV_STATE_CHECKED);
+		lv_obj_set_hidden(album_grid_pills, true);
+	}
+	for (int i = 0; i < GRID_COLUMN_PILLS; i++) {
+		settingsrow_pill_active(grid_column_pill[i], medialist_grid_columns() == i + 2);
+	}
+}
+
+static void album_grid_cb(lv_event_t *e) {
+	(void)e;
+	medialist_set_album_grid(lv_obj_has_state(album_grid_switch, LV_STATE_CHECKED));
+	album_grid_refresh();
+}
+
+static void grid_columns_cb(lv_event_t *e) {
+	if (player_sheet_drag_active() || switcher_back_drag_active()) {
+		return;
+	}
+	medialist_set_grid_columns((int)(intptr_t)lv_event_get_user_data(e));
+	album_grid_refresh();
+}
 
 static lv_obj_t *nowplaying_at_boot_switch;
 
@@ -1665,12 +1696,17 @@ static void build_library_page(gui_config_t *cfg) {
 		lv_obj_add_state(album_head_switch, LV_STATE_CHECKED);
 	}
 
-	// How the lists of albums are laid out: a row each, or a grid of covers.
-	settingsrow_toggle(container, "musicsettings_album_grid", &album_grid_switch, album_grid_cb);
-	option_note(container, "musicsettings_album_grid_note");
-	if (medialist_album_grid()) {
-		lv_obj_add_state(album_grid_switch, LV_STATE_CHECKED);
+	// How the lists of albums are laid out: a row each, or a grid of covers two,
+	// three or four to a line. The pills are numbers, the same in every language.
+	settingsrow_toggle_pills(container, "musicsettings_album_grid", album_grid_cb, &album_grid_switch, &album_grid_pills);
+	for (int i = 0; i < GRID_COLUMN_PILLS; i++) {
+		char columns[4];
+		snprintf(columns, sizeof(columns), "%d", i + 2);
+		grid_column_pill[i] = settingsrow_pill_text(album_grid_pills, columns, i + 2, grid_columns_cb);
 	}
+	option_note(container, "musicsettings_album_grid_note");
+	album_grid_refresh();
+	theme_register_refresh(album_grid_refresh);
 
 	// Who a row is by, under its title, on the lists picked here.
 	settingsrow_toggle_pills(container, "musicsettings_show_artist", artist_toggle_cb, &artist_switch, &artist_pills);

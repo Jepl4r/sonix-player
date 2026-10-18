@@ -61,7 +61,7 @@
 #define CF_SLOTS 6
 
 // The record: the size a square is decoded, built and drawn at.
-#define CF_MID_W 210
+#define CF_MID_W COVERLOADER_COVERFLOW_SIZE
 
 // The height a fully turned record comes out at, and how wide its far edge is
 // as a percentage of its near one. Together they are the angle.
