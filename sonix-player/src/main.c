@@ -1053,6 +1053,9 @@ static void tune_pointer(lv_indev_t *indev) {
 // framebuffer (fb_w/fb_h, 0 where there is none); SCREEN_WIDTH x SCREEN_HEIGHT.
 // A framebuffer size that matches no model is never used: the pages subtract
 // from these unsigned numbers, and an unexpected size wraps them.
+//
+// For a model laid out bigger than its panel (sysinfo.h) the answer is the
+// layout, which is also what the framebuffer driver made the display.
 static void panel_size(int *width, int *height, int fb_w, int fb_h) {
 	const sysinfo_model_t *model = sysinfo_model();
 	if (!model && fb_w > 0 && fb_h > 0) {
@@ -1062,8 +1065,13 @@ static void panel_size(int *width, int *height, int fb_w, int fb_h) {
 				   fb_w, fb_h, model->name);
 		}
 	}
-	*width = model ? model->panel_width : SCREEN_WIDTH;
-	*height = model ? model->panel_height : SCREEN_HEIGHT;
+	if (model && model->layout_width > 0) {
+		*width = model->layout_width;
+		*height = model->layout_height;
+	} else {
+		*width = model ? model->panel_width : SCREEN_WIDTH;
+		*height = model ? model->panel_height : SCREEN_HEIGHT;
+	}
 
 	const char *env = getenv("SONIX_PANEL");
 	int w = 0, h = 0;
@@ -1325,12 +1333,22 @@ static struct fb_var_screeninfo fb_var;
 // framebuffer page is still missing.
 //
 // The touch panel is turned with it, by inverting the evdev calibration.
+//
+// A panel the interface is not laid out at (sysinfo.h: the R3 II 2025's
+// 320x480 under the R3 Pro II's 480x720 layout) goes the same way, for good:
+// LVGL draws at the layout's size into the RAM page, and each frame's damage
+// is filtered down by 2/3 into the framebuffer page -- turned as well when the
+// rotation is on. The touch panel's coordinates are taken up by 3/2 through the
+// same calibration.
 // ---------------------------------------------------------------------------
 
 static lv_display_t *fb_display;   // the page-flipping display, NULL on the fallback
 static lv_indev_t *fb_touch;	   // so the calibration can be flipped with the screen
 static bool fb_rotated;
-static uint8_t *rot_page;		   // the RAM page LVGL draws into while rotated
+static bool fb_scaled;		   // drawn at the layout's size, filtered onto the panel
+static int32_t draw_w, draw_h; // LVGL's display: the panel, or the layout when scaled
+static size_t draw_page_size;  // one page of it, in bytes
+static uint8_t *rot_page;	   // the RAM page LVGL draws into while rotated or scaled
 
 // What this frame touched, and what each framebuffer page has not been given
 // yet (a bounding box each -- cheap, and a frame's damage is one region in
@@ -1372,8 +1390,8 @@ static void area_merge(lv_area_t *into, const lv_area_t *add) {
 static void area_set_full(lv_area_t *a) {
 	a->x1 = 0;
 	a->y1 = 0;
-	a->x2 = (int32_t)fb_var.xres - 1;
-	a->y2 = (int32_t)fb_var.yres - 1;
+	a->x2 = draw_w - 1;
+	a->y2 = draw_h - 1;
 }
 
 // Copies one dirty rectangle into `dst` (a whole framebuffer page) rotated by
@@ -1394,10 +1412,61 @@ static void blit_rotated_180(uint16_t *dst, const uint16_t *src, const lv_area_t
 	}
 }
 
+// RGB565 spread out so that the three channels add up side by side: green in
+// bits 21..26, red in 11..15, blue in 0..4, each with room above it for the sum
+// of sixteen pixels.
+static inline uint32_t rgb565_spread(uint16_t p) { return (p | ((uint32_t)p << 16)) & 0x07E0F81Fu; }
+
+// A sum of weights totalling 16 back to one pixel.
+static inline uint16_t rgb565_fold16(uint32_t x) {
+	x = (x >> 4) & 0x07E0F81Fu;
+	return (uint16_t)(x | (x >> 16));
+}
+
+// Filters one dirty rectangle of the layout-sized RAM page (draw_w x draw_h)
+// down onto `dst`, a framebuffer page 2/3 its size: every 3x3 block becomes
+// 2x2, each output pixel weighing the pixels it covers 3:1 along each axis
+// (9:3:3:1 over 16). The rectangle is widened to whole blocks. Turned through
+// 180 degrees too when `rotated`.
+static void blit_scaled(uint16_t *dst, const uint16_t *src, const lv_area_t *area, bool rotated) {
+	int32_t x1 = area->x1 < 0 ? 0 : area->x1 / 3 * 3;
+	int32_t y1 = area->y1 < 0 ? 0 : area->y1 / 3 * 3;
+	int32_t x2 = area->x2 >= draw_w ? draw_w - 1 : area->x2;
+	int32_t y2 = area->y2 >= draw_h ? draw_h - 1 : area->y2;
+	int32_t out_w = (int32_t)fb_var.xres;
+	int32_t out_h = (int32_t)fb_var.yres;
+
+	for (int32_t y = y1; y <= y2; y += 3) {
+		const uint16_t *s0 = src + (size_t)y * draw_w;
+		const uint16_t *s1 = s0 + draw_w;
+		const uint16_t *s2 = s1 + draw_w;
+		int32_t oy = y / 3 * 2;
+		uint16_t *d0 = dst + (size_t)(rotated ? out_h - 1 - oy : oy) * out_w;
+		uint16_t *d1 = dst + (size_t)(rotated ? out_h - 2 - oy : oy + 1) * out_w;
+
+		for (int32_t x = x1; x <= x2; x += 3) {
+			uint32_t a0 = rgb565_spread(s0[x]), a1 = rgb565_spread(s0[x + 1]), a2 = rgb565_spread(s0[x + 2]);
+			uint32_t b0 = rgb565_spread(s1[x]), b1 = rgb565_spread(s1[x + 1]), b2 = rgb565_spread(s1[x + 2]);
+			uint32_t c0 = rgb565_spread(s2[x]), c1 = rgb565_spread(s2[x + 1]), c2 = rgb565_spread(s2[x + 2]);
+			// Down the three columns, once for each output row...
+			uint32_t u0 = 3 * a0 + b0, u1 = 3 * a1 + b1, u2 = 3 * a2 + b2;
+			uint32_t l0 = b0 + 3 * c0, l1 = b1 + 3 * c1, l2 = b2 + 3 * c2;
+			// ...then across, once for each output column.
+			int32_t ox = x / 3 * 2;
+			int32_t c_left = rotated ? out_w - 1 - ox : ox;
+			int32_t c_right = rotated ? out_w - 2 - ox : ox + 1;
+			d0[c_left] = rgb565_fold16(3 * u0 + u1);
+			d0[c_right] = rgb565_fold16(u1 + 3 * u2);
+			d1[c_left] = rgb565_fold16(3 * l0 + l1);
+			d1[c_right] = rgb565_fold16(l1 + 3 * l2);
+		}
+	}
+}
+
 static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *px) {
 	bool second_page;
 
-	if (fb_rotated) {
+	if (fb_rotated || fb_scaled) {
 		// Collect this frame's damage; the copy happens once, on the last
 		// area, into the page that is NOT on screen.
 		area_merge(&rot_frame_dirty, area);
@@ -1414,8 +1483,12 @@ static void fb_pan_flush_cb(lv_display_t *disp, const lv_area_t *area, uint8_t *
 		area_merge(&redraw, &rot_frame_dirty);
 
 		if (!area_is_empty(&redraw)) {
-			blit_rotated_180((uint16_t *)(fb_mem + (second_page ? fb_page_size : 0)), (const uint16_t *)px, &redraw,
-							 (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			uint16_t *page = (uint16_t *)(fb_mem + (second_page ? fb_page_size : 0));
+			if (fb_scaled) {
+				blit_scaled(page, (const uint16_t *)px, &redraw, fb_rotated);
+			} else {
+				blit_rotated_180(page, (const uint16_t *)px, &redraw, (int32_t)fb_var.xres, (int32_t)fb_var.yres);
+			}
 		}
 
 		area_clear(&rot_page_pending[target]);
@@ -1498,8 +1571,39 @@ static lv_display_t *try_panned_display(void) {
 		return NULL;
 	}
 
-	lv_display_t *disp = lv_display_create((int32_t)fb_var.xres, (int32_t)fb_var.yres);
+	// The interface is laid out at the panel's size, unless the model says it
+	// is drawn bigger and filtered down (sysinfo.h) -- and only by exactly 3/2,
+	// which is the one ratio blit_scaled() does. The model by name, or else by
+	// the panel, as panel_size() picks it.
+	draw_w = (int32_t)fb_var.xres;
+	draw_h = (int32_t)fb_var.yres;
+	const sysinfo_model_t *model = sysinfo_model();
+	if (!model) {
+		model = sysinfo_model_by_panel((int)fb_var.xres, (int)fb_var.yres);
+	}
+	if (model && model->layout_width > 0 && (uint32_t)model->panel_width == fb_var.xres && (uint32_t)model->panel_height == fb_var.yres && model->layout_width * 2 == model->panel_width * 3 && model->layout_height * 2 == model->panel_height * 3) {
+		draw_w = model->layout_width;
+		draw_h = model->layout_height;
+		fb_scaled = true;
+	}
+	draw_page_size = (size_t)draw_w * (size_t)draw_h * sizeof(uint16_t);
+
+	if (fb_scaled) {
+		rot_page = calloc(1, draw_page_size);
+		if (!rot_page) {
+			fprintf(stderr, "fb: no memory for the %dx%d page (%zu bytes), so no scaling\n", draw_w, draw_h, draw_page_size);
+			fb_scaled = false;
+			draw_w = (int32_t)fb_var.xres;
+			draw_h = (int32_t)fb_var.yres;
+			draw_page_size = fb_page_size;
+		}
+	}
+
+	lv_display_t *disp = lv_display_create(draw_w, draw_h);
 	if (!disp) {
+		free(rot_page);
+		rot_page = NULL;
+		fb_scaled = false;
 		munmap(fb_mem, fb_page_size * 2);
 		close(fb_fd);
 		fb_fd = -1;
@@ -1507,12 +1611,22 @@ static lv_display_t *try_panned_display(void) {
 	}
 
 	lv_display_set_color_format(disp, LV_COLOR_FORMAT_RGB565);
-	lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size,
-						   LV_DISPLAY_RENDER_MODE_DIRECT);
+	if (fb_scaled) {
+		// Both framebuffer pages owe a whole frame.
+		area_clear(&rot_frame_dirty);
+		area_set_full(&rot_page_pending[0]);
+		area_set_full(&rot_page_pending[1]);
+		lv_display_set_buffers(disp, rot_page, NULL, (uint32_t)draw_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
+	} else {
+		lv_display_set_buffers(disp, fb_mem, fb_mem + fb_page_size, (uint32_t)fb_page_size, LV_DISPLAY_RENDER_MODE_DIRECT);
+	}
 	lv_display_set_flush_cb(disp, fb_pan_flush_cb);
 	fb_display = disp;
 
 	printf("fb: double-buffered, page flip on FBIOPAN_DISPLAY (%ux%u)\n", fb_var.xres, fb_var.yres);
+	if (fb_scaled) {
+		printf("fb: the interface drawn at %dx%d and filtered down to the %ux%u panel\n", draw_w, draw_h, fb_var.xres, fb_var.yres);
+	}
 	return disp;
 }
 
@@ -1599,8 +1713,8 @@ void display_wake_end(lv_display_t *disp) {
 // over: an async call runs at the top of the next lv_timer_handler pass.
 static void free_rot_pages_cb(void *unused) {
 	(void)unused;
-	if (fb_rotated) {
-		return; // turned back on in the meantime
+	if (fb_rotated || fb_scaled) {
+		return; // turned back on in the meantime, or the page LVGL always draws into
 	}
 	free(rot_page);
 	rot_page = NULL;
@@ -1627,12 +1741,36 @@ void panel_touch_enable(bool enabled) {
 
 bool display_get_rotated(void) { return fb_rotated; }
 
+// The touch panel reports the panel's own coordinates, and LVGL maps the
+// calibrated range onto its display. The picture turned, an inverted range
+// maps the top-left corner of the glass to the bottom-right of the screen; the
+// interface scaled down (fb_scaled), the panel's range covers the bigger layout
+// and taps are taken up by 3/2 with it.
+static void touch_calibrate(void) {
+	if (!fb_touch) {
+		return;
+	}
+	if (fb_rotated) {
+		lv_evdev_set_calibration(fb_touch, (int)fb_var.xres - 1, (int)fb_var.yres - 1, 0, 0);
+	} else {
+		lv_evdev_set_calibration(fb_touch, 0, 0, (int)fb_var.xres - 1, (int)fb_var.yres - 1);
+	}
+}
+
 void display_set_rotated(bool rotated) {
 	if (!fb_display || rotated == fb_rotated) {
 		return;
 	}
 
-	if (rotated) {
+	if (fb_scaled) {
+		// LVGL already draws into the RAM page and every frame is copied: only
+		// the copy turns. Both framebuffer pages still hold the picture the
+		// other way up, so they each owe a full frame.
+		area_clear(&rot_frame_dirty);
+		area_set_full(&rot_page_pending[0]);
+		area_set_full(&rot_page_pending[1]);
+		fb_rotated = rotated;
+	} else if (rotated) {
 		if (!rot_page) {
 			rot_page = malloc(fb_page_size);
 		}
@@ -1657,15 +1795,8 @@ void display_set_rotated(bool rotated) {
 		lv_async_call(free_rot_pages_cb, NULL);
 	}
 
-	// The touch panel turns with the picture: an inverted calibration maps
-	// the top-left corner of the glass to the bottom-right of the screen.
-	if (fb_touch) {
-		if (fb_rotated) {
-			lv_evdev_set_calibration(fb_touch, (int)fb_var.xres - 1, (int)fb_var.yres - 1, 0, 0);
-		} else {
-			lv_evdev_set_calibration(fb_touch, 0, 0, (int)fb_var.xres - 1, (int)fb_var.yres - 1);
-		}
-	}
+	// The touch panel turns with the picture.
+	touch_calibrate();
 
 	// Both framebuffer pages still hold the picture the other way up. One
 	// invalidation is enough: the page bookkeeping above already has each
@@ -1780,6 +1911,11 @@ static lv_display_t *init_target_display(void) {
 		lv_indev_set_display(touch, disp);
 		tune_pointer(touch);
 		fb_touch = touch;
+		// Scaled, the glass is smaller than the display it drives. Otherwise
+		// left as LVGL found it, which is one to one on these panels.
+		if (fb_scaled) {
+			touch_calibrate();
+		}
 		printf("Touch screen input driver successfully registered.\n");
 	} else {
 		fprintf(stderr, "Warning: No touch input device found.\n");

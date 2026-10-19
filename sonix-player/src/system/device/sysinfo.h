@@ -62,17 +62,27 @@ const char *sysinfo_ota_repo(void);
 // reports 800x480 until its file is set. The framebuffer size only picks a row
 // of this table, by exact match, when the name is missing (panel_size() in
 // main.c).
+//
+// A panel smaller than the layouts were drawn for is not laid out at its own
+// size: the pages' pictures and type do not shrink with it. Such a player names
+// the size the interface is laid out at instead (layout_width x layout_height,
+// exactly 3/2 of the panel), and the framebuffer driver filters every frame
+// down onto the panel (main.c). 0 for a panel that takes the layout as it is.
 typedef struct {
 	const char *name;		 // as written in system-info.json
 	int panel_width;		 // the panel, on the device and on the simulator alike
 	int panel_height;
+	int layout_width; // the interface, when it is not laid out at the panel's size (see above)
+	int layout_height;
 	const char *update_stem; // "<stem>.upt" is the update file this player accepts
 	const char *serial_prefix; // what the number on the box starts with
 	bool pmic_charger;		   // charged by the AXP2101 alone, no MP2731 (axpcharge.h)
 	bool cs43131;			   // one CS43131, 3.5 mm only, no HBC3000 (alsa-controls.h)
+	bool es9219;			   // one ES9219: two digital filters, no DRE or NOS (alsa-controls.h)
 	bool tap_wake;			   // the touch controller can wake the screen (power.h)
 	bool one_flank;			   // every button on the right flank (remap.c)
 	bool media_keys_swapped;   // KEY_NEXTSONG is the upper skip key, not next (system.c)
+	bool volume_wheel;		   // a volume wheel and no volume keys (remap.c, powersettings.c)
 } sysinfo_model_t;
 
 // The entry for the name in the file, or NULL when the file says nothing or

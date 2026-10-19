@@ -10,6 +10,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/device/bootlogo.h"
+#include "src/system/device/sysinfo.h"
 
 #include <dirent.h>
 #include <limits.h>
@@ -193,8 +194,11 @@ static void loaded_cb(lv_event_t *e) {
 }
 
 void bootlogopage_init(gui_config_t *cfg) {
-	logo_w = cfg->screen_width;
-	logo_h = cfg->screen_height;
+	// The boot script puts the logo straight on the panel, which on a model
+	// laid out bigger than its panel (sysinfo.h) is not the interface's size.
+	const sysinfo_model_t *model = sysinfo_model();
+	logo_w = model && model->layout_width > 0 ? model->panel_width : (int)cfg->screen_width;
+	logo_h = model && model->layout_width > 0 ? model->panel_height : (int)cfg->screen_height;
 	card_root = cfg->sd_root_path;
 
 	bootlogopage_screen = lv_obj_create(NULL);

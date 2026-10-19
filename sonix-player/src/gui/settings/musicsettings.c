@@ -24,7 +24,6 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/gui/shell/topbar.h"
-#include "src/system/device/sysinfo.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/audio/audio.h"
@@ -41,8 +40,9 @@
 lv_obj_t *musicsettings_screen;
 
 // ---------------------------------------------------------------------------
-// Filters: the CS43198's four digital filters, the same set the stock player
-// exposes (ALSA "Digital Filter" 0..3, decompile FUN_004803e0).
+// Filters: the DAC's digital filters, the same set the stock player exposes.
+// The CS43198's four (ALSA "Digital Filter" 0..3, decompile FUN_004803e0), the
+// CS43131's the same four, and the ES9219's two (alsa-controls.c).
 // ---------------------------------------------------------------------------
 
 static lv_obj_t *dacfilter_screen;
@@ -55,9 +55,31 @@ static const char *const FILTER_NAMES[4] = {
 	"musicsettings_slow_roll_off_phase_compensated",
 };
 
+static const char *const ES9219_FILTER_NAMES[2] = {
+	"musicsettings_apodizing_fast_roll_off",
+	"musicsettings_linear_phase_fast_roll_off",
+};
+
+static const char *filter_name(int i) { return alsa_board_is_es9219() ? ES9219_FILTER_NAMES[i] : FILTER_NAMES[i]; }
+
+// The saved choice, or the first filter when it names one this DAC does not
+// have, as the stock player does: one saved on the R3 Pro II's four comes back
+// as the default here.
+static int saved_filter(void) {
+	int filter = (int)config_get_int("audio", "dac_filter", 0);
+	return filter >= 0 && filter < dac_filter_count() ? filter : 0;
+}
+
+static const char *filter_note(void) {
+	if (alsa_board_is_cs43131()) {
+		return "musicsettings_filter_note_cs43131";
+	}
+	return alsa_board_is_es9219() ? "musicsettings_filter_note_es9219" : "musicsettings_filter_note";
+}
+
 static void refresh_filter_checks(void) {
-	int active = (int)config_get_int("audio", "dac_filter", 0);
-	for (int i = 0; i < 4; i++) {
+	int active = saved_filter();
+	for (int i = 0; i < dac_filter_count(); i++) {
 		if (filter_checks[i]) {
 			lv_label_set_text(filter_checks[i], i == active ? "\xE2\x9C\x93" : "");
 			lv_obj_set_style_text_color(filter_checks[i], theme()->accent, 0);
@@ -78,8 +100,8 @@ static void build_filter_page(gui_config_t *cfg) {
 	dacfilter_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(dacfilter_screen, cfg, "musicsettings_filters");
 
-	for (int i = 0; i < 4; i++) {
-		settingsrow_add(container, FILTER_NAMES[i], &filter_checks[i], filter_row_cb, (void *)(intptr_t)i);
+	for (int i = 0; i < dac_filter_count(); i++) {
+		settingsrow_add(container, filter_name(i), &filter_checks[i], filter_row_cb, (void *)(intptr_t)i);
 		lv_obj_set_style_text_font(filter_checks[i], &font_ui_26, 0);
 	}
 
@@ -89,7 +111,7 @@ static void build_filter_page(gui_config_t *cfg) {
 	lv_obj_set_width(note, lv_pct(100));
 	lv_obj_add_style(note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(note, &font_ui_22, 0);
-	lv_label_set_text(note, tr(alsa_board_is_cs43131() ? "musicsettings_filter_note_cs43131" : "musicsettings_filter_note"));
+	lv_label_set_text(note, tr(filter_note()));
 
 	refresh_filter_checks();
 	switcher_attach_back_gesture(dacfilter_screen);
@@ -583,7 +605,9 @@ static const volume_output_t VLIMIT_OUTPUTS[VLIMIT_OUTPUT_COUNT] = {VOLUME_OUTPU
 
 #define VLIMIT_STEPS (100 - VOLUME_LIMIT_MIN + 1)
 
-static bool vlimit_has_balanced(void) { return !sysinfo_model()->cs43131; }
+// Not sysinfo_model()->cs43131: the model is NULL on a device-name this build
+// does not know, and the board can still be told by its chip.
+static bool vlimit_has_balanced(void) { return !alsa_board_is_cs43131(); }
 
 static void vlimit_refresh(void) {
 	bool on = volume_limit_enabled();
@@ -2006,14 +2030,17 @@ void musicsettings_init(gui_config_t *cfg) {
 	settingsrow_add(container, "musicsettings_filters", NULL, switch_screen_cb, dacfilter_screen);
 
 	// Non-oversampling off and dynamic-range enhancement on by default, like the
-	// stock player. The R1's CS43131 has no DRE: no row there, and
-	// alsa-controls.c keeps it off.
-	settingsrow_toggle(container, "musicsettings_nos", &nos_switch, nos_toggle_cb);
-	if (config_get_int("audio", "dac_nos", 0)) {
-		lv_obj_add_state(nos_switch, LV_STATE_CHECKED);
+	// stock player. The R1's CS43131 has no DRE and the R3 II 2025's ES9219
+	// neither DRE nor NOS: no row for what the DAC lacks, and alsa-controls.c
+	// keeps it off.
+	if (dac_has_nos()) {
+		settingsrow_toggle(container, "musicsettings_nos", &nos_switch, nos_toggle_cb);
+		if (config_get_int("audio", "dac_nos", 0)) {
+			lv_obj_add_state(nos_switch, LV_STATE_CHECKED);
+		}
 	}
 
-	if (!alsa_board_is_cs43131()) {
+	if (dac_has_dre()) {
 		settingsrow_toggle(container, "musicsettings_dac_dre", &dre_switch, dre_toggle_cb);
 		if (config_get_int("audio", "dac_dre", 1)) {
 			lv_obj_add_state(dre_switch, LV_STATE_CHECKED);
@@ -2029,7 +2056,7 @@ void musicsettings_init(gui_config_t *cfg) {
 	// keep the two consistent.
 	fade_apply_setting();
 
-	set_dac_filter((int)config_get_int("audio", "dac_filter", 0));
+	set_dac_filter(saved_filter());
 	set_dac_dre((int)config_get_int("audio", "dac_dre", 1));
 	set_dac_nos((int)config_get_int("audio", "dac_nos", 0));
 	set_high_gain((int)config_get_int("audio", "high_gain", 0));

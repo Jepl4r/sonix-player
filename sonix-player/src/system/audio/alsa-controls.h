@@ -18,6 +18,10 @@ int detect_output(void); // the "Output Port Switch" value for what is plugged i
 // goes to the chip by another way. See alsa-controls.c.
 bool alsa_board_is_cs43131(void);
 
+// True on the R3 II 2025's audio board: one ES9219 behind the R3 Pro II's
+// HBC3000. Two digital filters, and no DRE or NOS. See alsa-controls.c.
+bool alsa_board_is_es9219(void);
+
 // The route on the OTHER physical socket, where the route is parked before a
 // suspend. Routes 1 and 2 are the two faces of the 3.5 mm one and the driver
 // runs nothing between them, so a partner picked by "any different number"
@@ -54,17 +58,22 @@ void alsa_output_reinit_leave_thread(void);
 void alsa_wait_output_reinit(void);
 void set_volume(long volume);
 
-// The DAC's digital filter (0..3, see alsa-controls.c). Written only when
-// it changes.
+// The DAC's digital filter, 0..dac_filter_count() - 1 (see alsa-controls.c).
+// Written only when it changes.
 void set_dac_filter(int filter);
 int get_dac_filter(void);
+int dac_filter_count(void);
 
 // The DAC's Dynamic Range Enhancement ("DRE_EN", 0/1). Written only when it
-// changes; the stock player has it on.
+// changes; the stock player has it on. Off and never written where the DAC has
+// none.
+bool dac_has_dre(void);
 void set_dac_dre(int enabled);
 int get_dac_dre(void);
 
-// The DAC's non-oversampling mode ("NOS_EN", 0/1), off by default.
+// The DAC's non-oversampling mode ("NOS_EN", 0/1), off by default. Off and
+// never written where the DAC has none.
+bool dac_has_nos(void);
 void set_dac_nos(int enabled);
 int get_dac_nos(void);
 

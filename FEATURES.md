@@ -1,6 +1,6 @@
 # Features
 
-This is everything Sonix Player can do today, on both the **R1** and the **R3 Pro II** unless it says otherwise.
+This is everything Sonix Player can do today, on the **R1**, the **R3 Pro II** and the **R3 II 2025** unless it says otherwise.
 
 > If something is not on this page, Sonix Player does not do it yet. It is not a bug: open a **Feature request**.
 
@@ -81,7 +81,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Crossfeed** - mixes a bit of each channel into the other, like speakers do.
 - **Channel balance** and **Mono audio**.
 - The EQ, PEQ and MSEB also work on radio and streaming.
-- **DAC settings** - 4 digital filters, DRE, NOS, high gain, and gain compensation for DSD.
+- **DAC settings** - 4 digital filters, DRE, NOS, high gain, and gain compensation for DSD. On the R3 II 2025, the stock firmware's two filters, high gain and gain compensation for DSD.
 - **DSD** - played natively, or converted to PCM when the output cannot take it (for example over Bluetooth).
 
 ## Volume and outputs
@@ -89,7 +89,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **The same volume curve** as the stock player.
 - **Remember volume** - one level for each output: 3.5 mm, 4.4 mm, USB-C and Bluetooth.
 - **Volume limit** - a maximum volume for each output.
-- **Volume steps** - how much one press of the volume key changes the volume.
+- **Volume steps** - how much one press of the volume key (one click of the wheel on the R3 II 2025) changes the volume.
 - **Line out** - the jack goes to a fixed level for an amplifier, and your volume comes back when you turn it off.
 - **USB DAC** - connect the player to a computer and it becomes its sound card, from 32 kHz to 384 kHz. You can choose whether it charges at the same time.
 - **USB audio out** - plug a USB DAC or USB-C headphones into the player.
@@ -174,9 +174,9 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Remap buttons** - give each media and volume button another action.
 - **Double click** - two quick presses of a button do the action you choose.
 - **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous. USB-C headphones with buttons work too.
-- **Lock the buttons** with the screen off: volume down + power. The power button and the remote always work.
+- **Lock the buttons** with the screen off: volume down + power (on the R3 II 2025, hold power and turn the wheel down). The power button and the remote always work.
 - **Keyboard** - ten layouts (English, Italian, German, Spanish, French, Dutch, Polish, Brazilian Portuguese, Czech, Russian), as a full keyboard or as a phone keypad (T9).
-- **Screenshots** - turn them on in Settings > More, then press volume up + power to save the screen to the card.
+- **Screenshots** - turn them on in Settings > More, then press volume up + power (wheel up + power on the R3 II 2025) to save the screen to the card.
 
 ## Screen and appearance
 
@@ -184,7 +184,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Text size** normal or large, **rounded corners**, battery percentage, and clock on the left, in the centre, on the right or hidden.
 - **Brightness** down to 1%, **screen-off time**, **double tap to wake**, and **rotate the screen** by 180°.
 - **Screensaver** - shows the cover of what is playing, or pictures from the `Screensaver` folder.
-  > Pictures must be JPEG (not progressive), portrait, and no larger than 480x720 on the R3 Pro II or 480x800 on the R1.
+  > Pictures must be JPEG (not progressive), portrait, and no larger than 480x720 on the R3 Pro II and the R3 II 2025, or 480x800 on the R1.
 - **Boot logo** - the default one follows your theme and accent colour, or pick your own picture.
   > Put JPEG or PNG pictures in the `Bootlogo` folder. They are cropped to fill the screen.
 
@@ -192,7 +192,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 - **Standby** after the time you choose, and **auto power-off** when nothing is playing.
 - **Battery screen when off** - plug in the charger with the player off and you see the battery level. Press the power button to see it again, hold it to start the player.
-- **Charge limit** - stop charging before 100% to make the battery last longer: at 80% on the R1, or anywhere from 80% to 100% on the R3 Pro II. On the R1 you can also limit the charging current to 500 mA.
+- **Charge limit** - stop charging before 100% to make the battery last longer: at 80% on the R1 and the R3 II 2025, or anywhere from 80% to 100% on the R3 Pro II. On the R1 and the R3 II 2025 you can also limit the charging current to 500 mA.
 - **Low battery** - a warning at 5%, and at 1% the player turns itself off with a 10 second countdown, also in standby.
 - **LED** - on or off, and off in standby.
 - **Power menu** - slide to power off or restart.

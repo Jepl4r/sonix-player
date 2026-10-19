@@ -1657,11 +1657,20 @@ static void run_hook_gesture(hook_clicks_t *clicks) {
 	}
 }
 
+// What an input node is, which decides what its keys mean.
+typedef enum {
+	INPUT_BUTTONS, // the buttons on the case
+	INPUT_HEADSET, // the keys on the headphone cable
+	INPUT_WHEEL,   // a volume wheel: KEY_LEFT and KEY_RIGHT, down and up
+	INPUT_TOUCH,   // the touch panel
+} input_kind_t;
+
 // One input node and what its thread needs to know about it. Allocated once and
 // never freed: the threads never end.
 typedef struct {
 	char node[32];
 	bool headset;	  // the keys on the headphone cable, not those on the case
+	bool wheel;		  // the volume wheel (INPUT_WHEEL)
 	int preopened_fd; // already open, or -1 to open `node`
 } input_node_t;
 
@@ -1792,6 +1801,18 @@ static void *input_thread_func(void *arg) {
 
 		if (ev.type != EV_KEY) {
 			continue;
+		}
+
+		// The wheel's two directions are the volume keys it stands for, so
+		// that it steps the volume, and with power locks the keys or takes a
+		// screenshot, exactly as they would. Each detent is a press and its
+		// release at once.
+		if (info->wheel) {
+			if (ev.code == KEY_LEFT) {
+				ev.code = KEY_VOLUMEDOWN;
+			} else if (ev.code == KEY_RIGHT) {
+				ev.code = KEY_VOLUMEUP;
+			}
 		}
 
 		log_key_event(node, &ev);
@@ -1946,13 +1967,14 @@ static void *input_thread_func(void *arg) {
 	return NULL;
 }
 
-static void start_input_thread_fd(const char *node, bool headset, int fd) {
+static void start_input_thread_fd(const char *node, input_kind_t kind, int fd) {
 	input_node_t *info = calloc(1, sizeof(*info));
 	if (!info) {
 		return;
 	}
 	snprintf(info->node, sizeof(info->node), "%s", node);
-	info->headset = headset;
+	info->headset = kind == INPUT_HEADSET;
+	info->wheel = kind == INPUT_WHEEL;
 	info->preopened_fd = fd;
 
 	pthread_t thread;
@@ -1964,7 +1986,7 @@ static void start_input_thread_fd(const char *node, bool headset, int fd) {
 }
 
 #ifndef HOST_BUILD
-static void start_input_thread(const char *node, bool headset) { start_input_thread_fd(node, headset, -1); }
+static void start_input_thread(const char *node, input_kind_t kind) { start_input_thread_fd(node, kind, -1); }
 #endif
 
 #ifdef HOST_BUILD
@@ -1979,7 +2001,7 @@ static void start_host_input_thread(void) {
 		perror("input: pipe");
 		return;
 	}
-	start_input_thread_fd("keyboard", false, host_key_pipe[0]);
+	start_input_thread_fd("keyboard", INPUT_BUTTONS, host_key_pipe[0]);
 }
 
 void input_host_button(int code, bool down) {
@@ -1996,10 +2018,11 @@ void input_host_button(int code, bool down) {
 // One thread per built-in button device, and one on the touch panel.
 //
 // The buttons are found by the names their drivers register -- the power key
-// on "md-gpio-keys", the volume and transport keys on "jz adc keyboard" -- and
-// not by number: the numbers are the order the drivers probed in, and a touch
+// on "md-gpio-keys", the volume and transport keys on "jz adc keyboard", the
+// R3 II 2025's volume wheel on "sa-ring-keys" (HiBy's ring driver) -- and not
+// by number: the numbers are the order the drivers probed in, and a touch
 // controller probing late moves them. event0 and event2, the numbers they
-// usually have, only when neither name is found.
+// usually have, only when no name is found.
 //
 // The touch panel is watched too, as the node main.c found for it: with
 // double-tap wake on, its controller reports the wake tap as a power-key
@@ -2007,7 +2030,14 @@ void input_host_button(int code, bool down) {
 // these threads ignore.
 #ifndef HOST_BUILD
 static void start_builtin_input_threads(void) {
-	static const char *const NAMES[] = {"md-gpio-keys", "jz adc keyboard"};
+	static const struct {
+		const char *name;
+		input_kind_t kind;
+	} NAMES[] = {
+		{"md-gpio-keys", INPUT_BUTTONS},
+		{"jz adc keyboard", INPUT_BUTTONS},
+		{"sa-ring-keys", INPUT_WHEEL},
+	};
 	const char *touch = panel_touch_device();
 	int found = 0;
 
@@ -2032,9 +2062,9 @@ static void start_builtin_input_threads(void) {
 			continue;
 		}
 		for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {
-			if (strcmp(name, NAMES[i]) == 0) {
-				printf("input: %s is a built-in button device (%s)\n", node, name);
-				start_input_thread(node, false);
+			if (strcmp(name, NAMES[i].name) == 0) {
+				printf("input: %s is a built-in %s (%s)\n", node, NAMES[i].kind == INPUT_WHEEL ? "volume wheel" : "button device", name);
+				start_input_thread(node, NAMES[i].kind);
 				found++;
 				break;
 			}
@@ -2049,11 +2079,11 @@ static void start_builtin_input_threads(void) {
 		fprintf(stderr, "input: no button device by name; watching event0 and event2\n");
 		for (size_t i = 0; i < sizeof(USUAL) / sizeof(USUAL[0]); i++) {
 			if (!touch || strcmp(USUAL[i], touch) != 0) {
-				start_input_thread(USUAL[i], false);
+				start_input_thread(USUAL[i], INPUT_BUTTONS);
 			}
 		}
 	}
-	start_input_thread(touch ? touch : "/dev/input/event1", false);
+	start_input_thread(touch ? touch : "/dev/input/event1", INPUT_TOUCH);
 }
 #endif
 
@@ -2096,7 +2126,7 @@ static void start_headset_input_thread(void) {
 
 		if (is_headset) {
 			printf("input: %s is the headset remote (%s)\n", node, name);
-			start_input_thread(node, true);
+			start_input_thread(node, INPUT_HEADSET);
 		}
 	}
 
