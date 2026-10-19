@@ -338,6 +338,13 @@ bool library_track_album(const char *path, char *out, size_t out_size);
 // name: what "Show album" opens.
 bool library_track_album_value(const char *path, char *out, size_t out_size);
 
+// The artists a track is filed under, as the Artists list names them: the
+// names its artist tag splits into when artists are split, in the tag's
+// order, or else the tag as it stands. What "Show artist" opens. At most
+// `max`; 0 when the file is not indexed or carries no artist tag.
+#define LIBRARY_ARTIST_NAME_MAX 256
+int library_track_artists(const char *path, char names[][LIBRARY_ARTIST_NAME_MAX], int max);
+
 // Finds indexed tracks by file name alone -- the whole batch in one pass over
 // the table, because a name without its folders cannot use an index and would
 // otherwise cost a scan each. `cb` fires once per match with the position the

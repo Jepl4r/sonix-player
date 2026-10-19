@@ -108,6 +108,10 @@ bool medialist_step_back_to_player(void);
 // the tracks strung out. What the search opens an artist with.
 void medialist_open_artist(const char *name);
 
+// The page medialist_open_artist() opens on, as the disc button was left: the
+// records or the tracks.
+lv_obj_t *medialist_artist_screen(void);
+
 // Re-reads what is playing and moves the accent mark to whichever rows now
 // carry it. Called from the player whenever the track changes; cheap enough
 // to call on a track that has not (it walks two dozen pool rows).

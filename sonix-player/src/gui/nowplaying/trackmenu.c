@@ -1801,6 +1801,51 @@ static void open_album_cb(void *user) {
 	}
 }
 
+// Show artist: the artist's page, as the search opens it. A track filed under
+// several artists -- a tag split into "A" and "B" -- asks which, in a second
+// menu where the first was; the names are the tag's own, not translated.
+#define SHOW_ARTIST_MAX 7 // what one menu holds
+static char artist_choices[SHOW_ARTIST_MAX][LIBRARY_ARTIST_NAME_MAX];
+static lv_obj_t *menu_anchor; // the button the menu opened from
+
+static void open_artist(const char *name) {
+	player_sheet_close(false);
+	medialist_open_artist(name);
+	// As for the album: over a list on the same page the step back brings
+	// it back with the player over it by itself.
+	if (!medialist_step_back_to_player()) {
+		switcher_set_player_return(medialist_artist_screen());
+	}
+}
+
+static void open_artist_choice_cb(void *user) { open_artist(artist_choices[(intptr_t)user]); }
+
+static void open_artist_cb(void *user) {
+	(void)user;
+
+	device_state_t state;
+	device_state_get(&state);
+	if (!state.current_file[0]) {
+		return;
+	}
+
+	int count = library_track_artists(state.current_file, artist_choices, SHOW_ARTIST_MAX);
+	if (count == 0) {
+		gui_notify_popup("trackmenu_no_artist");
+		return;
+	}
+	if (count == 1 || !menu_anchor) {
+		open_artist(artist_choices[0]);
+		return;
+	}
+
+	popover_item_t items[SHOW_ARTIST_MAX];
+	for (int i = 0; i < count; i++) {
+		items[i] = (popover_item_t){artist_choices[i], open_artist_choice_cb, (void *)(intptr_t)i, false, true};
+	}
+	popover_show(menu_anchor, items, count);
+}
+
 static void open_settings_cb(void *user) {
 	(void)user;
 	player_sheet_close(false);
@@ -1834,6 +1879,7 @@ void trackmenu_open(lv_obj_t *anchor) {
 		{"trackmenu_queue", open_queue_cb, NULL},
 		{"add_to_playlist", add_to_playlist_cb, NULL},
 		{"show_album", open_album_cb, NULL},
+		{"show_artist", open_artist_cb, NULL},
 		{"details", open_details_cb, NULL},
 		{"settings", open_settings_cb, NULL},
 	};
@@ -1849,7 +1895,13 @@ void trackmenu_open(lv_obj_t *anchor) {
 	device_state_get(&state);
 	bool podcast = state.current_file[0] && podcastcache_is_episode(state.current_file);
 
-	popover_show(anchor, podcast ? ITEMS_PODCAST : ITEMS, 5);
+	// No Show artist for an episode: a podcast has no artist page.
+	menu_anchor = anchor;
+	if (podcast) {
+		popover_show(anchor, ITEMS_PODCAST, (int)(sizeof(ITEMS_PODCAST) / sizeof(ITEMS_PODCAST[0])));
+	} else {
+		popover_show(anchor, ITEMS, (int)(sizeof(ITEMS) / sizeof(ITEMS[0])));
+	}
 }
 
 void trackmenu_init(gui_config_t *cfg) {
