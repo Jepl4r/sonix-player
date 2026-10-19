@@ -216,6 +216,9 @@ ICONS = [
     # the gap itself -- the two halves apart while off, closed up while on.
     ("gapless-on-quick.svg", "gapless_on_quick", 46),
     ("gapless-off-quick.svg", "gapless_off_quick", 46),
+    # The workout timer: a stopwatch -- a length of time, without the sleep
+    # timers' drawing, since it puts nothing to sleep.
+    ("workout-quick.svg", "workout_quick", 46),
     # File types, in the file manager and on the web page: one glyph per
     # family, at the size of the folder beside them.
     ("files-music.svg", "files_music", 32),

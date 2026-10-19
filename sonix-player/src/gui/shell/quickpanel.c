@@ -39,6 +39,7 @@
 #include "src/system/audio/eq.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/playback/sleeptimer.h"
+#include "src/system/playback/workouttimer.h"
 #include "src/system/device/power.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/qobuzsync.h"
@@ -96,6 +97,7 @@ static lv_obj_t *sleep_audiobook_btn;
 static lv_obj_t *sleep_podcast_btn;
 static lv_obj_t *wifi_transfer_btn;
 static lv_obj_t *gapless_btn;
+static lv_obj_t *workout_btn;
 
 // ---------------------------------------------------------------------------
 // Which buttons the panel carries, and where
@@ -130,6 +132,7 @@ static const char *const button_key[QP_BTN_COUNT] = {
 	[QP_BTN_SLEEP_PODCAST] = "sleep_podcast",
 	[QP_BTN_WIFI_TRANSFER] = "wifi_transfer",
 	[QP_BTN_GAPLESS] = "gapless",
+	[QP_BTN_WORKOUT] = "workout",
 };
 
 static const char *const button_tag[QP_BTN_COUNT] = {
@@ -149,6 +152,7 @@ static const char *const button_tag[QP_BTN_COUNT] = {
 	[QP_BTN_SLEEP_PODCAST] = "quickpanel_sleep_podcast",
 	[QP_BTN_WIFI_TRANSFER] = "wifitransfer_title",
 	[QP_BTN_GAPLESS] = "musicsettings_gapless_playback",
+	[QP_BTN_WORKOUT] = "workout_timer",
 };
 
 static uint8_t slots[QP_SLOT_COUNT];  // the grid, QP_BTN_NONE where it is empty
@@ -1048,11 +1052,10 @@ static void order_load(void) {
 		}
 		// Crossfade, which the migration below is taking out on purpose, and the
 		// buttons that arrive into a panel already holding eight: DLNA, the three
-		// sleep timers, Wi-Fi transfer and gapless. Appending them would change a
-		// panel nobody asked to change, so they wait among the unused ones, where
-		// the settings page shows them.
-		bool waits = i == QP_BTN_DLNA || i == QP_BTN_SLEEP_MUSIC || i == QP_BTN_SLEEP_AUDIOBOOK ||
-					 i == QP_BTN_SLEEP_PODCAST || i == QP_BTN_WIFI_TRANSFER || i == QP_BTN_GAPLESS;
+		// sleep timers, Wi-Fi transfer, gapless and the workout timer. Appending
+		// them would change a panel nobody asked to change, so they wait among
+		// the unused ones, where the settings page shows them.
+		bool waits = i == QP_BTN_DLNA || i == QP_BTN_SLEEP_MUSIC || i == QP_BTN_SLEEP_AUDIOBOOK || i == QP_BTN_SLEEP_PODCAST || i == QP_BTN_WIFI_TRANSFER || i == QP_BTN_GAPLESS || i == QP_BTN_WORKOUT;
 		if ((saved_version < 2 && i == QP_BTN_FADE) || waits) {
 			hidden[hidden_n++] = (uint8_t)i;
 		} else {
@@ -1171,6 +1174,8 @@ static lv_obj_t *button_widget(quickpanel_button_t which) {
 		return wifi_transfer_btn;
 	case QP_BTN_GAPLESS:
 		return gapless_btn;
+	case QP_BTN_WORKOUT:
+		return workout_btn;
 	default:
 		return NULL;
 	}
@@ -1385,6 +1390,8 @@ const lv_image_dsc_t *quickpanel_button_icon(quickpanel_button_t button) {
 		return &icon_wifi_transfer_quick;
 	case QP_BTN_GAPLESS:
 		return &icon_gapless_on_quick;
+	case QP_BTN_WORKOUT:
+		return &icon_workout_quick;
 	default:
 		return &icon_wifi;
 	}
@@ -1471,6 +1478,7 @@ static void refresh_audio_buttons(void) {
 	circle_button_set_on(sleep_music_btn, sleep_timer_armed(SLEEPTIMER_MUSIC));
 	circle_button_set_on(sleep_audiobook_btn, sleep_timer_armed(SLEEPTIMER_AUDIOBOOK));
 	circle_button_set_on(sleep_podcast_btn, sleep_timer_armed(SLEEPTIMER_PODCAST));
+	circle_button_set_on(workout_btn, workouttimer_running());
 	circle_button_set_on(wifi_transfer_btn, wifitransfer_get_enabled());
 
 	bool high = musicsettings_high_gain();
@@ -1744,6 +1752,45 @@ static void sleep_page_cb(lv_event_t *e) {
 													  : podcastpage_settings_screen();
 	open_page(screen);
 }
+
+// ---------------------------------------------------------------------------
+// The workout timer
+//
+// Lit while it counts. A tap starts it, or stops it while it counts; it goes
+// dark by itself when the time is up, which is the moment to tap it for the
+// next set. A hold opens the page where its length and its sound are chosen.
+// ---------------------------------------------------------------------------
+
+static void workout_clicked_cb(lv_event_t *e) {
+	(void)e;
+	if (long_press_consumed) {
+		long_press_consumed = false;
+		return;
+	}
+	if (workouttimer_running()) {
+		workouttimer_stop();
+	} else if (!workouttimer_start()) {
+		return;
+	}
+	toggled();
+}
+
+static void workout_page_cb(lv_event_t *e) {
+	(void)e;
+	open_page(musicsettings_workout_screen());
+}
+
+// The timer runs out on its own thread, and a side button starts it from
+// another: either way the button has to change colour, so the news crosses
+// over to this thread first.
+static void workout_changed_async(void *user) {
+	refresh_audio_buttons();
+	if ((intptr_t)user) {
+		gui_notify_popup("workout_time_up");
+	}
+}
+
+static void workout_changed(bool fired) { gui_post(workout_changed_async, (void *)(intptr_t)fired); }
 
 // DLNA, the third of the same family: a phone pushes music at the player over
 // the network, so without one there is nothing to push it from.
@@ -2063,6 +2110,11 @@ void quickpanel_init(gui_config_t *cfg) {
 	gapless_btn = make_circle_button(row, &icon_gapless_off_quick);
 	lv_obj_add_event_cb(gapless_btn, gapless_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(gapless_btn, gapless_page_cb, LV_EVENT_LONG_PRESSED, NULL);
+
+	workout_btn = make_circle_button(row, &icon_workout_quick);
+	lv_obj_add_event_cb(workout_btn, workout_clicked_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_add_event_cb(workout_btn, workout_page_cb, LV_EVENT_LONG_PRESSED, NULL);
+	workouttimer_set_listener(workout_changed);
 
 	bright_row = lv_obj_create(controls_card);
 	lv_obj_set_size(bright_row, lv_pct(100), BRIGHT_ROW_H);
