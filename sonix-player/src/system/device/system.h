@@ -115,6 +115,13 @@ void storage_release_for_shutdown(void);
 // until set.
 void input_set_key_lock(bool on);
 
+// The buttons with the screen off on a player with a volume wheel (sysinfo.h),
+// three options of their own: the power key does nothing but wake on a long
+// press; the wheel does nothing; play/pause and next turn the volume up and
+// down a step, as the buttons sit in the hand and whatever they are remapped
+// to. None of them counts while the key lock above is on. Off until set.
+void input_set_screen_off_keys(bool lock_power, bool lock_wheel, bool buttons_volume);
+
 // How far one press of a volume key moves the volume, in percent: on the case,
 // on the headphone cable and from Bluetooth headphones alike. Clamped to
 // VOLUME_STEP_MIN..VOLUME_STEP_MAX; VOLUME_STEP_MIN until set.

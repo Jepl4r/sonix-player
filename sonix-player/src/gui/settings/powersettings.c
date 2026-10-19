@@ -10,6 +10,7 @@
 #include "src/system/device/axpcharge.h"
 #include "src/system/device/led.h"
 #include "src/system/device/power.h"
+#include "src/system/device/sysinfo.h"
 #include "src/system/device/system.h"
 
 lv_obj_t *powersettings_screen;
@@ -47,6 +48,11 @@ static lv_obj_t *charge_value, *charge_slider;
 static lv_obj_t *auto_off_switch, *auto_off_value, *auto_off_slider, *auto_off_card;
 static lv_obj_t *led_on_switch, *led_off_switch, *led_off_card;
 static lv_obj_t *key_lock_switch;
+// A player with a volume wheel: what its buttons do with the screen off, three
+// options greyed out while the key lock is on (system.h). NULL elsewhere.
+static lv_obj_t *off_power_switch, *off_power_card;
+static lv_obj_t *off_wheel_switch, *off_wheel_card;
+static lv_obj_t *off_volume_switch, *off_volume_card;
 static lv_obj_t *standby_switch, *standby_value, *standby_slider, *standby_card;
 static lv_obj_t *charge_note;
 static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead of the slider
@@ -127,6 +133,21 @@ void powersettings_apply(void) {
 	led_set_idle_off(config_get_bool("power", "led_off_standby", true));
 
 	input_set_key_lock(config_get_bool("power", "lock_keys_screen_off", false));
+	input_set_screen_off_keys(config_get_bool("power", "lock_power_screen_off", false), config_get_bool("power", "lock_wheel_screen_off", false), config_get_bool("power", "buttons_volume_screen_off", false));
+}
+
+// One of the screen-off options, on and enabled, or greyed out under the key
+// lock, the way the LED's standby option greys out under its master switch.
+static void refresh_screen_off_option(lv_obj_t *sw, lv_obj_t *card, const char *key, bool key_lock) {
+	if (!sw) {
+		return;
+	}
+	if (config_get_bool("power", key, false)) {
+		lv_obj_add_state(sw, LV_STATE_CHECKED);
+	} else {
+		lv_obj_remove_state(sw, LV_STATE_CHECKED);
+	}
+	settingsrow_set_enabled(card, &sw, 1, !key_lock);
 }
 
 static void refresh_labels(void) {
@@ -163,7 +184,11 @@ static void refresh_labels(void) {
 		lv_obj_set_style_opa(led_off_card, LV_OPA_40, 0);
 	}
 
-	set_checked(key_lock_switch, config_get_bool("power", "lock_keys_screen_off", false));
+	bool key_lock = config_get_bool("power", "lock_keys_screen_off", false);
+	set_checked(key_lock_switch, key_lock);
+	refresh_screen_off_option(off_power_switch, off_power_card, "lock_power_screen_off", key_lock);
+	refresh_screen_off_option(off_wheel_switch, off_wheel_card, "lock_wheel_screen_off", key_lock);
+	refresh_screen_off_option(off_volume_switch, off_volume_card, "buttons_volume_screen_off", key_lock);
 
 	// Standby and its wait, on one card like the automatic power-off below.
 	bool standby = config_get_bool("power", "standby_mem", true);
@@ -249,6 +274,28 @@ static void key_lock_toggled_cb(lv_event_t *e) {
 	refresh_labels();
 }
 
+static void screen_off_option_toggled(lv_obj_t *sw, const char *key) {
+	config_set_bool("power", key, lv_obj_has_state(sw, LV_STATE_CHECKED));
+	config_save();
+	powersettings_apply();
+	refresh_labels();
+}
+
+static void off_power_toggled_cb(lv_event_t *e) {
+	(void)e;
+	screen_off_option_toggled(off_power_switch, "lock_power_screen_off");
+}
+
+static void off_wheel_toggled_cb(lv_event_t *e) {
+	(void)e;
+	screen_off_option_toggled(off_wheel_switch, "lock_wheel_screen_off");
+}
+
+static void off_volume_toggled_cb(lv_event_t *e) {
+	(void)e;
+	screen_off_option_toggled(off_volume_switch, "buttons_volume_screen_off");
+}
+
 static void auto_off_toggled_cb(lv_event_t *e) {
 	(void)e;
 	config_set_bool("power", "auto_off", lv_obj_has_state(auto_off_switch, LV_STATE_CHECKED));
@@ -327,6 +374,15 @@ void powersettings_init(gui_config_t *cfg) {
 	lv_obj_add_style(key_lock_note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(key_lock_note, &font_ui_22, 0);
 	lv_label_set_text(key_lock_note, tr("power_lock_keys_screen_off_note"));
+
+	// What the buttons do with the screen off on a player with a volume wheel
+	// (system.h): greyed out while the lock above is on.
+	const sysinfo_model_t *model = sysinfo_model();
+	if (model && model->volume_wheel) {
+		off_power_card = settingsrow_toggle(container, "power_lock_power_screen_off", &off_power_switch, off_power_toggled_cb);
+		off_wheel_card = settingsrow_toggle(container, "power_lock_wheel_screen_off", &off_wheel_switch, off_wheel_toggled_cb);
+		off_volume_card = settingsrow_toggle(container, "power_buttons_volume_screen_off", &off_volume_switch, off_volume_toggled_cb);
+	}
 
 	// Toggle and "after how long" on one card: the slider is only there while
 	// the option is on.

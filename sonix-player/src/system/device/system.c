@@ -1293,6 +1293,32 @@ static bool key_lock_gesture_armed(void) { return key_lock_when_off && !power_sc
 static bool keys_locked(void) { return key_lock_when_off && key_lock_engaged && !power_screen_is_on(); }
 
 // ---------------------------------------------------------------------------
+// The buttons with the screen off, on a player with a volume wheel
+//
+// Three options of their own in Power settings, for a player carried in a
+// pocket where the wheel turns and the power key presses by themselves: the
+// power key locked (a long press still wakes the screen, so it can never be
+// left dark with double tap off), the wheel locked, and play/pause and next
+// standing in for the wheel -- up and down, a volume step each, as the buttons
+// sit in the hand and whatever the remap page made of them.
+//
+// The key lock above takes precedence: while it is on these are greyed out on
+// the page and not consulted here.
+// ---------------------------------------------------------------------------
+
+static volatile bool off_lock_power;
+static volatile bool off_lock_wheel;
+static volatile bool off_buttons_volume;
+
+void input_set_screen_off_keys(bool lock_power, bool lock_wheel, bool buttons_volume) {
+	off_lock_power = lock_power;
+	off_lock_wheel = lock_wheel;
+	off_buttons_volume = buttons_volume;
+}
+
+static bool screen_off_option(bool option) { return option && !key_lock_when_off && !power_screen_is_on(); }
+
+// ---------------------------------------------------------------------------
 // Key combinations: volume up + power (screenshot), volume down + power (key
 // lock, see above)
 //
@@ -1662,7 +1688,7 @@ typedef enum {
 	INPUT_BUTTONS, // the buttons on the case
 	INPUT_HEADSET, // the keys on the headphone cable
 	INPUT_WHEEL,   // a volume wheel: KEY_LEFT and KEY_RIGHT, down and up
-	INPUT_TOUCH,   // the touch panel
+	INPUT_TOUCH,   // the touch panel, for the double-tap wake
 } input_kind_t;
 
 // One input node and what its thread needs to know about it. Allocated once and
@@ -1671,6 +1697,7 @@ typedef struct {
 	char node[32];
 	bool headset;	  // the keys on the headphone cable, not those on the case
 	bool wheel;		  // the volume wheel (INPUT_WHEEL)
+	bool touch;		  // the touch panel (INPUT_TOUCH)
 	int preopened_fd; // already open, or -1 to open `node`
 } input_node_t;
 
@@ -1706,14 +1733,25 @@ static void *input_thread_func(void *arg) {
 	uint32_t dbl_until = 0;
 	// The held key has already repeated its action: its release is not a click.
 	bool held_repeated = false;
+	// Play/pause or next standing in for the wheel with the screen off: the
+	// key that went down (`vol_from`) and the volume key it is (`vol_to`), until
+	// it comes back up. Held, it repeats the way the cable remote's volume keys
+	// do, whose path it takes: `held_as_volume`.
+	int vol_from = -1;
+	int vol_to = -1;
+	bool held_as_volume = false;
+	// The power key went down locked (the screen off, the option on): it does
+	// nothing on release, and its long press wakes the screen.
+	bool power_locked_press = false;
 
 	for (;;) {
 		// The deadline is whatever the held key is waiting for; with nothing
 		// held there is nothing to wait for and poll() blocks.
 		int timeout = -1;
 		uint32_t now = now_ms();
+		bool held_remote = info->headset || held_as_volume;
 
-		if (key_repeats_held(held, info->headset)) {
+		if (key_repeats_held(held, held_remote)) {
 			timeout = (int)(next_repeat > now ? next_repeat - now : 0);
 		} else if (held == KEY_POWER && !long_press_done) {
 			uint32_t due = held_since + POWER_LONG_PRESS_MS;
@@ -1767,13 +1805,13 @@ static void *input_thread_func(void *arg) {
 			bool suppressed = combo_active();
 
 			// The wait may have ended for another deadline than the held key's.
-			if (key_repeats_held(held, info->headset)) {
+			if (key_repeats_held(held, held_remote)) {
 				if ((int32_t)(now - next_repeat) < 0) {
 					continue;
 				}
-				bool seeking = key_seeks_held(held, info->headset);
+				bool seeking = key_seeks_held(held, held_remote);
 				if (!suppressed) {
-					repeat_held(held, info->headset);
+					repeat_held(held, held_remote);
 				}
 				if (seeking) {
 					// From here the release has nothing left to do: the press
@@ -1785,7 +1823,11 @@ static void *input_thread_func(void *arg) {
 			} else if (held == KEY_POWER && !long_press_done &&
 					   (int32_t)(now - (held_since + POWER_LONG_PRESS_MS)) >= 0) {
 				long_press_done = true;
-				if (!suppressed) {
+				if (power_locked_press) {
+					// Locked, the long press is the way back to the screen.
+					printf("input: power held while locked -> waking\n");
+					power_notify_power_button();
+				} else if (!suppressed) {
 					printf("input: power held, opening the power menu\n");
 					power_notify_activity();
 					gui_notify_power_menu();
@@ -1805,8 +1847,7 @@ static void *input_thread_func(void *arg) {
 
 		// The wheel's two directions are the volume keys it stands for, so
 		// that it steps the volume, and with power locks the keys or takes a
-		// screenshot, exactly as they would. Each detent is a press and its
-		// release at once.
+		// screenshot, exactly as they would.
 		if (info->wheel) {
 			if (ev.code == KEY_LEFT) {
 				ev.code = KEY_VOLUMEDOWN;
@@ -1816,6 +1857,13 @@ static void *input_thread_func(void *arg) {
 		}
 
 		log_key_event(node, &ev);
+
+		// The wheel locked with the screen off: its turns go nowhere. Each
+		// detent is a press and its release at once, so there is never one left
+		// half done.
+		if (info->wheel && screen_off_option(off_lock_wheel)) {
+			continue;
+		}
 
 		// The headphone remote reports a press it never releases as the device
 		// wakes from suspend: see power_headset_keys_settling(). A press let
@@ -1843,15 +1891,66 @@ static void *input_thread_func(void *arg) {
 			continue;
 		}
 
+		// Play/pause and next for the volume with the screen off (see
+		// input_set_screen_off_keys()): the button as it sits in the hand, not
+		// what it is mapped to. Decided on the way down and kept until the
+		// same key comes back up, whatever the screen does meanwhile.
+		if (ev.value == 1 && vol_from < 0 && !info->headset && !info->wheel && !info->touch && screen_off_option(off_buttons_volume)) {
+			keymap_button_t button = keymap_button_for_code(ev.code);
+			if (button == KEYMAP_BTN_PLAY || button == KEYMAP_BTN_NEXT) {
+				vol_from = ev.code;
+				vol_to = button == KEYMAP_BTN_PLAY ? KEY_VOLUMEUP : KEY_VOLUMEDOWN;
+			}
+		}
+		if (vol_from >= 0 && ev.code == vol_from) {
+			if (ev.value == 1) {
+				power_notify_activity();
+				if (seeked) {
+					device_state_scrub_commit();
+				}
+				if (dbl_code >= 0) {
+					run_mapped_action(keymap_button_for_code(dbl_code));
+					dbl_code = -1;
+				}
+				held = vol_to;
+				held_as_volume = true;
+				held_since = now_ms();
+				next_repeat = held_since + VOLUME_REPEAT_DELAY_MS;
+				long_press_done = false;
+				deferred = false;
+				seeked = false;
+				held_repeated = false;
+				dbl_first = false;
+				override_button = KEYMAP_BTN_COUNT;
+				apply_volume_step(vol_to);
+			} else if (ev.value == 0) {
+				if (held == vol_to && held_as_volume) {
+					held = -1;
+					held_as_volume = false;
+				}
+				vol_from = -1;
+				vol_to = -1;
+			}
+			continue;
+		}
+
 		if (ev.value == 1) {
 			power_notify_activity(); // any physical button counts as use
+
+			// The power key locked with the screen off: nothing now and nothing
+			// on release; held, it wakes the screen (see the deadline above).
+			// Not the touch panel's: its double tap arrives as a power press.
+			if (ev.code == KEY_POWER) {
+				power_locked_press = !info->headset && !info->touch && screen_off_option(off_lock_power);
+			}
+			bool locked_power = ev.code == KEY_POWER && power_locked_press;
 
 			// Volume + power: if a combination has fired -- now, or because the
 			// other key was already down -- this key belongs to it. The volume
 			// keys on the case only: the remote's are not under the thumb that
 			// presses power, and one stuck down would turn every later press of
 			// power into a screenshot or a lock.
-			bool combo = !info->headset && combo_press(ev.code);
+			bool combo = !info->headset && !locked_power && combo_press(ev.code);
 
 			// A scrub still open from a button whose release never arrived --
 			// another key went down first and took `held` with it -- is closed
@@ -1878,6 +1977,7 @@ static void *input_thread_func(void *arg) {
 			}
 
 			held = ev.code;
+			held_as_volume = false;
 			held_since = now_ms();
 			bool seeks = key_seeks_held(held, info->headset);
 			next_repeat = held_since + (seeks ? SEEK_HOLD_MS : VOLUME_REPEAT_DELAY_MS);
@@ -1925,11 +2025,15 @@ static void *input_thread_func(void *arg) {
 		}
 
 		if (ev.value == 0) {
-			bool combo = !info->headset && combo_release(ev.code);
+			bool locked_power = ev.code == KEY_POWER && power_locked_press;
+			bool combo = !info->headset && !locked_power && combo_release(ev.code);
 
-			if (ev.code == KEY_POWER && !long_press_done && !combo) {
+			if (ev.code == KEY_POWER && !long_press_done && !combo && !locked_power) {
 				// Short press: the screen toggle.
 				power_notify_power_button();
+			}
+			if (ev.code == KEY_POWER) {
+				power_locked_press = false;
 			}
 
 			if (ev.code == held) {
@@ -1975,6 +2079,7 @@ static void start_input_thread_fd(const char *node, input_kind_t kind, int fd) {
 	snprintf(info->node, sizeof(info->node), "%s", node);
 	info->headset = kind == INPUT_HEADSET;
 	info->wheel = kind == INPUT_WHEEL;
+	info->touch = kind == INPUT_TOUCH;
 	info->preopened_fd = fd;
 
 	pthread_t thread;
