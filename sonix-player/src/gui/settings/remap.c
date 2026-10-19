@@ -36,6 +36,10 @@ lv_obj_t *remap_screen;
 // play/pause over next -- so there it is one photo, the media side's files, cut
 // off at the bottom and sitting on the bottom edge, with four taller rows.
 //
+// The R3 II 2025 has the R3 Pro II's right flank under a volume wheel, and no
+// volume keys at all: one photo, the media side's files again, taller to take
+// the wheel in, and the R3 Pro II's three rows where its buttons are.
+//
 // The photos live in /usr/resource/sonix/gui rather than in the binary, and are
 // loaded when the page opens and freed when it closes: a picture seen once a
 // year does not stay resident on a 64 MB device.
@@ -83,6 +87,14 @@ static const hit_t PLAY_HITS[] = {
 static const hit_t VOL_HITS[] = {
 	{KEYMAP_BTN_VOL_UP, 145, 57},
 	{KEYMAP_BTN_VOL_DOWN, 202, 58},
+};
+
+// The R3 II 2025's right flank: the R3 Pro II's three buttons, 168 pixels
+// further down a photo that has the wheel above them.
+static const hit_t WHEEL_HITS[] = {
+	{KEYMAP_BTN_PREV, 190, 50},
+	{KEYMAP_BTN_PLAY, 253, 58},
+	{KEYMAP_BTN_NEXT, 311, 59},
 };
 
 // The R1's one flank, top to bottom under the power button: the volume rocker,
@@ -637,6 +649,8 @@ void remap_init(gui_config_t *cfg) {
 		model = sysinfo_model_by_panel(cfg->screen_width, cfg->screen_height);
 	}
 	bool one_flank = model && model->one_flank;
+	// A volume wheel instead of volume keys: nothing on the left flank to remap.
+	bool wheel = !one_flank && model && model->volume_wheel;
 
 	lv_obj_t *title = settingsrow_title(remap_screen, cfg, "remap_buttons");
 	settingsrow_title_corner_slots(title, cfg, 0);
@@ -649,17 +663,25 @@ void remap_init(gui_config_t *cfg) {
 	// Sizes are those of the files; positions put the photos where the design
 	// has them. The R3 Pro II's right flank starts under the title and its left
 	// flank runs four pixels past the bottom edge; the R1's photo stands on the
-	// bottom edge.
-	play_side.hits = one_flank ? R1_HITS : PLAY_HITS;
-	play_side.hit_count = one_flank ? (int)(sizeof(R1_HITS) / sizeof(R1_HITS[0]))
-									: (int)(sizeof(PLAY_HITS) / sizeof(PLAY_HITS[0]));
+	// bottom edge; the R3 II 2025's starts under the title like the R3 Pro II's.
 	play_side.rows_on_right = true;
 	if (one_flank) {
+		play_side.hits = R1_HITS;
+		play_side.hit_count = (int)(sizeof(R1_HITS) / sizeof(R1_HITS[0]));
 		play_side.w = 229;
 		play_side.h = 663;
 		play_side.x = 0;
 		play_side.y = cfg->screen_height - play_side.h;
+	} else if (wheel) {
+		play_side.hits = WHEEL_HITS;
+		play_side.hit_count = (int)(sizeof(WHEEL_HITS) / sizeof(WHEEL_HITS[0]));
+		play_side.w = 186;
+		play_side.h = 580;
+		play_side.x = 0;
+		play_side.y = 126;
 	} else {
+		play_side.hits = PLAY_HITS;
+		play_side.hit_count = (int)(sizeof(PLAY_HITS) / sizeof(PLAY_HITS[0]));
 		play_side.w = 185;
 		play_side.h = 411;
 		play_side.x = -1; // the first column of the light photo is not opaque
@@ -667,7 +689,7 @@ void remap_init(gui_config_t *cfg) {
 	}
 	build_side(&play_side, cfg);
 
-	if (!one_flank) {
+	if (!one_flank && !wheel) {
 		vol_side.hits = VOL_HITS;
 		vol_side.hit_count = (int)(sizeof(VOL_HITS) / sizeof(VOL_HITS[0]));
 		vol_side.rows_on_right = false;
@@ -676,7 +698,7 @@ void remap_init(gui_config_t *cfg) {
 		vol_side.x = cfg->screen_width - vol_side.w;
 		vol_side.y = cfg->screen_height - vol_side.h + 4;
 		build_side(&vol_side, cfg);
-	} else {
+	} else if (one_flank) {
 		// Under the last row, in the column the rows use.
 		const hit_t *last = &R1_HITS[sizeof(R1_HITS) / sizeof(R1_HITS[0]) - 1];
 		int col_x = play_side.x + play_side.w + LEADER_W;

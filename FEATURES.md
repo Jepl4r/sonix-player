@@ -171,7 +171,7 @@ This is everything Sonix Player can do today, on the **R1**, the **R3 Pro II** a
 
 ## Buttons and remotes
 
-- **Remap buttons** - give each media and volume button another action.
+- **Remap buttons** - give each media and volume button another action. The R3 II 2025 has a volume wheel and no volume buttons, so only its media buttons.
 - **Double click** - two quick presses of a button do the action you choose.
 - **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous. USB-C headphones with buttons work too.
 - **Lock the buttons** with the screen off: volume down + power (on the R3 II 2025, hold power and turn the wheel down). The power button and the remote always work.
