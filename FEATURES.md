@@ -54,6 +54,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **ReplayGain** - off, by track or by album, read from the tags.
 - **Remember track** - the queue and the position are still there after a restart. You can also open Now Playing straight away at startup.
 - **Sleep timer** - set a time and the playback pauses by itself when it runs out. There is one for music, one for audiobooks and one for podcasts.
+- **Workout timer** - a rest timer for the gym. Start it and it beeps over the music when the time is up: the music goes quieter for the beep and then comes back. Choose the length in minutes and seconds, and a beep, three beeps or a countdown. Start it from the control centre, or from a side button set to it.
 
 ## Now Playing
 

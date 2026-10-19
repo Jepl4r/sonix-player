@@ -31,6 +31,10 @@ lv_obj_t *musicsettings_fade_screen(void);
 // The playback options page, which holds the music sleep timer: what the
 // control centre's sleep button for music opens on a long press.
 lv_obj_t *musicsettings_playback_screen(void);
+
+// The workout timer's page, with its length and its sound: what the control
+// centre's workout button opens on a long press.
+lv_obj_t *musicsettings_workout_screen(void);
 bool musicsettings_fade_enabled(void);
 void musicsettings_set_fade_enabled(bool enabled);
 

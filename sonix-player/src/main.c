@@ -26,6 +26,7 @@
 #include "src/system/device/adb.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/playback/sleeptimer.h"
+#include "src/system/playback/workouttimer.h"
 #include "src/system/audio/usbaudio.h"
 #include "src/system/audio/audio.h"
 #include "src/system/library/audiobookdb.h"
@@ -2216,6 +2217,7 @@ int main(int argc, char **argv) {
 	// audiobook and podcast pages read their switch and their wheels while
 	// they are built, and read before this they all say off, 0 minutes.
 	sleeptimer_init();
+	workouttimer_init();
 
 	gui_init(&gui_cfg);
 
