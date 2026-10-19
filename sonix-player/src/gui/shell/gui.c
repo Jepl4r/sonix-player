@@ -563,6 +563,7 @@ static void volume_async_cb(void *user_data) {
 	int percent = (int)(intptr_t)user_data;
 	volume_overlay_show(percent);
 	topbar_refresh_volume(percent);
+	quickpanel_volume_changed(percent);
 }
 
 // From the AVRCP reader thread and from btvolume when the headphones move the

@@ -23,4 +23,8 @@ void volume_overlay_show(int percent);
 // so it turns this on for the length of a session.
 void volume_overlay_allow_outside_player(bool allow);
 
+// The speaker the bar draws for a level -- silent, quiet or loud -- for the
+// control centre's volume slider to draw the same one.
+const lv_image_dsc_t *volume_overlay_icon(int percent);
+
 #endif /* VOLUME_OVERLAY_H */

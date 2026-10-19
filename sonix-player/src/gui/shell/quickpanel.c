@@ -28,6 +28,7 @@
 #include "src/system/net/wifitransfer.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/volume_overlay.h"
 #include "src/gui/wireless/wifisettings.h"
 #include "src/system/remote/airplay.h"
 #include "src/system/audio/alsa-controls.h"
@@ -70,6 +71,7 @@
 #define CARD_GAP 16	   // between the two cards
 #define CARD_ROW_GAP 12 // between the blocks inside the controls card
 #define HANDLE_ROOM 24	// added under the slider when the card has a handle
+#define VOLUME_ROOM (BRIGHT_ROW_H + CARD_ROW_GAP) // added for the volume slider, when it is on
 #define BRIGHT_ROW_H 44
 // The dimmest backlight level on the slider: 0 would put the backlight out.
 #define BRIGHTNESS_FLOOR 1
@@ -203,6 +205,9 @@ static lv_obj_t *quick_row;	   // the first QP_SLOT_VISIBLE buttons
 static lv_obj_t *extra_clip;	   // the window the stretch opens, under the first lines
 static lv_obj_t *extra_row;	   // the rest, inside that window
 static lv_obj_t *bright_row;	   // moved down by the stretch
+static lv_obj_t *volume_row;	   // under it, when the option is on; moved down with it
+static lv_obj_t *volume_icon;
+static lv_obj_t *volume_slider;
 static lv_obj_t *expand_handle; // the line under the slider, and a tap target
 static lv_obj_t *expand_pill;
 static int card_h_rest;		   // both cards' height with nothing past the eighth
@@ -533,6 +538,7 @@ static void expand_set(int h) {
 	lv_obj_set_height(controls_card, card_h_base + h);
 	lv_obj_set_height(extra_clip, h);
 	lv_obj_set_style_translate_y(bright_row, h, 0);
+	lv_obj_set_style_translate_y(volume_row, h, 0);
 
 	// In proportion to the stretch: the second block comes in as the card
 	// uncovers it, and the card underneath goes out as it is covered.
@@ -595,6 +601,62 @@ static void expand_handle_clicked_cb(lv_event_t *e) {
 	}
 	expand_to(expand_h > 0 ? 0 : expand_full, true);
 }
+
+// ---------------------------------------------------------------------------
+// The volume slider (Settings > More > Control centre volume)
+//
+// The same level the keys and the volume bar move: the ceiling of the socket
+// in use caps it, and line out holds a fixed level, so the slider is greyed
+// out while that is on. It shows what the output is really at after every
+// move, not what was asked for.
+// ---------------------------------------------------------------------------
+
+static void cards_layout(void);
+
+bool quickpanel_volume_slider_enabled(void) { return config_get_bool("quickpanel", "volume_slider", false); }
+
+static void refresh_volume_row(int percent) {
+	if (!volume_row || lv_obj_is_hidden(volume_row)) {
+		return;
+	}
+	if (!lv_obj_has_state(volume_slider, LV_STATE_PRESSED)) {
+		lv_slider_set_value(volume_slider, percent, LV_ANIM_OFF);
+	}
+	lv_image_set_src(volume_icon, volume_overlay_icon(percent));
+	lv_obj_set_style_bg_color(volume_slider, theme()->accent, LV_PART_INDICATOR);
+	theme_apply_slider_knob(volume_slider);
+
+	bool fixed = lineout_is_active();
+	if (fixed) {
+		lv_obj_add_state(volume_slider, LV_STATE_DISABLED);
+	} else {
+		lv_obj_remove_state(volume_slider, LV_STATE_DISABLED);
+	}
+	lv_obj_set_style_opa(volume_row, fixed ? LV_OPA_40 : LV_OPA_COVER, 0);
+}
+
+static void volume_changed_cb(lv_event_t *e) {
+	(void)e;
+	set_volume_percent((int)lv_slider_get_value(volume_slider));
+	int percent = get_volume_percent();
+	lv_slider_set_value(volume_slider, percent, LV_ANIM_OFF);
+	lv_image_set_src(volume_icon, volume_overlay_icon(percent));
+	topbar_refresh_volume(percent);
+}
+
+void quickpanel_set_volume_slider(bool on) {
+	config_set_bool("quickpanel", "volume_slider", on);
+	config_save();
+	if (!volume_row) {
+		return;
+	}
+	lv_obj_set_hidden(volume_row, !on);
+	cards_layout();
+	expand_to(0, false);
+	refresh_volume_row(get_volume_percent());
+}
+
+void quickpanel_volume_changed(int percent) { refresh_volume_row(percent); }
 
 // Everything the sheet has to freshen before it becomes visible, whether it is
 // being animated in or dragged in a pixel at a time.
@@ -1176,6 +1238,23 @@ static lv_obj_t *button_widget(quickpanel_button_t which) {
 	}
 }
 
+// The two cards' heights. With a handle to show, or the volume slider, the
+// controls card takes the room from the now-playing card, which has height to
+// spare under its transport; without either both stay as they always were.
+static void cards_layout(void) {
+	if (!controls_card) {
+		return;
+	}
+	int room = expand_full ? HANDLE_ROOM : 0;
+	if (quickpanel_volume_slider_enabled()) {
+		room += VOLUME_ROOM;
+	}
+	card_h_base = card_h_rest + room;
+	lv_obj_set_y(np_card, card_top + card_h_base + CARD_GAP);
+	lv_obj_set_height(np_card, card_h_rest - room);
+	lv_obj_set_hidden(expand_handle, expand_full == 0);
+}
+
 // Puts the widgets in the grid's order: the first QP_SLOT_VISIBLE into the
 // card's own rows, the rest into the block the stretch uncovers. Both are
 // wrapping flexes, so a child's index is its position on screen and nothing
@@ -1214,16 +1293,7 @@ static void order_apply(void) {
 	int lines = (extra + QP_BUTTONS_PER_LINE - 1) / QP_BUTTONS_PER_LINE;
 	expand_full = lines * (CIRCLE_BUTTON_SIZE + CIRCLE_BUTTON_GAP);
 
-	// With a handle to show the card takes HANDLE_ROOM from the now-playing
-	// card, which has height to spare under its transport; without one both
-	// stay as they always were.
-	if (controls_card) {
-		int room = expand_full ? HANDLE_ROOM : 0;
-		card_h_base = card_h_rest + room;
-		lv_obj_set_y(np_card, card_top + card_h_base + CARD_GAP);
-		lv_obj_set_height(np_card, card_h_rest - room);
-		lv_obj_set_hidden(expand_handle, expand_full == 0);
-	}
+	cards_layout();
 	expand_to(0, false);
 }
 
@@ -1482,6 +1552,7 @@ static void refresh_audio_buttons(void) {
 	}
 	circle_button_set_on(gain_btn, high);
 	circle_button_set_on(lineout_btn, lineout_is_active());
+	refresh_volume_row(get_volume_percent()); // line out greys it out
 
 	// The drawing changes with the state as well as the fill: the two halves
 	// closed up while on, apart while off.
@@ -1903,6 +1974,55 @@ static lv_obj_t *make_card(lv_obj_t *parent, int width, int height, int top_y) {
 	return card;
 }
 
+// One slider of the controls card, under the buttons: the icon on the left and
+// the slider filling the rest, in a row BRIGHT_ROW_H high. The caller sets the
+// range and the events.
+static lv_obj_t *make_slider_row(lv_obj_t *parent, const lv_image_dsc_t *icon, lv_obj_t **icon_out, lv_obj_t **slider_out) {
+	lv_obj_t *row = lv_obj_create(parent);
+	lv_obj_set_size(row, lv_pct(100), BRIGHT_ROW_H);
+	lv_obj_set_style_bg_opa(row, 0, 0);
+	lv_obj_set_style_border_width(row, 0, 0);
+	lv_obj_set_style_pad_all(row, 0, 0);
+	// The knob is 26 px across and centred on the value, so at full scale half of
+	// it falls past the end of the track; the row clips its children, which would
+	// slice the knob down the middle. Keeping the track 13 px short of the row's
+	// right edge gives it room.
+	lv_obj_set_style_pad_right(row, 13, 0);
+	lv_obj_set_style_pad_gap(row, 18, 0);
+	lv_obj_set_scrollable(row, false);
+	lv_obj_set_event_bubble(row, true);
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+
+	lv_obj_t *image = lv_image_create(row);
+	lv_image_set_src(image, icon);
+	lv_obj_add_style(image, &theme_style_icon, 0);
+	lv_obj_set_style_image_recolor_opa(image, LV_OPA_COVER, 0);
+
+	lv_obj_t *slider = lv_slider_create(row);
+	lv_obj_set_height(slider, 10);
+	lv_obj_set_flex_grow(slider, 1);
+	lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
+	lv_obj_set_style_bg_color(slider, theme()->text_secondary, LV_PART_MAIN);
+	lv_obj_set_style_bg_opa(slider, LV_OPA_40, LV_PART_MAIN);
+	lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
+	lv_obj_set_style_bg_color(slider, theme()->accent, LV_PART_INDICATOR);
+	lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
+	lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
+	theme_apply_slider_knob(slider);
+	lv_obj_set_style_pad_all(slider, 8, LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(slider, 8, LV_PART_KNOB);
+	lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
+	lv_obj_set_style_shadow_color(slider, lv_color_black(), LV_PART_KNOB);
+	lv_obj_set_ext_click_area(slider, 18);
+
+	if (icon_out) {
+		*icon_out = image;
+	}
+	*slider_out = slider;
+	return row;
+}
+
 void quickpanel_init(gui_config_t *cfg) {
 	panel_h = cfg->screen_height;
 
@@ -2064,46 +2184,17 @@ void quickpanel_init(gui_config_t *cfg) {
 	lv_obj_add_event_cb(gapless_btn, gapless_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_add_event_cb(gapless_btn, gapless_page_cb, LV_EVENT_LONG_PRESSED, NULL);
 
-	bright_row = lv_obj_create(controls_card);
-	lv_obj_set_size(bright_row, lv_pct(100), BRIGHT_ROW_H);
-	lv_obj_set_style_bg_opa(bright_row, 0, 0);
-	lv_obj_set_style_border_width(bright_row, 0, 0);
-	lv_obj_set_style_pad_all(bright_row, 0, 0);
-	// The knob is 26 px across and centred on the value, so at full scale half of
-	// it falls past the end of the track; the row clips its children, which would
-	// slice the knob down the middle. Keeping the track 13 px short of the row's
-	// right edge gives it room.
-	lv_obj_set_style_pad_right(bright_row, 13, 0);
-	lv_obj_set_style_pad_gap(bright_row, 18, 0);
-	lv_obj_set_scrollable(bright_row, false);
-	lv_obj_set_event_bubble(bright_row, true);
-	lv_obj_set_flex_flow(bright_row, LV_FLEX_FLOW_ROW);
-	lv_obj_set_flex_align(bright_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-
-	lv_obj_t *sun = lv_image_create(bright_row);
-	lv_image_set_src(sun, &icon_sun);
-	lv_obj_add_style(sun, &theme_style_icon, 0);
-	lv_obj_set_style_image_recolor_opa(sun, LV_OPA_COVER, 0);
-
-	brightness_slider = lv_slider_create(bright_row);
-	lv_obj_set_height(brightness_slider, 10);
-	lv_obj_set_flex_grow(brightness_slider, 1);
+	bright_row = make_slider_row(controls_card, &icon_sun, NULL, &brightness_slider);
 	lv_slider_set_range(brightness_slider, BRIGHTNESS_FLOOR, 100);
-	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_MAIN);
-	lv_obj_set_style_bg_color(brightness_slider, theme()->text_secondary, LV_PART_MAIN);
-	lv_obj_set_style_bg_opa(brightness_slider, LV_OPA_40, LV_PART_MAIN);
-	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
-	lv_obj_set_style_bg_color(brightness_slider, theme()->accent, LV_PART_INDICATOR);
-	lv_obj_set_style_radius(brightness_slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
-	lv_obj_set_style_bg_color(brightness_slider, lv_color_white(), LV_PART_KNOB);
-	theme_apply_slider_knob(brightness_slider);
-	lv_obj_set_style_pad_all(brightness_slider, 8, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(brightness_slider, 8, LV_PART_KNOB);
-	lv_obj_set_style_shadow_opa(brightness_slider, LV_OPA_30, LV_PART_KNOB);
-	lv_obj_set_style_shadow_color(brightness_slider, lv_color_black(), LV_PART_KNOB);
-	lv_obj_set_ext_click_area(brightness_slider, 18);
 	lv_obj_add_event_cb(brightness_slider, brightness_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 	lv_obj_add_event_cb(brightness_slider, brightness_released_cb, LV_EVENT_RELEASED, NULL);
+
+	// The volume, under the brightness and drawn the same way, when the option
+	// is on: the card is then a row taller (cards_layout()).
+	volume_row = make_slider_row(controls_card, volume_overlay_icon(get_volume_percent()), &volume_icon, &volume_slider);
+	lv_slider_set_range(volume_slider, 0, 100);
+	lv_obj_add_event_cb(volume_slider, volume_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+	lv_obj_set_hidden(volume_row, !quickpanel_volume_slider_enabled());
 
 	// The buttons past the eighth. A window outside the flex, starting where the
 	// first two lines end, opens as tall as the stretch while the slider moves

@@ -167,6 +167,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 - Pull down from the status bar (or tap it) to open the **Control centre**: what is playing, brightness, and buttons for Wi-Fi, Bluetooth, AirPlay, DLNA, SonixLink, Wi-Fi transfer, EQ, PEQ, MSEB, Fade, Gapless, Gain, Line out and the three sleep timers.
 - Choose which buttons are shown and in what order.
+- **Control centre volume** - a volume slider under the brightness one, turned on in Settings > More.
 - The status bar shows the clock and the battery, and can stay on in Now Playing too.
 
 ## Buttons and remotes

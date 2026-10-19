@@ -28,6 +28,16 @@ void quickpanel_drag_begin(void);
 void quickpanel_drag_update(int dy);
 void quickpanel_drag_end(void);
 
+// Settings > More > Control centre volume: a volume slider under the
+// brightness one, off by default. Showing it makes the controls card a row
+// taller and the now-playing card a row shorter.
+bool quickpanel_volume_slider_enabled(void);
+void quickpanel_set_volume_slider(bool on);
+
+// The level moved somewhere else -- a key, the wheel, the volume bar, the
+// headphones over Bluetooth: the slider follows. On the GUI thread.
+void quickpanel_volume_changed(int percent);
+
 // ---------------------------------------------------------------------------
 // Which round buttons the panel carries, and where
 //

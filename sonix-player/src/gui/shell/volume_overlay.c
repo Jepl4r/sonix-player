@@ -85,15 +85,14 @@ static void hide_cb(lv_timer_t *timer) {
 	lv_timer_pause(hide_timer);
 }
 
-static void set_icon_for(int percent) {
-	const lv_image_dsc_t *icon = &icon_volume_high;
+const lv_image_dsc_t *volume_overlay_icon(int percent) {
 	if (percent < VOLUME_LOW_PERCENT) {
-		icon = &icon_volume_mute;
-	} else if (percent < VOLUME_HIGH_PERCENT) {
-		icon = &icon_volume_low;
+		return &icon_volume_mute;
 	}
-	lv_image_set_src(overlay_icon, icon);
+	return percent < VOLUME_HIGH_PERCENT ? &icon_volume_low : &icon_volume_high;
 }
+
+static void set_icon_for(int percent) { lv_image_set_src(overlay_icon, volume_overlay_icon(percent)); }
 
 // The finger moved the slider: apply it and keep the pill up.
 static void slider_changed_cb(lv_event_t *e) {
