@@ -172,7 +172,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 ## Buttons and remotes
 
-- **Remap buttons** - give each media and volume button another action.
+- **Remap buttons** - give each media and volume button another action, starting the workout timer among them.
 - **Double click** - two quick presses of a button do the action you choose.
 - **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous. USB-C headphones with buttons work too.
 - **Lock the buttons** with the screen off: volume down + power. The power button and the remote always work.

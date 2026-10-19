@@ -45,6 +45,10 @@ typedef enum {
 	KEYMAP_ACTION_NEXT,
 	KEYMAP_ACTION_VOLUME_UP,
 	KEYMAP_ACTION_VOLUME_DOWN,
+	// Starts the workout timer at its chosen length, or starts it over
+	// (workouttimer.h). Last, so the names already in a config keep meaning
+	// what they meant.
+	KEYMAP_ACTION_WORKOUT_TIMER,
 	KEYMAP_ACTION_COUNT,
 } keymap_action_t;
 
