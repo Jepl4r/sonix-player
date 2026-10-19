@@ -1319,6 +1319,36 @@ void input_set_screen_off_keys(bool lock_power, bool lock_wheel, bool buttons_vo
 static bool screen_off_option(bool option) { return option && !key_lock_when_off && !power_screen_is_on(); }
 
 // ---------------------------------------------------------------------------
+// The volume wheel: what it turns, and which way (input_set_wheel())
+//
+// The wheel reports a click clockwise as KEY_RIGHT and one anti-clockwise as
+// KEY_LEFT. Scrubbing moves the scrub position a click at a time, the way a
+// held skip key does (scrub_step()), and the one seek waits until the wheel
+// has been still for WHEEL_SCRUB_SETTLE_MS: a seek per click would never let
+// the stream fill its buffer.
+// ---------------------------------------------------------------------------
+
+#define WHEEL_SCRUB_SETTLE_MS 500
+
+static volatile bool wheel_scrub;
+static volatile bool wheel_up_clockwise = true;
+static volatile bool wheel_forward_clockwise = true;
+static volatile int wheel_scrub_seconds = WHEEL_SCRUB_DEFAULT_SECONDS;
+
+void input_set_wheel(bool scrub, bool up_clockwise, bool forward_clockwise, int scrub_seconds) {
+	if (scrub_seconds < WHEEL_SCRUB_MIN_SECONDS) {
+		scrub_seconds = WHEEL_SCRUB_MIN_SECONDS;
+	}
+	if (scrub_seconds > WHEEL_SCRUB_MAX_SECONDS) {
+		scrub_seconds = WHEEL_SCRUB_MAX_SECONDS;
+	}
+	wheel_scrub = scrub;
+	wheel_up_clockwise = up_clockwise;
+	wheel_forward_clockwise = forward_clockwise;
+	wheel_scrub_seconds = scrub_seconds;
+}
+
+// ---------------------------------------------------------------------------
 // Key combinations: volume up + power (screenshot), volume down + power (key
 // lock, see above)
 //
@@ -1344,6 +1374,14 @@ static bool combo_active(void) {
 	bool active = combo_fired;
 	pthread_mutex_unlock(&combo_lock);
 	return active;
+}
+
+// Power is down, so a volume key now would complete a combination.
+static bool combo_power_down(void) {
+	pthread_mutex_lock(&combo_lock);
+	bool down = combo_power_held;
+	pthread_mutex_unlock(&combo_lock);
+	return down;
 }
 
 // True when this key is part of a fired combination and so must not do what it
@@ -1504,24 +1542,28 @@ static bool mapped_action_seeks(keymap_button_t button) {
 	return action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_PREV;
 }
 
-// One step, in whichever direction the button means. Nothing is asked of the
-// decoder here: the step moves the scrub position, the interface follows it,
-// and the seek itself happens when the button is let go (device_state.h).
-// Refuses on anything with no position to move along -- a live radio stream has
-// neither a length nor a point to come back to.
-static void seek_step(keymap_button_t button) {
-	keymap_action_t action = effective_action(button);
-	if (action != KEYMAP_ACTION_NEXT && action != KEYMAP_ACTION_PREV) {
-		return;
-	}
-
+// One step of a scrub, `seconds` either way. Nothing is asked of the decoder
+// here: the step moves the scrub position, the interface follows it, and the
+// seek itself happens when the button is let go or the wheel stops
+// (device_state.h). Refuses on anything with no position to move along -- a
+// live radio stream has neither a length nor a point to come back to.
+static bool scrub_step(double seconds) {
 	device_state_t state;
 	device_state_get(&state);
 	if (state.live || state.progress_total_secs <= 0) {
-		return;
+		return false;
 	}
 
-	device_state_scrub_by((action == KEYMAP_ACTION_NEXT) ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS);
+	device_state_scrub_by(seconds);
+	return true;
+}
+
+// One step, in whichever direction the button means.
+static void seek_step(keymap_button_t button) {
+	keymap_action_t action = effective_action(button);
+	if (action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_PREV) {
+		scrub_step(action == KEYMAP_ACTION_NEXT ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS);
+	}
 }
 
 // WHAT REPEATS IS THE ACTION, NOT THE KEY.
@@ -1743,6 +1785,10 @@ static void *input_thread_func(void *arg) {
 	// The power key went down locked (the screen off, the option on): it does
 	// nothing on release, and its long press wakes the screen.
 	bool power_locked_press = false;
+	// The wheel has moved the scrub position, and the seek is due at
+	// `scrub_commit_at` unless it turns again first.
+	bool wheel_scrubbing = false;
+	uint32_t scrub_commit_at = 0;
 
 	for (;;) {
 		// The deadline is whatever the held key is waiting for; with nothing
@@ -1770,6 +1816,12 @@ static void *input_thread_func(void *arg) {
 				timeout = dbl_wait;
 			}
 		}
+		if (wheel_scrubbing) {
+			int scrub_wait = (int)(scrub_commit_at > now ? scrub_commit_at - now : 0);
+			if (timeout < 0 || scrub_wait < timeout) {
+				timeout = scrub_wait;
+			}
+		}
 
 		struct pollfd pfd = {.fd = fd, .events = POLLIN};
 		int ready = poll(&pfd, 1, timeout);
@@ -1795,6 +1847,12 @@ static void *input_thread_func(void *arg) {
 				int code = dbl_code;
 				dbl_code = -1;
 				run_mapped_action(keymap_button_for_code(code));
+			}
+
+			// The wheel has stopped: the music goes where it was turned to.
+			if (wheel_scrubbing && (int32_t)(now - scrub_commit_at) >= 0) {
+				wheel_scrubbing = false;
+				device_state_scrub_commit();
 			}
 
 			// While a combination is active its keys are no longer themselves:
@@ -1847,13 +1905,12 @@ static void *input_thread_func(void *arg) {
 
 		// The wheel's two directions are the volume keys it stands for, so
 		// that it steps the volume, and with power locks the keys or takes a
-		// screenshot, exactly as they would.
-		if (info->wheel) {
-			if (ev.code == KEY_LEFT) {
-				ev.code = KEY_VOLUMEDOWN;
-			} else if (ev.code == KEY_RIGHT) {
-				ev.code = KEY_VOLUMEUP;
-			}
+		// screenshot, exactly as they would. Which is up is a setting; the
+		// direction it was turned is kept for scrubbing.
+		bool wheel_clockwise = false;
+		if (info->wheel && (ev.code == KEY_LEFT || ev.code == KEY_RIGHT)) {
+			wheel_clockwise = ev.code == KEY_RIGHT;
+			ev.code = wheel_clockwise == wheel_up_clockwise ? KEY_VOLUMEUP : KEY_VOLUMEDOWN;
 		}
 
 		log_key_event(node, &ev);
@@ -1886,6 +1943,22 @@ static void *input_thread_func(void *arg) {
 					combo_press(ev.code);
 				} else if (ev.value == 0) {
 					combo_release(ev.code);
+				}
+			}
+			continue;
+		}
+
+		// The wheel scrubbing instead of stepping the volume: a click moves the
+		// position and the seek waits for the wheel to stop (the deadline
+		// above). With power down it is the volume key all the same, for the
+		// key lock and the screenshot.
+		if (info->wheel && wheel_scrub && !combo_power_down()) {
+			if (ev.value == 1) {
+				power_notify_activity();
+				int seconds = wheel_scrub_seconds;
+				if (scrub_step(wheel_clockwise == wheel_forward_clockwise ? seconds : -seconds)) {
+					wheel_scrubbing = true;
+					scrub_commit_at = now_ms() + WHEEL_SCRUB_SETTLE_MS;
 				}
 			}
 			continue;

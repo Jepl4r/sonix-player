@@ -122,6 +122,17 @@ void input_set_key_lock(bool on);
 // to. None of them counts while the key lock above is on. Off until set.
 void input_set_screen_off_keys(bool lock_power, bool lock_wheel, bool buttons_volume);
 
+// The volume wheel (sysinfo.h), as Settings > Wheel sets it. `scrub` makes a
+// click move through the track by `scrub_seconds` instead of a volume step;
+// a click clockwise raises the volume when `up_clockwise`, and goes forward
+// when `forward_clockwise`. With power held the wheel is the volume keys
+// whatever it turns, in the volume's direction, so the key lock and the
+// screenshot still work. Volume, clockwise both ways and 5 seconds until set.
+#define WHEEL_SCRUB_MIN_SECONDS 1
+#define WHEEL_SCRUB_MAX_SECONDS 30
+#define WHEEL_SCRUB_DEFAULT_SECONDS 5
+void input_set_wheel(bool scrub, bool up_clockwise, bool forward_clockwise, int scrub_seconds);
+
 // How far one press of a volume key moves the volume, in percent: on the case,
 // on the headphone cable and from Bluetooth headphones alike. Clamped to
 // VOLUME_STEP_MIN..VOLUME_STEP_MAX; VOLUME_STEP_MIN until set.

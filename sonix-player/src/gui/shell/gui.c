@@ -71,6 +71,7 @@
 #include "src/gui/library/search.h"
 #include "src/gui/settings/settings.h"
 #include "src/gui/settings/systempage.h"
+#include "src/gui/settings/wheelpage.h"
 #include "src/gui/shell/setupwifi.h"
 #include "src/gui/shell/welcome.h"
 #include "src/gui/streaming/streaming.h"
@@ -706,6 +707,7 @@ void gui_init(gui_config_t *cfg) {
 	remap_init(cfg);
 	ccsettings_init(cfg);
 	kblayoutpage_init(cfg); // the keyboard-language row on the same page
+	wheelpage_init(cfg);	// its row is on the settings page itself
 	settings_init(cfg);
 	devoptions_init(cfg);
 	processespage_init(cfg); // the processes page the devoptions entry opens

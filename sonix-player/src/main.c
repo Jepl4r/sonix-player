@@ -23,6 +23,7 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/settings.h"
+#include "src/gui/settings/wheelpage.h"
 #include "src/system/device/adb.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/playback/sleeptimer.h"
@@ -2481,6 +2482,7 @@ int main(int argc, char **argv) {
 	// Charge limit, automatic shutdown and standby, as they were left. The
 	// screen timeout is the Screen page's setting and comes from there.
 	powersettings_apply();
+	wheelpage_apply();
 	settings_apply_screen_off();
 
 #ifndef HOST_BUILD

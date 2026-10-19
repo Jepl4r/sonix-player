@@ -22,6 +22,7 @@
 #include "src/gui/settings/systempage.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/settings/timeset.h"
+#include "src/gui/settings/wheelpage.h"
 #include "src/system/core/config.h"
 #include "src/system/audio/headset.h"
 #include "src/system/core/lang.h"
@@ -536,6 +537,10 @@ void settings_init(gui_config_t *cfg) {
 	language_bind_menu_row(settingsrow_add(container, "language", NULL, switch_screen_cb, language_screen));
 
 	settingsrow_add(container, "more", NULL, switch_screen_cb, othersettings_screen);
+	// Only on a player with a volume wheel: see wheelpage.h.
+	if (wheelpage_screen) {
+		settingsrow_add(container, "wheel", NULL, switch_screen_cb, wheelpage_screen);
+	}
 	settingsrow_add(container, "system", NULL, switch_screen_cb, systempage_screen);
 	// Hidden until the build number in System > Info is tapped five times.
 	// Built regardless, so unlocking is a visibility change rather than a
