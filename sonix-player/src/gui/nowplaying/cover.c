@@ -1366,9 +1366,21 @@ typedef enum {
 	COVER_BUILD_FAILED, // a picture was found, none of them would decode
 } cover_build_t;
 
+// A caller's say over each candidate's bytes: the thumbnails' picture cache
+// (thumb_build_track) answers for a picture it has already made, and keeps the
+// one just built.
+typedef struct {
+	// True when `outs` were filled without decoding `art`.
+	bool (*lookup)(void *ctx, const albumart_t *art, cover_image_t *outs);
+	// The images just built from the bytes last passed to lookup.
+	void (*store)(void *ctx, const cover_image_t *outs);
+	void *ctx;
+} cover_source_hook_t;
+
 // `used`, when given, is set to the candidate index the images came from.
+// `hook` may be NULL.
 static cover_build_t build_from_sources_at(const char *path, bool is_dir, const image_request_t *reqs, int n,
-										   cover_image_t *outs, int *used) {
+										   cover_image_t *outs, int *used, const cover_source_hook_t *hook) {
 	bool had_bytes = false;
 
 	// Noted for the crash handler and cleared on the way out, so a log that
@@ -1392,8 +1404,14 @@ static cover_build_t build_from_sources_at(const char *path, bool is_dir, const 
 		}
 
 		had_bytes = true;
-		// A card pulled out under the decode: an image made of zeros, not kept.
-		bool ok = build_images_safely(art.data, art.size, reqs, n, outs) && !albumart_faulted(&art);
+		bool ok = hook && hook->lookup(hook->ctx, &art, outs);
+		if (!ok) {
+			// A card pulled out under the decode: an image made of zeros, not kept.
+			ok = build_images_safely(art.data, art.size, reqs, n, outs) && !albumart_faulted(&art);
+			if (ok && hook) {
+				hook->store(hook->ctx, outs);
+			}
+		}
 		albumart_free(&art);
 		if (ok) {
 			crumb_set_artwork(NULL);
@@ -1417,7 +1435,7 @@ static cover_build_t build_from_sources_at(const char *path, bool is_dir, const 
 
 static cover_build_t build_from_sources(const char *path, bool is_dir, const image_request_t *reqs, int n,
 										cover_image_t *outs) {
-	return build_from_sources_at(path, is_dir, reqs, n, outs, NULL);
+	return build_from_sources_at(path, is_dir, reqs, n, outs, NULL, NULL);
 }
 
 // ---------------------------------------------------------------------------
@@ -1656,7 +1674,7 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 	}
 
 	int used = -1;
-	cover_build_t built = build_from_sources_at(filepath, false, reqs, n, results, &used);
+	cover_build_t built = build_from_sources_at(filepath, false, reqs, n, results, &used, NULL);
 	if (built == COVER_BUILD_NONE) {
 		// A podcast episode with no cover file beside it: fetch it now, on the
 		// loader thread, which can afford to wait on a network request, then
@@ -1665,7 +1683,7 @@ bool cover_load_player_images(const char *filepath, int cover_w, int cover_h, co
 		if (!podcastcache_ensure_cover(filepath)) {
 			return false;
 		}
-		built = build_from_sources_at(filepath, false, reqs, n, results, &used);
+		built = build_from_sources_at(filepath, false, reqs, n, results, &used, NULL);
 	}
 	bool ok = (built == COVER_BUILD_OK);
 
@@ -1720,7 +1738,7 @@ bool cover_load_shared(const char *filepath, int player_w, int player_h, int siz
 	if (!have) {
 		image_request_t req = {.w = player_w, .h = player_h, .fit = COVER_FIT_COVER, .backdrop = false};
 		int used = -1;
-		if (build_from_sources_at(filepath, false, &req, 1, &big, &used) != COVER_BUILD_OK) {
+		if (build_from_sources_at(filepath, false, &req, 1, &big, &used, NULL) != COVER_BUILD_OK) {
 			return false;
 		}
 		keyed = id && used == source_index;
@@ -2146,59 +2164,53 @@ static void thumb_db_store(const char *key, const cover_image_t *img, bool has_i
 // starts with a letter that is not one.
 static void thumb_picture_key(char *out, size_t out_size, uint64_t id, int box) { snprintf(out, out_size, "p%016llx|%d", (unsigned long long)id, box); }
 
+typedef struct {
+	int box;
+	char key[40]; // empty when the bytes last looked up have no id
+} thumb_picture_t;
+
+static bool thumb_picture_lookup(void *ctx, const albumart_t *art, cover_image_t *outs) {
+	thumb_picture_t *pic = ctx;
+	pic->key[0] = '\0';
+	if (!art->size) {
+		return false;
+	}
+	uint64_t id = bytes_id(art->data, art->size);
+	// Asked after the hash, not before: a card pulled during it leaves an id
+	// computed over zeroed pages, which names nothing.
+	if (albumart_faulted(art)) {
+		return false;
+	}
+	thumb_picture_key(pic->key, sizeof(pic->key), id, pic->box);
+	bool has_image = false;
+	return thumb_db_load(pic->key, outs, &has_image) && has_image;
+}
+
+static void thumb_picture_store(void *ctx, const cover_image_t *outs) {
+	thumb_picture_t *pic = ctx;
+	if (pic->key[0]) {
+		thumb_db_store(pic->key, outs, true);
+	}
+}
+
 // A track's thumbnail, decoded at most once per picture.
 //
 // The file keys are per path, so the dozen tracks of an album that all carry
 // the same embedded cover would otherwise be a dozen decodes the first time
 // the album is opened -- seconds each for a large progressive JPEG, which
-// TJpgDec cannot scale and stb_image decodes whole. Here the bytes the decode
-// would start from are identified first, and a thumbnail already made from the
-// same picture at the same size is taken instead. The candidates are walked
-// exactly as build_from_sources_at() walks them, and a picture key is only
+// TJpgDec cannot scale and stb_image decodes whole. So each candidate's bytes
+// are identified before they are decoded, and a thumbnail already made from
+// the same picture at the same size is taken instead. A picture key is only
 // written for the bytes an image was actually built from, so the answer is
 // the one the decode would have given.
 static cover_build_t thumb_build_track(const char *path, int size, cover_image_t *out) {
 	image_request_t req = {.w = size, .h = size, .fit = COVER_FIT_CONTAIN, .backdrop = false};
-	bool cacheable = size <= THUMB_DISK_MAX_SIZE;
-	bool had_bytes = false;
-
-	crumb_set_artwork(path);
-	memset(out, 0, sizeof(*out));
-
-	for (int i = 0; i < ALBUMART_CANDIDATES; i++) {
-		albumart_t art;
-		if (!albumart_load_candidate(path, i, &art)) {
-			continue;
-		}
-		had_bytes = true;
-
-		// No id for bytes a pulled card may have zeroed: they name nothing.
-		uint64_t id = cacheable && art.size && !albumart_faulted(&art) ? bytes_id(art.data, art.size) : 0;
-		char picture_key[40];
-		if (id) {
-			thumb_picture_key(picture_key, sizeof(picture_key), id, size);
-			bool has_image = false;
-			if (thumb_db_load(picture_key, out, &has_image) && has_image) {
-				albumart_free(&art);
-				crumb_set_artwork(NULL);
-				return COVER_BUILD_OK;
-			}
-		}
-
-		bool ok = build_images_safely(art.data, art.size, &req, 1, out) && !albumart_faulted(&art);
-		albumart_free(&art);
-		if (ok) {
-			if (id) {
-				thumb_db_store(picture_key, out, true);
-			}
-			crumb_set_artwork(NULL);
-			return COVER_BUILD_OK;
-		}
-		cover_free(out);
+	if (size > THUMB_DISK_MAX_SIZE) {
+		return build_from_sources(path, false, &req, 1, out);
 	}
-
-	crumb_set_artwork(NULL);
-	return had_bytes ? COVER_BUILD_FAILED : COVER_BUILD_NONE;
+	thumb_picture_t pic = {.box = size};
+	cover_source_hook_t hook = {.lookup = thumb_picture_lookup, .store = thumb_picture_store, .ctx = &pic};
+	return build_from_sources_at(path, false, &req, 1, out, NULL, &hook);
 }
 
 static cover_build_t thumb_load_uncached(const char *path, bool is_dir, int size, cover_image_t *out) {
