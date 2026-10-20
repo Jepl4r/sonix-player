@@ -11,6 +11,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/keyboard.h"
+#include "src/gui/library/geniusui.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/library/playlistpage.h"
 #include "src/gui/nowplaying/player.h"
@@ -222,6 +223,11 @@ static void menu_fav_action(void *user) {
 	}
 }
 
+static void menu_genius_action(void *user) {
+	(void)user;
+	geniusui_start(menu_path);
+}
+
 // Where "add to queue" puts it, the same as the library lists' menu. The
 // queue on disk is written now so a power-off does not lose the addition.
 static void menu_queue_action(void *user) {
@@ -311,11 +317,12 @@ static void track_long_pressed_cb(lv_event_t *e) {
 	menu_playlist_count = 0;
 	playlists_for_each(collect_playlist_cb, NULL);
 
-	popover_item_t items[4];
+	popover_item_t items[5];
 	int n = 0;
 	items[n++] = (popover_item_t){
 		library_fav_contains(menu_path) ? "remove_from_favourites" : "medialist_add_to_favourites", menu_fav_action, NULL,
 		false};
+	items[n++] = (popover_item_t){"smartmix_start", menu_genius_action, NULL, false};
 	items[n++] = (popover_item_t){"add_to_queue", menu_queue_action, NULL, false};
 	items[n++] = (popover_item_t){"add_to_playlist", menu_playlist_action, NULL, false};
 	if (menu_playlist_count > 0) {

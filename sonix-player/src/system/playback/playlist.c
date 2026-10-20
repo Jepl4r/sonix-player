@@ -946,6 +946,8 @@ bool playlist_move(int from, int to) {
 	return true;
 }
 
+bool playlist_is_ordered(void) { return ordered_queue; }
+
 bool playlist_is_custom(void) { return custom_queue; }
 
 void playlist_set_custom(bool custom) { custom_queue = custom; }
@@ -1354,9 +1356,12 @@ void playlist_set_mode(playback_mode_t new_mode) {
 	mode_save();
 }
 
-playback_mode_t playlist_get_mode(void) { return mode; }
+playback_mode_t playlist_get_mode(void) { return ordered_queue ? PLAYBACK_MODE_NORMAL : mode; }
 
 playback_mode_t playlist_cycle_mode(void) {
+	if (ordered_queue) {
+		return PLAYBACK_MODE_NORMAL;
+	}
 	playback_mode_t old = mode;
 	switch (mode) {
 	case PLAYBACK_MODE_NORMAL:

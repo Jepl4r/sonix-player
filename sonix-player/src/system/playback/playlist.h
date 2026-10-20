@@ -95,6 +95,9 @@ bool playlist_move(int from, int to);
 // True while the queue is a custom list rather than a folder.
 bool playlist_is_custom(void);
 
+// An ordered answer keeps its sequence across mode changes and restarts.
+bool playlist_is_ordered(void);
+
 // Whether the queue is sitting on its last entry, in queue order. Says nothing
 // about what happens next -- that is the playback mode's business -- only that
 // there is nothing after this one. Album chaining needs to know it before the

@@ -31,6 +31,7 @@
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/library/geniusui.h"
 
 lv_obj_t *medialist_screen;
 lv_obj_t *medialist_tracks_screen;
@@ -222,15 +223,16 @@ typedef struct {
 typedef struct {
 	lv_obj_t *screen;
 	lv_obj_t *title_label;
-	lv_obj_t *list;	 // the scrollable viewport
-	lv_obj_t *body;	 // fixed-height canvas the rows are placed on
-	lv_obj_t *empty; // "nothing here" message
-	lv_obj_t *corner;	   // the right-hand button strip on the title row
-	lv_obj_t *reverse_btn; // Favourites: the list reversed (newest first)
-	lv_obj_t *play_btn;	   // the circle-play corner button
-	lv_obj_t *play_menu;   // and the card it opens, one per screen
+	lv_obj_t *list;					  // the scrollable viewport
+	lv_obj_t *body;					  // fixed-height canvas the rows are placed on
+	lv_obj_t *empty;				  // "nothing here" message
+	lv_obj_t *corner;				  // the right-hand button strip on the title row
+	lv_obj_t *reverse_btn;			  // Favourites: the list reversed (newest first)
+	lv_obj_t *play_btn;				  // the circle-play corner button
+	lv_obj_t *play_menu;			  // and the card it opens, one per screen
 	lv_obj_t *play_menu_random_album; // ...whose "albums in random order" row comes and goes
-	lv_obj_t *sort_btn;	   // A-Z / Z-A
+	lv_obj_t *play_menu_genius;		  // a one-track list has an unambiguous seed
+	lv_obj_t *sort_btn;				  // A-Z / Z-A
 	lv_obj_t *sort_icon;
 	lv_obj_t *album_btn;   // tracks screen only: group an artist's tracks by album
 	lv_obj_t *reorder_btn; // playlists only: put the list in hand-order mode
@@ -3334,6 +3336,17 @@ static lv_obj_t *play_menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t
 	return row;
 }
 
+static void play_menu_genius_cb(lv_event_t *e) {
+	(void)e;
+	panel_t *p = play_menu_panel;
+	char path[512] = "";
+	if (p && p->is_tracks && p->count == 1) {
+		row_path_copy(p, 0, path, sizeof(path));
+	}
+	play_menu_hide();
+	geniusui_start(path);
+}
+
 // Built once, on the artist-records screen, and shown and hidden from there.
 static void play_menu_build(panel_t *p) {
 	p->play_menu = lv_obj_create(p->screen);
@@ -3361,6 +3374,7 @@ static void play_menu_build(panel_t *p) {
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 	play_menu_row(card, "medialist_play_in_random_order", play_menu_shuffle_cb);
+	p->play_menu_genius = play_menu_row(card, "smartmix_start", play_menu_genius_cb);
 	play_menu_row(card, "medialist_play_in_sequence", play_menu_sequence_cb);
 	p->play_menu_random_album = play_menu_row(card, "medialist_play_albums_in_random_order", play_menu_random_album_cb);
 	play_menu_row(card, "medialist_queue_random_track", play_menu_random_track_cb);
@@ -3377,9 +3391,10 @@ static void play_menu_clicked_cb(lv_event_t *e) {
 	// Records in random order only where there are records to choose between,
 	// and only with the option that plays one record after another: without it
 	// the choice would be one record at random and then silence.
-	bool random_albums = p->kind == LIBRARY_LIST_ALBUMS && !p->from_paths && p->count >= 2 &&
-						 device_state_album_chaining();
+	bool random_albums = p->kind == LIBRARY_LIST_ALBUMS && !p->from_paths && p->count >= 2 && device_state_album_chaining();
 	lv_obj_set_hidden(p->play_menu_random_album, !random_albums);
+	// A multi-track list has no chosen track. Its row menus carry the seed.
+	lv_obj_set_hidden(p->play_menu_genius, !p->is_tracks || p->count != 1);
 	play_menu_panel = p;
 	lv_obj_set_hidden(p->play_menu, false);
 	lv_obj_move_foreground(p->play_menu);
@@ -3388,6 +3403,11 @@ static void play_menu_clicked_cb(lv_event_t *e) {
 // The ellipsis menu on a track row.
 static char menu_path[512];
 static char menu_name[256];
+
+static void medialist_mix_track(void *user) {
+	(void)user;
+	geniusui_start(menu_path);
+}
 // The row the menu was opened on, so an action that removes the thing the row
 // stands for can take the row away with it.
 static panel_t *menu_panel;
@@ -3529,16 +3549,16 @@ static void menu_btn_cb(lv_event_t *e) {
 		menu_album[0] = '\0';
 	}
 
-	popover_item_t items[5];
+	popover_item_t items[6];
 	int n = 0;
 	// The two "add to" lines stay next to each other: they are the same kind
 	// of thing, and reading past one to reach the other is friction with no
 	// reason behind it. "Show album" goes with "Details" instead, both being
 	// ways of finding out more about the track rather than doing something to
 	// it.
-	items[n++] = (popover_item_t){
-		library_fav_contains(menu_path) ? "remove_from_favourites" : "medialist_add_to_favourites", menu_fav_action, NULL};
+	items[n++] = (popover_item_t){library_fav_contains(menu_path) ? "remove_from_favourites" : "medialist_add_to_favourites", menu_fav_action, NULL};
 	items[n++] = (popover_item_t){"add_to_queue", menu_queue_action, NULL};
+	items[n++] = (popover_item_t){"smartmix_start", medialist_mix_track, NULL};
 	// Inside a playlist the useful action is the opposite one: this list is
 	// where the track already is, so offering to file it somewhere else while
 	// looking at it would be the wrong way round.

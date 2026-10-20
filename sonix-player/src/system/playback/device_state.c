@@ -412,7 +412,7 @@ static void queue_persist(void) {
 	}
 
 	if (filled > 0 && !from_stream) {
-		library_queue_save((const char *const *)list, filled, current, playlist_is_custom());
+		library_queue_save((const char *const *)list, filled, current, playlist_is_custom(), playlist_is_ordered());
 		saved_queue_revision = revision;
 		queue_ever_saved = true;
 	}
@@ -740,8 +740,7 @@ void device_state_restore_index(library_index_t *ix, int start_index, const char
 	device_state_remember_restored(current_metadata_file, position);
 }
 
-void device_state_restore_list(const char *const *list, int count, int start_index, bool custom, const char *filepath,
-							   double position) {
+void device_state_restore_list(const char *const *list, int count, int start_index, bool custom, bool ordered, const char *filepath, double position) {
 	// Same reason as load_and_play: this changes the track too.
 	scrub_cancel();
 
@@ -750,7 +749,11 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 		return;
 	}
 
-	playlist_load_paths(list, count, start_index);
+	if (ordered) {
+		playlist_load_paths_ordered(list, count, start_index);
+	} else {
+		playlist_load_paths(list, count, start_index);
+	}
 	// playlist_load_paths() always marks the queue custom; a queue that was a
 	// folder queue before the reboot has to stay one, or it would never be
 	// refreshed from the disk again.

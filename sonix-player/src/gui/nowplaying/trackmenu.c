@@ -9,6 +9,7 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
+#include "src/gui/library/geniusui.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/library/playlistpage.h"
@@ -1433,6 +1434,16 @@ static const char *details_card_path(const char *file) {
 	return file;
 }
 
+static void details_genius_cb(lv_event_t *e) {
+	(void)e;
+	device_state_t state;
+	device_state_get(&state);
+	const char *path = details_path[0] ? details_path : state.current_file;
+	if (path[0] && !podcastcache_is_episode(path)) {
+		geniusui_start(path);
+	}
+}
+
 // The common tail of both variants: tags, format, size, path.
 // `codec` is the name the decoder reports ("MP3", "AAC", "ALAC"...), empty when
 // it has none; `kbps` is the bitrate the file declares, 0 when it declares
@@ -1546,6 +1557,27 @@ static void details_fill(const char *file, const song_metadata_t *tags, int bits
 		details_add_row("trackmenu_source", "tidal");
 	} else {
 		details_add_row("trackmenu_file", details_card_path(file));
+	}
+
+	if (file[0] && !podcastcache_is_episode(file)) {
+		lv_obj_t *row = lv_btn_create(details_card);
+		lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+		lv_obj_set_style_bg_opa(row, 0, 0);
+		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
+		lv_obj_set_style_border_width(row, 0, 0);
+		lv_obj_set_style_shadow_width(row, 0, 0);
+		lv_obj_set_style_pad_all(row, 0, 0);
+		lv_obj_set_scrollable(row, false);
+		lv_obj_set_event_bubble(row, true);
+		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
+		lv_obj_add_event_cb(row, details_genius_cb, LV_EVENT_CLICKED, NULL);
+
+		lv_obj_t *label = lv_label_create(row);
+		lv_label_set_text(label, tr("smartmix_start"));
+		lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+		lv_obj_set_width(label, lv_pct(100));
+		lv_obj_add_style(label, &theme_style_text, 0);
+		lv_obj_set_style_text_font(label, &font_ui_24, 0);
 	}
 }
 
@@ -1719,6 +1751,15 @@ static void add_to_playlist_cb(void *user) {
 	switcher_set_player_return(playlistpage_screen);
 }
 
+static void start_genius_cb(void *user) {
+	(void)user;
+	device_state_t state;
+	device_state_get(&state);
+	if (state.current_file[0] && !podcastcache_is_episode(state.current_file)) {
+		geniusui_start(state.current_file);
+	}
+}
+
 // "Show album": the record the playing track came off. Backing out of it
 // returns to the player, like everything else this menu opens.
 static void open_album_cb(void *user) {
@@ -1832,6 +1873,7 @@ void trackmenu_open(lv_obj_t *anchor) {
 	// borrowed term to make a menu line up.
 	static const popover_item_t ITEMS[] = {
 		{"trackmenu_queue", open_queue_cb, NULL},
+		{"smartmix_start", start_genius_cb, NULL},
 		{"add_to_playlist", add_to_playlist_cb, NULL},
 		{"show_album", open_album_cb, NULL},
 		{"details", open_details_cb, NULL},
@@ -1849,7 +1891,8 @@ void trackmenu_open(lv_obj_t *anchor) {
 	device_state_get(&state);
 	bool podcast = state.current_file[0] && podcastcache_is_episode(state.current_file);
 
-	popover_show(anchor, podcast ? ITEMS_PODCAST : ITEMS, 5);
+	int count = podcast ? sizeof(ITEMS_PODCAST) / sizeof(ITEMS_PODCAST[0]) : sizeof(ITEMS) / sizeof(ITEMS[0]);
+	popover_show(anchor, podcast ? ITEMS_PODCAST : ITEMS, count);
 }
 
 void trackmenu_init(gui_config_t *cfg) {

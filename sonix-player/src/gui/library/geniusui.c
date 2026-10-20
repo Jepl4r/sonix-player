@@ -1,0 +1,210 @@
+#include "src/gui/library/geniusui.h"
+
+#include <pthread.h>
+#include <stdatomic.h>
+#include <stdint.h>
+#include <stdio.h>
+#include <stdlib.h>
+#include <string.h>
+
+#include "src/gui/fonts/fonts.h"
+#include "src/gui/nowplaying/player.h"
+#include "src/gui/shell/gui.h"
+#include "src/gui/shell/icons.h"
+#include "src/gui/shell/spinner.h"
+#include "src/gui/shell/switcher.h"
+#include "src/gui/shell/theme.h"
+#include "src/system/core/lang.h"
+#include "src/system/core/utils.h"
+#include "src/system/device/power.h"
+#include "src/system/library/genius.h"
+#include "src/system/playback/device_state.h"
+
+typedef struct {
+	char seed_path[512];
+	unsigned random;
+	atomic_bool cancel;
+	atomic_bool delivery_failed;
+	geniusdb_snapshot_t *snapshot;
+	genius_mix_t mix;
+	genius_result_t result;
+} genius_job_t;
+
+// GUI thread owns the widgets and job pointer. The worker owns the result
+// until gui_post succeeds, or delivery_failed hands it to the polling timer.
+static struct {
+	genius_job_t *job;
+	lv_obj_t *overlay;
+	lv_timer_t *timer;
+} genius_ui;
+
+static void genius_finish(void *user) {
+	genius_job_t *job = user;
+	lv_timer_delete(genius_ui.timer);
+	genius_ui.timer = NULL;
+	lv_obj_delete(genius_ui.overlay);
+	genius_ui.overlay = NULL;
+	genius_ui.job = NULL;
+	power_hold_screen_on(false);
+	if (atomic_load(&job->cancel) || (job->snapshot && !geniusdb_snapshot_current(job->snapshot)) || !gui_card_available()) {
+		job->result = GENIUS_CANCELLED;
+	}
+	if (job->result == GENIUS_OK) {
+		// This entry point loads through playlist_load_paths_ordered and starts
+		// playback while keeping the queue's persistence in device_state.
+		//
+		// Starting a mix from the track already playing must not send it back
+		// to the beginning: the mix is queue replacement, not a restart.
+		device_state_t state;
+		device_state_get(&state);
+		if (job->mix.count > 0 && state.current_file[0] && strcmp(state.current_file, job->mix.paths[0]) == 0) {
+			device_state_play_list_ordered_at(job->mix.paths, job->mix.count, 0, state.progress_current_secs);
+		} else {
+			device_state_play_list_ordered(job->mix.paths, job->mix.count, 0);
+		}
+		player_refresh_now_playing();
+		switch_screen(player_screen);
+	} else {
+		const char *message;
+		switch (job->result) {
+		case GENIUS_NO_DATA:
+			message = "smartmix_no_data";
+			break;
+		case GENIUS_TOO_FEW:
+			message = "smartmix_too_few";
+			break;
+		case GENIUS_BUDGET:
+			message = "smartmix_budget";
+			break;
+		case GENIUS_CANCELLED:
+			message = "smartmix_cancelled";
+			break;
+		default:
+			message = "smartmix_failed";
+			break;
+		}
+		gui_notify_popup(message);
+	}
+	genius_mix_free(&job->mix);
+	geniusdb_free_snapshot(job->snapshot);
+	free(job);
+}
+
+static void genius_poll(lv_timer_t *timer) {
+	(void)timer;
+	if (genius_ui.job && atomic_load(&genius_ui.job->delivery_failed)) {
+		genius_finish(genius_ui.job);
+	}
+}
+
+static void *genius_build(void *user) {
+	genius_job_t *job = user;
+	thread_be_low_priority("smart mix");
+	geniusdb_result_t read = geniusdb_load_snapshot(&job->snapshot, &job->cancel);
+	if (read == GENIUSDB_OK) {
+		job->result = genius_mix_build(job->snapshot, job->seed_path, job->random, &job->cancel, &job->mix);
+	} else if (read == GENIUSDB_UNAVAILABLE) {
+		job->result = GENIUS_NO_DATA;
+	} else if (read == GENIUSDB_LIMIT) {
+		job->result = GENIUS_BUDGET;
+	} else if (read == GENIUSDB_CANCELLED) {
+		job->result = GENIUS_CANCELLED;
+	} else {
+		job->result = GENIUS_INVALID;
+	}
+	if (!gui_post(genius_finish, job)) {
+		// The GUI timer owns delivery after a full post queue. The worker
+		// touches no widget, and the progress card still has a completion.
+		fprintf(stderr, "genius: GUI post queue is full\n");
+		atomic_store(&job->delivery_failed, true);
+	}
+	return NULL;
+}
+
+static void genius_cancel(lv_event_t *e) {
+	(void)e;
+	if (genius_ui.job) {
+		atomic_store(&genius_ui.job->cancel, true);
+	}
+}
+
+static void genius_cancel_button(lv_obj_t *parent) {
+	lv_obj_t *row = lv_btn_create(parent);
+	lv_obj_set_size(row, lv_pct(100), 76);
+	lv_obj_add_style(row, &theme_style_card, 0);
+	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_border_width(row, 0, 0);
+	lv_obj_set_style_shadow_width(row, 0, 0);
+	lv_obj_set_style_pad_hor(row, 16, 0);
+	lv_obj_set_scrollable(row, false);
+	lv_obj_add_event_cb(row, genius_cancel, LV_EVENT_CLICKED, NULL);
+
+	lv_obj_t *label = lv_label_create(row);
+	lv_label_set_text(label, tr("cancel"));
+	lv_label_set_long_mode(label, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(label, lv_pct(100));
+	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_add_style(label, &theme_style_text, 0);
+	lv_obj_set_style_text_font(label, &font_ui_22, 0);
+	lv_obj_center(label);
+}
+
+bool geniusui_available(void) { return gui_card_available() && geniusdb_available(); }
+
+void geniusui_start(const char *seed_path) {
+	if (genius_ui.job) {
+		return;
+	}
+	if (!geniusui_available() || !seed_path || !seed_path[0]) {
+		fprintf(stderr, "genius: no data for the selected track\n");
+		gui_notify_popup("smartmix_no_data");
+		return;
+	}
+	genius_job_t *job = calloc(1, sizeof(*job));
+	if (!job) {
+		fprintf(stderr, "genius: cannot allocate background job\n");
+		gui_notify_popup("smartmix_failed");
+		return;
+	}
+	snprintf(job->seed_path, sizeof(job->seed_path), "%s", seed_path);
+	job->random = lv_rand(0, INT32_MAX);
+	atomic_init(&job->cancel, false);
+	atomic_init(&job->delivery_failed, false);
+	genius_ui.job = job;
+	power_hold_screen_on(true);
+	genius_ui.overlay = lv_obj_create(lv_layer_top());
+	lv_obj_remove_style_all(genius_ui.overlay);
+	lv_obj_set_size(genius_ui.overlay, lv_pct(100), lv_pct(100));
+	lv_obj_set_style_bg_color(genius_ui.overlay, lv_color_black(), 0);
+	lv_obj_set_style_bg_opa(genius_ui.overlay, LV_OPA_60, 0);
+	lv_obj_set_clickable(genius_ui.overlay, true);
+	lv_obj_set_scrollable(genius_ui.overlay, false);
+	lv_obj_t *card = lv_obj_create(genius_ui.overlay);
+	lv_obj_set_size(card, 380, LV_SIZE_CONTENT);
+	lv_obj_add_style(card, &theme_style_screen, 0);
+	lv_obj_set_style_pad_all(card, 20, 0);
+	lv_obj_set_style_pad_gap(card, 20, 0);
+	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
+	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_center(card);
+	lv_obj_t *spinner = spinner_create(card, &icon_loader_big);
+	lv_obj_set_size(spinner, 48, 48);
+	lv_obj_t *label = lv_label_create(card);
+	lv_label_set_text(label, tr("smartmix_building"));
+	lv_obj_set_width(label, lv_pct(100));
+	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_set_style_text_font(label, &font_ui_22, 0);
+	lv_obj_add_style(label, &theme_style_text, 0);
+	genius_cancel_button(card);
+	genius_ui.timer = lv_timer_create(genius_poll, 100, NULL);
+	pthread_t worker;
+	int error = pthread_create(&worker, NULL, genius_build, job);
+	if (error) {
+		fprintf(stderr, "genius: cannot start worker: %s\n", strerror(error));
+		job->result = GENIUS_INVALID;
+		genius_finish(job);
+		return;
+	}
+	pthread_detach(worker);
+}

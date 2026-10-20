@@ -42,6 +42,41 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Delete tracks** from the card, after asking (turn it on in the settings first).
 - **Playlists** - create, rename, reorder and delete. You can back them up to the card as `.m3u` files that other players can read, and import `.m3u` playlists back, even when some files were moved.
 
+## Smart Mix
+
+- **Start from a track** - choose Start Smart Mix in the track's menu to build
+  a mix of up to ten related tracks in the background, with a cancel button.
+- **Built on the player** - after a scan or change check, the same worker builds
+  missing or outdated Smart Mix data from the scanned tags. An existing library
+  can build it when the card returns even with Detect changes disabled, without
+  rescanning its files. No computer or network is required.
+- **Genre-based candidates** - one genre per cluster, ranked by shared album,
+  artist and year. Each track keeps at most 32 candidates, with at most two per
+  artist and three per album. Empty tags are handled as ordinary values.
+- **Progress and background work** - the scan page keeps its tracks-written
+  count and shows Smart Mix indexing separately, with its own total and time
+  estimate. Continue in background and return to the same job; the display may
+  turn off while the device stays awake. Cancel stops the active phase and
+  prevents later phases.
+- **Complete generations** - a bounded staging database is synced before a
+  same-directory rename publishes `.local/genius.db`. Cancellation, limits,
+  changed inputs and write errors leave the previous graph in place. Removal
+  stops and awaits the worker before unmount; abandoned staging is discarded
+  on the next build. The generation names the producer, algorithm and SHA-256
+  of the exact normalized input paths/tags, plus the static graph digest.
+- **Optional PC upgrade** - a PC exporter can supply the same binary format.
+  An equivalent reference-exporter graph is retained. Producers that include
+  the matching `input_sha256` and algorithm are recognized without reranking.
+- **Bounded indexing** - up to 4,096 library rows (including ignored empty paths), 1 MiB of retained path/tag text,
+  4,096 bytes per field, 4 MiB of builder allocations and a 2 MiB snapshot.
+  Ranking evaluates at most 4,096 scores and seven passes of that genre per
+  track. Reaching a limit preserves the old graph and leaves the library usable;
+  a Smart Mix failure does not fail a successful scan.
+- **An ordered queue** - spacing and selection determine the sequence. Shuffle
+  and repeat do not alter it, and the order survives a reboot.
+- Missing data, too few similar tracks and resource limits each have their own
+  message. Snapshot memory and graph traversal have explicit limits.
+
 ## Playback
 
 - **Playback modes** - normal, repeat all, repeat one, shuffle, and a continuous shuffle that deals a new order every round.

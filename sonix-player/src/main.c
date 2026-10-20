@@ -69,7 +69,7 @@
 #include "src/system/core/utils.h"
 #include "src/system/net/webcgi.h"
 #include "src/system/net/wifi.h"
-
+#include "src/system/library/geniusdb.h"
 
 static volatile sig_atomic_t running = 1;
 
@@ -132,9 +132,10 @@ static bool restore_saved_track(void) {
 	char **queue = NULL;
 	int queue_index = 0;
 	bool queue_custom = false;
-	int queue_count = had_query ? 0 : library_queue_load(&queue, &queue_index, &queue_custom);
+	bool queue_ordered = false;
+	int queue_count = had_query ? 0 : library_queue_load(&queue, &queue_index, &queue_custom, &queue_ordered);
 	if (queue_count > 0) {
-		player_restore_list((const char *const *)queue, queue_count, queue_index, queue_custom, saved_track, saved_pos);
+		player_restore_list((const char *const *)queue, queue_count, queue_index, queue_custom, queue_ordered, saved_track, saved_pos);
 		library_queue_free(queue, queue_count);
 		return true;
 	}
@@ -2156,6 +2157,8 @@ int main(int argc, char **argv) {
 		// The audiobook index lives beside it, in its own file.
 		snprintf(db_path, sizeof(db_path), "%s/.local/audiobooks.db", db_root);
 		audiobookdb_open(db_path);
+		snprintf(db_path, sizeof(db_path), "%s/.local/genius.db", db_root);
+		geniusdb_open(db_path);
 
 		// And the radio's own: the starred stations and the last few played.
 		radio_store_open(db_root);

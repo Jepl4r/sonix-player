@@ -4588,9 +4588,8 @@ void player_restore_index(library_index_t *ix, int start_index, const char *cons
 	player_refresh_now_playing();
 }
 
-void player_restore_list(const char *const *list, int count, int start_index, bool custom, const char *filepath,
-						 double position) {
-	device_state_restore_list(list, count, start_index, custom, filepath, position);
+void player_restore_list(const char *const *list, int count, int start_index, bool custom, bool ordered, const char *filepath, double position) {
+	device_state_restore_list(list, count, start_index, custom, ordered, filepath, position);
 	player_refresh_now_playing();
 }
 

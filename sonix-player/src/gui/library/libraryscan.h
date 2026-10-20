@@ -11,8 +11,8 @@ extern lv_obj_t *libraryscan_screen;
 
 void libraryscan_init(gui_config_t *cfg);
 
-// Opening the page starts a scan. Called by the switcher when the page is
-// loaded, so nothing else has to remember to kick it off.
+// Opening attaches to a running scan/update/Smart Mix job; otherwise starts a
+// scan. Leaving the page keeps the job running until explicitly cancelled.
 void libraryscan_begin(void);
 
 // Asks which of the card's top-level folders to scan, saves the choice

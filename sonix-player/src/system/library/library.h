@@ -2,6 +2,7 @@
 #define LIBRARY_H
 
 #include <stdbool.h>
+#include <stdatomic.h>
 #include <stddef.h>
 #include <stdint.h>
 
@@ -186,6 +187,7 @@ typedef enum {
 	LIBRARY_UPDATE_REORGANIZING,
 	LIBRARY_UPDATE_REORGANIZED,
 	LIBRARY_UPDATE_SCANNED,
+	LIBRARY_UPDATE_GENIUS,
 } library_update_event_t;
 typedef void (*library_update_listener_t)(library_update_event_t event, int added, int removed, int updated);
 void library_set_update_listener(library_update_listener_t listener);
@@ -201,6 +203,27 @@ bool library_scan_running(void);
 
 // Tracks written to the index so far -- what the progress page counts up.
 int library_scan_found(void);
+
+// One coherent progress sample. completed/total belong to this phase, never
+// to the tracks-written counter above. elapsed_ms resets at every boundary.
+typedef enum {
+	LIBRARY_PHASE_IDLE,
+	LIBRARY_PHASE_CHECKING,
+	LIBRARY_PHASE_READING,
+	LIBRARY_PHASE_REORGANIZING,
+	LIBRARY_PHASE_GENIUS_CHECKING,
+	LIBRARY_PHASE_GENIUS_BUILDING,
+	LIBRARY_PHASE_GENIUS_PUBLISHING,
+	LIBRARY_PHASE_DONE,
+} library_scan_phase_t;
+typedef struct {
+	library_scan_phase_t phase;
+	unsigned serial;
+	int completed, total;
+	uint32_t elapsed_ms;
+	bool genius_failed, genius_published;
+} library_scan_progress_t;
+void library_scan_progress(library_scan_progress_t *out);
 
 // The folder being read right now, copied into the caller's buffer for the
 // progress page. A copy and not a pointer: the scan thread rewrites that string
@@ -228,6 +251,22 @@ void library_set_log_database(bool enabled);
 // ---------------------------------------------------------------------------
 // Reading the index
 // ---------------------------------------------------------------------------
+
+// Raw scanned tags, not the split/joined browsing values. Borrowed, exact
+// UTF-8 byte lengths; NULL tags/year become empty/zero. Fields over 4096 bytes
+// carry their exact length and an empty payload, and must be rejected by the
+// callback before dereferencing that length. Callback runs under
+// the existing index lock and must not call the library. False on SQL error,
+// cancellation or callback refusal. The bounded stream delivers at most 4097
+// rows: a Smart Mix builder accepts at most 4096, rejecting the extra row.
+// revision identifies the input view and must still match before publication.
+typedef struct {
+	const char *path, *artist, *album, *genre;
+	size_t path_bytes, artist_bytes, album_bytes, genre_bytes;
+	int64_t year;
+} library_tags_t;
+typedef bool (*library_tags_cb)(const library_tags_t *tags, void *user);
+bool library_read_tags(library_tags_cb cb, void *user, const atomic_bool *cancel, unsigned *revision);
 
 typedef enum {
 	LIBRARY_LIST_TRACKS,
@@ -434,6 +473,10 @@ bool library_history_entry(long long id, char *path, size_t path_size, char *nam
 // The id of the newest entry, 0 while there is none: it only grows, so it
 // changes whenever an entry is added.
 long long library_history_revision(void);
+
+// Reads index membership under the index lock. Returns false on read failure;
+// otherwise indexed reports whether the path is in the index.
+bool library_get_indexed(const char *path, bool *indexed);
 
 bool library_fav_contains(const char *path);
 
@@ -742,7 +785,7 @@ bool library_playback_state_load(char *path_out, size_t path_size, double *posit
 // shuffle deal already applied),
 // `current_index` the position within it, `custom` whether it is a library
 // list (never rebuilt from a folder) or a plain folder queue.
-void library_queue_save(const char *const *paths, int count, int current_index, bool custom);
+void library_queue_save(const char *const *paths, int count, int current_index, bool custom, bool ordered);
 
 // Cheap partial update for the common case: the position moved, the list did
 // not. Rewriting a few thousand rows on every track change is not free.
@@ -778,8 +821,8 @@ int library_queue_load_extra(char ***paths_out, int **slots_out);
 
 // Loads the saved queue. Returns the entry count (0 if there is none), fills
 // *paths_out with a malloc'd array of malloc'd strings -- release it with
-// library_queue_free() -- plus the position and the custom flag if asked.
-int library_queue_load(char ***paths_out, int *index_out, bool *custom_out);
+// library_queue_free() -- plus the position, custom and ordered flags if asked.
+int library_queue_load(char ***paths_out, int *index_out, bool *custom_out, bool *ordered_out);
 void library_queue_free(char **paths, int count);
 
 #endif /* LIBRARY_H */

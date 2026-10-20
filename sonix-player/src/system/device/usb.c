@@ -28,7 +28,7 @@
 #include "src/gui/shell/gui.h"
 #include "src/system/audio/audio.h"
 #include "src/system/playback/device_state.h"
-
+#include "src/system/library/geniusdb.h"
 
 // The ADB init script (S440adb) builds its own gadget under this directory
 // and binds it to the device's one USB controller. That matters here: with
@@ -707,6 +707,7 @@ static void storage_export(void) {
 	audio_stop();
 	library_close();
 	audiobookdb_close();
+	geniusdb_close();
 	logging_suspend_for_usb();
 	btlog_card_release();
 
@@ -849,6 +850,8 @@ static void storage_restore(void) {
 	library_open(db_path);
 	snprintf(db_path, sizeof(db_path), "%s/.local/audiobooks.db", sd_mount);
 	audiobookdb_open(db_path);
+	snprintf(db_path, sizeof(db_path), "%s/.local/genius.db", sd_mount);
+	geniusdb_open(db_path);
 	logging_resume_after_usb();
 	btlog_card_attach(sd_mount);
 

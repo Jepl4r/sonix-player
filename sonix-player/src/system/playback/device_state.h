@@ -78,8 +78,7 @@ void device_state_restore_index(library_index_t *ix, int start_index, const char
 // whole list comes back, so next and prev pick up where they were instead of
 // being stuck on the one remembered song. `filepath` is the track to come up on
 // (paused at `position`); if it is not in the list, `start_index` decides.
-void device_state_restore_list(const char *const *list, int count, int start_index, bool custom, const char *filepath,
-							   double position);
+void device_state_restore_list(const char *const *list, int count, int start_index, bool custom, bool ordered, const char *filepath, double position);
 
 // Starts a library list as the queue, handing the queue the same handle the
 // list is drawn from: the queue is then four bytes a track rather than a second

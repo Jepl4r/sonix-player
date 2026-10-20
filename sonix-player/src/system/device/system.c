@@ -51,6 +51,7 @@
 #include "src/system/device/sysserver.h"
 #include "src/system/core/utils.h"
 #include "src/system/core/utils.h"
+#include "src/system/library/geniusdb.h"
 
 #ifndef PATH_MAX
 #define PATH_MAX 4096
@@ -814,6 +815,7 @@ static void card_databases_detach(void) {
 	btlog_card_release();
 	library_close();
 	audiobookdb_close();
+	geniusdb_close();
 	printf("storage: card databases closed for removal\n");
 }
 
@@ -834,6 +836,8 @@ static void card_databases_attach(const char *root) {
 	library_open(path);
 	snprintf(path, sizeof(path), "%.*s/.local/audiobooks.db", room, root);
 	audiobookdb_open(path);
+	snprintf(path, sizeof(path), "%.*s/.local/genius.db", room, root);
+	geniusdb_open(path);
 
 	// The card may have been written somewhere else while it was out: looked
 	// over in the background, as soon as the index is open.

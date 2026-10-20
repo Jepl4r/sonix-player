@@ -34,6 +34,10 @@ lv_obj_t *libraryscan_screen;
 
 static lv_obj_t *count_label;
 static lv_obj_t *status_label;
+static lv_obj_t *phase_label;
+static lv_obj_t *progress_label;
+static lv_obj_t *eta_label;
+static lv_obj_t *background_button;
 static lv_obj_t *ok_button;
 static lv_obj_t *cancel_button;
 static lv_timer_t *poll_timer;
@@ -41,14 +45,18 @@ static lv_timer_t *poll_timer;
 static const char *sd_root;
 
 static void show_finished(int found) {
+	library_scan_progress_t progress;
+	library_scan_progress(&progress);
 	lv_label_set_text_fmt(count_label, "%d", found);
 	lv_label_set_text(status_label, found == 1 ? tr("libraryscan_track_found") : tr("libraryscan_tracks_found"));
+	lv_label_set_text(phase_label, progress.genius_failed ? tr("libraryscan_smartmix_failed") :
+		progress.genius_published ? tr("libraryscan_smartmix_ready") : "");
+	lv_label_set_text(progress_label, "");
+	lv_label_set_text(eta_label, "");
 
 	lv_obj_set_hidden(cancel_button, true);
 	lv_obj_set_hidden(ok_button, false);
-
-	// The scan is over; the screen may go back to timing out.
-	power_hold_screen_on(false);
+	lv_obj_set_hidden(background_button, true);
 }
 
 static void poll_cb(lv_timer_t *timer) {
@@ -56,10 +64,32 @@ static void poll_cb(lv_timer_t *timer) {
 	lv_label_set_text_fmt(count_label, "%d", found);
 
 	if (library_scan_running()) {
+		library_scan_progress_t progress;
+		library_scan_progress(&progress);
+		bool building = progress.phase == LIBRARY_PHASE_GENIUS_BUILDING;
+		bool publishing = progress.phase == LIBRARY_PHASE_GENIUS_PUBLISHING;
+		lv_label_set_text(status_label, found == 1 ? tr("libraryscan_track_found") : tr("libraryscan_tracks_found"));
+		lv_label_set_text(phase_label, progress.phase == LIBRARY_PHASE_GENIUS_CHECKING ? tr("libraryscan_smartmix_checking") :
+			building ? tr("libraryscan_smartmix_indexing") : publishing ? tr("libraryscan_smartmix_publishing") :
+			progress.phase == LIBRARY_PHASE_REORGANIZING ? tr("libraryscan_reorganizing") : "");
+		lv_label_set_text(progress_label, "");
+		lv_label_set_text(eta_label, "");
+		if ((building || publishing) && progress.total > 0) {
+			int percent = (int)((int64_t)progress.completed * 100 / progress.total);
+			if (!progress.genius_published && percent >= 100) percent = 99;
+			lv_label_set_text_fmt(progress_label, tr("libraryscan_smartmix_progress"), progress.completed, progress.total, percent);
+			// Only uniform ranking work contributes to this estimate. Looking
+			// for unchanged tracks, reading tags and syncing are separate phases.
+			if (building && progress.completed > 0 && progress.completed < progress.total && progress.elapsed_ms >= 1000) {
+				uint64_t seconds = (uint64_t)progress.elapsed_ms * (progress.total - progress.completed) / progress.completed / 1000;
+				lv_label_set_text_fmt(eta_label, tr("libraryscan_smartmix_eta"), (unsigned)(seconds / 60), (unsigned)(seconds % 60));
+			}
+		}
 		return;
 	}
 
 	lv_timer_pause(timer);
+	topbar_set_library_check(TOPBAR_LIBRARY_CHECKED);
 	show_finished(found);
 }
 
@@ -82,32 +112,36 @@ static void cancel_cb(lv_event_t *e) {
 	(void)e;
 
 	library_scan_stop();
-	lv_timer_pause(poll_timer);
-	power_hold_screen_on(false);
 
 	back_to_music();
 }
 
+static void background_cb(lv_event_t *e) {
+	(void)e;
+	back_to_music();
+}
+
 void libraryscan_begin(void) {
-	lv_label_set_text(count_label, "0");
-	lv_label_set_text(status_label, tr("libraryscan_tracks_found"));
 	lv_obj_set_hidden(ok_button, true);
 	lv_obj_set_hidden(cancel_button, false);
+	lv_obj_set_hidden(background_button, false);
 
-	if (!library_scan_start(sd_root)) {
+	// Opening a running job attaches, including a graph-only run on an
+	// existing index. Returning to this page must never wipe/restart the scan.
+	if (!library_scan_running() && !library_scan_start(sd_root)) {
 		// Nothing to scan (no card, or a scan is somehow already going).
 		lv_label_set_text(status_label, tr("no_card_to_scan"));
 		lv_obj_set_hidden(cancel_button, true);
 		lv_obj_set_hidden(ok_button, false);
+		lv_obj_set_hidden(background_button, true);
 		return;
 	}
 
-	// Reading a card takes minutes and nobody is touching the screen while it
-	// happens; the idle timer must not blank the panel halfway through.
-	power_hold_screen_on(true);
-
+	// power.c's library_scan_running() busy guard holds the device awake for
+	// every phase, even off-page or with the panel dark. No display hold here.
 	lv_timer_reset(poll_timer);
 	lv_timer_resume(poll_timer);
+	poll_cb(poll_timer);
 }
 
 // ---------------------------------------------------------------------------
@@ -409,6 +443,10 @@ static void pick_fill(void) {
 }
 
 void libraryscan_choose_folders(void) {
+	if (library_scan_running()) {
+		switch_screen(libraryscan_screen);
+		return;
+	}
 	if (!pick_veil) {
 		pick_build();
 	}
@@ -474,6 +512,11 @@ static void update_note_cb(void *user) {
 		break;
 
 	case LIBRARY_UPDATE_ADDING:
+		break;
+
+	case LIBRARY_UPDATE_GENIUS:
+		topbar_set_library_check(TOPBAR_LIBRARY_CHECKING);
+		lv_timer_resume(poll_timer);
 		break;
 
 	case LIBRARY_UPDATE_FINISHED:
@@ -562,7 +605,7 @@ void libraryscan_init(gui_config_t *cfg) {
 	int content_top = settingsrow_content_top(cfg);
 
 	lv_obj_t *container = lv_obj_create(libraryscan_screen);
-	lv_obj_set_size(container, lv_pct(100), cfg->screen_height - content_top);
+	lv_obj_set_size(container, lv_pct(100), cfg->screen_height - content_top - cfg->padding * 2 - 150);
 	lv_obj_align(container, LV_ALIGN_TOP_LEFT, 0, content_top);
 	lv_obj_set_style_bg_opa(container, 0, 0);
 	lv_obj_set_style_border_width(container, 0, 0);
@@ -590,14 +633,40 @@ void libraryscan_init(gui_config_t *cfg) {
 	lv_label_set_text(status_label, tr("libraryscan_tracks_found"));
 	lv_obj_add_style(status_label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_26, 0);
+	lv_obj_set_width(status_label, lv_pct(100));
+	lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
+	phase_label = lv_label_create(container);
+	lv_label_set_text(phase_label, "");
+	lv_obj_set_width(phase_label, lv_pct(100));
+	lv_obj_set_style_text_align(phase_label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_add_style(phase_label, &theme_style_text, 0);
+	lv_obj_set_style_text_font(phase_label, &font_ui_22, 0);
+
+	progress_label = lv_label_create(container);
+	lv_label_set_text(progress_label, "");
+	lv_obj_set_width(progress_label, lv_pct(100));
+	lv_obj_set_style_text_align(progress_label, LV_TEXT_ALIGN_CENTER, 0);
+	lv_obj_add_style(progress_label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(progress_label, &font_ui_18, 0);
+
+	eta_label = lv_label_create(container);
+	lv_label_set_text(eta_label, "");
+	lv_obj_add_style(eta_label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(eta_label, &font_ui_18, 0);
 
 	// The two buttons share the foot of the page: cancel while the scan runs, OK
 	// once it is done.
 	cancel_button = make_button(libraryscan_screen, "cancel", lv_color_make(210, 66, 58), cancel_cb, cfg);
 	ok_button = make_button(libraryscan_screen, "ok", theme()->accent, ok_cb, cfg);
 	lv_obj_set_hidden(ok_button, true);
+	background_button = make_button(libraryscan_screen, "libraryscan_background", theme()->surface_pressed, background_cb, cfg);
+	lv_obj_set_width(background_button, cfg->screen_width - 2 * cfg->padding);
+	lv_obj_set_height(background_button, 50);
+	lv_obj_align(background_button, LV_ALIGN_BOTTOM_MID, 0, -(cfg->padding * 2 + 80));
+	lv_obj_set_hidden(background_button, true);
 
 	poll_timer = lv_timer_create(poll_cb, SCAN_POLL_MS, NULL);
+	power_pause_in_standby(poll_timer);
 	lv_timer_pause(poll_timer);
 
 	// The card may have been written while the player was off.

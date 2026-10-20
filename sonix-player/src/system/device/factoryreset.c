@@ -25,6 +25,7 @@
 #include <sys/reboot.h>
 #include <sys/stat.h>
 #include <unistd.h>
+#include "src/system/library/geniusdb.h"
 
 // ---------------------------------------------------------------------------
 // How the original firmware does it, and why that is the only safe way
@@ -167,6 +168,7 @@ void factoryreset_run(void) {
 	audio_stop();
 	library_close();
 	audiobookdb_close();
+	geniusdb_close();
 	logging_suspend_for_usb();
 	btlog_card_release();
 
