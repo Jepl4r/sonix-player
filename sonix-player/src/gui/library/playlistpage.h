@@ -17,6 +17,11 @@ void playlistpage_init(gui_config_t *cfg);
 // Browse: the playlists themselves.
 void playlistpage_open(void);
 
+// Opens the playlist `name` as its own track list, exactly as tapping its row
+// does. A caller that has just written a playlist hands the user straight to it
+// this way, instead of back to wherever the track was picked up.
+void playlistpage_open_named(const char *name);
+
 // Pick: choose (or create) the playlist `track_path` is added to.
 void playlistpage_add_track(const char *track_path);
 

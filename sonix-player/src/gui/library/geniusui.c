@@ -1,4 +1,5 @@
 #include "src/gui/library/geniusui.h"
+#include "src/gui/library/playlistpage.h"
 
 #include <pthread.h>
 #include <stdatomic.h>
@@ -14,21 +15,39 @@
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/toast.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/device/power.h"
 #include "src/system/library/genius.h"
+#include "src/system/library/library.h"
+#include "src/system/library/playlists.h"
 #include "src/system/playback/device_state.h"
 #include "src/system/playback/playlist.h"
 
+// What the finished mix is for. A mix started from a track's own menu is
+// played; the one the Playlist page asks for is written to the card as a
+// playlist and leaves the decoder alone.
+typedef enum {
+	GENIUS_MODE_PLAY,
+	GENIUS_MODE_PLAYLIST,
+} genius_mode_t;
+
 typedef struct {
 	char seed_path[512];
+	// The language's word for the feature, read on the GUI thread: the worker
+	// below writes the playlist and cannot reach the language table.
+	char prefix[64];
+	genius_mode_t mode;
 	unsigned random;
 	atomic_bool cancel;
 	atomic_bool delivery_failed;
 	geniusdb_snapshot_t *snapshot;
 	genius_mix_t mix;
 	genius_result_t result;
+	// Where the mix landed, for the mode that writes one.
+	char playlist_name[256];
+	uint64_t playlist_session;
 } genius_job_t;
 
 // GUI thread owns the widgets and job pointer. The worker owns the result
@@ -39,6 +58,8 @@ static struct {
 	lv_timer_t *timer;
 } genius_ui;
 
+static void genius_begin(const char *seed_path, genius_mode_t mode, const char *prefix);
+
 static void genius_finish(void *user) {
 	genius_job_t *job = user;
 	lv_timer_delete(genius_ui.timer);
@@ -47,10 +68,25 @@ static void genius_finish(void *user) {
 	genius_ui.overlay = NULL;
 	genius_ui.job = NULL;
 	power_hold_screen_on(false);
-	if (atomic_load(&job->cancel) || (job->snapshot && !geniusdb_snapshot_current(job->snapshot)) || !gui_card_available()) {
+	if (atomic_load(&job->cancel) || (job->snapshot && !geniusdb_snapshot_current(job->snapshot)) || !gui_card_available() ||
+		(job->mode == GENIUS_MODE_PLAYLIST && job->playlist_session && library_session() != job->playlist_session)) {
 		job->result = GENIUS_CANCELLED;
 	}
-	if (job->result == GENIUS_OK) {
+	// Cancelled while it was being written, or the card went away under it:
+	// remove the unwanted playlist only while its session is still open.
+	if (job->mode == GENIUS_MODE_PLAYLIST && job->result != GENIUS_OK && job->playlist_name[0]) {
+		playlists_delete_session(job->playlist_name, job->playlist_session);
+		job->playlist_name[0] = '\0';
+	}
+	if (job->result == GENIUS_OK && job->mode == GENIUS_MODE_PLAYLIST) {
+		// The mix is a playlist on the card now. What is playing is none of
+		// this mode's business: the user asked for a playlist, so they are
+		// handed the playlist -- its own list of tracks, the same screen
+		// tapping its row would open.
+		printf("genius: mix saved as '%s'\n", job->playlist_name);
+		toast_success("playlist_tracks_added");
+		playlistpage_open_named(job->playlist_name);
+	} else if (job->result == GENIUS_OK) {
 		// The mix's sequence is loaded as an ordered queue, so next and prev
 		// follow it and device_state persists it as it stands.
 		//
@@ -112,6 +148,15 @@ static void *genius_build(void *user) {
 	geniusdb_result_t read = geniusdb_load_snapshot(&job->snapshot, &job->cancel);
 	if (read == GENIUSDB_OK) {
 		job->result = genius_mix_build(job->snapshot, job->seed_path, job->random, &job->cancel, &job->mix);
+		// Writing the playlist belongs to this thread: it reads tags off the
+		// card for every entry. A mix that cannot be written is reported as a
+		// failure, and the playlist it half made is taken back off the card
+		// inside the save.
+		if (job->result == GENIUS_OK && job->mode == GENIUS_MODE_PLAYLIST &&
+			!playlists_create_from_seed(job->prefix, job->seed_path, (const char *const *)job->mix.paths,
+										job->mix.count, job->playlist_name, sizeof(job->playlist_name), &job->playlist_session)) {
+			job->result = GENIUS_INVALID;
+		}
 	} else if (read == GENIUSDB_UNAVAILABLE) {
 		job->result = GENIUS_NO_DATA;
 	} else if (read == GENIUSDB_LIMIT) {
@@ -161,7 +206,15 @@ static void genius_cancel_button(lv_obj_t *parent) {
 
 bool geniusui_available(void) { return gui_card_available() && geniusdb_available(); }
 
-void geniusui_start(const char *seed_path) {
+void geniusui_start(const char *seed_path) { genius_begin(seed_path, GENIUS_MODE_PLAY, NULL); }
+
+void geniusui_create_playlist(const char *seed_path) {
+	// The name is composed here, on the GUI thread: the worker that writes the
+	// playlist has no way to ask the language table what the feature is called.
+	genius_begin(seed_path, GENIUS_MODE_PLAYLIST, tr("smartmix_playlist_prefix"));
+}
+
+static void genius_begin(const char *seed_path, genius_mode_t mode, const char *prefix) {
 	if (genius_ui.job) {
 		return;
 	}
@@ -177,6 +230,8 @@ void geniusui_start(const char *seed_path) {
 		return;
 	}
 	snprintf(job->seed_path, sizeof(job->seed_path), "%s", seed_path);
+	snprintf(job->prefix, sizeof(job->prefix), "%s", prefix ? prefix : "");
+	job->mode = mode;
 	job->random = lv_rand(0, INT32_MAX);
 	atomic_init(&job->cancel, false);
 	atomic_init(&job->delivery_failed, false);

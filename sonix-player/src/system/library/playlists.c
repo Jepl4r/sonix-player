@@ -7,6 +7,7 @@
 #include "src/system/playback/playlist.h"
 
 #include <dirent.h>
+#include <pthread.h>
 #include <stdbool.h>
 #include <stdint.h>
 #include <errno.h>
@@ -187,9 +188,10 @@ static bool file_is_marked(const char *path) {
 // conversion must not delete the user's only other copy.
 // ---------------------------------------------------------------------------
 
-static int rows_from_file(const char *name, const char *file_path);
+static int rows_from_file(const char *name, const char *file_path, uint64_t session);
 
 static void migrate_folder_once(void) {
+	uint64_t session = library_session();
 	if (migration_tried || !dir_path[0] || library_playlists_migrated()) {
 		return;
 	}
@@ -197,7 +199,7 @@ static void migrate_folder_once(void) {
 
 	DIR *dir = opendir(dir_path);
 	if (!dir) {
-		library_playlists_set_migrated(); // no folder, nothing to move, never again
+		library_playlists_set_migrated(session); // no folder, nothing to move, never again
 		return;
 	}
 
@@ -226,7 +228,7 @@ static void migrate_folder_once(void) {
 			continue;
 		}
 
-		int count = rows_from_file(name, full);
+		int count = rows_from_file(name, full, session);
 		if (count > 0) {
 			moved++;
 			tracks += count;
@@ -234,7 +236,7 @@ static void migrate_folder_once(void) {
 	}
 	closedir(dir);
 
-	library_playlists_set_migrated();
+	library_playlists_set_migrated(session);
 	if (moved > 0) {
 		fprintf(stderr, "playlists: %d playlist%s (%d tracks) moved from the card into the index; the files stay as "
 						"backups\n",
@@ -269,10 +271,11 @@ bool playlists_exists(const char *name) { return name_is_usable(name) && library
 // ---------------------------------------------------------------------------
 
 bool playlists_create(const char *name) {
+	uint64_t session = library_session();
 	if (!name_is_usable(name)) {
 		return false;
 	}
-	return library_playlist_create(name);
+	return library_playlist_create(name, session);
 }
 
 // The seconds an #EXTINF line wants. -1 (the M3U "unknown") whenever the
@@ -324,7 +327,7 @@ void playlists_track_names(const char *track_path, char *title, size_t title_siz
 	}
 }
 
-bool playlists_add_track(const char *name, const char *track_path) {
+static bool add_track_session(const char *name, const char *track_path, uint64_t session) {
 	if (!name_is_usable(name) || !track_path || !track_path[0]) {
 		return false;
 	}
@@ -336,14 +339,20 @@ bool playlists_add_track(const char *name, const char *track_path) {
 	playlists_track_names(track_path, row.title, sizeof(row.title), row.artist, sizeof(row.artist));
 	row.seconds = track_seconds(track_path);
 
-	return library_playlist_append(name, &row);
+	return library_playlist_append(name, &row, session);
+}
+
+bool playlists_add_track(const char *name, const char *track_path) {
+	uint64_t session = library_session();
+	return add_track_session(name, track_path, session);
 }
 
 bool playlists_remove_track(const char *name, const char *track_path) {
+	uint64_t session = library_session();
 	if (!name_is_usable(name) || !track_path || !track_path[0]) {
 		return false;
 	}
-	return library_playlist_remove_path(name, track_path);
+	return library_playlist_remove_path(name, track_path, session);
 }
 
 bool playlists_has_track(const char *name, const char *track_path) {
@@ -351,22 +360,31 @@ bool playlists_has_track(const char *name, const char *track_path) {
 }
 
 int playlists_remove_positions(const char *name, const int *positions, int count) {
+	uint64_t session = library_session();
 	if (!name_is_usable(name)) {
 		return 0;
 	}
-	return library_playlist_remove_positions(name, positions, count);
+	return library_playlist_remove_positions(name, positions, count, session);
 }
 
-bool playlists_delete(const char *name) { return name_is_usable(name) && library_playlist_drop(name); }
+bool playlists_delete_session(const char *name, uint64_t session) {
+	return name_is_usable(name) && library_playlist_drop(name, session);
+}
+
+bool playlists_delete(const char *name) {
+	uint64_t session = library_session();
+	return playlists_delete_session(name, session);
+}
 
 bool playlists_rename(const char *name, const char *new_name) {
+	uint64_t session = library_session();
 	if (!name_is_usable(name) || !name_is_usable(new_name)) {
 		return false;
 	}
 	// No special case for case alone: a table name is compared exactly, so
 	// "prova" and "Prova" are two playlists -- unlike the FAT file names the
 	// backups take, where they would be one file.
-	return library_playlist_rename(name, new_name);
+	return library_playlist_rename(name, new_name, session);
 }
 
 // ---------------------------------------------------------------------------
@@ -587,12 +605,12 @@ static void name_entry(const char *path, const char *extinf, char *title_out, si
 // 0 if nothing did. Used by the one-time move off the card; Import has its own
 // reader, because it also has to look up entries the card no longer has at the
 // path they name.
-static int rows_from_file(const char *name, const char *file_path) {
+static int rows_from_file(const char *name, const char *file_path, uint64_t session) {
 	FILE *f = fopen(file_path, "r");
 	if (!f) {
 		return 0;
 	}
-	library_playlist_writer_t *writer = library_playlist_write_begin(name);
+	library_playlist_writer_t *writer = library_playlist_write_begin(name, session);
 	if (!writer) {
 		fclose(f);
 		return 0;
@@ -758,6 +776,168 @@ int playlists_count_tracks(const char *name) {
 }
 
 int playlists_count_lines(const char *name) { return playlists_count_tracks(name); }
+
+// ---------------------------------------------------------------------------
+// Writing more than one entry
+//
+// A set of tracks, and the playlist a finished mix becomes. Both put many
+// entries in at once and both hold the write lock for the whole run: two of
+// them at once would have the second see the first's half-written table, and
+// pick a name that is about to exist. library_playlist_append() has a lock of
+// its own, but that one covers a single entry.
+// ---------------------------------------------------------------------------
+
+static pthread_mutex_t write_lock = PTHREAD_MUTEX_INITIALIZER;
+
+// The longest name a playlist may have, and the characters a card file name
+// cannot carry: the same two rules name_is_usable() applies, so a name that
+// gets past here is one playlists_create() accepts.
+#define PLAYLISTS_NAME_MAX 200
+#define PLAYLISTS_NAME_FORBIDDEN "/\\:*?\"<>|"
+
+// Every track of the set that could be written, in order. How many went in.
+int playlists_add_tracks(const char *name, const char *const *paths, int count) {
+	uint64_t session = library_session();
+	if (!name_is_usable(name) || !paths || count <= 0) {
+		return 0;
+	}
+	int added = 0;
+	pthread_mutex_lock(&write_lock);
+	for (int i = 0; i < count; i++) {
+		if (paths[i] && add_track_session(name, paths[i], session)) {
+			added++;
+		}
+	}
+	pthread_mutex_unlock(&write_lock);
+	return added;
+}
+
+// The characters a card file name cannot carry, taken out of a track's title
+// before it is used as part of a playlist's.
+static void seed_name_sanitise(char *text) {
+	for (char *c = text; *c; c++) {
+		if (strchr(PLAYLISTS_NAME_FORBIDDEN, *c) != NULL) {
+			*c = '-';
+		}
+	}
+	// A title that opens or closes with one of them -- a quoted one, say --
+	// would otherwise leave the dashes at the ends of the playlist's name,
+	// where they read as part of it rather than as the track's punctuation.
+	size_t len = strlen(text);
+	size_t start = 0;
+	while (start < len && text[start] == '-') {
+		start++;
+	}
+	while (len > start && text[len - 1] == '-') {
+		len--;
+	}
+	memmove(text, text + start, len - start);
+	text[len - start] = '\0';
+}
+
+// Cuts `text` so that it and the prefix, the separator and the suffix fit
+// `budget` bytes, never splitting a UTF-8 sequence.
+static void seed_name_cut(char *text, size_t budget, size_t tail) {
+	size_t len = strlen(text);
+	if (budget <= tail) {
+		text[0] = '\0';
+		return;
+	}
+	size_t room = budget - tail;
+	if (len <= room) {
+		return;
+	}
+	size_t cut = room;
+	while (cut > 0 && ((unsigned char)text[cut] & 0xC0) == 0x80) {
+		cut--;
+	}
+	text[cut] = '\0';
+}
+
+// `<prefix> - <title>`, then `<prefix> - <title> (2)` and up. The seed's title
+// is what gives way when the name would be too long; the prefix never does.
+static void seed_name_make(const char *prefix, const char *title, int attempt, char *out, size_t size) {
+	char tail[16];
+	tail[0] = '\0';
+	if (attempt > 0) {
+		snprintf(tail, sizeof(tail), " (%d)", attempt + 1);
+	}
+	char cut[PLAYLISTS_NAME_MAX + 1];
+	snprintf(cut, sizeof(cut), "%s", title);
+	seed_name_sanitise(cut);
+	seed_name_cut(cut, size - 1, strlen(prefix) + 3 + strlen(tail));
+
+	// Copied rather than formatted: the compiler cannot see that seed_name_cut()
+	// has already made room for all of this, and one snprintf would have it warn
+	// about a truncation that cannot happen.
+	size_t plen = strlen(prefix);
+	size_t clen = cut[0] ? strlen(cut) : 0;
+	size_t tlen = strlen(tail);
+	size_t at = 0;
+	memcpy(out + at, prefix, plen);
+	at += plen;
+	if (clen > 0) {
+		memcpy(out + at, " - ", 3);
+		at += 3;
+		memcpy(out + at, cut, clen);
+		at += clen;
+	}
+	memcpy(out + at, tail, tlen);
+	at += tlen;
+	out[at < size ? at : size - 1] = '\0';
+}
+
+bool playlists_create_from_seed(const char *prefix, const char *seed_path, const char *const *paths, int count,
+								char *name_out, size_t name_size, uint64_t *session_out) {
+	uint64_t session = library_session();
+	if (session_out) {
+		*session_out = session;
+	}
+	if (name_out && name_size) {
+		name_out[0] = '\0';
+	}
+	if (!session || !name_is_usable(prefix) || !seed_path || !seed_path[0] || !paths || count <= 0 || !name_out ||
+		name_size < 16) {
+		return false;
+	}
+
+	// What the playlist is named after. Reads the card, which is why this is a
+	// worker's work rather than the GUI thread's.
+	char title[PLAYLISTS_NAME_MAX + 1];
+	char artist[PLAYLISTS_NAME_MAX + 1];
+	playlists_track_names(seed_path, title, sizeof(title), artist, sizeof(artist));
+
+	char name[PLAYLISTS_NAME_MAX + 1];
+	bool created = false;
+	pthread_mutex_lock(&write_lock);
+	for (int attempt = 0; attempt < 100 && !created; attempt++) {
+		seed_name_make(prefix, title, attempt, name, sizeof(name));
+		if (library_playlist_exists(name)) {
+			continue;
+		}
+		created = library_playlist_create(name, session);
+		if (!created) {
+			break;
+		}
+	}
+	if (created) {
+		for (int i = 0; i < count; i++) {
+			if (!paths[i] || !add_track_session(name, paths[i], session)) {
+				// Remove the partial playlist only while its session is open.
+				playlists_delete_session(name, session);
+				created = false;
+				break;
+			}
+		}
+	}
+	pthread_mutex_unlock(&write_lock);
+
+	if (!created) {
+		return false;
+	}
+	snprintf(name_out, name_size, "%s", name);
+	return true;
+}
 
 // ---------------------------------------------------------------------------
 // import
@@ -941,6 +1121,7 @@ static bool import_name(const char *stem, char *name_out, size_t name_size) {
 }
 
 bool playlists_import(const char *source_path, bool overwrite, playlists_import_result_t *out) {
+	uint64_t session = library_session();
 	if (!source_path || !source_path[0] || !out) {
 		return false;
 	}
@@ -1100,7 +1281,7 @@ bool playlists_import(const char *source_path, bool overwrite, playlists_import_
 	if (replacing) {
 		snprintf(name, sizeof(name), "%.180s (import)", stem);
 		if (library_playlist_exists(name)) {
-			library_playlist_drop(name);
+			library_playlist_drop(name, session);
 		}
 	} else if (!import_name(stem, name, sizeof(name))) {
 		import_entries_free(entries, count);
@@ -1116,7 +1297,7 @@ bool playlists_import(const char *source_path, bool overwrite, playlists_import_
 	//
 	// Straight into the playlist, a row at a time. Held in an array first, a
 	// five-thousand-entry import would be nine megabytes of fixed-width rows.
-	library_playlist_writer_t *writer = library_playlist_write_begin(name);
+	library_playlist_writer_t *writer = library_playlist_write_begin(name, session);
 	if (!writer) {
 		import_entries_free(entries, count);
 		return false;
@@ -1148,7 +1329,7 @@ bool playlists_import(const char *source_path, bool overwrite, playlists_import_
 	import_entries_free(entries, count);
 	if (!ok) {
 		if (replacing) {
-			library_playlist_drop(name); // the old playlist stays as it was
+			library_playlist_drop(name, session); // the old playlist stays as it was
 		}
 		return false;
 	}
@@ -1156,7 +1337,7 @@ bool playlists_import(const char *source_path, bool overwrite, playlists_import_
 	// The new rows are complete: they take the old playlist's place. Should
 	// that fail, they stay under the name they were written to rather than
 	// being lost.
-	if (replacing && library_playlist_drop(stem) && library_playlist_rename(name, stem)) {
+	if (replacing && library_playlist_drop(stem, session) && library_playlist_rename(name, stem, session)) {
 		copy_capped(name, sizeof(name), stem);
 	}
 

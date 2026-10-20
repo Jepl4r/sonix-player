@@ -308,6 +308,7 @@ static const char *const SORT_INDEXES[] = {
 
 static sqlite3 *db;
 static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
+static uint64_t session_generation;
 
 // Bumped whenever a row's identity can have changed underneath a list that is
 // already open.
@@ -1426,18 +1427,23 @@ static bool db_open_file(const char *db_path) {
 
 	album_groups_fill();
 	album_keys_fill();
+	if (++session_generation == 0) {
+		session_generation++;
+	}
 	return true;
 }
 
 bool library_open(const char *db_path) {
+	pthread_mutex_lock(&db_lock);
 	if (db) {
+		pthread_mutex_unlock(&db_lock);
 		return true;
 	}
 	if (!db_path || !db_path[0] || !db_open_file(db_path)) {
+		pthread_mutex_unlock(&db_lock);
 		return false;
 	}
 
-	pthread_mutex_lock(&db_lock);
 	links_check();
 	bump_all_generations(); // a different card is a different set of row ids
 	pthread_mutex_unlock(&db_lock);
@@ -6961,6 +6967,13 @@ bool library_is_open(void) {
 	return open;
 }
 
+uint64_t library_session(void) {
+	pthread_mutex_lock(&db_lock);
+	uint64_t session = db ? session_generation : 0;
+	pthread_mutex_unlock(&db_lock);
+	return session;
+}
+
 bool library_scan_running(void) { return scan_running; }
 
 int library_scan_found(void) { return scan_found; }
@@ -7240,14 +7253,18 @@ void library_playlist_names_free(char **names, int count) {
 	free(names);
 }
 
-bool library_playlist_create(const char *name) {
+static bool playlist_session_writable_locked(uint64_t session) {
+	return db && session && session == session_generation && sqlite3_db_readonly(db, "main") == 0;
+}
+
+bool library_playlist_create(const char *name, uint64_t session) {
 	char quoted[PLAYLIST_TABLE_MAX];
 	if (!playlist_table(name, quoted, sizeof(quoted))) {
 		return false;
 	}
 	pthread_mutex_lock(&db_lock);
 	bool ok = false;
-	if (db && !playlist_table_exists_locked(name)) {
+	if (playlist_session_writable_locked(session) && !playlist_table_exists_locked(name)) {
 		ok = playlist_create_locked(quoted);
 	}
 	if (ok) {
@@ -7257,14 +7274,14 @@ bool library_playlist_create(const char *name) {
 	return ok;
 }
 
-bool library_playlist_drop(const char *name) {
+bool library_playlist_drop(const char *name, uint64_t session) {
 	char quoted[PLAYLIST_TABLE_MAX];
 	if (!playlist_table(name, quoted, sizeof(quoted))) {
 		return false;
 	}
 	pthread_mutex_lock(&db_lock);
 	bool ok = false;
-	if (db && playlist_table_exists_locked(name)) {
+	if (playlist_session_writable_locked(session) && playlist_table_exists_locked(name)) {
 		char sql[PLAYLIST_TABLE_MAX + 32];
 		snprintf(sql, sizeof(sql), "DROP TABLE %s", quoted);
 		ok = exec(sql);
@@ -7276,17 +7293,19 @@ bool library_playlist_drop(const char *name) {
 	return ok;
 }
 
-bool library_playlist_rename(const char *name, const char *new_name) {
+bool library_playlist_rename(const char *name, const char *new_name, uint64_t session) {
 	char from[PLAYLIST_TABLE_MAX], to[PLAYLIST_TABLE_MAX];
 	if (!playlist_table(name, from, sizeof(from)) || !playlist_table(new_name, to, sizeof(to))) {
 		return false;
 	}
-	if (strcmp(name, new_name) == 0) {
-		return true;
-	}
 	pthread_mutex_lock(&db_lock);
 	bool ok = false;
-	if (db && playlist_table_exists_locked(name) && !playlist_table_exists_locked(new_name)) {
+	if (playlist_session_writable_locked(session) && strcmp(name, new_name) == 0) {
+		pthread_mutex_unlock(&db_lock);
+		return true;
+	}
+	if (playlist_session_writable_locked(session) && playlist_table_exists_locked(name) &&
+		!playlist_table_exists_locked(new_name)) {
 		char sql[2 * PLAYLIST_TABLE_MAX + 32];
 		snprintf(sql, sizeof(sql), "ALTER TABLE %s RENAME TO %s", from, to);
 		ok = exec(sql);
@@ -7317,13 +7336,14 @@ static bool playlist_append_locked(const char *quoted, const library_playlist_ro
 	return ok;
 }
 
-bool library_playlist_append(const char *name, const library_playlist_row_t *row) {
+bool library_playlist_append(const char *name, const library_playlist_row_t *row, uint64_t session) {
 	char quoted[PLAYLIST_TABLE_MAX];
 	if (!row || !playlist_table(name, quoted, sizeof(quoted))) {
 		return false;
 	}
 	pthread_mutex_lock(&db_lock);
-	bool ok = db && playlist_create_locked(quoted) && playlist_append_locked(quoted, row);
+	bool ok = playlist_session_writable_locked(session) && playlist_create_locked(quoted) &&
+			  playlist_append_locked(quoted, row);
 	if (ok) {
 		bump_generation(GEN_PLAYLISTS);
 	}
@@ -7443,11 +7463,12 @@ int library_playlist_rows(const char *name, library_playlist_row_t **rows_out) {
 
 struct library_playlist_writer {
 	sqlite3_stmt *stmt;
+	uint64_t session;
 	bool failed;
 	bool owns_transaction;
 };
 
-library_playlist_writer_t *library_playlist_write_begin(const char *name) {
+library_playlist_writer_t *library_playlist_write_begin(const char *name, uint64_t session) {
 	char quoted[PLAYLIST_TABLE_MAX];
 	if (!playlist_table(name, quoted, sizeof(quoted))) {
 		return NULL;
@@ -7461,11 +7482,13 @@ library_playlist_writer_t *library_playlist_write_begin(const char *name) {
 	snprintf(sql, sizeof(sql), "INSERT INTO %s(path,title,artist,seconds,present) VALUES(?,?,?,?,?)", quoted);
 
 	pthread_mutex_lock(&db_lock);
-	if (!db || !playlist_create_locked(quoted) || sqlite3_prepare_v2(db, sql, -1, &writer->stmt, NULL) != SQLITE_OK) {
+	if (!playlist_session_writable_locked(session) || !playlist_create_locked(quoted) ||
+		sqlite3_prepare_v2(db, sql, -1, &writer->stmt, NULL) != SQLITE_OK) {
 		pthread_mutex_unlock(&db_lock);
 		free(writer);
 		return NULL;
 	}
+	writer->session = session;
 	writer->owns_transaction = exec_quiet("BEGIN");
 	pthread_mutex_unlock(&db_lock);
 	return writer;
@@ -7476,6 +7499,11 @@ bool library_playlist_write_row(library_playlist_writer_t *writer, const library
 		return false;
 	}
 	pthread_mutex_lock(&db_lock);
+	if (!playlist_session_writable_locked(writer->session)) {
+		writer->failed = true;
+		pthread_mutex_unlock(&db_lock);
+		return false;
+	}
 	sqlite3_reset(writer->stmt);
 	sqlite3_bind_text(writer->stmt, 1, row->path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(writer->stmt, 2, row->title, -1, SQLITE_TRANSIENT);
@@ -7498,6 +7526,11 @@ bool library_playlist_write_end(library_playlist_writer_t *writer, bool keep) {
 	bool ok = keep && !writer->failed;
 	pthread_mutex_lock(&db_lock);
 	sqlite3_finalize(writer->stmt);
+	if (!playlist_session_writable_locked(writer->session)) {
+		pthread_mutex_unlock(&db_lock);
+		free(writer);
+		return false;
+	}
 	if (writer->owns_transaction) {
 		exec(ok ? "COMMIT" : "ROLLBACK");
 	} else if (!ok) {
@@ -7512,11 +7545,11 @@ bool library_playlist_write_end(library_playlist_writer_t *writer, bool keep) {
 	return ok;
 }
 
-bool library_playlist_append_all(const char *name, const library_playlist_row_t *rows, int count) {
+bool library_playlist_append_all(const char *name, const library_playlist_row_t *rows, int count, uint64_t session) {
 	if (!rows || count < 0) {
 		return false;
 	}
-	library_playlist_writer_t *writer = library_playlist_write_begin(name);
+	library_playlist_writer_t *writer = library_playlist_write_begin(name, session);
 	if (!writer) {
 		return false;
 	}
@@ -7640,7 +7673,7 @@ bool library_playlist_move(const char *name, int from, int to) {
 	return ok;
 }
 
-bool library_playlist_remove_path(const char *name, const char *path) {
+bool library_playlist_remove_path(const char *name, const char *path, uint64_t session) {
 	char quoted[PLAYLIST_TABLE_MAX];
 	if (!path || !path[0] || !playlist_table(name, quoted, sizeof(quoted))) {
 		return false;
@@ -7651,7 +7684,7 @@ bool library_playlist_remove_path(const char *name, const char *path) {
 
 	pthread_mutex_lock(&db_lock);
 	bool ok = false;
-	if (db && playlist_table_exists_locked(name)) {
+	if (playlist_session_writable_locked(session) && playlist_table_exists_locked(name)) {
 		sqlite3_stmt *stmt = NULL;
 		if (sqlite3_prepare_v2(db, sql, -1, &stmt, NULL) == SQLITE_OK) {
 			sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
@@ -7688,7 +7721,7 @@ bool library_playlist_contains(const char *name, const char *path) {
 	return found;
 }
 
-int library_playlist_remove_positions(const char *name, const int *positions, int count) {
+int library_playlist_remove_positions(const char *name, const int *positions, int count, uint64_t session) {
 	char quoted[PLAYLIST_TABLE_MAX];
 	if (!positions || count <= 0 || !playlist_table(name, quoted, sizeof(quoted))) {
 		return 0;
@@ -7709,7 +7742,7 @@ int library_playlist_remove_positions(const char *name, const int *positions, in
 
 	pthread_mutex_lock(&db_lock);
 	int removed = 0;
-	if (db && playlist_table_exists_locked(name)) {
+	if (playlist_session_writable_locked(session) && playlist_table_exists_locked(name)) {
 		int found = 0;
 		sqlite3_stmt *stmt = NULL;
 		if (sqlite3_prepare_v2(db, read_sql, -1, &stmt, NULL) == SQLITE_OK) {
@@ -7782,9 +7815,9 @@ bool library_playlists_migrated(void) {
 	return done;
 }
 
-void library_playlists_set_migrated(void) {
+void library_playlists_set_migrated(uint64_t session) {
 	pthread_mutex_lock(&db_lock);
-	if (db) {
+	if (playlist_session_writable_locked(session)) {
 		exec("INSERT OR REPLACE INTO PLAYLIST_MIGRATION(id,done) VALUES(0,1)");
 	}
 	pthread_mutex_unlock(&db_lock);

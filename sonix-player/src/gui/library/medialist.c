@@ -344,6 +344,11 @@ typedef struct {
 	lv_point_t index_press;
 	bool index_engaged;
 
+	// Walking the lists to choose one track rather than to listen to: a tap
+	// hands the path to the caller instead of playing it, and the corner
+	// keeps none of its buttons. See medialist_open_seed().
+	bool picking_seed;
+
 	// Selection mode, on the lists panel_selectable() allows: a long press on
 	// a row starts it, taps then choose rows, and the corner holds the way out
 	// and "add to playlist" in place of its usual buttons. `corner_shown` is
@@ -399,6 +404,14 @@ static unsigned sort_year_mask;
 // list -- from the search, or from the Artists list with Album view off --
 // opens as their records instead.
 static bool artist_records;
+
+// Where a seed pick hands the track it was walked to. One picker is up at a
+// time; whether the callback is used at all is the panel's own mode.
+static medialist_seed_cb_t seed_cb;
+static void *seed_cb_user;
+
+static void panel_open(const char *title, library_list_t kind, library_filter_t filter, const char *filter_value,
+					   bool picking_seed);
 
 // Whether an artist opens as a list of their records. On by default: an artist
 // with a dozen albums is a dozen rows this way and four hundred the other.
@@ -1188,13 +1201,14 @@ static void row_update_selection(panel_t *p, row_t *row, const char *name, const
 	} else {
 		lv_obj_set_hidden(row->check, true);
 	}
+	// The ellipsis, or the chevron on a row that opens another list. Both go
+	// away while a selection is being made; the ellipsis goes away again while
+	// a seed is being picked, because its menu is about playing and filing the
+	// track rather than choosing it. The chevron stays: it still says the row
+	// goes somewhere.
 	lv_obj_t *usual = row->menu_btn ? row->menu_btn : row->chevron;
 	if (usual) {
-		if (p->selecting) {
-			lv_obj_set_hidden(usual, true);
-		} else {
-			lv_obj_set_hidden(usual, false);
-		}
+		lv_obj_set_hidden(usual, p->selecting || (p->picking_seed && row->menu_btn != NULL));
 	}
 }
 
@@ -1377,7 +1391,7 @@ static void row_long_pressed_cb(lv_event_t *e) {
 		return;
 	}
 	panel_t *p = lv_event_get_user_data(e);
-	if (!panel_selectable(p) || p->reordering) {
+	if (!panel_selectable(p) || p->reordering || p->picking_seed) {
 		return;
 	}
 	row_t *row = row_of_button(p, lv_event_get_current_target(e));
@@ -2598,6 +2612,17 @@ static void row_clicked_cb(lv_event_t *e) {
 		}
 	}
 
+	// The list is being walked for one track, not listened to. The path goes
+	// back to whoever asked for it, and the list is left where it is: what
+	// happens next is theirs to decide, and the walk may well carry on from
+	// here.
+	if (p->picking_seed && p->is_tracks) {
+		if (path[0] && seed_cb) {
+			seed_cb(path, seed_cb_user);
+		}
+		return;
+	}
+
 	if (p->is_tracks) {
 		// The queue is this list, so next/prev walk it -- not the folder the
 		// file happens to live in.
@@ -2654,10 +2679,10 @@ static void row_clicked_cb(lv_event_t *e) {
 				   p->kind == LIBRARY_LIST_GENRES || p->kind == LIBRARY_LIST_YEARS;
 	bool artist_row = p->kind == LIBRARY_LIST_ARTISTS || p->kind == LIBRARY_LIST_ALBUM_ARTISTS;
 	if (grouped && (medialist_album_view() || (artist_row && artist_records))) {
-		medialist_open(name, LIBRARY_LIST_ALBUMS, filter_for(p->kind), name);
+		panel_open(name, LIBRARY_LIST_ALBUMS, filter_for(p->kind), name, p->picking_seed);
 		return;
 	}
-	medialist_open(name, LIBRARY_LIST_TRACKS, filter_for(p->kind), name);
+	panel_open(name, LIBRARY_LIST_TRACKS, filter_for(p->kind), name, p->picking_seed);
 }
 
 // One of the small transparent glyph buttons that sit on the title row.
@@ -2949,7 +2974,7 @@ static void reload_current(panel_t *p) {
 
 	p->signature[0] = '\0';
 	reopening_resorted = true;
-	medialist_open(title, p->kind, p->filter, value[0] ? value : NULL);
+	panel_open(title, p->kind, p->filter, value[0] ? value : NULL, p->picking_seed);
 	reopening_resorted = false;
 }
 
@@ -3051,7 +3076,7 @@ static void album_order_clicked_cb(lv_event_t *e) {
 	snprintf(title, sizeof(title), "%s", p->title);
 	snprintf(value, sizeof(value), "%s", p->filter_value);
 	open_replacing = true;
-	medialist_open(title, to_records ? LIBRARY_LIST_ALBUMS : LIBRARY_LIST_TRACKS, p->filter, value);
+	panel_open(title, to_records ? LIBRARY_LIST_ALBUMS : LIBRARY_LIST_TRACKS, p->filter, value, p->picking_seed);
 	open_replacing = false;
 }
 
@@ -3510,7 +3535,8 @@ static char menu_album[256];
 static void menu_album_action(void *user) {
 	(void)user;
 	if (menu_album[0]) {
-		medialist_open(menu_album, LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ALBUM, menu_album);
+		panel_open(menu_album, LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ALBUM, menu_album,
+				   menu_panel ? menu_panel->picking_seed : false);
 	}
 }
 
@@ -3518,6 +3544,10 @@ static void menu_btn_cb(lv_event_t *e) {
 	lv_event_stop_bubbling(e);
 
 	panel_t *p = lv_event_get_user_data(e);
+	if (p->picking_seed) {
+		// The menu is about playing and filing a track, not choosing one.
+		return;
+	}
 	if (p->reordering) {
 		// This button is the drag handle in reorder mode. A press and a lift
 		// without any movement is still a click, and without this the track
@@ -4480,6 +4510,12 @@ static void head_build(panel_t *p) {
 	p->head_buttons[0] = head_glyph_button(buttons, &icon_shuffle, head_shuffle_cb, p);
 	p->head_buttons[1] = head_play_button(buttons, head_play_cb, p);
 	p->head_buttons[2] = head_glyph_button(buttons, &icon_list_queue, head_queue_cb, p);
+	// Picking a seed is not listening: shuffle, play and add-to-queue all act
+	// on the queue, which is not what the page is for. Built and then put
+	// away, so nothing downstream has to know the row is empty.
+	if (p->picking_seed) {
+		lv_obj_set_hidden(buttons, true);
+	}
 	head_paint(p);
 
 	// The real height of all that, for the rows to start under. The screen may
@@ -4826,7 +4862,7 @@ static bool panel_back_guard(void) {
 	panel_step_t step = p->back[--p->back_count];
 	opening_step_back = true;
 	step_back_scroll = step.scroll;
-	medialist_open(step.title, step.kind, step.filter, step.value[0] ? step.value : NULL);
+	panel_open(step.title, step.kind, step.filter, step.value[0] ? step.value : NULL, p->picking_seed);
 	opening_step_back = false;
 	step_back_scroll = -1;
 	if (step.from_player) {
@@ -4854,6 +4890,19 @@ bool medialist_step_back_to_player(void) {
 }
 
 void medialist_open(const char *title, library_list_t kind, library_filter_t filter, const char *filter_value) {
+	panel_open(title, kind, filter, filter_value, false);
+}
+
+void medialist_open_seed(const char *title, medialist_seed_cb_t cb, void *user) {
+	seed_cb = cb;
+	seed_cb_user = user;
+	// The records first: a seed is one track of one album, and the walk down
+	// to it is the ordinary one.
+	panel_open(title, LIBRARY_LIST_ALBUMS, LIBRARY_FILTER_NONE, NULL, true);
+}
+
+static void panel_open(const char *title, library_list_t kind, library_filter_t filter, const char *filter_value,
+					   bool picking_seed) {
 	last_stacked = NULL;
 	last_unchanged = NULL;
 
@@ -4891,6 +4940,7 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	}
 	p->filter = filter;
 	p->from_paths = false;
+	p->picking_seed = picking_seed;
 	snprintf(p->filter_value, sizeof(p->filter_value), "%s", filter_value ? filter_value : "");
 	// Callers hand an album's value in as its title as well; the heading shows
 	// the name.
@@ -4945,6 +4995,13 @@ void medialist_open(const char *title, library_list_t kind, library_filter_t fil
 	// one comes back from the database in an order the database decides, and
 	// dragging a row in it would have nowhere to be written down.
 	bool want_reorder = kind == LIBRARY_LIST_PLAYLIST;
+
+	// A seed pick is not a listen: "play all of this", the sort order, the
+	// album/records swap have nothing to do with the one track being looked
+	// for, and the corner is left empty.
+	if (p->picking_seed) {
+		want_album = want_play = want_sort = want_reverse = want_reorder = false;
+	}
 
 	// Whatever this panel was showing before, it is not showing it now.
 	reorder_stop(p);

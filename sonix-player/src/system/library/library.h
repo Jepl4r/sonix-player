@@ -26,6 +26,10 @@
 bool library_open(const char *db_path);
 void library_close(void);
 
+// Identifies this database open, including a reopen of the same card. Zero
+// while the database is closed.
+uint64_t library_session(void);
+
 // Closes and reopens the index when its file is no longer the one that was
 // opened: deleted (from the file manager, the Wi-Fi transfer page) or replaced
 // by another under the same name. A deleted database stays readable through the
@@ -691,15 +695,16 @@ void library_playlist_names_free(char **names, int count);
 bool library_playlist_exists(const char *name);
 
 // An empty playlist. False if one by that name is already there.
-bool library_playlist_create(const char *name);
-bool library_playlist_drop(const char *name);
+// Writes require the session returned by library_session(), still writable.
+bool library_playlist_create(const char *name, uint64_t session);
+bool library_playlist_drop(const char *name, uint64_t session);
 
 // Fails when `new_name` is taken. Renaming to the current name succeeds and
 // does nothing.
-bool library_playlist_rename(const char *name, const char *new_name);
+bool library_playlist_rename(const char *name, const char *new_name, uint64_t session);
 
 // Appends a row, creating the playlist if it is not there.
-bool library_playlist_append(const char *name, const library_playlist_row_t *row);
+bool library_playlist_append(const char *name, const library_playlist_row_t *row, uint64_t session);
 
 // Appending many, one at a time, under one transaction: an import writes
 // hundreds of rows and a commit each would be hundreds of card writes, while an
@@ -709,13 +714,13 @@ bool library_playlist_append(const char *name, const library_playlist_row_t *row
 // false has left the writer failed, and end() then rolls the whole thing back;
 // end() also rolls back when `keep` is false. The writer is freed either way.
 typedef struct library_playlist_writer library_playlist_writer_t;
-library_playlist_writer_t *library_playlist_write_begin(const char *name);
+library_playlist_writer_t *library_playlist_write_begin(const char *name, uint64_t session);
 bool library_playlist_write_row(library_playlist_writer_t *writer, const library_playlist_row_t *row);
 bool library_playlist_write_end(library_playlist_writer_t *writer, bool keep);
 
 // The same, for a caller that already holds the rows. Only for a handful of
 // them: see the note on the size of one.
-bool library_playlist_append_all(const char *name, const library_playlist_row_t *rows, int count);
+bool library_playlist_append_all(const char *name, const library_playlist_row_t *rows, int count, uint64_t session);
 
 // Rows [offset, offset+count) in order, every entry including the hidden ones,
 // with the title and artist a row shows (see above), into a buffer the caller
@@ -732,14 +737,14 @@ int library_playlist_page(const char *name, int offset, int count, library_playl
 int library_playlist_rows(const char *name, library_playlist_row_t **rows_out);
 
 // The first row naming this path, gone.
-bool library_playlist_remove_path(const char *name, const char *path);
+bool library_playlist_remove_path(const char *name, const char *path, uint64_t session);
 
 // Whether any row of the playlist names this path.
 bool library_playlist_contains(const char *name, const char *path);
 
 // Removes the entries at `positions` -- counted as the page shows the list,
 // hidden entries left out -- in one transaction. Returns how many went.
-int library_playlist_remove_positions(const char *name, const int *positions, int count);
+int library_playlist_remove_positions(const char *name, const int *positions, int count, uint64_t session);
 
 // One entry moved from one position to another, the rest closing up behind it.
 // Positions are counted from the top of the list as the page shows it, not row
@@ -755,7 +760,7 @@ int library_playlist_count(const char *name);
 // True once per card: whether the .m3u files that were the playlists have
 // already been taken into the index. See playlists_init().
 bool library_playlists_migrated(void);
-void library_playlists_set_migrated(void);
+void library_playlists_set_migrated(uint64_t session);
 
 // A remembered track count for a playlist held as an .m3u file, where counting
 // means one card lookup per entry -- seconds of blocked interface on a list of

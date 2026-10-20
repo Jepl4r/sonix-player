@@ -46,6 +46,10 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 - **Start from a track** - choose Start Smart Mix in the track's menu to build
   a mix of up to ten related tracks in the background, with a cancel button.
+- **Saved as a playlist** - from the Playlist page, create a mix and choose its
+  starting track on the library's own lists, or take the track being added to a
+  playlist. The mix is written to the card as an ordinary playlist named after
+  the track and opens as its own track list; what is playing is left alone.
 - **Built on the player** - after a scan or change check, the same worker builds
   missing or outdated Smart Mix data from the scanned tags. An existing library
   can build it when the card returns even with Detect changes disabled, without
