@@ -19,6 +19,7 @@
 #include "src/system/device/power.h"
 #include "src/system/library/genius.h"
 #include "src/system/playback/device_state.h"
+#include "src/system/playback/playlist.h"
 
 typedef struct {
 	char seed_path[512];
@@ -50,15 +51,23 @@ static void genius_finish(void *user) {
 		job->result = GENIUS_CANCELLED;
 	}
 	if (job->result == GENIUS_OK) {
-		// This entry point loads through playlist_load_paths_ordered and starts
-		// playback while keeping the queue's persistence in device_state.
+		// The mix's sequence is loaded as an ordered queue, so next and prev
+		// follow it and device_state persists it as it stands.
 		//
-		// Starting a mix from the track already playing must not send it back
-		// to the beginning: the mix is queue replacement, not a restart.
+		// Starting a mix from the track already playing is queue replacement,
+		// not a restart: the file on the decoder is left alone.
 		device_state_t state;
 		device_state_get(&state);
-		if (job->mix.count > 0 && state.current_file[0] && strcmp(state.current_file, job->mix.paths[0]) == 0) {
-			device_state_play_list_ordered_at(job->mix.paths, job->mix.count, 0, state.progress_current_secs);
+		// ...and only when it is playing. The loaded track stays reported while
+		// the player is stopped, and leaving the decoder alone then would
+		// replace the queue and never start anything.
+		if (job->mix.count > 0 && state.status == AUDIO_STATUS_PLAYING && state.current_file[0] &&
+			strcmp(state.current_file, job->mix.paths[0]) == 0) {
+			// The seed is already on the decoder. Replace the queue around it
+			// rather than loading it again: a reload restarts the file and
+			// re-applies a position, which is what makes the bar jump.
+			playlist_load_paths_ordered(job->mix.paths, job->mix.count, 0);
+			device_state_queue_changed();
 		} else {
 			device_state_play_list_ordered(job->mix.paths, job->mix.count, 0);
 		}
