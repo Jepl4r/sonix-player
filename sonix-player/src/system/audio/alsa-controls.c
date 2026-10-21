@@ -143,6 +143,29 @@ bool alsa_board_is_cs43131(void) {
 	return answer != 0;
 }
 
+// ---------------------------------------------------------------------------
+// The R3 II 2025's audio board
+//
+// One ES9219 behind the R3 Pro II's HBC3000 and machine driver: the same
+// routes, the same line-out flag, and the same volume curves (the stock
+// player's ot_devices_2025.json carries the HDB and MDB tables below, entry
+// for entry).
+//
+// Its codec driver (HiBy's codec_es9219.ko) has neither "DRE_EN" nor
+// "NOS_EN", and its "Digital Filter" (0..6) sets the chip's filter shape to 6
+// when given 6 and to 0 when given anything else. The stock player offers
+// those two and nothing more: "Apodizing fast roll-off" writes 0 and is the
+// default, "Linear phase fast roll-off" writes 6, and a saved choice past the
+// two is put back to the first.
+// ---------------------------------------------------------------------------
+
+// By the model alone: a player this build does not know is never taken for
+// this board, so nothing found on the bus can change what the others do.
+bool alsa_board_is_es9219(void) {
+	const sysinfo_model_t *model = sysinfo_model();
+	return model && model->es9219;
+}
+
 static bool lineout_on;
 static int lineout_saved_percent = -1;
 static int lineout_jack; // the jack the mode was switched on for
@@ -411,21 +434,27 @@ static bool want_balance_lineout(void) { return lineout_on && detect_output() ==
 // would leave the stream on the old configuration until the next track.
 int alsa_output_key(void) { return detect_output() * 2 + (want_balance_lineout() ? 1 : 0); }
 
-// The DAC's four digital interpolation filters, the ALSA "Digital Filter"
-// control the stock player writes (0..3), on both boards:
+// The DAC's digital interpolation filters, the ALSA "Digital Filter" control
+// the stock player writes. The CS43198 and the CS43131 have four, written as
+// they are numbered (0..3):
 //   0 fast roll-off, low latency      1 fast roll-off, phase compensated
 //   2 slow roll-off, low latency      3 slow roll-off, phase compensated
+// The ES9219 has two, written as the stock player writes them (see above):
+//   0 apodizing fast roll-off (0)     1 linear phase fast roll-off (6)
+static const int ES9219_FILTER_VALUES[] = {0, 6};
 static int current_filter = -1;
 
+int dac_filter_count(void) { return alsa_board_is_es9219() ? 2 : 4; }
+
 void set_dac_filter(int filter) {
-	if (filter < 0 || filter > 3) {
+	if (filter < 0 || filter >= dac_filter_count()) {
 		return;
 	}
 	if (filter == current_filter) {
 		return; // same reasoning as the output switch: never poke it idly
 	}
 	current_filter = filter;
-	alsa_set_control("Digital Filter", filter);
+	alsa_set_control("Digital Filter", alsa_board_is_es9219() ? ES9219_FILTER_VALUES[filter] : filter);
 	printf("set dac filter to %d\n", filter);
 }
 
@@ -436,15 +465,17 @@ int get_dac_filter(void) { return current_filter < 0 ? 0 : current_filter; }
 // filter and the output route: never poke the codec idly mid-stream.
 static int current_dre = -1;
 
-// DRE does not exist on the CS43131 board: it stays off there and nothing is
-// written.
+// DRE does not exist on the CS43131 or the ES9219 board: it stays off there and
+// nothing is written.
+bool dac_has_dre(void) { return !alsa_board_is_cs43131() && !alsa_board_is_es9219(); }
+
 void set_dac_dre(int enabled) {
-	enabled = enabled && !alsa_board_is_cs43131() ? 1 : 0;
+	enabled = enabled && dac_has_dre() ? 1 : 0;
 	if (enabled == current_dre) {
 		return;
 	}
 	current_dre = enabled;
-	if (alsa_board_is_cs43131()) {
+	if (!dac_has_dre()) {
 		return;
 	}
 	alsa_set_control("DRE_EN", enabled);
@@ -452,22 +483,28 @@ void set_dac_dre(int enabled) {
 }
 
 int get_dac_dre(void) {
-	if (alsa_board_is_cs43131()) {
+	if (!dac_has_dre()) {
 		return 0;
 	}
 	return current_dre < 0 ? 1 : current_dre;
 }
 
 // The DAC's non-oversampling mode, the ALSA "NOS_EN" switch the stock player
-// writes (decompile FUN_004820e0, settings case 0x7e). Same cached contract.
+// writes (decompile FUN_004820e0, settings case 0x7e). Same cached contract,
+// and the same answer as DRE on the ES9219 board, which has no NOS either.
 static int current_nos = -1;
 
+bool dac_has_nos(void) { return !alsa_board_is_es9219(); }
+
 void set_dac_nos(int enabled) {
-	enabled = enabled ? 1 : 0;
+	enabled = enabled && dac_has_nos() ? 1 : 0;
 	if (enabled == current_nos) {
 		return;
 	}
 	current_nos = enabled;
+	if (!dac_has_nos()) {
+		return;
+	}
 	alsa_set_control("NOS_EN", enabled);
 	printf("set dac NOS to %d\n", enabled);
 }

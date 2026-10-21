@@ -18,7 +18,7 @@ static char device_name[64];
 static char dac_info[96];
 static char ota_repo[128];
 
-// Every player this binary knows how to be. Both serial prefixes are the ones
+// Every player this binary knows how to be. Every serial prefix is the one
 // printed on the box.
 static const sysinfo_model_t MODELS[] = {
 	{
@@ -29,9 +29,11 @@ static const sysinfo_model_t MODELS[] = {
 		.serial_prefix = "R3PII",
 		.pmic_charger = false,
 		.cs43131 = false,
+		.es9219 = false,
 		.tap_wake = true,
 		.one_flank = false,
 		.media_keys_swapped = true,
+		.volume_wheel = false,
 	},
 	{
 		.name = "HiBy R1",
@@ -41,9 +43,28 @@ static const sysinfo_model_t MODELS[] = {
 		.serial_prefix = "R1",
 		.pmic_charger = true,
 		.cs43131 = true,
+		.es9219 = false,
 		.tap_wake = false,
 		.one_flank = true,
 		.media_keys_swapped = false,
+		.volume_wheel = false,
+	},
+	{
+		// HiBy's stock kernel and modules: an ES9219 behind the HBC3000, the
+		// R3 Pro II's skip and play keys, and a volume wheel where the volume
+		// keys would be.
+		.name = "HiBy R3 II 2025",
+		.panel_width = 320,
+		.panel_height = 480,
+		.update_stem = "r3ii_2025",
+		.serial_prefix = "R3IIV",
+		.pmic_charger = true,
+		.cs43131 = false,
+		.es9219 = true,
+		.tap_wake = true,
+		.one_flank = false,
+		.media_keys_swapped = true,
+		.volume_wheel = true,
 	},
 };
 
