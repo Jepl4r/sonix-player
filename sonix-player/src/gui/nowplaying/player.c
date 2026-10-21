@@ -74,6 +74,7 @@ static lv_obj_t *fav_btn_icon; // the star above it
 
 static void update_fav_button(void);
 static void update_speed_button(void);
+static void update_sleep_label(void);
 static void update_format_label(const device_state_t *state);
 static void update_repeat_button(void);
 
@@ -90,6 +91,10 @@ static lv_obj_t *remaining_label; // end of the track, under the right end
 // bar had an empty middle and the question -- how much of this is left -- is the
 // same one the clocks answer.
 static lv_obj_t *queue_position_label;
+// The same slot when a sleep timer is the thing to say: a moon and the time
+// left. The box is the whole target for a tap, and the label above lives in it.
+static lv_obj_t *sleep_box;
+static lv_obj_t *sleep_icon;
 static lv_obj_t *repeat_btn_icon;
 static lv_obj_t *prev_icon; // static so the over-cover recolor can reach them
 static lv_obj_t *next_icon;
@@ -608,6 +613,7 @@ static void apply_audiobook_mode(bool book, bool podcast) {
 		const lv_image_dsc_t *mark = book ? &icon_book_headphones : podcast ? &icon_podcast_cover : &icon_music_note;
 		lv_image_set_src(cover_placeholder_icon, mark);
 	}
+	update_sleep_label();
 }
 
 // ---------------------------------------------------------------------------
@@ -770,6 +776,7 @@ static void apply_playback_status(audio_status_t status) {
 			lv_timer_pause(sleep_timer);
 		}
 	}
+	update_sleep_label();
 }
 
 // "3/24": which track of the queue is playing.
@@ -835,6 +842,127 @@ static void update_queue_position(void) {
 		return;
 	}
 	lv_label_set_text_fmt(queue_position_label, "%d/%d", (int)playlist_current_entry() + 1, count);
+}
+
+// What the kind the sleep timer would act on is: the one that is playing, or
+// the book's when nothing is, because the moon on a book's page is a way to set
+// the book's timer before pressing play.
+static sleeptimer_kind_t sleep_label_kind(void) {
+	sleeptimer_kind_t kind = sleeptimer_kind_playing();
+	return kind == SLEEPTIMER_COUNT ? SLEEPTIMER_AUDIOBOOK : kind;
+}
+
+// The moon is a way into the popover when a timer counts, and on a book always.
+static bool sleep_box_active(void) {
+	if (live_mode) {
+		return false;
+	}
+	return audiobook_mode || sleeptimer_remaining(sleeptimer_kind_playing()) > 0;
+}
+
+// The glyph the quick panel uses for that kind's timer, so the one under the
+// bar reads as the same control.
+static const lv_image_dsc_t *sleep_icon_for(sleeptimer_kind_t kind) {
+	switch (kind) {
+	case SLEEPTIMER_MUSIC:
+		return &icon_sleep_music_quick;
+	case SLEEPTIMER_PODCAST:
+		return &icon_sleep_podcast_quick;
+	default:
+		return &icon_sleep_audiobook_quick;
+	}
+}
+
+// "14:59", or "1:29:59" from one hour.
+static void format_sleep_remaining(int seconds, char *out, size_t size) {
+	if (seconds >= 3600) {
+		snprintf(out, size, "%d:%02d:%02d", seconds / 3600, seconds / 60 % 60, seconds % 60);
+	} else {
+		snprintf(out, size, "%d:%02d", seconds / 60, seconds % 60);
+	}
+}
+
+static void set_sleep_icon(const lv_image_dsc_t *src) {
+	if (lv_image_get_src(sleep_icon) != src) {
+		lv_image_set_src(sleep_icon, src);
+	}
+}
+
+// The centre slot under the bar. While the timer of what is playing counts, a
+// lit moon and the time left, for music and podcasts too; on a book otherwise
+// the moon alone, dimmed, as the way in; and everywhere else the queue position
+// exactly as it was. Asked on every poll and on every tick of the sleep timer,
+// so the time left is never more than a second stale with the screen on.
+static void update_sleep_label(void) {
+	if (!queue_position_label || !sleep_icon) {
+		return;
+	}
+	sleeptimer_kind_t kind = sleeptimer_kind_playing();
+	int left = live_mode ? 0 : sleeptimer_remaining(kind);
+	bool book_idle = audiobook_mode && !live_mode;
+
+	if (left > 0) {
+		char text[16];
+		format_sleep_remaining(left, text, sizeof(text));
+		if (strcmp(lv_label_get_text(queue_position_label), text) != 0) {
+			lv_label_set_text(queue_position_label, text);
+		}
+		lv_obj_set_style_image_recolor(sleep_icon, chrome_accent(), 0);
+		set_sleep_icon(sleep_icon_for(kind));
+	} else if (book_idle) {
+		if (lv_label_get_text(queue_position_label)[0] != '\0') {
+			lv_label_set_text(queue_position_label, "");
+		}
+		lv_obj_set_style_image_recolor(sleep_icon, lv_color_make(100, 100, 100), 0);
+		set_sleep_icon(&icon_sleep_audiobook_quick);
+	} else {
+		update_queue_position();
+	}
+	lv_obj_set_hidden(sleep_icon, left <= 0 && !book_idle);
+}
+
+static void sleep_pick(void *user) {
+	sleeptimer_quick_set(sleep_label_kind(), (int)(intptr_t)user);
+	update_sleep_label();
+	// The tick runs only while a stretch counts, so a pick that arms one has to
+	// wake it, and one that disarms it can let it sleep.
+	if (sleep_timer) {
+		if (sleeptimer_any_running()) {
+			lv_timer_resume(sleep_timer);
+		} else {
+			lv_timer_pause(sleep_timer);
+		}
+	}
+}
+
+static void sleep_box_event_cb(lv_event_t *e) {
+	static const int CHOICES[] = {0, 15, 30, 45, 60, 90};
+	enum { CHOICE_COUNT = sizeof(CHOICES) / sizeof(CHOICES[0]) };
+	// The popover keeps the label pointers until it closes, so the formatted
+	// ones live here and not on the stack.
+	static char labels[CHOICE_COUNT][24];
+
+	if (!sleep_box_active()) {
+		return;
+	}
+	sleeptimer_kind_t kind = sleep_label_kind();
+	bool on = sleeptimer_enabled(kind);
+
+	// Zeroed for the reason written at speed_btn_event_cb(): `checked` must not
+	// be stack garbage.
+	popover_item_t items[CHOICE_COUNT] = {0};
+	for (int i = 0; i < CHOICE_COUNT; i++) {
+		if (CHOICES[i] == 0) {
+			items[i].label = "sleep_quick_off";
+		} else {
+			snprintf(labels[i], sizeof(labels[i]), tr("sleep_quick_minutes"), CHOICES[i]);
+			items[i].label = labels[i];
+		}
+		items[i].action = sleep_pick;
+		items[i].user = (void *)(intptr_t)CHOICES[i];
+		items[i].checked = on ? CHOICES[i] == sleeptimer_minutes(kind) : CHOICES[i] == 0;
+	}
+	popover_show(lv_event_get_current_target(e), items, CHOICE_COUNT);
 }
 
 // Works out view_start and view_length for playback at `position` in a file
@@ -903,7 +1031,7 @@ static void set_progress_label(double current_secs, double total_secs) {
 
 	// Written from here because this is the one place that runs on every poll
 	// and on every track change, which is exactly when the answer can move.
-	update_queue_position();
+	update_sleep_label();
 }
 
 // True while a decode is in flight at the worker.
@@ -4892,6 +5020,7 @@ static void sleep_timer_cb(lv_timer_t *timer) {
 	for (int i = 0; i < SLEEPTIMER_COUNT; i++) {
 		expired = sleeptimer_expired((sleeptimer_kind_t)i) || expired;
 	}
+	update_sleep_label();
 	if (!expired || audio_get_status() != AUDIO_STATUS_PLAYING) {
 		return;
 	}
@@ -5569,15 +5698,37 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_align(remaining_label, LV_ALIGN_RIGHT_MID);
 
 	// Between them, in the middle the two clocks left empty. Dimmer than they
-	// are: it is a bearing, not a reading.
-	queue_position_label = lv_label_create(below_slider_group);
+	// are: it is a bearing, not a reading. It shares the slot with the sleep
+	// timer's moon, which is why both sit in one box that takes the tap.
+	sleep_box = lv_obj_create(below_slider_group);
+	lv_obj_set_size(sleep_box, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+	lv_obj_set_style_bg_opa(sleep_box, 0, 0);
+	lv_obj_set_style_border_width(sleep_box, 0, 0);
+	lv_obj_set_style_radius(sleep_box, 0, 0);
+	lv_obj_set_style_pad_all(sleep_box, 0, 0);
+	lv_obj_set_style_pad_column(sleep_box, 6, 0);
+	lv_obj_set_scrollable(sleep_box, false);
+	lv_obj_set_flex_flow(sleep_box, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(sleep_box, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_align(sleep_box, LV_ALIGN_CENTER);
+	lv_obj_set_ext_click_area(sleep_box, CORNER_BTN_EXT_CLICK);
+	lv_obj_add_event_cb(sleep_box, sleep_box_event_cb, LV_EVENT_CLICKED, NULL);
+
+	sleep_icon = lv_image_create(sleep_box);
+	lv_image_set_src(sleep_icon, &icon_sleep_audiobook_quick);
+	// The glyphs are drawn at 46 px; the slot wants them at the height of the text.
+	lv_obj_set_size(sleep_icon, 22, 22);
+	lv_image_set_inner_align(sleep_icon, LV_IMAGE_ALIGN_CONTAIN);
+	lv_obj_set_style_image_recolor_opa(sleep_icon, LV_OPA_COVER, 0);
+	lv_obj_set_hidden(sleep_icon, true);
+
+	queue_position_label = lv_label_create(sleep_box);
 	lv_label_set_text(queue_position_label, "");
 	lv_obj_add_style(queue_position_label, &theme_style_text_dim, 0);
 	// A step below the clocks either side of it, as well as dimmer: it is a
 	// bearing and they are the reading, and at the same size the three read as
 	// one row of equals.
 	lv_obj_set_style_text_font(queue_position_label, &font_ui_18, 0);
-	lv_obj_set_align(queue_position_label, LV_ALIGN_CENTER);
 
 	// Transport: prev, play/pause, next -- with the repeat toggle parked on
 	// the left, out of the way of the transport controls.

@@ -46,6 +46,10 @@ void sleeptimer_set_enabled(sleeptimer_kind_t kind, bool on);
 int sleeptimer_minutes(sleeptimer_kind_t kind);
 void sleeptimer_set_minutes(sleeptimer_kind_t kind, int minutes);
 
+// The quick menu's pick: `minutes` > 0 sets and switches that kind on and,
+// when that kind is playing, starts a fresh stretch now; 0 switches it off.
+void sleeptimer_quick_set(sleeptimer_kind_t kind, int minutes);
+
 // Which kind is playing, or SLEEPTIMER_COUNT for none of them. Told from the
 // one place in the player that sees every change of playback state; naming a
 // kind stops whichever other one was counting.

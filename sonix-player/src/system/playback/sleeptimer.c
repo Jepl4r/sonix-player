@@ -113,6 +113,21 @@ void sleeptimer_set_minutes(sleeptimer_kind_t kind, int minutes) {
 	restart(kind);
 }
 
+void sleeptimer_quick_set(sleeptimer_kind_t kind, int minutes) {
+	if (!in_range(kind)) {
+		return;
+	}
+	if (minutes <= 0) {
+		sleeptimer_set_enabled(kind, false);
+		return;
+	}
+	sleeptimer_set_minutes(kind, minutes);
+	sleeptimer_set_enabled(kind, true);
+	// Picking the length that is already set makes both setters return early, and
+	// picking again is still asking for a full stretch from now.
+	restart(kind);
+}
+
 void sleeptimer_note_playing(sleeptimer_kind_t kind) {
 	if (!in_range(kind)) {
 		kind = SLEEPTIMER_COUNT; // nothing any of them counts
