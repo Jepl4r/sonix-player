@@ -122,14 +122,35 @@ static void preset_read(const char *dir) {
 	eq_presets_set_dir(dir);
 	const int want[EQ_BANDS] = {3, 2, 1, 0, 4, 5, 1, 0, -1, -2};
 	int out[EQ_BANDS];
-	assert(eq_preset_read("Voice", out));
+	bool missing = true;
+	assert(eq_preset_read("Voice", out, &missing) && !missing);
 	assert(memcmp(out, want, sizeof(want)) == 0);
 	assert(eq_get_band(0) == 0 && eq_writes == 0); // read, not applied
-	assert(!eq_preset_read("Gone", out));
+	// Gone for certain: no such file, or a name no file could have.
+	assert(!eq_preset_read("Gone", out, &missing) && missing);
+	missing = false;
+	assert(!eq_preset_read("a/b", out, &missing) && missing);
+	assert(!eq_preset_read("Gone", out, NULL));
+
+	// A file that is there but cannot be read is not gone either.
+	snprintf(path, sizeof(path), "%s/.local/eq/Locked.ini", dir);
+	f = fopen(path, "w");
+	assert(f);
+	fclose(f);
+	chmod(path, 0);
+	if (geteuid() != 0) { // root reads it anyway
+		missing = true;
+		assert(!eq_preset_read("Locked", out, &missing) && !missing);
+	}
 
 	// Loading through the same parser still applies the curve.
 	assert(eq_preset_load("Voice"));
 	assert(eq_get_band(0) == 3 && eq_get_band(9) == -2);
+
+	// No card to look on is not the same as no preset: not missing.
+	eq_presets_set_dir("");
+	missing = true;
+	assert(!eq_preset_read("Voice", out, &missing) && !missing);
 
 	assert(eq_default_preset_by_name("eq_vocal") != NULL);
 	assert(eq_default_preset_by_name("eq_vocal")->gain_db[4] == 4);

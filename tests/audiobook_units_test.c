@@ -67,10 +67,14 @@ void eq_override_clear(void) { eq_call = EQ_CALL_CLEAR; }
 bool eq_override_active(void) {
   return eq_call == EQ_CALL_BANDS || eq_call == EQ_CALL_BYPASS;
 }
-bool eq_preset_read(const char *name, int gain_db_out[EQ_BANDS]) {
+bool eq_preset_read(const char *name, int gain_db_out[EQ_BANDS],
+                    bool *missing) {
+  // "busy" stands for a card that cannot be read just now.
+  *missing = strcmp(name, "busy") != 0;
   if (strcmp(name, "Voice") != 0) {
     return false;
   }
+  *missing = false;
   memcpy(gain_db_out, voice, sizeof(voice));
   return true;
 }
@@ -222,6 +226,7 @@ static void eq_setting(void) {
 
 static void eq_apply(void) {
   stub_count = 0;
+  assert(!audiobook_take_eq_fallback());
 
   // Same as music: nothing over the music curve.
   eq_call = EQ_CALL_NONE;
@@ -251,6 +256,24 @@ static void eq_apply(void) {
   assert(audiobook_eq_mode() == AUDIOBOOK_EQ_MUSIC);
   assert(saves == 1);
   assert(audiobook_apply_eq(true) && eq_call == EQ_CALL_CLEAR);
+  assert(audiobook_take_eq_fallback());
+  assert(!audiobook_take_eq_fallback());
+
+  // A preset that cannot be read just now: plain music for this track, the
+  // setting kept, nothing to tell.
+  audiobook_set_eq(AUDIOBOOK_EQ_PRESET, "user:busy");
+  saves = 0;
+  eq_call = EQ_CALL_NONE;
+  assert(audiobook_apply_eq(true) && eq_call == EQ_CALL_CLEAR);
+  assert(audiobook_eq_mode() == AUDIOBOOK_EQ_PRESET && saves == 0);
+  assert(!audiobook_take_eq_fallback());
+
+  // An unknown built-in tag is gone just the same.
+  audiobook_set_eq(AUDIOBOOK_EQ_PRESET, "eq_bogus");
+  assert(!audiobook_apply_eq(true) && eq_call == EQ_CALL_CLEAR);
+  assert(audiobook_eq_mode() == AUDIOBOOK_EQ_MUSIC);
+  assert(audiobook_take_eq_fallback());
+  assert(!audiobook_take_eq_fallback());
 }
 
 int main(void) {

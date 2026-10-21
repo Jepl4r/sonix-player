@@ -258,10 +258,21 @@ void audiobook_set_eq(audiobook_eq_mode_t mode, const char *preset) {
 	config_save();
 }
 
+static bool eq_fell_back;
+
+bool audiobook_take_eq_fallback(void) {
+	bool value = eq_fell_back;
+	eq_fell_back = false;
+	return value;
+}
+
 // Only a book gets the audiobook curve; anything else plays through whatever
-// the [eq] settings say. A preset that cannot be found -- a user preset
-// deleted from the card since it was chosen -- puts the setting back to the
-// music curve, so the listener is told once rather than on every track.
+// the [eq] settings say. A preset that is gone -- a user preset deleted from
+// the card since it was chosen, or a built-in tag this build does not have --
+// puts the setting back to the music curve, so the listener is told once
+// rather than on every track. One that merely cannot be read now (the card
+// busy, or not mounted yet) gets the music curve for this track and keeps the
+// setting: the next track asks again.
 bool audiobook_apply_eq(bool book_playing) {
 	audiobook_eq_mode_t mode = book_playing ? audiobook_eq_mode() : AUDIOBOOK_EQ_MUSIC;
 	if (mode == AUDIOBOOK_EQ_MUSIC) {
@@ -278,8 +289,13 @@ bool audiobook_apply_eq(bool book_playing) {
 	static const char USER_PREFIX[] = "user:";
 	int gain[EQ_BANDS];
 	if (strncmp(preset, USER_PREFIX, sizeof(USER_PREFIX) - 1) == 0) {
-		if (eq_preset_read(preset + sizeof(USER_PREFIX) - 1, gain)) {
+		bool missing = false;
+		if (eq_preset_read(preset + sizeof(USER_PREFIX) - 1, gain, &missing)) {
 			eq_override_bands(gain);
+			return true;
+		}
+		if (!missing) {
+			eq_override_clear();
 			return true;
 		}
 	} else {
@@ -292,6 +308,7 @@ bool audiobook_apply_eq(bool book_playing) {
 
 	eq_override_clear();
 	audiobook_set_eq(AUDIOBOOK_EQ_MUSIC, "");
+	eq_fell_back = true;
 	return false;
 }
 

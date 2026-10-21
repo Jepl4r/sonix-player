@@ -556,16 +556,30 @@ bool eq_preset_load(const char *name) {
 
 // A band the file leaves out reads as flat: there is no music curve under
 // this one to keep it from.
-bool eq_preset_read(const char *name, int gain_db_out[EQ_BANDS]) {
-	if (!gain_db_out) {
+bool eq_preset_read(const char *name, int gain_db_out[EQ_BANDS], bool *missing) {
+	bool gone = false;
+	if (missing) {
+		*missing = false;
+	}
+	if (!gain_db_out || !eq_preset_dir[0]) {
 		return false;
 	}
-	int gain[EQ_BANDS] = {0};
-	if (!eq_preset_parse(name, gain)) {
-		return false;
+	if (!name_is_usable(name)) {
+		gone = true;
+	} else {
+		int gain[EQ_BANDS] = {0};
+		errno = 0;
+		if (eq_preset_parse(name, gain)) {
+			memcpy(gain_db_out, gain, sizeof(gain));
+			return true;
+		}
+		// fopen's own errno: the parser returns straight after it fails.
+		gone = errno == ENOENT;
 	}
-	memcpy(gain_db_out, gain, sizeof(gain));
-	return true;
+	if (missing) {
+		*missing = gone;
+	}
+	return false;
 }
 
 bool eq_preset_delete(const char *name) {

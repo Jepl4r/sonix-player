@@ -68,7 +68,13 @@ void audiobook_set_eq(audiobook_eq_mode_t mode, const char *preset); // saves bo
 // Puts the chosen curve on the engine for a playing book, or clears it.
 // Called on every track change and when the setting changes. Returns false
 // when a user preset named by the setting is missing (the caller toasts).
+// A preset that is only unreadable for now (the card busy or not mounted) is
+// not missing: that track plays the music curve and the setting stays.
 bool audiobook_apply_eq(bool book_playing);
+// True once after audiobook_apply_eq() put a missing preset's setting back to
+// "Same as music", then false until it happens again. The track change that
+// does it has no toasts of its own; the GUI asks this and tells the listener.
+bool audiobook_take_eq_fallback(void);
 
 // The sleep timer is one of the three in sleeptimer.h, which keeps the
 // audiobook one under the same [audiobook] keys. "Stop at the end of the

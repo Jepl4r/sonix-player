@@ -45,8 +45,12 @@ const eq_preset_t *eq_default_preset_by_name(const char *name);
 void eq_presets_set_dir(const char *sd_root);
 bool eq_preset_save(const char *name);
 bool eq_preset_load(const char *name);
-// Reads a user preset's bands without applying them. False when missing.
-bool eq_preset_read(const char *name, int gain_db_out[EQ_BANDS]);
+// Reads a user preset's bands without applying them. False when it cannot be
+// read. `missing` (may be NULL) tells the two failures apart: true only when
+// the preset is gone for certain -- no such file in the preset directory, or a
+// name no file could have -- and false when the card could not be asked: no
+// directory set yet, or a file that is there but will not open.
+bool eq_preset_read(const char *name, int gain_db_out[EQ_BANDS], bool *missing);
 bool eq_preset_delete(const char *name);
 typedef bool (*eq_preset_name_cb_t)(const char *name, void *user);
 int eq_preset_for_each(eq_preset_name_cb_t cb, void *user);
