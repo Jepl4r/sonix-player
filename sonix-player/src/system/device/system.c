@@ -1293,6 +1293,55 @@ static bool key_lock_gesture_armed(void) { return key_lock_when_off && !power_sc
 static bool keys_locked(void) { return key_lock_when_off && key_lock_engaged && !power_screen_is_on(); }
 
 // ---------------------------------------------------------------------------
+// The buttons with the screen off, on a player with a volume wheel
+//
+// Two options of their own in Power settings, for a player carried in a pocket
+// where the wheel turns by itself: the wheel locked, and play/pause and next
+// standing in for it -- up and down, a volume step each, as the buttons sit in
+// the hand and whatever the remap page made of them. On a player without a
+// wheel both stay off, whatever the settings file says.
+//
+// The key lock above takes precedence: while it is on these are greyed out on
+// the page and not consulted here.
+// ---------------------------------------------------------------------------
+
+static volatile bool off_lock_wheel;
+static volatile bool off_buttons_volume;
+
+void input_set_screen_off_keys(bool lock_wheel, bool buttons_volume) {
+	const sysinfo_model_t *model = sysinfo_model();
+	bool wheel = model && model->volume_wheel;
+	off_lock_wheel = wheel && lock_wheel;
+	off_buttons_volume = wheel && buttons_volume;
+}
+
+static bool screen_off_option(bool option) { return option && !key_lock_when_off && !power_screen_is_on(); }
+
+// ---------------------------------------------------------------------------
+// The volume wheel's settings (input_set_wheel(), Settings > More > Wheel):
+// what it turns, which way is up, which way is forward, and how far a click
+// scrubs. The wheel's own thread is further down.
+// ---------------------------------------------------------------------------
+
+static volatile bool wheel_scrub;
+static volatile bool wheel_up_clockwise = true;
+static volatile bool wheel_forward_clockwise = true;
+static volatile int wheel_scrub_seconds = WHEEL_SCRUB_DEFAULT_SECONDS;
+
+void input_set_wheel(bool scrub, bool up_clockwise, bool forward_clockwise, int scrub_seconds) {
+	if (scrub_seconds < WHEEL_SCRUB_MIN_SECONDS) {
+		scrub_seconds = WHEEL_SCRUB_MIN_SECONDS;
+	}
+	if (scrub_seconds > WHEEL_SCRUB_MAX_SECONDS) {
+		scrub_seconds = WHEEL_SCRUB_MAX_SECONDS;
+	}
+	wheel_scrub = scrub;
+	wheel_up_clockwise = up_clockwise;
+	wheel_forward_clockwise = forward_clockwise;
+	wheel_scrub_seconds = scrub_seconds;
+}
+
+// ---------------------------------------------------------------------------
 // Key combinations: volume up + power (screenshot), volume down + power (key
 // lock, see above)
 //
@@ -1478,24 +1527,28 @@ static bool mapped_action_seeks(keymap_button_t button) {
 	return action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_PREV;
 }
 
-// One step, in whichever direction the button means. Nothing is asked of the
-// decoder here: the step moves the scrub position, the interface follows it,
-// and the seek itself happens when the button is let go (device_state.h).
-// Refuses on anything with no position to move along -- a live radio stream has
-// neither a length nor a point to come back to.
-static void seek_step(keymap_button_t button) {
-	keymap_action_t action = effective_action(button);
-	if (action != KEYMAP_ACTION_NEXT && action != KEYMAP_ACTION_PREV) {
-		return;
-	}
-
+// One step of a scrub, `seconds` either way. Nothing is asked of the decoder
+// here: the step moves the scrub position, the interface follows it, and the
+// seek itself happens when the button is let go or the wheel stops
+// (device_state.h). Refuses on anything with no position to move along -- a
+// live radio stream has neither a length nor a point to come back to.
+static bool scrub_step(double seconds) {
 	device_state_t state;
 	device_state_get(&state);
 	if (state.live || state.progress_total_secs <= 0) {
-		return;
+		return false;
 	}
 
-	device_state_scrub_by((action == KEYMAP_ACTION_NEXT) ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS);
+	device_state_scrub_by(seconds);
+	return true;
+}
+
+// One step, in whichever direction the button means.
+static void seek_step(keymap_button_t button) {
+	keymap_action_t action = effective_action(button);
+	if (action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_PREV) {
+		scrub_step(action == KEYMAP_ACTION_NEXT ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS);
+	}
 }
 
 // WHAT REPEATS IS THE ACTION, NOT THE KEY.
@@ -1697,14 +1750,22 @@ static void *input_thread_func(void *arg) {
 	uint32_t dbl_until = 0;
 	// The held key has already repeated its action: its release is not a click.
 	bool held_repeated = false;
+	// Play/pause or next standing in for the wheel with the screen off: the
+	// key that went down (`vol_from`) and the volume key it is (`vol_to`), until
+	// it comes back up. Held, it repeats the way the cable remote's volume keys
+	// do, whose path it takes: `held_as_volume`.
+	int vol_from = -1;
+	int vol_to = -1;
+	bool held_as_volume = false;
 
 	for (;;) {
 		// The deadline is whatever the held key is waiting for; with nothing
 		// held there is nothing to wait for and poll() blocks.
 		int timeout = -1;
 		uint32_t now = now_ms();
+		bool held_remote = info->headset || held_as_volume;
 
-		if (key_repeats_held(held, info->headset)) {
+		if (key_repeats_held(held, held_remote)) {
 			timeout = (int)(next_repeat > now ? next_repeat - now : 0);
 		} else if (held == KEY_POWER && !long_press_done) {
 			uint32_t due = held_since + POWER_LONG_PRESS_MS;
@@ -1758,13 +1819,13 @@ static void *input_thread_func(void *arg) {
 			bool suppressed = combo_active();
 
 			// The wait may have ended for another deadline than the held key's.
-			if (key_repeats_held(held, info->headset)) {
+			if (key_repeats_held(held, held_remote)) {
 				if ((int32_t)(now - next_repeat) < 0) {
 					continue;
 				}
-				bool seeking = key_seeks_held(held, info->headset);
+				bool seeking = key_seeks_held(held, held_remote);
 				if (!suppressed) {
-					repeat_held(held, info->headset);
+					repeat_held(held, held_remote);
 				}
 				if (seeking) {
 					// From here the release has nothing left to do: the press
@@ -1822,6 +1883,49 @@ static void *input_thread_func(void *arg) {
 			continue;
 		}
 
+		// Play/pause and next for the volume with the screen off (see
+		// input_set_screen_off_keys()): the button as it sits in the hand, not
+		// what it is mapped to. Decided on the way down and kept until the
+		// same key comes back up, whatever the screen does meanwhile.
+		if (ev.value == 1 && vol_from < 0 && !info->headset && screen_off_option(off_buttons_volume)) {
+			keymap_button_t button = keymap_button_for_code(ev.code);
+			if (button == KEYMAP_BTN_PLAY || button == KEYMAP_BTN_NEXT) {
+				vol_from = ev.code;
+				vol_to = button == KEYMAP_BTN_PLAY ? KEY_VOLUMEUP : KEY_VOLUMEDOWN;
+			}
+		}
+		if (vol_from >= 0 && ev.code == vol_from) {
+			if (ev.value == 1) {
+				power_notify_activity();
+				if (seeked) {
+					device_state_scrub_commit();
+				}
+				if (dbl_code >= 0) {
+					run_mapped_action(keymap_button_for_code(dbl_code));
+					dbl_code = -1;
+				}
+				held = vol_to;
+				held_as_volume = true;
+				held_since = now_ms();
+				next_repeat = held_since + VOLUME_REPEAT_DELAY_MS;
+				long_press_done = false;
+				deferred = false;
+				seeked = false;
+				held_repeated = false;
+				dbl_first = false;
+				override_button = KEYMAP_BTN_COUNT;
+				apply_volume_step(vol_to);
+			} else if (ev.value == 0) {
+				if (held == vol_to && held_as_volume) {
+					held = -1;
+					held_as_volume = false;
+				}
+				vol_from = -1;
+				vol_to = -1;
+			}
+			continue;
+		}
+
 		if (ev.value == 1) {
 			power_notify_activity(); // any physical button counts as use
 
@@ -1857,6 +1961,7 @@ static void *input_thread_func(void *arg) {
 			}
 
 			held = ev.code;
+			held_as_volume = false;
 			held_since = now_ms();
 			bool seeks = key_seeks_held(held, info->headset);
 			next_repeat = held_since + (seeks ? SEEK_HOLD_MS : VOLUME_REPEAT_DELAY_MS);
@@ -2003,9 +2108,25 @@ void input_host_button(int code, bool down) {
 // input_thread_func(): a click is simply the volume key it stands for -- a
 // volume step, or with power held the key lock or the screenshot -- and none of
 // the buttons' holds, repeats and double clicks apply to it.
+//
+// Which way is up is a setting, and so is scrubbing instead (input_set_wheel()):
+// a click then moves the scrub position, the way a held skip key does
+// (scrub_step()), and the one seek waits until the wheel has been still for
+// WHEEL_SCRUB_SETTLE_MS -- a seek per click would never let a stream fill its
+// buffer. With power down the wheel is the volume keys all the same, for the
+// key lock and the screenshot.
 // ---------------------------------------------------------------------------
 
 #define WHEEL_DEVICE_NAME "sa-ring-keys"
+#define WHEEL_SCRUB_SETTLE_MS 500
+
+// Power is down, so a volume key now would complete a combination.
+static bool combo_power_down(void) {
+	pthread_mutex_lock(&combo_lock);
+	bool down = combo_power_held;
+	pthread_mutex_unlock(&combo_lock);
+	return down;
+}
 
 static void *wheel_thread_func(void *arg) {
 	char *node = arg;
@@ -2016,7 +2137,32 @@ static void *wheel_thread_func(void *arg) {
 		return NULL;
 	}
 
+	// The wheel has moved the scrub position, and the seek is due at
+	// `scrub_commit_at` unless it turns again first.
+	bool scrubbing = false;
+	uint32_t scrub_commit_at = 0;
+
 	for (;;) {
+		int timeout = -1;
+		if (scrubbing) {
+			uint32_t now = now_ms();
+			timeout = (int)(scrub_commit_at > now ? scrub_commit_at - now : 0);
+		}
+		struct pollfd pfd = {.fd = fd, .events = POLLIN};
+		int ready = poll(&pfd, 1, timeout);
+		if (ready < 0) {
+			if (errno == EINTR) {
+				continue;
+			}
+			break;
+		}
+		if (ready == 0) {
+			// The wheel has stopped: the music goes where it was turned to.
+			scrubbing = false;
+			device_state_scrub_commit();
+			continue;
+		}
+
 		struct input_event ev;
 		if (read(fd, &ev, sizeof(ev)) != sizeof(ev)) {
 			break;
@@ -2024,9 +2170,15 @@ static void *wheel_thread_func(void *arg) {
 		if (ev.type != EV_KEY || (ev.code != KEY_LEFT && ev.code != KEY_RIGHT)) {
 			continue;
 		}
-		ev.code = ev.code == KEY_RIGHT ? KEY_VOLUMEUP : KEY_VOLUMEDOWN;
+		bool clockwise = ev.code == KEY_RIGHT;
+		ev.code = clockwise == wheel_up_clockwise ? KEY_VOLUMEUP : KEY_VOLUMEDOWN;
 		log_key_event(node, &ev);
 
+		// Locked with the screen off: its turns go nowhere. Each click is a
+		// press and its release at once, so none is ever left half done.
+		if (screen_off_option(off_lock_wheel)) {
+			continue;
+		}
 		if (ev.value == 0) {
 			combo_release(ev.code);
 			continue;
@@ -2038,6 +2190,14 @@ static void *wheel_thread_func(void *arg) {
 		// Power down: this click completes the key lock or the screenshot. It
 		// is counted even with the keys locked, or the lock could not be undone.
 		if (combo_press(ev.code) || keys_locked()) {
+			continue;
+		}
+		if (wheel_scrub && !combo_power_down()) {
+			int seconds = wheel_scrub_seconds;
+			if (scrub_step(clockwise == wheel_forward_clockwise ? seconds : -seconds)) {
+				scrubbing = true;
+				scrub_commit_at = now_ms() + WHEEL_SCRUB_SETTLE_MS;
+			}
 			continue;
 		}
 		apply_volume_step(ev.code);

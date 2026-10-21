@@ -22,6 +22,7 @@
 #include "src/gui/settings/systempage.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/settings/timeset.h"
+#include "src/gui/settings/wheelpage.h"
 #include "src/gui/shell/uiscale.h"
 #include "src/system/core/config.h"
 #include "src/system/audio/headset.h"
@@ -443,6 +444,11 @@ static void build_other_page(gui_config_t *cfg) {
 	}
 
 	settingsrow_add(container, "remap_buttons", NULL, switch_screen_cb, remap_screen);
+
+	// Only on a player with a volume wheel: see wheelpage.h.
+	if (wheelpage_screen) {
+		settingsrow_add(container, "wheel", NULL, switch_screen_cb, wheelpage_screen);
+	}
 
 	settingsrow_slider(container, "settings_volume_steps", VOLUME_STEP_MAX - VOLUME_STEP_MIN + 1, &volume_step_value,
 					   &volume_step_slider, volume_step_changed_cb);

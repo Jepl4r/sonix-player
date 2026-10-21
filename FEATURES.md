@@ -175,6 +175,8 @@ This is everything Sonix Player can do today, on the **R1**, the **R3 Pro II** a
 - **Double click** - two quick presses of a button do the action you choose.
 - **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous. USB-C headphones with buttons work too.
 - **Lock the buttons** with the screen off: volume down + power (on the R3 II 2025, hold power and turn the wheel down). The power button and the remote always work.
+- **Wheel** (R3 II 2025) - the wheel turns the volume or scrubs through the track, from 1 to 30 seconds a click, and you choose which way is up and which way is forward.
+- **R3 II 2025, with the screen off** - lock the volume wheel, or turn the volume up and down with Play/Pause and Next, whatever those buttons are remapped to. They are off while the buttons are locked.
 - **Keyboard** - ten layouts (English, Italian, German, Spanish, French, Dutch, Polish, Brazilian Portuguese, Czech, Russian), as a full keyboard or as a phone keypad (T9).
 - **Screenshots** - turn them on in Settings > More, then press volume up + power (wheel up + power on the R3 II 2025) to save the screen to the card.
 

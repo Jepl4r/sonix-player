@@ -535,6 +535,17 @@ void settingsrow_toggle_slider_expanded(lv_obj_t *card, bool expanded) {
 	}
 }
 
+void settingsrow_set_enabled(lv_obj_t *card, lv_obj_t *const *controls, int count, bool enabled) {
+	for (int i = 0; i < count; i++) {
+		if (enabled) {
+			lv_obj_remove_state(controls[i], LV_STATE_DISABLED);
+		} else {
+			lv_obj_add_state(controls[i], LV_STATE_DISABLED);
+		}
+	}
+	lv_obj_set_style_opa(card, enabled ? LV_OPA_COVER : LV_OPA_40, 0);
+}
+
 lv_obj_t *settingsrow_toggle_slider(lv_obj_t *parent, const char *name, int steps, lv_obj_t **switch_out,
 									lv_obj_t **value_out, lv_obj_t **slider_out, lv_event_cb_t toggle_cb,
 									lv_event_cb_t slider_cb) {
