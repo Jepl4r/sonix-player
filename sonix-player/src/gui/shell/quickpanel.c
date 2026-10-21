@@ -1886,10 +1886,13 @@ static lv_obj_t *make_flat_button(lv_obj_t *parent, int size, lv_event_cb_t cb) 
 
 // The now-playing card above its buttons -- the title, the artist and the space
 // over them -- is the way to the player: the sheet goes away and the player
-// comes up, as from the Music page. A tap only: a drag here carries the sheet,
-// and the tap guard never lets a drag click. Taps on the row of buttons are the
-// buttons' own, and those between them, bubbled up from the row, are nobody's.
+// comes up, as from the Music page. A tap only: a press that moved the sheet is
+// not one, as for the sheet's other tap targets. Taps on the row of buttons are
+// the buttons' own, and those between them, bubbled up from the row, are nobody's.
 static void np_card_clicked_cb(lv_event_t *e) {
+	if (press_dragged) {
+		return;
+	}
 	if (lv_event_get_target(e) != np_card) {
 		return;
 	}
