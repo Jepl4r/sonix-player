@@ -71,8 +71,8 @@
 #define CARD_GAP 16	   // between the two cards
 #define CARD_ROW_GAP 12 // between the blocks inside the controls card
 #define HANDLE_ROOM 24	// added under the slider when the card has a handle
-#define VOLUME_ROOM (BRIGHT_ROW_H + CARD_ROW_GAP) // added for the volume slider, when it is on
 #define BRIGHT_ROW_H 44
+#define VOLUME_ROOM (BRIGHT_ROW_H + CARD_ROW_GAP) // added for the volume slider, when it is on
 // The dimmest backlight level on the slider: 0 would put the backlight out.
 #define BRIGHTNESS_FLOOR 1
 
@@ -607,8 +607,10 @@ static void expand_handle_clicked_cb(lv_event_t *e) {
 //
 // The same level the keys and the volume bar move: the ceiling of the socket
 // in use caps it, and line out holds a fixed level, so the slider is greyed
-// out while that is on. It shows what the output is really at after every
-// move, not what was asked for.
+// out while that is on. While it is dragged the knob stays under the finger
+// and only the level moves; let go, it shows what the output is really at.
+// Snapping it back mid-drag would only have the finger move it again, a write
+// per frame for as long as it is held past the limit.
 // ---------------------------------------------------------------------------
 
 static void cards_layout(void);
@@ -623,8 +625,6 @@ static void refresh_volume_row(int percent) {
 		lv_slider_set_value(volume_slider, percent, LV_ANIM_OFF);
 	}
 	lv_image_set_src(volume_icon, volume_overlay_icon(percent));
-	lv_obj_set_style_bg_color(volume_slider, theme()->accent, LV_PART_INDICATOR);
-	theme_apply_slider_knob(volume_slider);
 
 	bool fixed = lineout_is_active();
 	if (fixed) {
@@ -637,11 +637,19 @@ static void refresh_volume_row(int percent) {
 
 static void volume_changed_cb(lv_event_t *e) {
 	(void)e;
-	set_volume_percent((int)lv_slider_get_value(volume_slider));
+	int want = (int)lv_slider_get_value(volume_slider);
+	if (want == get_volume_percent()) {
+		return;
+	}
+	set_volume_percent(want);
 	int percent = get_volume_percent();
-	lv_slider_set_value(volume_slider, percent, LV_ANIM_OFF);
 	lv_image_set_src(volume_icon, volume_overlay_icon(percent));
 	topbar_refresh_volume(percent);
+}
+
+static void volume_released_cb(lv_event_t *e) {
+	(void)e;
+	lv_slider_set_value(volume_slider, get_volume_percent(), LV_ANIM_OFF);
 }
 
 void quickpanel_set_volume_slider(bool on) {
@@ -676,6 +684,8 @@ static void panel_prepare(void) {
 	// for whichever theme is live now; otherwise it keeps the ring (or lack of
 	// one) it was created with.
 	theme_apply_slider_knob(brightness_slider);
+	lv_obj_set_style_bg_color(volume_slider, theme()->accent, LV_PART_INDICATOR);
+	theme_apply_slider_knob(volume_slider);
 
 	refresh_now_playing_card();
 	refresh_audio_buttons();
@@ -2194,6 +2204,8 @@ void quickpanel_init(gui_config_t *cfg) {
 	volume_row = make_slider_row(controls_card, volume_overlay_icon(get_volume_percent()), &volume_icon, &volume_slider);
 	lv_slider_set_range(volume_slider, 0, 100);
 	lv_obj_add_event_cb(volume_slider, volume_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
+	lv_obj_add_event_cb(volume_slider, volume_released_cb, LV_EVENT_RELEASED, NULL);
+	lv_obj_add_event_cb(volume_slider, volume_released_cb, LV_EVENT_PRESS_LOST, NULL);
 	lv_obj_set_hidden(volume_row, !quickpanel_volume_slider_enabled());
 
 	// The buttons past the eighth. A window outside the flex, starting where the

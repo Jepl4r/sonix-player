@@ -34,8 +34,10 @@ void quickpanel_drag_end(void);
 bool quickpanel_volume_slider_enabled(void);
 void quickpanel_set_volume_slider(bool on);
 
-// The level moved somewhere else -- a key, the wheel, the volume bar, the
-// headphones over Bluetooth: the slider follows. On the GUI thread.
+// The level moved somewhere else and was announced with gui_notify_volume() --
+// a volume key, the headphones over Bluetooth: the slider follows. On the GUI
+// thread. A change that is not announced, such as the volume bar's own slider,
+// reaches it with the panel's poll.
 void quickpanel_volume_changed(int percent);
 
 // ---------------------------------------------------------------------------
