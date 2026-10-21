@@ -498,6 +498,11 @@ static void apply_track_speed(void) {
 	} else {
 		audio_set_speed(1.0);
 	}
+
+	// The graphic EQ the same way: a book through the audiobook curve, anything
+	// else through the music one. A preset gone missing is the GUI's to tell,
+	// from the setting falling back; this file has no toasts.
+	(void)audiobook_apply_eq(audiobook_is_playing());
 }
 
 // The file the engine was last started on. A podcast episode picks up where it

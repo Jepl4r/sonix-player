@@ -38,14 +38,30 @@ typedef struct {
 extern const eq_preset_t EQ_DEFAULT_PRESETS[];
 extern const int EQ_DEFAULT_PRESET_COUNT;
 void eq_apply_preset(const eq_preset_t *preset);
+// The built-in preset with this tr tag (e.g. "eq_vocal"), or NULL.
+const eq_preset_t *eq_default_preset_by_name(const char *name);
 
 // The user's own, one file each in <card>/.local/eq.
 void eq_presets_set_dir(const char *sd_root);
 bool eq_preset_save(const char *name);
 bool eq_preset_load(const char *name);
+// Reads a user preset's bands without applying them. False when missing.
+bool eq_preset_read(const char *name, int gain_db_out[EQ_BANDS]);
 bool eq_preset_delete(const char *name);
 typedef bool (*eq_preset_name_cb_t)(const char *name, void *user);
 int eq_preset_for_each(eq_preset_name_cb_t cb, void *user);
+
+// A curve that stands in for the [eq] settings while it is set: the audio
+// thread hears these bands with the EQ on, whatever the switch says. The
+// settings themselves are untouched. Bypass means the graphic EQ is off.
+//
+// The audiobook equalizer is built on it: a book can play through its own
+// curve, or none, while the EQ page goes on showing and editing the music one.
+// Nothing here is saved; whoever sets it sets it again after a restart.
+void eq_override_bands(const int gain_db[EQ_BANDS]);
+void eq_override_bypass(void);
+void eq_override_clear(void);
+bool eq_override_active(void);
 
 // The band centre frequencies, for the UI's labels.
 extern const int eq_band_freq[EQ_BANDS];

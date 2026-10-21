@@ -31,6 +31,12 @@ static volatile int band_gain_db[EQ_BANDS];
 static volatile int eq_enabled;
 static volatile int mseb_value[MSEB_BANDS];
 
+// The override over the two above (see eq.h): what the audio thread hears in
+// their place while it is set. Never saved.
+typedef enum { OVERRIDE_NONE = 0, OVERRIDE_BANDS, OVERRIDE_BYPASS } override_mode_t;
+static volatile int override_mode = OVERRIDE_NONE;
+static volatile int override_gain[EQ_BANDS];
+
 // PEQ. The bands are not `volatile`: they are structs, and a volatile struct is
 // not an atomic access in C, only slower code. The module's usual rule applies:
 // the audio thread may read one mid-update, and the next buffer reads it whole,
@@ -323,6 +329,52 @@ void eq_set_band(int band, int gain_db) {
 
 int eq_get_band(int band) { return (band >= 0 && band < EQ_BANDS) ? band_gain_db[band] : 0; }
 
+// The override. The bands are written before the mode and the version last,
+// so the audio thread that sees the new version reads the new curve whole.
+void eq_override_bands(const int gain_db[EQ_BANDS]) {
+	if (!gain_db) {
+		return;
+	}
+	for (int i = 0; i < EQ_BANDS; i++) {
+		override_gain[i] = clamp_int(gain_db[i], EQ_GAIN_MIN_DB, EQ_GAIN_MAX_DB);
+	}
+	override_mode = OVERRIDE_BANDS;
+	settings_version++;
+}
+
+void eq_override_bypass(void) {
+	override_mode = OVERRIDE_BYPASS;
+	settings_version++;
+}
+
+void eq_override_clear(void) {
+	override_mode = OVERRIDE_NONE;
+	settings_version++;
+}
+
+bool eq_override_active(void) { return override_mode != OVERRIDE_NONE; }
+
+// What the filters are built from: the override while one is set, the [eq]
+// settings otherwise. Every place that turns the graphic EQ into sound asks
+// these rather than eq_enabled and band_gain_db.
+static bool eq_effective_enabled(void) {
+	int mode = override_mode;
+	if (mode == OVERRIDE_BANDS) {
+		return true;
+	}
+	if (mode == OVERRIDE_BYPASS) {
+		return false;
+	}
+	return eq_enabled != 0;
+}
+
+static int eq_effective_band(int band) {
+	if (band < 0 || band >= EQ_BANDS) {
+		return 0;
+	}
+	return override_mode == OVERRIDE_BANDS ? override_gain[band] : band_gain_db[band];
+}
+
 // ---------------------------------------------------------------------------
 // MSEB settings. Same contract as the graphic EQ's: UI writes, audio thread
 // rebuilds on the next buffer.
@@ -392,6 +444,18 @@ void eq_apply_preset(const eq_preset_t *preset) {
 	}
 }
 
+const eq_preset_t *eq_default_preset_by_name(const char *name) {
+	if (!name) {
+		return NULL;
+	}
+	for (int i = 0; i < EQ_DEFAULT_PRESET_COUNT; i++) {
+		if (strcmp(EQ_DEFAULT_PRESETS[i].name, name) == 0) {
+			return &EQ_DEFAULT_PRESETS[i];
+		}
+	}
+	return NULL;
+}
+
 void eq_presets_set_dir(const char *sd_root) {
 	if (!sd_root || !sd_root[0]) {
 		eq_preset_dir[0] = '\0';
@@ -450,7 +514,9 @@ bool eq_preset_save(const char *name) {
 	return true;
 }
 
-bool eq_preset_load(const char *name) {
+// Reads the preset `name` over `gain_db`: a band the file names is replaced,
+// clamped, and one it leaves out keeps what the caller put there.
+static bool eq_preset_parse(const char *name, int gain_db[EQ_BANDS]) {
 	if (!eq_preset_dir[0] || !name_is_usable(name)) {
 		return false;
 	}
@@ -467,10 +533,38 @@ bool eq_preset_load(const char *name) {
 	while (fgets(line, sizeof(line), f)) {
 		int index = 0, value = 0;
 		if (sscanf(line, "b%d=%d", &index, &value) == 2 && index >= 0 && index < EQ_BANDS) {
-			eq_set_band(index, value);
+			gain_db[index] = clamp_int(value, EQ_GAIN_MIN_DB, EQ_GAIN_MAX_DB);
 		}
 	}
 	fclose(f);
+	return true;
+}
+
+bool eq_preset_load(const char *name) {
+	int gain[EQ_BANDS];
+	for (int i = 0; i < EQ_BANDS; i++) {
+		gain[i] = band_gain_db[i];
+	}
+	if (!eq_preset_parse(name, gain)) {
+		return false;
+	}
+	for (int i = 0; i < EQ_BANDS; i++) {
+		eq_set_band(i, gain[i]);
+	}
+	return true;
+}
+
+// A band the file leaves out reads as flat: there is no music curve under
+// this one to keep it from.
+bool eq_preset_read(const char *name, int gain_db_out[EQ_BANDS]) {
+	if (!gain_db_out) {
+		return false;
+	}
+	int gain[EQ_BANDS] = {0};
+	if (!eq_preset_parse(name, gain)) {
+		return false;
+	}
+	memcpy(gain_db_out, gain, sizeof(gain));
 	return true;
 }
 
@@ -1581,8 +1675,9 @@ static void filters_rebuild(int rate) {
 			active++;
 		}
 	}
+	bool geq_on = eq_effective_enabled();
 	for (int i = 0; i < EQ_BANDS; i++) {
-		double gain = eq_enabled ? (double)band_gain_db[i] : 0.0;
+		double gain = geq_on ? (double)eq_effective_band(i) : 0.0;
 		slot_update(MSEB_FILTERS + i, F_PEAK, eq_band_freq[i], gain, EQ_BAND_Q, rate, rate_changed);
 		if (chain_active[MSEB_FILTERS + i]) {
 			active++;
@@ -1707,9 +1802,9 @@ int eq_auto_headroom_tenths(void) {
 	double max_boost = 0;
 	double total = (double)mseb_auto_preamp_db(EQ_HEADROOM_REFERENCE_RATE);
 
-	if (eq_enabled) {
+	if (eq_effective_enabled()) {
 		for (int i = 0; i < EQ_BANDS; i++) {
-			double gain = (double)band_gain_db[i];
+			double gain = (double)eq_effective_band(i);
 			if (gain > max_boost) {
 				max_boost = gain;
 			}
@@ -1966,7 +2061,7 @@ static void chain_run_pass(int n, int channels, float step) {
 }
 
 static bool process_prepare(int frame_count, int channels, int sample_rate) {
-	if ((!eq_enabled && !mseb_enabled && !peq_enabled) || frame_count <= 0 || sample_rate <= 0) {
+	if ((!eq_effective_enabled() && !mseb_enabled && !peq_enabled) || frame_count <= 0 || sample_rate <= 0) {
 		return false;
 	}
 	if (channels > EQ_MAX_CHANNELS) {

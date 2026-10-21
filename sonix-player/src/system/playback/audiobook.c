@@ -1,6 +1,7 @@
 #include "audiobook.h"
 
 #include "src/system/library/audiobookdb.h"
+#include "src/system/audio/eq.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/mp4.h"
@@ -223,6 +224,76 @@ void audiobook_set_stop_at_chapter_end(bool on) { config_set_int("audiobook", "s
 bool audiobook_duration_per_chapter(void) { return config_get_int("audiobook", "duration_chapter", 0) != 0; }
 
 void audiobook_set_duration_per_chapter(bool on) { config_set_int("audiobook", "duration_chapter", on ? 1 : 0); }
+
+// The equalizer setting, as words in the file: someone reading config.ini sees
+// "preset" and "eq_vocal", not 2. Anything it does not recognise is the music
+// curve.
+static const char *const EQ_MODE_NAMES[] = {"music", "off", "preset"};
+
+audiobook_eq_mode_t audiobook_eq_mode(void) {
+	const char *value = config_get("audiobook", "eq_mode", "music");
+	for (int i = 0; i < (int)(sizeof(EQ_MODE_NAMES) / sizeof(EQ_MODE_NAMES[0])); i++) {
+		if (value && strcmp(value, EQ_MODE_NAMES[i]) == 0) {
+			return (audiobook_eq_mode_t)i;
+		}
+	}
+	return AUDIOBOOK_EQ_MUSIC;
+}
+
+const char *audiobook_eq_preset(char *out, size_t size) {
+	if (!out || size == 0) {
+		return "";
+	}
+	const char *value = config_get("audiobook", "eq_preset", "");
+	snprintf(out, size, "%s", value ? value : "");
+	return out;
+}
+
+void audiobook_set_eq(audiobook_eq_mode_t mode, const char *preset) {
+	if (mode < AUDIOBOOK_EQ_MUSIC || mode > AUDIOBOOK_EQ_PRESET) {
+		mode = AUDIOBOOK_EQ_MUSIC;
+	}
+	config_set("audiobook", "eq_mode", EQ_MODE_NAMES[mode]);
+	config_set("audiobook", "eq_preset", preset ? preset : "");
+	config_save();
+}
+
+// Only a book gets the audiobook curve; anything else plays through whatever
+// the [eq] settings say. A preset that cannot be found -- a user preset
+// deleted from the card since it was chosen -- puts the setting back to the
+// music curve, so the listener is told once rather than on every track.
+bool audiobook_apply_eq(bool book_playing) {
+	audiobook_eq_mode_t mode = book_playing ? audiobook_eq_mode() : AUDIOBOOK_EQ_MUSIC;
+	if (mode == AUDIOBOOK_EQ_MUSIC) {
+		eq_override_clear();
+		return true;
+	}
+	if (mode == AUDIOBOOK_EQ_OFF) {
+		eq_override_bypass();
+		return true;
+	}
+
+	char preset[128];
+	audiobook_eq_preset(preset, sizeof(preset));
+	static const char USER_PREFIX[] = "user:";
+	int gain[EQ_BANDS];
+	if (strncmp(preset, USER_PREFIX, sizeof(USER_PREFIX) - 1) == 0) {
+		if (eq_preset_read(preset + sizeof(USER_PREFIX) - 1, gain)) {
+			eq_override_bands(gain);
+			return true;
+		}
+	} else {
+		const eq_preset_t *builtin = eq_default_preset_by_name(preset);
+		if (builtin) {
+			eq_override_bands(builtin->gain_db);
+			return true;
+		}
+	}
+
+	eq_override_clear();
+	audiobook_set_eq(AUDIOBOOK_EQ_MUSIC, "");
+	return false;
+}
 
 static bool rewind_suppressed;
 

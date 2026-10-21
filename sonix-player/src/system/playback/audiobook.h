@@ -56,6 +56,20 @@ void audiobook_set_stop_at_chapter_end(bool on);
 bool audiobook_duration_per_chapter(void);
 void audiobook_set_duration_per_chapter(bool on);
 
+// Equalizer: the graphic EQ curve a book plays through. "Same as music" (the
+// default) leaves the [eq] settings in charge; "off" bypasses the graphic EQ;
+// a preset is one of the built-ins by its tr tag or one of the user's own as
+// "user:<name>". Only the graphic EQ: the parametric, MSEB and the rest stay
+// as the listener set them.
+typedef enum { AUDIOBOOK_EQ_MUSIC = 0, AUDIOBOOK_EQ_OFF, AUDIOBOOK_EQ_PRESET } audiobook_eq_mode_t;
+audiobook_eq_mode_t audiobook_eq_mode(void);						 // [audiobook] eq_mode = music|off|preset
+const char *audiobook_eq_preset(char *out, size_t size);			 // [audiobook] eq_preset: "eq_vocal" or "user:<name>"
+void audiobook_set_eq(audiobook_eq_mode_t mode, const char *preset); // saves both, config_save()
+// Puts the chosen curve on the engine for a playing book, or clears it.
+// Called on every track change and when the setting changes. Returns false
+// when a user preset named by the setting is missing (the caller toasts).
+bool audiobook_apply_eq(bool book_playing);
+
 // The sleep timer is one of the three in sleeptimer.h, which keeps the
 // audiobook one under the same [audiobook] keys. "Stop at the end of the
 // chapter" is the switch above, not a timer length.

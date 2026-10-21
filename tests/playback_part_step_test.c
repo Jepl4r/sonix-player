@@ -51,6 +51,7 @@ int main(void) {
 }
 void audio_set_speed(double speed) {}
 double audiobook_speed(void) { return 1.0; }
+bool audiobook_apply_eq(bool book_playing) { return true; }
 void audiobook_suppress_rewind_once(void) {}
 void metadata_read(const char *path, song_metadata_t *out) {
   memset(out, 0, sizeof(*out));

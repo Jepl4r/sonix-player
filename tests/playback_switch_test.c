@@ -3,6 +3,12 @@
 static bool saved;
 static char selected[512] = "old.mp3";
 bool audiobook_is_playing(void) { return true; }
+static bool eq_applied;
+bool audiobook_apply_eq(bool book_playing) {
+  assert(book_playing);
+  eq_applied = true;
+  return true;
+}
 void audio_get_progress(double *current, double *total) {
   *current = 123;
   *total = 1000;
@@ -19,6 +25,7 @@ void audiobook_track_changed(const char *path) {
 int main(void) {
   load_paused("new.mp3");
   assert(saved);
+  assert(eq_applied);
   return 0;
 }
 int audio_play_paused(const char *path, double position) {

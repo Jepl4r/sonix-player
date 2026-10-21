@@ -24,6 +24,9 @@ ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$r
 if "$build/keymap-test"; then printf "%s\n" "PASS keymap-actions"; else failed=$((failed + 1)); fi
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/sleeptimer_test.c" $gc_flags -o "$build/sleeptimer-test"
 if "$build/sleeptimer-test"; then printf "%s\n" "PASS sleeptimer"; else failed=$((failed + 1)); fi
+${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/eq_override_test.c" $gc_flags -lm -o "$build/eq-override-test"
+mkdir "$build/eq-override"
+if "$build/eq-override-test" "$build/eq-override"; then printf "%s\n" "PASS eq-override"; else failed=$((failed + 1)); fi
 for guard in ota firmware; do
  ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/${guard}_guard_test.c" $gc_flags -o "$build/$guard-test"
  mkdir "$build/$guard"
