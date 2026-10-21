@@ -4459,6 +4459,13 @@ static void update_progress(void) {
 						!state.live && podcastcache_is_episode(state.current_file),
 						!state.live && audio_get_dsd_multiple() > 0);
 
+	// The audiobook equalizer fell back to the music curve at a track change
+	// (its user preset is gone): said once, here, since the change happens off
+	// the GUI thread.
+	if (audiobook_mode && audiobook_take_eq_fallback()) {
+		gui_notify_popup("audiobook_eq_preset_missing");
+	}
+
 	// Where the book got to. Not the same thing as "remember track" below and
 	// not subject to its switch: that setting is about which track comes back
 	// on the next boot, while this is the whole point of a book -- it is

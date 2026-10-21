@@ -18,6 +18,7 @@
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/settings/artistexceptions.h"
 #include "src/gui/settings/lastfmsettings.h"
+#include "src/gui/library/audiobooks.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -25,6 +26,7 @@
 #include "src/system/audio/alsa-controls.h"
 #include "src/gui/shell/topbar.h"
 #include "src/system/device/sysinfo.h"
+#include "src/system/playback/audiobook.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/playback/sleeptimer.h"
 #include "src/system/audio/audio.h"
@@ -1033,6 +1035,28 @@ static void refresh_eq_sliders(void) {
 	}
 }
 
+// While a book plays with its own curve the sliders still show the music one;
+// this line says what is actually heard.
+static lv_obj_t *eq_audiobook_note;
+
+static void refresh_eq_audiobook_note(void) {
+	if (!eq_audiobook_note) {
+		return;
+	}
+	bool show = audiobook_is_playing() && audiobook_eq_mode() != AUDIOBOOK_EQ_MUSIC;
+	if (show) {
+		char choice[128];
+		audiobooks_eq_choice_text(choice, sizeof(choice));
+		lv_label_set_text_fmt(eq_audiobook_note, tr("eq_audiobook_note"), choice);
+	}
+	lv_obj_set_hidden(eq_audiobook_note, !show);
+}
+
+static void eq_screen_loaded_cb(lv_event_t *e) {
+	(void)e;
+	refresh_eq_audiobook_note();
+}
+
 static void build_eq_page(gui_config_t *cfg) {
 	eq_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(eq_screen, cfg, "equaliser");
@@ -1041,6 +1065,14 @@ static void build_eq_page(gui_config_t *cfg) {
 	if (eq_get_enabled()) {
 		lv_obj_add_state(eq_enable_switch, LV_STATE_CHECKED);
 	}
+
+	eq_audiobook_note = lv_label_create(container);
+	lv_label_set_long_mode(eq_audiobook_note, LV_LABEL_LONG_WRAP);
+	lv_obj_set_width(eq_audiobook_note, lv_pct(100));
+	lv_obj_add_style(eq_audiobook_note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(eq_audiobook_note, &font_ui_22, 0);
+	refresh_eq_audiobook_note();
+	lv_obj_add_event_cb(eq_screen, eq_screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 
 	// The band card: ten vertical sliders side by side, frequency underneath.
 	lv_obj_t *card = lv_obj_create(container);

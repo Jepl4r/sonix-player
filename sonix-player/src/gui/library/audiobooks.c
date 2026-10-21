@@ -18,6 +18,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/system/audio/eq.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
@@ -1215,10 +1216,21 @@ static toggle_pills_t rewind_card;
 static lv_obj_t *rewind_pill[REWIND_CHOICES];
 static const int REWIND_VALUES[REWIND_CHOICES] = {3, 5, 7, 10};
 
+// The equalizer setting holds a built-in's tag or "user:<name>" in this much.
+#define PRESET_FIELD_MAX 128
+static const char USER_PRESET_PREFIX[] = "user:";
+
+static lv_obj_t *eq_value_label;
+static void open_eq_chooser_cb(lv_event_t *e);
+
 static void refresh_settings_page(void) {
 	if (!stop_chapter_switch) {
 		return;
 	}
+
+	char eq_text[PRESET_FIELD_MAX];
+	audiobooks_eq_choice_text(eq_text, sizeof(eq_text));
+	lv_label_set_text(eq_value_label, eq_text);
 
 	bool per_chapter = audiobook_duration_per_chapter();
 	settingsrow_pill_active(duration_total_pill, !per_chapter);
@@ -1317,6 +1329,13 @@ static void build_settings_page(gui_config_t *cfg) {
 		rewind_pill[i] = make_pill(rewind_card.pills, REWIND_LABELS[i], REWIND_VALUES[i], rewind_pick_cb);
 	}
 
+	// Which curve a book plays through. The page behind it is built below.
+	settingsrow_add(container, "audiobook_equalizer", &eq_value_label, open_eq_chooser_cb, NULL);
+	// A user preset's name can be any length; the row keeps room for its own.
+	lv_label_set_long_mode(eq_value_label, LV_LABEL_LONG_DOT);
+	lv_obj_set_style_max_width(eq_value_label, 240, 0);
+	lv_obj_set_height(eq_value_label, lv_font_get_line_height(&font_ui_24));
+
 	// An action, not a page: it asks before it starts, so no chevron.
 	settingsrow_action(container, "audiobook_scan_audiobooks_2", scan_row_cb, NULL);
 	// Said on the row itself: a scan that finds nothing because the books are
@@ -1328,6 +1347,160 @@ static void build_settings_page(gui_config_t *cfg) {
 	lv_obj_add_event_cb(audiobooksettings_screen, settings_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	// And when the control centre switches the timer with the page under it.
 	lv_obj_add_event_cb(audiobooksettings_screen, settings_loaded_cb, LV_EVENT_REFRESH, NULL);
+}
+
+// ---------------------------------------------------------------------------
+// Equalizer: the curve a book plays through
+//
+// A page and not a popover: "same as music", "off", the ten built-in curves
+// and the listener's own are more rows than a popover holds. The user's own
+// are read from the card each time the page opens, since they can be saved and
+// deleted from the equalizer page in between.
+// ---------------------------------------------------------------------------
+
+#define CHECK_GREEN lv_color_make(46, 194, 126)
+
+// One row of the chooser: what a tap writes into the setting.
+typedef struct {
+	audiobook_eq_mode_t mode;
+	char preset[PRESET_FIELD_MAX];
+	lv_obj_t *check;
+} eq_choice_t;
+
+static lv_obj_t *audiobookeq_screen;
+static lv_obj_t *eq_list;
+static eq_choice_t *eq_choices;
+static int eq_choice_count;
+static int eq_choice_cap;
+
+void audiobooks_eq_choice_text(char *out, size_t size) {
+	if (!out || size == 0) {
+		return;
+	}
+	char preset[PRESET_FIELD_MAX];
+	switch (audiobook_eq_mode()) {
+	case AUDIOBOOK_EQ_OFF:
+		snprintf(out, size, "%s", tr("audiobook_eq_off"));
+		break;
+	case AUDIOBOOK_EQ_PRESET:
+		audiobook_eq_preset(preset, sizeof(preset));
+		if (strncmp(preset, USER_PRESET_PREFIX, sizeof(USER_PRESET_PREFIX) - 1) == 0) {
+			snprintf(out, size, "%s", preset + sizeof(USER_PRESET_PREFIX) - 1);
+		} else {
+			snprintf(out, size, "%s", tr(preset));
+		}
+		break;
+	default:
+		snprintf(out, size, "%s", tr("audiobook_eq_same_as_music"));
+		break;
+	}
+}
+
+static bool eq_choice_is_current(const eq_choice_t *choice) {
+	if (choice->mode != audiobook_eq_mode()) {
+		return false;
+	}
+	if (choice->mode != AUDIOBOOK_EQ_PRESET) {
+		return true;
+	}
+	char preset[PRESET_FIELD_MAX];
+	audiobook_eq_preset(preset, sizeof(preset));
+	return strcmp(choice->preset, preset) == 0;
+}
+
+static void paint_eq_marks(void) {
+	for (int i = 0; i < eq_choice_count; i++) {
+		lv_obj_set_hidden(eq_choices[i].check, !eq_choice_is_current(&eq_choices[i]));
+	}
+}
+
+static void eq_choice_cb(lv_event_t *e) {
+	intptr_t index = (intptr_t)lv_event_get_user_data(e);
+	if (index < 0 || index >= eq_choice_count) {
+		return;
+	}
+	audiobook_set_eq(eq_choices[index].mode, eq_choices[index].preset);
+	if (!audiobook_apply_eq(audiobook_is_playing())) {
+		// A user preset that went away between listing and tap. The player's
+		// poll would say it again, so this one takes the flag.
+		audiobook_take_eq_fallback();
+		gui_notify_popup("audiobook_eq_preset_missing");
+	}
+	paint_eq_marks();
+	refresh_settings_page();
+	back_btn_cb(NULL);
+}
+
+static void add_eq_choice(const char *name, audiobook_eq_mode_t mode, const char *preset) {
+	if (eq_choice_count == eq_choice_cap) {
+		int cap = eq_choice_cap ? eq_choice_cap * 2 : 16;
+		eq_choice_t *grown = realloc(eq_choices, (size_t)cap * sizeof(*grown));
+		if (!grown) {
+			return;
+		}
+		eq_choices = grown;
+		eq_choice_cap = cap;
+	}
+
+	eq_choice_t *choice = &eq_choices[eq_choice_count];
+	choice->mode = mode;
+	snprintf(choice->preset, sizeof(choice->preset), "%s", preset ? preset : "");
+
+	lv_obj_t *row = settingsrow_action(eq_list, name, eq_choice_cb, (void *)(intptr_t)eq_choice_count);
+	// The tick goes in before the name is fitted, so the name leaves room for it.
+	lv_obj_t *mark = lv_image_create(row);
+	lv_image_set_src(mark, &icon_check);
+	lv_obj_set_style_image_recolor(mark, CHECK_GREEN, 0);
+	lv_obj_set_style_image_recolor_opa(mark, LV_OPA_COVER, 0);
+	lv_obj_align(mark, LV_ALIGN_RIGHT_MID, 0, 0);
+	choice->check = mark;
+	settingsrow_name_lines(row, 1);
+	eq_choice_count++;
+}
+
+static bool add_user_eq_choice(const char *name, void *user) {
+	int *count = user;
+	char preset[PRESET_FIELD_MAX];
+	if ((size_t)snprintf(preset, sizeof(preset), "%s%s", USER_PRESET_PREFIX, name) >= sizeof(preset)) {
+		return true; // a name the setting cannot hold
+	}
+	if (*count == 0) {
+		lv_obj_t *header = lv_label_create(eq_list);
+		lv_obj_set_width(header, lv_pct(100));
+		lv_obj_add_style(header, &theme_style_text_dim, 0);
+		lv_obj_set_style_text_font(header, &font_ui_22, 0);
+		lv_label_set_text(header, tr("audiobook_eq_user_presets"));
+	}
+	(*count)++;
+	add_eq_choice(name, AUDIOBOOK_EQ_PRESET, preset);
+	return true;
+}
+
+static void rebuild_eq_chooser(void) {
+	lv_obj_clean(eq_list);
+	eq_choice_count = 0;
+
+	add_eq_choice("audiobook_eq_same_as_music", AUDIOBOOK_EQ_MUSIC, "");
+	add_eq_choice("audiobook_eq_off", AUDIOBOOK_EQ_OFF, "");
+	for (int i = 0; i < EQ_DEFAULT_PRESET_COUNT; i++) {
+		add_eq_choice(EQ_DEFAULT_PRESETS[i].name, AUDIOBOOK_EQ_PRESET, EQ_DEFAULT_PRESETS[i].name);
+	}
+	int user_count = 0;
+	eq_preset_for_each(add_user_eq_choice, &user_count);
+
+	paint_eq_marks();
+}
+
+static void open_eq_chooser_cb(lv_event_t *e) {
+	(void)e;
+	rebuild_eq_chooser();
+	switch_screen(audiobookeq_screen);
+}
+
+static void build_eq_chooser_page(gui_config_t *cfg) {
+	audiobookeq_screen = lv_obj_create(NULL);
+	eq_list = settingsrow_page(audiobookeq_screen, cfg, "audiobook_equalizer");
+	switcher_attach_back_gesture(audiobookeq_screen);
 }
 
 // ---------------------------------------------------------------------------
@@ -1621,5 +1794,6 @@ void audiobooks_init(gui_config_t *cfg) {
 	build_names_page(cfg);
 	build_settings_page(cfg);
 	build_controls_page(cfg);
+	build_eq_chooser_page(cfg);
 	build_scan_page(cfg);
 }

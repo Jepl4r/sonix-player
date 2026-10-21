@@ -17,6 +17,10 @@ extern lv_obj_t *audiobookscan_screen;
 
 void audiobooks_init(gui_config_t *cfg);
 
+// What the audiobook equalizer is set to, in words: "Same as music", "Off", a
+// built-in curve by its translated name, or a user preset by its name.
+void audiobooks_eq_choice_text(char *out, size_t size);
+
 // Starts `book` (a file, or a folder book's folder) in `file` at `seconds`,
 // and writes that as where the book stands. The player is left as it is: the
 // caller decides whether it comes up.
