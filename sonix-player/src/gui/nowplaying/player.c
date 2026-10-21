@@ -4627,11 +4627,15 @@ void player_step_chapter(int direction) {
 	update_progress();
 }
 
-// The side keys mapped to a chapter step. A stream and a DLNA queue answer as
-// they do to the track keys; a book steps by chapter; everything else is
-// exactly the track key.
+// The side keys mapped to a chapter step. A book with chapters or parts steps
+// by chapter; a stream, a DLNA queue, a book with no units to step along and
+// everything else is exactly the track key (on that book, seconds).
+static bool chapter_key_steps(void) {
+	return !radio_is_active() && !dlna_owns_playback() && audiobook_mode && audiobook_unit_count() > 0;
+}
+
 void player_key_next_chapter(void) {
-	if (!radio_is_active() && !dlna_owns_playback() && audiobook_mode) {
+	if (chapter_key_steps()) {
 		player_step_chapter(1);
 		return;
 	}
@@ -4639,7 +4643,7 @@ void player_key_next_chapter(void) {
 }
 
 void player_key_prev_chapter(void) {
-	if (!radio_is_active() && !dlna_owns_playback() && audiobook_mode) {
+	if (chapter_key_steps()) {
 		player_step_chapter(-1);
 		return;
 	}
