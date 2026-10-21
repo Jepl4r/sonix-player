@@ -184,6 +184,20 @@ static void flush_book_position(const device_state_t *state) {
 	audiobook_note_position(state->progress_current_secs, state->progress_total_secs, true);
 }
 
+// Sample the outgoing decoder before any load resets its progress or the
+// audiobook module forgets which book it belongs to. Every track-load path
+// uses this boundary, including selections from outside Now Playing.
+static void change_book_track(const char *filepath) {
+	if (audiobook_is_playing()) {
+		double current = 0, total = 0;
+		audio_get_progress(&current, &total);
+		if (current > 1.0) {
+			audiobook_note_position(current, total, true);
+		}
+	}
+	audiobook_track_changed(filepath);
+}
+
 void device_state_remember_flush(void) {
 	device_state_t state;
 	device_state_get(&state);
@@ -559,7 +573,7 @@ static void load_and_play_at(const char *filepath, double position) {
 	// change, and everything that dresses the player for one reads the answer
 	// from it. Every route by which the track can change passes through one of
 	// these calls.
-	audiobook_track_changed(current_metadata_file);
+	change_book_track(current_metadata_file);
 	// The ReplayGain the tags asked for, worked out once per track.
 	replaygain_load(&current_metadata);
 	apply_track_speed();
@@ -606,7 +620,7 @@ static void load_paused(const char *filepath) {
 		snprintf(current_metadata_file, sizeof(current_metadata_file), "%s", filepath);
 	}
 	metadata_read(current_metadata_file, &current_metadata);
-	audiobook_track_changed(current_metadata_file);
+	change_book_track(current_metadata_file);
 	replaygain_load(&current_metadata);
 	apply_track_speed();
 
@@ -647,7 +661,7 @@ void device_state_restore_file(const char *filepath, double position) {
 	// change, and everything that dresses the player for one reads the answer
 	// from it. Every route by which the track can change passes through one of
 	// these calls.
-	audiobook_track_changed(current_metadata_file);
+	change_book_track(current_metadata_file);
 	// The ReplayGain the tags asked for, worked out once per track.
 	replaygain_load(&current_metadata);
 	apply_track_speed();
@@ -726,7 +740,7 @@ void device_state_restore_index(library_index_t *ix, int start_index, const char
 	strncpy(current_metadata_file, path, sizeof(current_metadata_file) - 1);
 	current_metadata_file[sizeof(current_metadata_file) - 1] = '\0';
 	metadata_read(current_metadata_file, &current_metadata);
-	audiobook_track_changed(current_metadata_file);
+	change_book_track(current_metadata_file);
 	replaygain_load(&current_metadata);
 	apply_track_speed();
 
@@ -776,7 +790,7 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 	// change, and everything that dresses the player for one reads the answer
 	// from it. Every route by which the track can change passes through one of
 	// these calls.
-	audiobook_track_changed(current_metadata_file);
+	change_book_track(current_metadata_file);
 	// The ReplayGain the tags asked for, worked out once per track.
 	replaygain_load(&current_metadata);
 	apply_track_speed();
@@ -819,7 +833,7 @@ void device_state_play_file_at(const char *filepath, double position) {
 		current_metadata_file[sizeof(current_metadata_file) - 1] = '\0';
 	}
 	metadata_read(current_metadata_file, &current_metadata);
-	audiobook_track_changed(current_metadata_file);
+	change_book_track(current_metadata_file);
 	// The ReplayGain the tags asked for, worked out once per track.
 	replaygain_load(&current_metadata);
 	apply_track_speed();

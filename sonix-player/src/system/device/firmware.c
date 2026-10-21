@@ -19,6 +19,7 @@
 #include "src/system/device/power.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/device/system.h"
+#include "src/system/device/usb.h"
 
 
 // The card is scanned once and every name compared case-insensitively,
@@ -90,7 +91,7 @@ bool firmware_update_file_find(char *out, size_t out_size) {
 	out[0] = '\0';
 
 	const char *root = storage_sd_root();
-	if (!root || !*root) {
+	if (!root || !*root || !storage_card_attached() || usb_storage_active()) {
 		return false;
 	}
 
@@ -102,6 +103,13 @@ bool firmware_update_file_find(char *out, size_t out_size) {
 }
 
 void firmware_update_start(void) {
+	// The card may have been removed/exported since the confirmation screen
+	// or the OTA download completed. Never arm recovery without its image.
+	char image[512];
+	if (!firmware_update_file_find(image, sizeof(image))) {
+		fprintf(stderr, "firmware: update card/image is no longer available\n");
+		return;
+	}
 #ifdef HOST_BUILD
 	printf("firmware: (host build) would arm recovery and reboot\n");
 #else
