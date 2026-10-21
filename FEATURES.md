@@ -147,9 +147,9 @@ This is everything Sonix Player can do today, on the **R1**, the **R3 Pro II** a
 
 - **File manager** - browse the card, create folders, rename, move, copy and delete. Pictures and text files open right there.
 - **Metronome** - 30 to 250 BPM, up to 7 beats per bar, and tap tempo.
-- **Game Boy** (Gearboy) (not yet available on the R3 II 2025) - plays Game Boy and Game Boy Color games, with their real names, save states, five palettes, shaders and color correction.
+- **Game Boy** (Gearboy) - plays Game Boy and Game Boy Color games, with their real names, save states, five palettes, shaders and color correction.
   > ROMs go in `Games/GB` and `Games/GBC`. The boot ROMs (optional) go in `Games/Bios`: `dmg_boot.bin` and `cgb_boot.bin`.
-- **Flappy Bird** (not yet available on the R3 II 2025), with sounds.
+- **Flappy Bird**, with sounds.
 
 ## Wireless
 

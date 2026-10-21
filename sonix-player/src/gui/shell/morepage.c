@@ -11,7 +11,6 @@
 #include "src/gui/shell/gridpage.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
-#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *morepage_screen;
 
@@ -36,22 +35,11 @@ void morepage_init(gui_config_t *cfg) {
 		{"metronome", &icon_menu_metronome, &metronomepage_screen, NULL},
 	};
 
-	// The games are drawn for a 480 px wide panel -- the Game Boy picture at
-	// three times its size, the bird at four -- so a narrower one goes without.
-	grid_entry_t shown[sizeof(entries) / sizeof(entries[0])];
-	int count = 0;
-	for (size_t i = 0; i < sizeof(entries) / sizeof(entries[0]); i++) {
-		bool game = entries[i].target == &gearboypage_screen || entries[i].action == flappybird_open;
-		if (!game || cfg->screen_width >= UI_DESIGN_WIDTH) {
-			shown[count++] = entries[i];
-		}
-	}
-
 	// Two columns by three rows, like the Music and Wireless pages, so a tile
 	// here is exactly the size of a tile there. The grid is laid out as full
 	// even with fewer entries, so the only tile sits where it would with six --
 	// top left -- instead of floating in the middle of a page of its own.
-	gridpage_build(morepage_screen, cfg, shown, count, 2, 3, true);
+	gridpage_build(morepage_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
 
 	settingsrow_title(morepage_screen, cfg, "more");
 }

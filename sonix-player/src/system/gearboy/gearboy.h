@@ -14,12 +14,17 @@
 // sound cannot drift apart because one loop produces both. A computed usleep
 // in place of that would slip a frame every few seconds.
 //
-// The framebuffer is already scaled 3x (480x432). The scaling costs a
-// millisecond and runs on the emulator thread, which has room for it, rather
-// than on the UI thread, which does not.
+// The framebuffer is already scaled 3x (480x432), or 2x (320x288) for a panel
+// 320 px wide (gearboy_set_scale()). The scaling costs a millisecond and runs
+// on the emulator thread, which has room for it, rather than on the UI thread,
+// which does not.
 
 #define GEARBOY_SCREEN_W 480
 #define GEARBOY_SCREEN_H 432
+
+// 3, the default, or 2. Set before gearboy_start(): the framebuffer is made at
+// that size when the game starts.
+void gearboy_set_scale(int scale);
 
 #define GEARBOY_TITLE_MAX 128
 
@@ -50,7 +55,8 @@ bool gearboy_failed(void);
 // The running game's title, for the page.
 const char *gearboy_title(void);
 
-// The framebuffer, 480x432 RGB565. NULL until a game is running.
+// The framebuffer, 480x432 RGB565 (320x288 at 2x). NULL until a game is
+// running.
 //
 // Only the UI thread writes it, inside gearboy_present(); the emulator thread
 // Only the UI thread writes it, inside gearboy_present(); the emulator thread
