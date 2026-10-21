@@ -1431,7 +1431,8 @@ static void eq_choice_cb(lv_event_t *e) {
 	back_btn_cb(NULL);
 }
 
-static void add_eq_choice(const char *name, audiobook_eq_mode_t mode, const char *preset) {
+// `name` is a language tag, or a user preset's own name when `is_data`.
+static void add_eq_choice(const char *name, bool is_data, audiobook_eq_mode_t mode, const char *preset) {
 	if (eq_choice_count == eq_choice_cap) {
 		int cap = eq_choice_cap ? eq_choice_cap * 2 : 16;
 		eq_choice_t *grown = realloc(eq_choices, (size_t)cap * sizeof(*grown));
@@ -1447,6 +1448,10 @@ static void add_eq_choice(const char *name, audiobook_eq_mode_t mode, const char
 	snprintf(choice->preset, sizeof(choice->preset), "%s", preset ? preset : "");
 
 	lv_obj_t *row = settingsrow_action(eq_list, name, eq_choice_cb, (void *)(intptr_t)eq_choice_count);
+	if (is_data) {
+		// A preset named like a language tag is still just its name.
+		lv_label_set_text(settingsrow_name_label(row), name);
+	}
 	// The tick goes in before the name is fitted, so the name leaves room for it.
 	lv_obj_t *mark = lv_image_create(row);
 	lv_image_set_src(mark, &icon_check);
@@ -1472,7 +1477,7 @@ static bool add_user_eq_choice(const char *name, void *user) {
 		lv_label_set_text(header, tr("audiobook_eq_user_presets"));
 	}
 	(*count)++;
-	add_eq_choice(name, AUDIOBOOK_EQ_PRESET, preset);
+	add_eq_choice(name, true, AUDIOBOOK_EQ_PRESET, preset);
 	return true;
 }
 
@@ -1480,10 +1485,10 @@ static void rebuild_eq_chooser(void) {
 	lv_obj_clean(eq_list);
 	eq_choice_count = 0;
 
-	add_eq_choice("audiobook_eq_same_as_music", AUDIOBOOK_EQ_MUSIC, "");
-	add_eq_choice("audiobook_eq_off", AUDIOBOOK_EQ_OFF, "");
+	add_eq_choice("audiobook_eq_same_as_music", false, AUDIOBOOK_EQ_MUSIC, "");
+	add_eq_choice("audiobook_eq_off", false, AUDIOBOOK_EQ_OFF, "");
 	for (int i = 0; i < EQ_DEFAULT_PRESET_COUNT; i++) {
-		add_eq_choice(EQ_DEFAULT_PRESETS[i].name, AUDIOBOOK_EQ_PRESET, EQ_DEFAULT_PRESETS[i].name);
+		add_eq_choice(EQ_DEFAULT_PRESETS[i].name, false, AUDIOBOOK_EQ_PRESET, EQ_DEFAULT_PRESETS[i].name);
 	}
 	int user_count = 0;
 	eq_preset_for_each(add_user_eq_choice, &user_count);
@@ -1497,9 +1502,22 @@ static void open_eq_chooser_cb(lv_event_t *e) {
 	switch_screen(audiobookeq_screen);
 }
 
+// Opens on the current choice rather than at the top: with a user preset
+// chosen it is below the ten built-ins.
+static void eq_chooser_loaded_cb(lv_event_t *e) {
+	(void)e;
+	for (int i = 0; i < eq_choice_count; i++) {
+		if (eq_choice_is_current(&eq_choices[i])) {
+			lv_obj_scroll_to_view(lv_obj_get_parent(eq_choices[i].check), LV_ANIM_OFF);
+			break;
+		}
+	}
+}
+
 static void build_eq_chooser_page(gui_config_t *cfg) {
 	audiobookeq_screen = lv_obj_create(NULL);
 	eq_list = settingsrow_page(audiobookeq_screen, cfg, "audiobook_equalizer");
+	lv_obj_add_event_cb(audiobookeq_screen, eq_chooser_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	switcher_attach_back_gesture(audiobookeq_screen);
 }
 

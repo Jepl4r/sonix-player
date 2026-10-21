@@ -636,6 +636,8 @@ static void row_clicked_cb(lv_event_t *e) {
 	e->user_data = action;
 }
 
+static void row_action_delete_cb(lv_event_t *e) { free(lv_event_get_user_data(e)); }
+
 // A row's chevron, if it has one: the only image among its children.
 static lv_obj_t *row_chevron(lv_obj_t *row) {
 	if (!row) {
@@ -693,12 +695,14 @@ lv_obj_t *settingsrow_add(lv_obj_t *parent, const char *name, lv_obj_t **value_o
 	// on a row and not only in the gaps between rows.
 	lv_obj_set_event_bubble(row, true);
 
-	// Rows live for the whole run, so these action records are never freed.
+	// The record is freed with the row, so a page that cleans and rebuilds its
+	// rows does not leak one per row.
 	row_action_t *action = malloc(sizeof(*action));
 	if (action) {
 		action->cb = cb;
 		action->user_data = user_data;
 		lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, action);
+		lv_obj_add_event_cb(row, row_action_delete_cb, LV_EVENT_DELETE, action);
 	}
 
 	lv_obj_t *label = lv_label_create(row);
