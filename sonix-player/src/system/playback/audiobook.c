@@ -420,8 +420,7 @@ bool audiobook_chapter(int index, char *title_out, size_t title_size, double *st
 	return ok;
 }
 
-int audiobook_chapter_at(double seconds) {
-	pthread_mutex_lock(&lock);
+static int chapter_at_locked(double seconds) {
 	int found = -1;
 	for (int i = 0; i < chapter_count; i++) {
 		if (chapters[i].start <= seconds + 0.001) {
@@ -430,8 +429,82 @@ int audiobook_chapter_at(double seconds) {
 			break;
 		}
 	}
+	return found;
+}
+
+int audiobook_chapter_at(double seconds) {
+	pthread_mutex_lock(&lock);
+	int found = chapter_at_locked(seconds);
 	pthread_mutex_unlock(&lock);
 	return found;
+}
+
+// Parts are the units of a folder book; the chapters inside one of its files
+// are not offered as well. Called with `lock` held.
+static bool units_are_parts_locked(void) { return part_count > 1; }
+
+static int unit_count_locked(void) { return units_are_parts_locked() ? part_count : chapter_count; }
+
+int audiobook_unit_count(void) {
+	pthread_mutex_lock(&lock);
+	int value = unit_count_locked();
+	pthread_mutex_unlock(&lock);
+	return value;
+}
+
+int audiobook_unit_current(double seconds) {
+	pthread_mutex_lock(&lock);
+	int value = units_are_parts_locked() ? part_index : chapter_at_locked(seconds);
+	pthread_mutex_unlock(&lock);
+	return value;
+}
+
+bool audiobook_unit_title(int index, char *out, size_t size) {
+	pthread_mutex_lock(&lock);
+	bool ok = index >= 0 && index < unit_count_locked();
+	if (ok && out && size) {
+		snprintf(out, size, "%s", units_are_parts_locked() ? parts[index].title : chapters[index].title);
+	}
+	pthread_mutex_unlock(&lock);
+	return ok;
+}
+
+bool audiobook_step_target(double seconds, int direction, audiobook_step_t *out) {
+	audiobook_step_t target = {AUDIOBOOK_STEP_NONE, 0, -1};
+	pthread_mutex_lock(&lock);
+	bool by_part = units_are_parts_locked();
+	int count = unit_count_locked();
+	int current = by_part ? part_index : chapter_at_locked(seconds);
+	bool ok = count > 0 && (!by_part || current >= 0);
+	if (ok && direction > 0) {
+		if (current + 1 < count) {
+			if (by_part) {
+				target.kind = AUDIOBOOK_STEP_PART;
+				target.part = current + 1;
+			} else {
+				target.kind = AUDIOBOOK_STEP_SEEK;
+				target.seconds = chapters[current + 1].start;
+			}
+		}
+	} else if (ok) {
+		double into = by_part || current < 0 ? seconds : seconds - chapters[current].start;
+		double start = by_part || current < 0 ? 0 : chapters[current].start;
+		if (into > AUDIOBOOK_STEP_RESTART_SECONDS || current <= 0) {
+			target.kind = AUDIOBOOK_STEP_SEEK;
+			target.seconds = start;
+		} else if (by_part) {
+			target.kind = AUDIOBOOK_STEP_PART;
+			target.part = current - 1;
+		} else {
+			target.kind = AUDIOBOOK_STEP_SEEK;
+			target.seconds = chapters[current - 1].start;
+		}
+	}
+	pthread_mutex_unlock(&lock);
+	if (out) {
+		*out = target;
+	}
+	return ok;
 }
 
 unsigned audiobook_serial(void) { return serial; }

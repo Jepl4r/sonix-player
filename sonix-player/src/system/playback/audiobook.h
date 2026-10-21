@@ -110,6 +110,31 @@ bool audiobook_chapter(int index, char *title_out, size_t title_size, double *st
 // Which chapter contains `seconds`, or -1 when the book has no chapters.
 int audiobook_chapter_at(double seconds);
 
+// The units the chapter row and the chapter list count: a folder book's
+// parts, else the file's embedded chapters. Zero when the book has neither.
+int audiobook_unit_count(void);
+// Which unit holds `seconds` of the loaded file: the current part for a
+// folder book, the chapter at `seconds` otherwise. -1 with no units.
+int audiobook_unit_current(double seconds);
+// Title of unit `index` (chapter title or part title). False out of range.
+bool audiobook_unit_title(int index, char *out, size_t size);
+
+// Where a step between units lands. SEEK moves within the loaded file; PART
+// loads another file of a folder book from its start; NONE stays put.
+typedef enum { AUDIOBOOK_STEP_NONE, AUDIOBOOK_STEP_SEEK, AUDIOBOOK_STEP_PART } audiobook_step_kind_t;
+typedef struct {
+	audiobook_step_kind_t kind;
+	double seconds; // SEEK: where to seek in the loaded file
+	int part; // PART: which part to load, from its start
+} audiobook_step_t;
+// Going back further into a unit than this returns to its start; within it,
+// to the unit before.
+#define AUDIOBOOK_STEP_RESTART_SECONDS 3.0
+// The target of a step by `direction` (+1 next, -1 previous) from `seconds`.
+// False when the book has no units. Next from the last unit is NONE; previous
+// from the first unit restarts it.
+bool audiobook_step_target(double seconds, int direction, audiobook_step_t *out);
+
 // Bumped whenever the loaded book (or its chapter list) changes, so a page can
 // redraw only when there is something new.
 unsigned audiobook_serial(void);
