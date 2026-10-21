@@ -98,6 +98,9 @@ void device_state_play_list_ordered(const char *const *list, int count, int star
 // The same, starting `position` seconds into the first track: a folder book
 // resumed where it was left. Below zero means its beginning.
 void device_state_play_list_ordered_at(const char *const *list, int count, int start_index, double position);
+// The same again, but the track comes up paused at its beginning and play
+// starts it: a folder book stepped to another part while it is paused.
+void device_state_load_list_ordered_paused(const char *const *list, int count, int start_index);
 
 // Before a file starts, someone can say "not yet".
 //

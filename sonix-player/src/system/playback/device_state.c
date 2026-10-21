@@ -909,6 +909,18 @@ void device_state_play_list_ordered_at(const char *const *list, int count, int s
 	}
 }
 
+void device_state_load_list_ordered_paused(const char *const *list, int count, int start_index) {
+	if (!list || count <= 0) {
+		return;
+	}
+	playlist_load_paths_ordered(list, count, start_index);
+
+	char path[512];
+	if (playlist_current_path(path, sizeof(path))) {
+		load_paused(path);
+	}
+}
+
 // Jumps to a specific entry of the current queue: the queue page's tap.
 bool device_state_play_queue_index(int index) {
 	if (!playlist_set_current(index)) {

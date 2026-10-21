@@ -16,6 +16,8 @@ for test in cancel partial-cancel stat-error stale scan-error cyrillic live-save
 done
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/playback_switch_test.c" $gc_flags -o "$build/switch-test"
 if "$build/switch-test"; then printf "%s\n" "PASS playback-switch"; else failed=$((failed + 1)); fi
+${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/playback_part_step_test.c" $gc_flags -o "$build/part-step-test"
+if "$build/part-step-test"; then printf "%s\n" "PASS playback-part-step"; else failed=$((failed + 1)); fi
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/audiobook_units_test.c" $gc_flags -lpthread -o "$build/units-test"
 if "$build/units-test"; then printf "%s\n" "PASS audiobook-units"; else failed=$((failed + 1)); fi
 for guard in ota firmware; do
