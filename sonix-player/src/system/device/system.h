@@ -115,6 +115,11 @@ void storage_release_for_shutdown(void);
 // until set.
 void input_set_key_lock(bool on);
 
+// With the screen off, the power key wakes the screen only on a long press, and
+// a short press does nothing. The double tap still wakes, and the key still
+// counts towards volume + power. Off until set.
+void input_set_power_long_press_wake(bool on);
+
 // How far one press of a volume key moves the volume, in percent: on the case,
 // on the headphone cable and from Bluetooth headphones alike. Clamped to
 // VOLUME_STEP_MIN..VOLUME_STEP_MAX; VOLUME_STEP_MIN until set.
