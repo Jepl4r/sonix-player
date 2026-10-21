@@ -244,9 +244,6 @@ static bool audiobook_mode_valid;   // false until the first apply, so it paints
 // carries a previous-chapter button on its left and a next-chapter one on its
 // right, and its two lines name the book and the chapter being heard.
 #define CHAPTER_BTN_SIZE 56
-// Where the two buttons start in Studio's head: past the chevron and the
-// ellipsis, where the names stop too.
-#define CHAPTER_STUDIO_INSET 68
 static lv_obj_t *chapter_prev_btn;
 static lv_obj_t *chapter_next_btn;
 static lv_obj_t *chapter_prev_icon;
@@ -1311,6 +1308,7 @@ static void slider_over_waveform(bool over) {
 
 #define STUDIO_MARGIN 14	  // what the sleeve keeps to the side edges
 #define STUDIO_HEAD_H 78	  // the title, the artist and the ellipsis
+#define STUDIO_HEAD_SIDE 68	  // what the chevron and the ellipsis each keep of the head
 #define STUDIO_COVER_GAP 24	  // between the head and the top of the sleeve
 #define STUDIO_BADGE_GAP 6	  // between the head and the source mark under the ellipsis
 #define STUDIO_QUALITY_GAP 10 // between the sleeve and the line under it
@@ -2919,8 +2917,8 @@ static void chapter_row_sync(void) {
 		lv_obj_set_parent(chapter_next_btn, studio_head);
 		lv_obj_set_ignore_layout(chapter_prev_btn, true);
 		lv_obj_set_ignore_layout(chapter_next_btn, true);
-		lv_obj_align(chapter_prev_btn, LV_ALIGN_LEFT_MID, CHAPTER_STUDIO_INSET, 0);
-		lv_obj_align(chapter_next_btn, LV_ALIGN_RIGHT_MID, -CHAPTER_STUDIO_INSET, 0);
+		lv_obj_align(chapter_prev_btn, LV_ALIGN_LEFT_MID, STUDIO_HEAD_SIDE, 0);
+		lv_obj_align(chapter_next_btn, LV_ALIGN_RIGHT_MID, -STUDIO_HEAD_SIDE, 0);
 	} else {
 		lv_obj_set_parent(chapter_prev_btn, lv_obj_get_parent(song_text_obj));
 		lv_obj_move_to_index(chapter_prev_btn, 0);
@@ -3605,7 +3603,16 @@ static void show_track_texts(const device_state_t *state) {
 // writes only when the unit is a different one. Anything that is not a book
 // with units keeps the track's own lines.
 static void update_chapter_line(const device_state_t *state) {
-	int unit = audiobook_mode && audiobook_has_chapters ? audiobook_unit_current(state->progress_current_secs) : -1;
+	int unit = -1;
+	if (audiobook_mode && audiobook_has_chapters) {
+		unit = audiobook_unit_current(state->progress_current_secs);
+		// Before the first mark of a file whose chapters do not start at 0 the
+		// opening counts as the first chapter, so the row does not change shape
+		// when playback reaches the mark.
+		if (unit < 0 && audiobook_unit_count() > 0) {
+			unit = 0;
+		}
+	}
 	if (unit == chapter_line_unit) {
 		return;
 	}
@@ -4563,15 +4570,16 @@ static void book_chapters_action(void *user) {
 // a tap in the chapter list makes them. Playing goes on playing; paused comes
 // up paused, so a step never starts the book by itself. Either way the part
 // being left has its place written first (change_book_track() in
-// device_state.c).
-static void chapter_load_part(int part, bool playing) {
+// device_state.c). False when nothing was loaded: no memory, or a scan changed
+// the parts under the step.
+static bool chapter_load_part(int part, bool playing) {
 	int count = audiobook_part_count();
 	if (part < 0 || part >= count) {
-		return;
+		return false;
 	}
 	char **paths = calloc((size_t)count, sizeof(char *));
 	if (!paths) {
-		return;
+		return false;
 	}
 	int filled = 0;
 	for (int i = 0; i < count; i++) {
@@ -4581,7 +4589,8 @@ static void chapter_load_part(int part, bool playing) {
 		}
 		filled++;
 	}
-	if (filled == count) {
+	bool loaded = filled == count;
+	if (loaded) {
 		if (playing) {
 			device_state_play_list_ordered((const char *const *)paths, count, part);
 		} else {
@@ -4592,6 +4601,7 @@ static void chapter_load_part(int part, bool playing) {
 		free(paths[i]);
 	}
 	free(paths);
+	return loaded;
 }
 
 void player_step_chapter(int direction) {
@@ -4606,7 +4616,9 @@ void player_step_chapter(int direction) {
 		// Written through, like the second jumps: a step is a deliberate move.
 		audiobook_note_position(target.seconds, state.progress_total_secs, true);
 	} else if (target.kind == AUDIOBOOK_STEP_PART) {
-		chapter_load_part(target.part, state.status == AUDIO_STATUS_PLAYING);
+		if (!chapter_load_part(target.part, state.status == AUDIO_STATUS_PLAYING)) {
+			return; // the part still loaded keeps its place
+		}
 		audiobook_note_position(0, 0, true); // the new part, at its start
 		player_refresh_now_playing();
 	} else {
@@ -5833,7 +5845,7 @@ void player_init(gui_config_t *cfg) {
 	// against one of them.
 	studio_text_col = lv_obj_create(studio_head);
 	lv_obj_remove_style_all(studio_text_col);
-	lv_obj_set_size(studio_text_col, cover_size - 2 * STUDIO_MARGIN - 2 * 68, LV_SIZE_CONTENT);
+	lv_obj_set_size(studio_text_col, cover_size - 2 * STUDIO_MARGIN - 2 * STUDIO_HEAD_SIDE, LV_SIZE_CONTENT);
 	lv_obj_align(studio_text_col, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_flex_flow(studio_text_col, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(studio_text_col, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
