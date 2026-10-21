@@ -20,6 +20,8 @@ ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$r
 if "$build/part-step-test"; then printf "%s\n" "PASS playback-part-step"; else failed=$((failed + 1)); fi
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/audiobook_units_test.c" $gc_flags -lpthread -o "$build/units-test"
 if "$build/units-test"; then printf "%s\n" "PASS audiobook-units"; else failed=$((failed + 1)); fi
+${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/keymap_actions_test.c" $gc_flags -o "$build/keymap-test"
+if "$build/keymap-test"; then printf "%s\n" "PASS keymap-actions"; else failed=$((failed + 1)); fi
 for guard in ota firmware; do
  ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/${guard}_guard_test.c" $gc_flags -o "$build/$guard-test"
  mkdir "$build/$guard"

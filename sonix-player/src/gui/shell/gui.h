@@ -103,6 +103,8 @@ typedef enum {
 	GUI_KEY_PLAY_PAUSE,
 	GUI_KEY_NEXT,
 	GUI_KEY_PREV,
+	GUI_KEY_NEXT_CHAPTER,
+	GUI_KEY_PREV_CHAPTER,
 } gui_key_t;
 
 void gui_notify_key(gui_key_t key);

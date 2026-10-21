@@ -4627,6 +4627,25 @@ void player_step_chapter(int direction) {
 	update_progress();
 }
 
+// The side keys mapped to a chapter step. A stream and a DLNA queue answer as
+// they do to the track keys; a book steps by chapter; everything else is
+// exactly the track key.
+void player_key_next_chapter(void) {
+	if (!radio_is_active() && !dlna_owns_playback() && audiobook_mode) {
+		player_step_chapter(1);
+		return;
+	}
+	player_key_next();
+}
+
+void player_key_prev_chapter(void) {
+	if (!radio_is_active() && !dlna_owns_playback() && audiobook_mode) {
+		player_step_chapter(-1);
+		return;
+	}
+	player_key_prev();
+}
+
 static void chapter_prev_cb(lv_event_t *e) {
 	(void)e;
 	player_step_chapter(-1);

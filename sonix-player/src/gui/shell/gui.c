@@ -537,6 +537,17 @@ static void key_async_cb(void *user_data) {
 			return;
 		}
 		break;
+	// A chapter has no meaning on the phone: the receiver gets a track key.
+	case GUI_KEY_NEXT_CHAPTER:
+		if (btreceiver_key(BTRECEIVER_NEXT)) {
+			return;
+		}
+		break;
+	case GUI_KEY_PREV_CHAPTER:
+		if (btreceiver_key(BTRECEIVER_PREV)) {
+			return;
+		}
+		break;
 	}
 
 	switch (key) {
@@ -548,6 +559,12 @@ static void key_async_cb(void *user_data) {
 		break;
 	case GUI_KEY_PREV:
 		player_key_prev();
+		break;
+	case GUI_KEY_NEXT_CHAPTER:
+		player_key_next_chapter();
+		break;
+	case GUI_KEY_PREV_CHAPTER:
+		player_key_prev_chapter();
 		break;
 	}
 }

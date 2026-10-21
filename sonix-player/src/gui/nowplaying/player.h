@@ -93,6 +93,11 @@ void player_key_play_pause(void);
 void player_key_next(void);
 void player_key_prev(void);
 
+// The same two keys as chapter steps: one chapter or part in a book, exactly
+// player_key_next/prev everywhere else.
+void player_key_next_chapter(void);
+void player_key_prev_chapter(void);
+
 // What the player's on-screen prev/next buttons do: seconds-sized skips on an
 // audiobook or podcast, previous/next track otherwise. The control centre
 // calls these so that it behaves exactly like the player.

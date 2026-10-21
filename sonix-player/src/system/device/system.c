@@ -1475,7 +1475,8 @@ static bool mapped_action_repeats(keymap_button_t button) {
 
 static bool mapped_action_seeks(keymap_button_t button) {
 	keymap_action_t action = effective_action(button);
-	return action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_PREV;
+	return action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_PREV || action == KEYMAP_ACTION_NEXT_CHAPTER ||
+		   action == KEYMAP_ACTION_PREV_CHAPTER;
 }
 
 // One step, in whichever direction the button means. Nothing is asked of the
@@ -1485,7 +1486,7 @@ static bool mapped_action_seeks(keymap_button_t button) {
 // neither a length nor a point to come back to.
 static void seek_step(keymap_button_t button) {
 	keymap_action_t action = effective_action(button);
-	if (action != KEYMAP_ACTION_NEXT && action != KEYMAP_ACTION_PREV) {
+	if (!mapped_action_seeks(button)) {
 		return;
 	}
 
@@ -1495,7 +1496,8 @@ static void seek_step(keymap_button_t button) {
 		return;
 	}
 
-	device_state_scrub_by((action == KEYMAP_ACTION_NEXT) ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS);
+	bool forward = action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_NEXT_CHAPTER;
+	device_state_scrub_by(forward ? SEEK_STEP_SECONDS : -SEEK_STEP_SECONDS);
 }
 
 // WHAT REPEATS IS THE ACTION, NOT THE KEY.
@@ -1553,6 +1555,12 @@ static void run_mapped_action(keymap_button_t button) {
 		break;
 	case KEYMAP_ACTION_NEXT:
 		gui_notify_key(GUI_KEY_NEXT);
+		break;
+	case KEYMAP_ACTION_PREV_CHAPTER:
+		gui_notify_key(GUI_KEY_PREV_CHAPTER);
+		break;
+	case KEYMAP_ACTION_NEXT_CHAPTER:
+		gui_notify_key(GUI_KEY_NEXT_CHAPTER);
 		break;
 	case KEYMAP_ACTION_VOLUME_UP:
 		apply_volume_step(KEY_VOLUMEUP);

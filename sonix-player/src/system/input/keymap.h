@@ -45,6 +45,8 @@ typedef enum {
 	KEYMAP_ACTION_NEXT,
 	KEYMAP_ACTION_VOLUME_UP,
 	KEYMAP_ACTION_VOLUME_DOWN,
+	KEYMAP_ACTION_PREV_CHAPTER, // one chapter back in a book; previous track elsewhere
+	KEYMAP_ACTION_NEXT_CHAPTER, // one chapter on in a book; next track elsewhere
 	KEYMAP_ACTION_COUNT,
 } keymap_action_t;
 
