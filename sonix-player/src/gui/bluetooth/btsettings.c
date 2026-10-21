@@ -19,14 +19,15 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/core/lang.h"
 
 lv_obj_t *btsettings_screen;
 
 #define BT_PAGE_POLL_MS 500
-#define BT_ROW_H 76
-#define CORNER_BTN_SIZE 56
+#define BT_ROW_H ui_px(76)
+#define CORNER_BTN_SIZE ui_px(56)
 
 static lv_obj_t *bt_switch;
 static lv_obj_t *status_label;
@@ -218,7 +219,7 @@ static void forget_action(void *user) {
 // announces itself.
 // ---------------------------------------------------------------------------
 
-#define RENAME_CANCEL_SIZE 56
+#define RENAME_CANCEL_SIZE ui_px(56)
 
 static lv_obj_t *rename_layer;
 static lv_obj_t *rename_field;
@@ -292,7 +293,7 @@ static void build_rename_layer(gui_config_t *cfg) {
 	lv_label_set_text(heading, tr("rename"));
 	lv_obj_add_style(heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(heading, &font_ui_24, 0);
-	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 10);
+	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(10));
 
 	lv_obj_t *cancel = lv_btn_create(rename_layer);
 	lv_obj_set_size(cancel, RENAME_CANCEL_SIZE, RENAME_CANCEL_SIZE);
@@ -314,19 +315,19 @@ static void build_rename_layer(gui_config_t *cfg) {
 	// device keeps whole.
 	lv_textarea_set_max_length(rename_field, BT_NAME_MAX - 1);
 	lv_textarea_set_placeholder_text(rename_field, tr("name"));
-	lv_obj_set_size(rename_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(rename_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(rename_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(rename_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 60);
+	lv_obj_align(rename_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(60));
 	lv_obj_add_style(rename_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(rename_field, 12, 0);
+	lv_obj_set_style_radius(rename_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(rename_field, 0, 0);
 	lv_obj_set_style_shadow_width(rename_field, 0, 0);
-	lv_obj_set_style_pad_all(rename_field, 14, 0);
+	lv_obj_set_style_pad_all(rename_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(rename_field, &font_ui_24, 0);
 	keyboard_style_caret(rename_field);
 
 	rename_keyboard =
-		keyboard_create(rename_layer, cfg->screen_width, 316, rename_field, NULL, "ok", rename_accept_cb, NULL);
+		keyboard_create(rename_layer, cfg->screen_width, ui_px(316), rename_field, NULL, "ok", rename_accept_cb, NULL);
 }
 
 static void row_free_cb(lv_event_t *e) { free(lv_event_get_user_data(e)); }
@@ -440,16 +441,16 @@ static void add_row(lv_obj_t *parent, const bt_device_t *device, bool paired_sec
 	lv_obj_set_height(row, BT_ROW_H);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 18, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(18), 0);
 	lv_obj_set_style_pad_ver(row, 0, 0);
 	lv_obj_set_event_bubble(row, true);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(row, 14, 0);
+	lv_obj_set_style_pad_column(row, ui_px(14), 0);
 
 	lv_obj_set_user_data(row, device->connected ? (void *)1 : NULL);
 	if (paired_section) {
@@ -492,7 +493,7 @@ static void add_row(lv_obj_t *parent, const bt_device_t *device, bool paired_sec
 	// the row connects, so disconnect and forget need somewhere else to live.
 	if (paired_section) {
 		lv_obj_t *menu_btn = lv_btn_create(row);
-		lv_obj_set_size(menu_btn, 44, 56);
+		lv_obj_set_size(menu_btn, ui_px(44), ui_px(56));
 		lv_obj_set_style_bg_opa(menu_btn, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(menu_btn, 0, 0);
 		lv_obj_set_style_shadow_width(menu_btn, 0, 0);
@@ -514,8 +515,8 @@ static void add_placeholder(lv_obj_t *parent, const char *text, bool spin) {
 	lv_obj_remove_style_all(row);
 	lv_obj_set_width(row, lv_pct(100));
 	lv_obj_set_height(row, LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_top(row, 4, 0);
-	lv_obj_set_style_pad_column(row, 10, 0);
+	lv_obj_set_style_pad_top(row, ui_px(4), 0);
+	lv_obj_set_style_pad_column(row, ui_px(10), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -750,7 +751,7 @@ static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, co
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (CORNER_BTN_SIZE + 6),
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (CORNER_BTN_SIZE + ui_px(6)),
 				 cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
@@ -771,8 +772,8 @@ static lv_obj_t *make_section(lv_obj_t *container, const char *title, lv_obj_t *
 	lv_obj_set_width(label, lv_pct(100));
 	lv_obj_add_style(label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_set_style_pad_top(label, 6, 0);
-	lv_obj_set_style_pad_hor(label, 4, 0);
+	lv_obj_set_style_pad_top(label, ui_px(6), 0);
+	lv_obj_set_style_pad_hor(label, ui_px(4), 0);
 	if (label_out) {
 		*label_out = label;
 	}
@@ -783,7 +784,7 @@ static lv_obj_t *make_section(lv_obj_t *container, const char *title, lv_obj_t *
 	lv_obj_set_style_bg_opa(box, 0, 0);
 	lv_obj_set_style_border_width(box, 0, 0);
 	lv_obj_set_style_pad_all(box, 0, 0);
-	lv_obj_set_style_pad_gap(box, 8, 0);
+	lv_obj_set_style_pad_gap(box, ui_px(8), 0);
 	lv_obj_set_scrollable(box, false);
 	lv_obj_set_event_bubble(box, true);
 	lv_obj_set_flex_flow(box, LV_FLEX_FLOW_COLUMN);
@@ -803,12 +804,12 @@ void btsettings_init(gui_config_t *cfg) {
 	lv_obj_set_width(status_label, lv_pct(100));
 	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_20, 0);
-	lv_obj_set_style_pad_hor(status_label, 4, 0);
+	lv_obj_set_style_pad_hor(status_label, ui_px(4), 0);
 	lv_label_set_long_mode(status_label, LV_LABEL_LONG_WRAP);
 
 	paired_list = make_section(container, "bt_paired_devices", &paired_label);
 	found_list = make_section(container, "bt_other_devices", &found_label);
-	lv_obj_set_style_pad_bottom(found_list, 12, 0);
+	lv_obj_set_style_pad_bottom(found_list, ui_px(12), 0);
 
 	// The gear takes slot 0, the same corner the Music page uses for its own.
 	// Receiver mode sits immediately to its left, and the scan button moves out

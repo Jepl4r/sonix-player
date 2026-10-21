@@ -17,10 +17,11 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/topbar.h"
 #include "src/gui/nowplaying/trackmenu.h"
+#include "src/gui/shell/uiscale.h"
 
 // Diameter of the round back button. Small enough to stay out of the way of
 // the artwork, big enough to still be a comfortable touch target.
-#define BACK_BTN_SIZE 56
+#define BACK_BTN_SIZE ui_px(56)
 
 static lv_obj_t *back_btn;
 static lv_obj_t *back_btn_icon;
@@ -47,7 +48,7 @@ static int8_t back_btn_top_bar_height;
 // On the player the status bar is hidden, so there is no row of its own for the
 // chevron to line up with and it would sit against the top edge. This is the
 // air it keeps instead, and what the player's own header row is aligned to.
-#define BACK_BTN_PLAYER_TOP 14
+#define BACK_BTN_PLAYER_TOP ui_px(14)
 
 // Whether the status bar stays up over the player too (back_btn_player_below_bar).
 static bool player_bar_shown;
@@ -143,7 +144,7 @@ static bool back_goes_to_player(void) {
 // the width on release it completes; short of that it snaps back.
 // ---------------------------------------------------------------------------
 
-#define BACK_DRAG_COMMIT_PX 10	// sideways movement that starts the drag
+#define BACK_DRAG_COMMIT_PX ui_px(10) // sideways movement that starts the drag
 #define BACK_COMMIT_FRACTION 3	// release beyond width/3 goes back
 #define BACK_ANIM_MS 140
 
@@ -272,7 +273,7 @@ static void back_underlay_build(void) {
 		// The same two placements as place_back_btn(): the player's own offset
 		// where there is no status bar, the status bar's height everywhere else.
 		int y = back_btn_padding + (going_to_player ? BACK_BTN_PLAYER_TOP : back_btn_top_bar_height);
-		lv_obj_set_pos(chevron, back_btn_padding + 10, y + 10);
+		lv_obj_set_pos(chevron, back_btn_padding + ui_px(10), y + ui_px(10));
 		if (going_to_player && chevron_over_cover) {
 			lv_obj_set_style_image_recolor(chevron, lv_color_white(), 0);
 		} else {

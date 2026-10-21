@@ -14,6 +14,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/gui/wireless/wifisettings.h"
 #include "src/system/audio/audio.h"
 #include "src/system/core/lang.h"
@@ -486,8 +487,8 @@ void wifitransfer_page_init(gui_config_t *cfg) {
 	lv_obj_add_style(status_label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_22, 0);
 	lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_hor(status_label, 4, 0);
-	lv_obj_set_style_pad_top(status_label, 14, 0);
+	lv_obj_set_style_pad_hor(status_label, ui_px(4), 0);
+	lv_obj_set_style_pad_top(status_label, ui_px(14), 0);
 
 	// The address, which is the whole point of the page: big, centred, and in
 	// the accent colour, the way the stock page prints it in blue.
@@ -498,7 +499,7 @@ void wifitransfer_page_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(url_label, &font_ui_32, 0);
 	lv_obj_set_style_text_color(url_label, theme()->accent, 0);
 	lv_obj_set_style_text_align(url_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_ver(url_label, 16, 0);
+	lv_obj_set_style_pad_ver(url_label, ui_px(16), 0);
 
 	// The address, quieter and under the name: a fallback, not a second offer.
 	addr_label = lv_label_create(container);
@@ -507,7 +508,7 @@ void wifitransfer_page_init(gui_config_t *cfg) {
 	lv_obj_add_style(addr_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(addr_label, &font_ui_20, 0);
 	lv_obj_set_style_text_align(addr_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_bottom(addr_label, 14, 0);
+	lv_obj_set_style_pad_bottom(addr_label, ui_px(14), 0);
 	hide(addr_label);
 
 	warn1_label = lv_label_create(container);
@@ -516,7 +517,7 @@ void wifitransfer_page_init(gui_config_t *cfg) {
 	lv_obj_add_style(warn1_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(warn1_label, &font_ui_20, 0);
 	lv_obj_set_style_text_align(warn1_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_hor(warn1_label, 4, 0);
+	lv_obj_set_style_pad_hor(warn1_label, ui_px(4), 0);
 
 	warn2_label = lv_label_create(container);
 	lv_obj_set_width(warn2_label, lv_pct(100));
@@ -524,13 +525,13 @@ void wifitransfer_page_init(gui_config_t *cfg) {
 	lv_obj_add_style(warn2_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(warn2_label, &font_ui_20, 0);
 	lv_obj_set_style_text_align(warn2_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_pad_hor(warn2_label, 4, 0);
-	lv_obj_set_style_pad_top(warn2_label, 8, 0);
+	lv_obj_set_style_pad_hor(warn2_label, ui_px(4), 0);
+	lv_obj_set_style_pad_top(warn2_label, ui_px(8), 0);
 
 	// The way out of the "no Wi-Fi" state, which is the only actionable thing
 	// this page ever offers besides its own switch.
 	wifi_row = settingsrow_add(container, "wi_fi_settings", NULL, wifi_row_cb, NULL);
-	lv_obj_set_style_margin_top(wifi_row, 16, 0);
+	lv_obj_set_style_margin_top(wifi_row, ui_px(16), 0);
 	hide(wifi_row);
 
 	poll_timer = lv_timer_create(poll_cb, WT_POLL_MS, NULL);

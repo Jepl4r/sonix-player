@@ -4,9 +4,12 @@
 
 #include "lvgl/lvgl.h"
 
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/config.h"
 
-#define CORNER_RADIUS 28
+// The radius on a 480 px wide panel, and so the largest it gets (uiscale.h).
+#define CORNER_RADIUS_DESIGN 28
+#define CORNER_RADIUS ui_px(CORNER_RADIUS_DESIGN)
 // Samples per pixel along each axis, for the antialiased edge of the arc.
 #define CORNER_SAMPLES 4
 
@@ -17,7 +20,7 @@ enum { TOP_LEFT, TOP_RIGHT, BOTTOM_LEFT, BOTTOM_RIGHT };
 // fill rather than an image blend. Built, and the objects created, only once
 // the option is on: with it off, which is the default, none of this is touched.
 static lv_obj_t *corner[4];
-static uint8_t pixels[4][CORNER_RADIUS * CORNER_RADIUS];
+static uint8_t pixels[4][CORNER_RADIUS_DESIGN * CORNER_RADIUS_DESIGN];
 static lv_image_dsc_t image[4];
 static bool enabled;
 
@@ -55,7 +58,7 @@ static void build_masks(void) {
 		image[i].header.w = CORNER_RADIUS;
 		image[i].header.h = CORNER_RADIUS;
 		image[i].header.stride = CORNER_RADIUS;
-		image[i].data_size = sizeof(pixels[i]);
+		image[i].data_size = (uint32_t)(CORNER_RADIUS * CORNER_RADIUS);
 		image[i].data = (const uint8_t *)pixels[i];
 	}
 }

@@ -31,19 +31,20 @@
 #include "src/gui/shell/confirm.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/uiscale.h"
 
 lv_obj_t *medialist_screen;
 lv_obj_t *medialist_tracks_screen;
 lv_obj_t *medialist_albums_screen;
 
 // The exact geometry of the file browser's rows, so the two lists are twins.
-#define ROW_HEIGHT 100
-#define ROW_GAP 8
+#define ROW_HEIGHT ui_px(100)
+#define ROW_GAP ui_px(8)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
-#define ROW_RADIUS 12
-#define ROW_PAD 14
-#define THUMB_SIZE 72
-#define QUALITY_GAP 4 // between a title and the badge under it
+#define ROW_RADIUS ui_px(12)
+#define ROW_PAD ui_px(14)
+#define THUMB_SIZE ui_px(72)
+#define QUALITY_GAP ui_px(4) // between a title and the badge under it
 #define ROW_POOL 12
 
 // How many rows are held in RAM for a query-backed list: the twelve on screen
@@ -55,9 +56,9 @@ lv_obj_t *medialist_albums_screen;
 // It lives INSIDE the row's left padding, so nothing on the row moves to make
 // space for it -- the thumbnail still starts at ROW_PAD whether the mark is
 // there or not.
-#define PLAYMARK_WIDTH 6
-#define PLAYMARK_HEIGHT 52
-#define PLAYMARK_INSET 4 // from the row's left edge
+#define PLAYMARK_WIDTH ui_px(6)
+#define PLAYMARK_HEIGHT ui_px(52)
+#define PLAYMARK_INSET ui_px(4) // from the row's left edge
 
 // Where in the coverloader's slot table each pool lives (the browser owns
 // 0..9; see coverloader.h).
@@ -78,8 +79,8 @@ lv_obj_t *medialist_albums_screen;
 // album grouping beside circle-play on an artist's tracks, shuffle beside the
 // reverse on Favourites. The strip is sized for the most whatever a particular
 // list shows -- see build_panel() for what happens when it is not.
-#define CORNER_BUTTON_SIZE 56
-#define CORNER_GAP 4
+#define CORNER_BUTTON_SIZE ui_px(56)
+#define CORNER_GAP ui_px(4)
 #define CORNER_MAX_BUTTONS 4
 
 // How often finished artwork is collected while any is pending.
@@ -87,13 +88,13 @@ lv_obj_t *medialist_albums_screen;
 #define HEAD_POLL_MS 30
 
 // The bin's red disc in selection mode.
-#define DELETE_FAB_SIZE 72
+#define DELETE_FAB_SIZE ui_px(72)
 
 // Inside a record of more than one disc, a heading above the first track of
 // each: "Disc 2". This is the height it adds above that track's row.
-#define DISC_HEAD_PITCH 44
+#define DISC_HEAD_PITCH ui_px(44)
 // The gap between a heading and the row under it.
-#define DISC_HEAD_BELOW 12
+#define DISC_HEAD_BELOW ui_px(12)
 // More changes of disc than this is not a box set but tags in disarray, and a
 // list of headings with a track or two under each reads worse than none.
 #define DISC_HEAD_MAX 64
@@ -104,22 +105,22 @@ lv_obj_t *medialist_albums_screen;
 // The head an album's page opens with in the alternative layout: the cover as
 // large as the width allows, and under it the title, the artist, the genre and
 // the year. It scrolls away with the rows.
-#define HEAD_COVER_SIZE 300
-#define HEAD_GAP 24		// between the head and the first row (or heading)
+#define HEAD_COVER_SIZE ui_px(300)
+#define HEAD_GAP ui_px(24) // between the head and the first row (or heading)
 #define HEAD_TITLE_LINES 2
 // The three ways to start the record, in a row under the year: shuffle, play
 // and one track at random into the queue -- what circle-play offers on the
 // other lists, out where the thumb is. Play is a filled pill with its name on
 // it, the other two bare glyphs either side.
-#define HEAD_BTN_SIDE 56
-#define HEAD_PLAY_HEIGHT 56
-#define HEAD_PLAY_PAD 40 // what the pill keeps either side of its word
-#define HEAD_BTN_GAP 20
+#define HEAD_BTN_SIDE ui_px(56)
+#define HEAD_PLAY_HEIGHT ui_px(56)
+#define HEAD_PLAY_PAD ui_px(40) // what the pill keeps either side of its word
+#define HEAD_BTN_GAP ui_px(20)
 
 // Behind selection mode's buttons, while the head's cover can be under them:
 // the page's colour, part see-through, over a blur of whatever it covers.
-#define SEL_BLUR_RADIUS 18
-#define SEL_BLUR_PAD 6
+#define SEL_BLUR_RADIUS ui_px(18)
+#define SEL_BLUR_PAD ui_px(6)
 
 // The page in the sleeve's colour: one of the sleeve's colours
 // (cover_page_tone), at the brightness of the sleeve as a whole pushed away
@@ -135,7 +136,7 @@ lv_obj_t *medialist_albums_screen;
 // The track number that takes the place of the cover on each row of that
 // layout: one picture at the top says whose record it is, and the twelve
 // beneath it would only say it again.
-#define TRACKNO_WIDTH 44
+#define TRACKNO_WIDTH ui_px(44)
 
 // ---------------------------------------------------------------------------
 // The A-Z strip
@@ -158,11 +159,11 @@ lv_obj_t *medialist_albums_screen;
 // buckets, and two spellings of the same number is how they would drift apart.
 #define INDEX_BUCKETS LIBRARY_INDEX_BUCKETS
 #define INDEX_PAST_Z_SLOT LIBRARY_INDEX_PAST_Z_SLOT
-#define INDEX_BAR_WIDTH 28
+#define INDEX_BAR_WIDTH ui_px(28)
 #define INDEX_HIDE_MS 2500	// no scrolling and no touch for this long: it goes
 #define INDEX_HINT_MS 450	// the big letter outstays the finger by a moment
 #define INDEX_MIN_ROWS 30	// shorter lists are quicker to just scroll
-#define INDEX_ENGAGE_PX 6	// upward or downward movement that claims the press
+#define INDEX_ENGAGE_PX ui_px(6) // upward or downward movement that claims the press
 
 typedef struct {
 	char *name;
@@ -1259,7 +1260,7 @@ static void sel_buttons_show(panel_t *p, bool on) {
 		lv_obj_move_foreground(p->sel_delete_btn);
 		// Room under the last row while the bin is up, so that row can be
 		// scrolled clear of it.
-		lv_obj_set_style_pad_bottom(p->list, bin ? p->cfg->padding + DELETE_FAB_SIZE + 12 : 0, 0);
+		lv_obj_set_style_pad_bottom(p->list, bin ? p->cfg->padding + DELETE_FAB_SIZE + ui_px(12) : 0, 0);
 		if (!bin) {
 			// The room gone, a list scrolled into it goes back to its end.
 			int limit = body_height(p) - lv_obj_get_height(p->list);
@@ -2461,8 +2462,8 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 
 	p->index_bar = lv_obj_create(p->screen);
 	lv_obj_remove_style_all(p->index_bar);
-	lv_obj_set_size(p->index_bar, INDEX_BAR_WIDTH, cfg->screen_height - content_top - 8);
-	lv_obj_align(p->index_bar, LV_ALIGN_TOP_RIGHT, -2, content_top + 4);
+	lv_obj_set_size(p->index_bar, INDEX_BAR_WIDTH, cfg->screen_height - content_top - ui_px(8));
+	lv_obj_align(p->index_bar, LV_ALIGN_TOP_RIGHT, ui_px(-2), content_top + ui_px(4));
 	lv_obj_set_style_bg_color(p->index_bar, theme()->surface, 0);
 	lv_obj_set_style_bg_opa(p->index_bar, LV_OPA_60, 0);
 	lv_obj_set_style_radius(p->index_bar, INDEX_BAR_WIDTH / 2, 0);
@@ -2498,11 +2499,11 @@ static void index_build(panel_t *p, gui_config_t *cfg) {
 	// a list of cards, and a card on cards is a card nobody sees.
 	p->index_hint = lv_obj_create(p->screen);
 	lv_obj_remove_style_all(p->index_hint);
-	lv_obj_set_size(p->index_hint, 132, 124);
+	lv_obj_set_size(p->index_hint, ui_px(132), ui_px(124));
 	lv_obj_align(p->index_hint, LV_ALIGN_CENTER, 0, 0);
 	lv_obj_set_style_bg_color(p->index_hint, theme()->accent, 0);
 	lv_obj_set_style_bg_opa(p->index_hint, LV_OPA_90, 0);
-	lv_obj_set_style_radius(p->index_hint, 26, 0);
+	lv_obj_set_style_radius(p->index_hint, ui_px(26), 0);
 	lv_obj_set_scrollable(p->index_hint, false);
 	lv_obj_set_clickable(p->index_hint, false);
 	lv_obj_set_hidden(p->index_hint, true);
@@ -2697,8 +2698,8 @@ static lv_obj_t *corner_button(lv_obj_t *parent, const lv_image_dsc_t *glyph, lv
 
 // How close to the top or bottom edge a finger has to be before the list starts
 // moving under it, and how far it moves each time the event comes round.
-#define REORDER_EDGE_PX 70
-#define REORDER_EDGE_STEP 18
+#define REORDER_EDGE_PX ui_px(70)
+#define REORDER_EDGE_STEP ui_px(18)
 
 // Only one drag can be in flight, so this is one set of variables rather than a
 // set per panel.
@@ -2744,12 +2745,12 @@ static void drop_line_show(panel_t *p, int before_index) {
 		lv_obj_set_style_shadow_width(drop_line, 0, 0);
 		lv_obj_set_style_pad_all(drop_line, 0, 0);
 		lv_obj_add_style(drop_line, &theme_style_accent_bg, 0);
-		lv_obj_set_style_radius(drop_line, 2, 0);
+		lv_obj_set_style_radius(drop_line, ui_px(2), 0);
 	} else if (lv_obj_get_parent(drop_line) != p->body) {
 		lv_obj_set_parent(drop_line, p->body);
 	}
-	lv_obj_set_size(drop_line, lv_obj_get_width(p->body) - 2 * ROW_PAD, 4);
-	lv_obj_set_pos(drop_line, ROW_PAD, row_y(p, before_index) - ROW_GAP / 2 - 2);
+	lv_obj_set_size(drop_line, lv_obj_get_width(p->body) - 2 * ROW_PAD, ui_px(4));
+	lv_obj_set_pos(drop_line, ROW_PAD, row_y(p, before_index) - ROW_GAP / 2 - ui_px(2));
 	lv_obj_set_hidden(drop_line, false);
 	lv_obj_move_foreground(drop_line);
 }
@@ -2772,7 +2773,7 @@ static int index_under(const panel_t *p, lv_coord_t y) {
 static void drag_mark_rows(panel_t *p) {
 	for (int i = 0; i < ROW_POOL; i++) {
 		bool carried = drag_panel == p && p->rows[i].index >= 0 && p->rows[i].index == drag_from;
-		lv_obj_set_style_border_width(p->rows[i].button, carried ? 2 : 0, 0);
+		lv_obj_set_style_border_width(p->rows[i].button, carried ? ui_px(2) : 0, 0);
 		if (carried) {
 			lv_obj_set_style_border_color(p->rows[i].button, theme()->accent, 0);
 			lv_obj_set_style_border_opa(p->rows[i].button, LV_OPA_COVER, 0);
@@ -3312,13 +3313,13 @@ static void play_menu_dismiss_cb(lv_event_t *e) {
 
 static lv_obj_t *play_menu_row(lv_obj_t *parent, const char *text, lv_event_cb_t cb) {
 	lv_obj_t *row = lv_btn_create(parent);
-	lv_obj_set_size(row, lv_pct(100), 76);
+	lv_obj_set_size(row, lv_pct(100), ui_px(76));
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(16), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, NULL);
 
@@ -3347,15 +3348,15 @@ static void play_menu_build(panel_t *p) {
 	lv_obj_add_event_cb(p->play_menu, play_menu_dismiss_cb, LV_EVENT_CLICKED, NULL);
 
 	lv_obj_t *card = lv_obj_create(p->play_menu);
-	lv_obj_set_size(card, 380, LV_SIZE_CONTENT);
+	lv_obj_set_size(card, ui_px(380), LV_SIZE_CONTENT);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_screen, 0);
 	lv_obj_set_style_bg_opa(card, LV_OPA_COVER, 0);
-	lv_obj_set_style_radius(card, 18, 0);
+	lv_obj_set_style_radius(card, ui_px(18), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 16, 0);
-	lv_obj_set_style_pad_gap(card, 10, 0);
+	lv_obj_set_style_pad_all(card, ui_px(16), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(10), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(card, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -3698,7 +3699,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	// is one button wide and the second button of a pair lands outside its own
 	// parent, at x = -60, and is never drawn. Sizing for the most buttons that
 	// can coexist costs a strip of empty space on the pages that show fewer.
-	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - 1) * CORNER_GAP, 56);
+	lv_obj_set_size(p->corner, CORNER_MAX_BUTTONS * CORNER_BUTTON_SIZE + (CORNER_MAX_BUTTONS - 1) * CORNER_GAP, ui_px(56));
 	lv_obj_set_clickable(p->corner, false); // it is a shelf, not a control
 	lv_obj_align(p->corner, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_scrollable(p->corner, false);
@@ -3760,7 +3761,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_style_border_width(p->sel_delete_btn, 0, 0);
 		lv_obj_set_style_shadow_width(p->sel_delete_btn, 0, 0);
 		lv_obj_set_style_pad_all(p->sel_delete_btn, 0, 0);
-		lv_obj_align(p->sel_delete_btn, LV_ALIGN_BOTTOM_RIGHT, -(int)cfg->padding - 6, -(int)cfg->padding - 6);
+		lv_obj_align(p->sel_delete_btn, LV_ALIGN_BOTTOM_RIGHT, -(int)cfg->padding - ui_px(6), -(int)cfg->padding - ui_px(6));
 		lv_obj_add_event_cb(p->sel_delete_btn, sel_delete_cb, LV_EVENT_CLICKED, p);
 		lv_obj_t *bin = lv_image_create(p->sel_delete_btn);
 		lv_image_set_src(bin, &icon_trash);
@@ -3779,7 +3780,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 	lv_obj_set_style_text_align(p->empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(p->empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(p->empty, &font_ui_24, 0);
-	lv_obj_align(p->empty, LV_ALIGN_TOP_MID, 0, 120);
+	lv_obj_align(p->empty, LV_ALIGN_TOP_MID, 0, ui_px(120));
 	lv_obj_set_hidden(p->empty, true);
 
 	for (int i = 0; i < ROW_POOL; i++) {
@@ -3846,7 +3847,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		lv_obj_set_size(row->detail, LV_PCT(100), LV_SIZE_CONTENT);
 		lv_obj_set_flex_flow(row->detail, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row->detail, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-		lv_obj_set_style_pad_column(row->detail, 8, 0);
+		lv_obj_set_style_pad_column(row->detail, ui_px(8), 0);
 		lv_obj_set_scrollable(row->detail, false);
 		lv_obj_set_clickable(row->detail, false);
 		lv_obj_set_event_bubble(row->detail, true);
@@ -3900,7 +3901,7 @@ static void build_panel(panel_t *p, gui_config_t *cfg, bool is_tracks, int slot_
 		if (is_tracks) {
 			// The per-track menu, riding the right edge of the row.
 			row->menu_btn = lv_btn_create(row->button);
-			lv_obj_set_size(row->menu_btn, 44, 44);
+			lv_obj_set_size(row->menu_btn, ui_px(44), ui_px(44));
 			lv_obj_set_style_bg_opa(row->menu_btn, LV_OPA_TRANSP, 0);
 			lv_obj_set_style_border_width(row->menu_btn, 0, 0);
 			lv_obj_set_style_shadow_width(row->menu_btn, 0, 0);
@@ -4402,7 +4403,7 @@ static void head_build(panel_t *p) {
 	lv_obj_set_pos(p->head, 0, 0);
 	lv_obj_set_flex_flow(p->head, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(p->head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(p->head, 6, 0);
+	lv_obj_set_style_pad_row(p->head, ui_px(6), 0);
 	// The top of the cover level with the top of the chevron, which stands
 	// centred in a corner button's height below the page's padding.
 	lv_obj_set_style_pad_top(p->head,
@@ -4425,7 +4426,7 @@ static void head_build(panel_t *p) {
 	lv_obj_add_style(p->head_cover, &theme_style_icon, 0);
 	lv_obj_set_style_image_recolor_opa(p->head_cover, LV_OPA_COVER, 0);
 	lv_obj_set_clickable(p->head_cover, false);
-	lv_obj_set_style_margin_bottom(p->head_cover, 10, 0);
+	lv_obj_set_style_margin_bottom(p->head_cover, ui_px(10), 0);
 
 	p->head_title = head_line(p->head, width, p->title, &font_ui_28, HEAD_TITLE_LINES);
 	lv_obj_add_style(p->head_title, &theme_style_text, 0);
@@ -4453,7 +4454,7 @@ static void head_build(panel_t *p) {
 	lv_obj_set_flex_flow(buttons, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(buttons, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(buttons, HEAD_BTN_GAP, 0);
-	lv_obj_set_style_margin_top(buttons, 12, 0);
+	lv_obj_set_style_margin_top(buttons, ui_px(12), 0);
 	lv_obj_set_scrollable(buttons, false);
 	lv_obj_set_clickable(buttons, false);
 	lv_obj_set_event_bubble(buttons, true);

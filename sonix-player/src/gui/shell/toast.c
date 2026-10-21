@@ -4,6 +4,7 @@
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/spinner.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 
 #include <string.h>
@@ -16,20 +17,20 @@
 #define TOAST_MAX_MS 5000
 // Not TOAST_W / TOAST_H: the second of those collides with toast.h's own
 // include guard, which is defined by the time this line is read.
-#define TOAST_WIDTH 260
+#define TOAST_WIDTH ui_px(260)
 // Past this many characters the card widens to TOAST_WIDE_WIDTH (or the panel
 // less TOAST_SIDE_MARGIN on each side): four lines at the narrow width would
 // make a tall thin column of a sentence.
 #define TOAST_WIDE_CHARS 60
-#define TOAST_WIDE_WIDTH 380
-#define TOAST_SIDE_MARGIN 30
+#define TOAST_WIDE_WIDTH ui_px(380)
+#define TOAST_SIDE_MARGIN ui_px(30)
 // The least height with a glyph above the text, so a short message keeps the
 // usual square card. The card grows past it for a longer one -- the AutoEq
 // messages run to three sentences -- and never past the panel less
 // TOAST_SIDE_MARGIN above and below. Without a glyph there is no least height:
 // 200 px of card around a single line reads as an empty box with a sentence
 // lost in the middle of it.
-#define TOAST_HEIGHT 200
+#define TOAST_HEIGHT ui_px(200)
 
 // The Adwaita "success" green, the same one the active chevrons use, so a
 // confirmation reads as one across the interface, and the Adwaita red beside
@@ -101,11 +102,11 @@ void toast_init(gui_config_t *cfg) {
 	lv_obj_set_style_max_height(card, lv_display_get_vertical_resolution(lv_display_get_default()) - 2 * TOAST_SIDE_MARGIN, 0);
 	lv_obj_center(card);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 20, 0);
+	lv_obj_set_style_radius(card, ui_px(20), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_gap(card, 16, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(16), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_clickable(card, true); // a tap on it is not a tap outside
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
