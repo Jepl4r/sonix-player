@@ -99,6 +99,10 @@ void player_key_prev(void);
 void player_screen_prev(void);
 void player_screen_next(void);
 
+// Steps the loaded book by one chapter/part (+1 next, -1 previous). Nothing
+// happens when no book with units is loaded. Safe to call from the UI thread only.
+void player_step_chapter(int direction);
+
 // The feed of the episode being played, for the control centre's star button.
 // Returns true and fills id/feed when a podcast is playing.
 bool player_current_podcast_feed(long long *id_out, podcast_feed_t *feed_out);

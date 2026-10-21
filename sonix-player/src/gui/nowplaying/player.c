@@ -39,6 +39,7 @@
 #include "src/system/bluetooth/btreceiver.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/system/library/audiobookdb.h"
 #include "src/system/library/library.h"
 #include "src/system/library/lrclib.h"
 #include "src/system/library/lyrics.h"
@@ -238,6 +239,21 @@ static bool audiobook_has_chapters;		 // whether the loaded book is marked up
 static int audiobook_skip_shown_back;	 // the two jump sizes the buttons are drawn
 static int audiobook_skip_shown_forward; // for, so changing the setting repaints
 static bool audiobook_mode_valid;   // false until the first apply, so it paints once
+
+// The chapter row: on a book with chapters or parts, the title and author block
+// carries a previous-chapter button on its left and a next-chapter one on its
+// right, and its two lines name the book and the chapter being heard.
+#define CHAPTER_BTN_SIZE 56
+// Where the two buttons start in Studio's head: past the chevron and the
+// ellipsis, where the names stop too.
+#define CHAPTER_STUDIO_INSET 68
+static lv_obj_t *chapter_prev_btn;
+static lv_obj_t *chapter_next_btn;
+static lv_obj_t *chapter_prev_icon;
+static lv_obj_t *chapter_next_icon;
+static bool chapter_row_in_head;   // Studio's text column has given up the buttons' width
+static int chapter_line_unit = -1; // the unit the two lines name; -1 while they name the track
+static void chapter_row_sync(void);
 
 static cover_image_t current_cover;	   // pixels currently referenced by cover_img
 static cover_image_t current_backdrop; // upside-down blurred copy behind the controls
@@ -549,6 +565,7 @@ static void apply_audiobook_mode(bool book, bool podcast) {
 	if (more_btn_icon) {
 		lv_image_set_src(more_btn_icon, podcast && !book ? &icon_podcast_episodes : &icon_ellipsis_vertical);
 	}
+	chapter_row_sync();
 
 	// The star and the repeat mode are about the music library and its queue.
 	// On a book they are not merely useless: starring would write a row into
@@ -959,7 +976,7 @@ static void set_over_cover(bool on) {
 
 	lv_obj_t *const text_objs[] = {song_title_label, elapsed_label, remaining_label};
 	lv_obj_t *const dim_objs[] = {song_artist_label, format_label, queue_position_label};
-	lv_obj_t *const icon_objs[] = {prev_icon, next_icon};
+	lv_obj_t *const icon_objs[] = {prev_icon, next_icon, chapter_prev_icon, chapter_next_icon};
 
 	for (size_t i = 0; i < sizeof(text_objs) / sizeof(text_objs[0]); i++) {
 		if (!text_objs[i]) {
@@ -2884,6 +2901,52 @@ static void studio_put(void) {
 	studio_refresh_cover();
 }
 
+// Puts the chapter row's two buttons beside the title and author, wherever the
+// arrangement keeps those two lines, and shows them only on a book with units.
+// In the standard arrangement they sit in the title's own row, the next one
+// where the format goes -- which says nothing useful about a book and gives
+// way. In Studio the names live in the head, so the buttons go there too and
+// the column the names are centred in gives up their width.
+static void chapter_row_sync(void) {
+	if (!chapter_prev_btn || !chapter_next_btn || !song_text_obj || !song_side_obj) {
+		return;
+	}
+	bool on = audiobook_mode && audiobook_has_chapters;
+	bool studio = layout_studio_now && studio_head;
+
+	if (studio) {
+		lv_obj_set_parent(chapter_prev_btn, studio_head);
+		lv_obj_set_parent(chapter_next_btn, studio_head);
+		lv_obj_set_ignore_layout(chapter_prev_btn, true);
+		lv_obj_set_ignore_layout(chapter_next_btn, true);
+		lv_obj_align(chapter_prev_btn, LV_ALIGN_LEFT_MID, CHAPTER_STUDIO_INSET, 0);
+		lv_obj_align(chapter_next_btn, LV_ALIGN_RIGHT_MID, -CHAPTER_STUDIO_INSET, 0);
+	} else {
+		lv_obj_set_parent(chapter_prev_btn, lv_obj_get_parent(song_text_obj));
+		lv_obj_move_to_index(chapter_prev_btn, 0);
+		lv_obj_set_parent(chapter_next_btn, song_side_obj);
+		lv_obj_set_ignore_layout(chapter_prev_btn, false);
+		lv_obj_set_ignore_layout(chapter_next_btn, false);
+	}
+	lv_obj_set_hidden(chapter_prev_btn, !on);
+	lv_obj_set_hidden(chapter_next_btn, !on);
+
+	// By the buttons' width and not to a fixed one: the lyrics button narrows
+	// the same column the same way, and the two have to undo cleanly.
+	bool in_head = on && studio;
+	if (studio_text_col && in_head != chapter_row_in_head) {
+		int32_t w = lv_obj_get_style_width(studio_text_col, 0);
+		lv_obj_set_width(studio_text_col, in_head ? w - 2 * CHAPTER_BTN_SIZE : w + 2 * CHAPTER_BTN_SIZE);
+		chapter_row_in_head = in_head;
+	}
+
+	// Studio keeps the format under the sleeve, out of the buttons' way, and
+	// the pills never show it.
+	if (format_label && !layout_studio_now && !layout_alt_now) {
+		lv_obj_set_hidden(format_label, on);
+	}
+}
+
 // Moves the pieces between the two arrangements.
 //
 // Reparenting and not rebuilding: the title label carries its scrolling, the
@@ -3003,6 +3066,7 @@ static void apply_layout(void) {
 	} else {
 		lyrics_layout(); // studio_put() places the page itself
 	}
+	chapter_row_sync();		 // after the format above was shown again
 	align_title_with_star(); // the title may have just left its row, or come back to it
 
 	paint_alt_tint();
@@ -3525,6 +3589,49 @@ static void player_refresh_theme(void) {
 
 static void update_qobuz_badge(void);
 
+// The track's own two lines: its title, or the file's name when it has none,
+// and whose name goes under it (see metadata_shown_artist()).
+static void show_track_texts(const device_state_t *state) {
+	const char *file = state->current_file;
+	const char *slash = strrchr(file, '/');
+	scrolltext_set(song_title_label, state->metadata.title[0] ? state->metadata.title : (slash ? slash + 1 : file));
+	scrolltext_set(song_artist_label, metadata_shown_artist(&state->metadata));
+}
+
+// The two lines of the chapter row: the book's name from the index, not the
+// file's title -- a folder book's file is titled after its part, which the line
+// under it already says -- and under it "3/12  Chapter three", the chapter (or
+// part) being heard. Called on every track change and from the poll, and
+// writes only when the unit is a different one. Anything that is not a book
+// with units keeps the track's own lines.
+static void update_chapter_line(const device_state_t *state) {
+	int unit = audiobook_mode && audiobook_has_chapters ? audiobook_unit_current(state->progress_current_secs) : -1;
+	if (unit == chapter_line_unit) {
+		return;
+	}
+	chapter_line_unit = unit;
+	if (unit < 0) {
+		show_track_texts(state);
+	} else {
+		char book[512], title[256];
+		if (audiobook_current_book(book, sizeof(book), NULL, 0) && audiobookdb_book_info(book, title, sizeof(title), NULL, 0, NULL) && title[0]) {
+			scrolltext_set(song_title_label, title);
+		} else {
+			show_track_texts(state);
+		}
+		char name[256] = "", line[300];
+		audiobook_unit_title(unit, name, sizeof(name));
+		if (name[0]) {
+			snprintf(line, sizeof(line), "%d/%d  %s", unit + 1, audiobook_unit_count(), name);
+		} else {
+			snprintf(line, sizeof(line), "%d/%d", unit + 1, audiobook_unit_count());
+		}
+		scrolltext_set(song_artist_label, line);
+	}
+	lyrics_head_sync();
+	alt_pills_sync();
+}
+
 // Refreshes the now-playing info (title + artist) from the current
 // device state and resets the per-track length cache. Used both when the user
 // picks a file and when playback auto-advances to a new track.
@@ -3576,12 +3683,9 @@ static void refresh_now_playing(void) {
 	}
 
 	const char *file = state.current_file;
-	const char *slash = strrchr(file, '/');
-	scrolltext_set(song_title_label, state.metadata.title[0] ? state.metadata.title : (slash ? slash + 1 : file));
-
-	// Whose name goes under the title: see metadata_shown_artist().
-	const char *artist = metadata_shown_artist(&state.metadata);
-	scrolltext_set(song_artist_label, artist);
+	show_track_texts(&state);
+	chapter_line_unit = -1;
+	update_chapter_line(&state); // a book with chapters says which one instead
 	lyrics_head_sync();
 	alt_pills_sync();
 
@@ -4208,6 +4312,9 @@ static void update_progress(void) {
 	// player dressed as a podcast over a song.
 	apply_audiobook_mode(!state.live && audiobook_is_playing(),
 						 !state.live && podcastcache_is_episode(state.current_file));
+	if (!state.live) {
+		update_chapter_line(&state); // playback runs on into the next chapter
+	}
 	update_format_label(&state); // the rate/bits settle shortly after the start
 
 	// The status LED follows playback promptly from here (the battery poll
@@ -4452,6 +4559,101 @@ static void book_chapters_action(void *user) {
 	}
 }
 
+// Another part of a folder book, from its start: the parts become the queue, as
+// a tap in the chapter list makes them. Playing goes on playing; paused comes
+// up paused, so a step never starts the book by itself. Either way the part
+// being left has its place written first (change_book_track() in
+// device_state.c).
+static void chapter_load_part(int part, bool playing) {
+	int count = audiobook_part_count();
+	if (part < 0 || part >= count) {
+		return;
+	}
+	char **paths = calloc((size_t)count, sizeof(char *));
+	if (!paths) {
+		return;
+	}
+	int filled = 0;
+	for (int i = 0; i < count; i++) {
+		char path[512];
+		if (!audiobook_part(i, NULL, 0, path, sizeof(path)) || !(paths[filled] = strdup(path))) {
+			break;
+		}
+		filled++;
+	}
+	if (filled == count) {
+		if (playing) {
+			device_state_play_list_ordered((const char *const *)paths, count, part);
+		} else {
+			device_state_load_list_ordered_paused((const char *const *)paths, count, part);
+		}
+	}
+	for (int i = 0; i < filled; i++) {
+		free(paths[i]);
+	}
+	free(paths);
+}
+
+void player_step_chapter(int direction) {
+	device_state_t state;
+	device_state_get(&state);
+	audiobook_step_t target;
+	if (!audiobook_step_target(state.progress_current_secs, direction, &target)) {
+		return;
+	}
+	if (target.kind == AUDIOBOOK_STEP_SEEK) {
+		device_state_seek(target.seconds);
+		// Written through, like the second jumps: a step is a deliberate move.
+		audiobook_note_position(target.seconds, state.progress_total_secs, true);
+	} else if (target.kind == AUDIOBOOK_STEP_PART) {
+		chapter_load_part(target.part, state.status == AUDIO_STATUS_PLAYING);
+		audiobook_note_position(0, 0, true); // the new part, at its start
+		player_refresh_now_playing();
+	} else {
+		return; // the last chapter: nothing after it, and no wrap
+	}
+	update_progress();
+}
+
+static void chapter_prev_cb(lv_event_t *e) {
+	(void)e;
+	player_step_chapter(-1);
+}
+
+static void chapter_next_cb(lv_event_t *e) {
+	(void)e;
+	player_step_chapter(1);
+}
+
+// A tap on the chapter row's names opens the chapter list they count from.
+static void song_text_clicked_cb(lv_event_t *e) {
+	(void)e;
+	if (player_sheet_drag_active() || !audiobook_mode || !audiobook_has_chapters) {
+		return;
+	}
+	book_chapters_action(NULL);
+}
+
+// One of the chapter row's two buttons: the transport's previous/next glyph,
+// which already means "the one before/after", with no chrome, hidden.
+static lv_obj_t *chapter_btn_create(lv_obj_t *parent, const lv_image_dsc_t *glyph, lv_event_cb_t cb, lv_obj_t **icon_out) {
+	lv_obj_t *btn = lv_btn_create(parent);
+	lv_obj_set_size(btn, CHAPTER_BTN_SIZE, CHAPTER_BTN_SIZE);
+	lv_obj_set_style_bg_opa(btn, 0, 0);
+	lv_obj_set_style_shadow_width(btn, 0, 0);
+	lv_obj_set_style_pad_all(btn, 0, 0);
+	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_set_ext_click_area(btn, CORNER_BTN_EXT_CLICK);
+	lv_obj_set_hidden(btn, true);
+
+	lv_obj_t *icon = lv_image_create(btn);
+	lv_image_set_src(icon, glyph);
+	lv_obj_add_style(icon, &theme_style_icon, 0);
+	lv_obj_center(icon);
+	*icon_out = icon;
+	return btn;
+}
+
 static void book_add_bookmark_action(void *user) {
 	(void)user;
 	audiobookextras_add_bookmark();
@@ -4686,7 +4888,8 @@ void player_refresh_artist(void) {
 	}
 	device_state_t state;
 	device_state_get(&state);
-	if (state.live || !state.current_file[0]) {
+	// The chapter row's second line is the chapter, not an artist.
+	if (state.live || !state.current_file[0] || chapter_line_unit >= 0) {
 		return;
 	}
 	scrolltext_set(song_artist_label, metadata_shown_artist(&state.metadata));
@@ -5162,8 +5365,14 @@ void player_init(gui_config_t *cfg) {
 	// up with the star again.
 	lv_obj_add_event_cb(song_info, song_info_layout_cb, LV_EVENT_LAYOUT_CHANGED, NULL);
 
+	// The chapter row's previous button, left of the names; its next button
+	// goes into the right side below. Both down until a book with units comes
+	// up (chapter_row_sync()).
+	chapter_prev_btn = chapter_btn_create(song_info, &icon_skip_back, chapter_prev_cb, &chapter_prev_icon);
+
 	lv_obj_t *song_text = lv_obj_create(song_info);
 	song_text_obj = song_text;
+	lv_obj_add_event_cb(song_text, song_text_clicked_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_set_height(song_text, LV_SIZE_CONTENT);
 	lv_obj_set_flex_grow(song_text, 1);
 	lv_obj_set_style_bg_opa(song_text, 0, 0);
@@ -5214,6 +5423,8 @@ void player_init(gui_config_t *cfg) {
 	fav_btn_icon = lv_image_create(fav_btn);
 	lv_obj_center(fav_btn_icon);
 	update_fav_button();
+
+	chapter_next_btn = chapter_btn_create(song_side, &icon_skip_forward, chapter_next_cb, &chapter_next_icon);
 
 	format_label = lv_label_create(song_side);
 	lv_label_set_text(format_label, "");
