@@ -22,4 +22,11 @@ static inline int sleepfade_gain_q10(uint32_t now_ms, uint32_t deadline_ms, bool
 	return gain_at_disarm + (1024 - gain_at_disarm) * (int)elapsed / SLEEPFADE_RETURN_MS;
 }
 
+// The deadline and the return ramp both limit the gain of this snapshot.
+static inline int sleep_fade_gain(uint32_t now_ms, uint32_t deadline_ms, bool armed, uint32_t disarmed_at_ms, int gain_at_disarm) {
+	int returning = sleepfade_gain_q10(now_ms, 0, false, disarmed_at_ms, gain_at_disarm);
+	int timed = sleepfade_gain_q10(now_ms, deadline_ms, armed, disarmed_at_ms, gain_at_disarm);
+	return timed < returning ? timed : returning;
+}
+
 #endif /* SLEEPFADE_H */

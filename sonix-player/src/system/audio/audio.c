@@ -506,19 +506,13 @@ static uint32_t sleep_fade_now_ms(void) {
 	return (uint32_t)((uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
 }
 
-static int sleep_fade_gain(sleep_fade_t state, uint32_t now) {
-	int returning = sleepfade_gain_q10(now, 0, false, state.disarmed_at, state.gain_at_disarm);
-	int timed = sleepfade_gain_q10(now, state.deadline, state.armed, state.disarmed_at, state.gain_at_disarm);
-	return timed < returning ? timed : returning;
-}
-
 void audio_sleep_fade_arm(uint32_t deadline_ms) {
 	pthread_mutex_lock(&audio_mutex);
 	if (!sleep_fade.armed || sleep_fade.deadline != deadline_ms) {
 		uint32_t now = sleep_fade_now_ms();
 		// Extending a fading stretch returns from its current level over 500 ms.
 		if (!sleep_fade.armed || (int32_t)(deadline_ms - sleep_fade.deadline) > 0) {
-			sleep_fade.gain_at_disarm = sleep_fade_gain(sleep_fade, now);
+			sleep_fade.gain_at_disarm = sleep_fade_gain(now, sleep_fade.deadline, sleep_fade.armed, sleep_fade.disarmed_at, sleep_fade.gain_at_disarm);
 			sleep_fade.disarmed_at = now;
 		}
 		sleep_fade.armed = true;
@@ -532,7 +526,7 @@ void audio_sleep_fade_disarm(void) {
 	pthread_mutex_lock(&audio_mutex);
 	if (sleep_fade.armed) {
 		uint32_t now = sleep_fade_now_ms();
-		sleep_fade.gain_at_disarm = sleep_fade_gain(sleep_fade, now);
+		sleep_fade.gain_at_disarm = sleep_fade_gain(now, sleep_fade.deadline, sleep_fade.armed, sleep_fade.disarmed_at, sleep_fade.gain_at_disarm);
 		sleep_fade.disarmed_at = now;
 		sleep_fade.armed = false;
 		printf("audio: sleep fade disarmed gain=%d\n", sleep_fade.gain_at_disarm);
@@ -551,7 +545,7 @@ static int sleep_fade_buffer_gain(void) {
 	pthread_mutex_lock(&audio_mutex);
 	sleep_fade_t state = sleep_fade;
 	pthread_mutex_unlock(&audio_mutex);
-	return sleep_fade_gain(state, sleep_fade_now_ms());
+	return sleep_fade_gain(sleep_fade_now_ms(), state.deadline, state.armed, state.disarmed_at, state.gain_at_disarm);
 }
 
 static void fade_apply_s16(short *samples, int count, int gain) {
