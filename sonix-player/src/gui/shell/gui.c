@@ -11,6 +11,7 @@
 #include "src/gui/library/browser.h"
 #include "src/gui/nowplaying/coverflow.h"
 #include "src/gui/settings/ccsettings.h"
+#include "src/gui/settings/homescreensettings.h"
 #include "src/gui/nowplaying/chapters.h"
 #include "src/gui/nowplaying/lyricsearch.h"
 #include "src/gui/wireless/airplay.h"
@@ -636,6 +637,9 @@ void gui_init(gui_config_t *cfg) {
 	gearboyplay_screen = lv_obj_create(NULL);
 	flappybird_screen = lv_obj_create(NULL);
 	metronomepage_screen = lv_obj_create(NULL);
+	// Created here so its row on the More page has somewhere to point; filled
+	// after every grid it lists has been built.
+	homescreensettings_screen = lv_obj_create(NULL);
 
 	// Persistent topbar that stays above every screen.
 	topbar_init(cfg);
@@ -695,6 +699,7 @@ void gui_init(gui_config_t *cfg) {
 	imageview_init(cfg); // likewise, for a picture
 	filespage_init(cfg);
 	streaming_init(cfg);
+	homescreensettings_init(cfg); // after every tiled page it lists: streaming is the last
 
 	player_init(cfg);
 

@@ -5,6 +5,7 @@
 #include "src/gui/library/audiobooks.h"
 #include "src/gui/shell/gridpage.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/homescreen.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/morepage.h"
 #include "src/gui/library/music.h"
@@ -32,5 +33,8 @@ void main_menu_init(gui_config_t *cfg) {
 		{"settings", &icon_menu_settings, &settings_screen},
 	};
 
-	gridpage_build(main_menu_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, false);
+	// Built empty and filled with the tiles placed here (Settings > More >
+	// Homescreen), which may include some of the More page's.
+	lv_obj_t *grid = gridpage_build(main_menu_screen, cfg, NULL, 0, 2, 3, false);
+	homescreen_register_home(grid, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])));
 }

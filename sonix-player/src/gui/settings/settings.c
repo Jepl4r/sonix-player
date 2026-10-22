@@ -9,6 +9,7 @@
 #include "src/gui/settings/ccsettings.h"
 #include "src/gui/shell/confirm.h"
 #include "src/gui/settings/devoptions.h"
+#include "src/gui/settings/homescreensettings.h"
 #include "src/gui/settings/language.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/settings/kblayoutpage.h"
@@ -450,6 +451,7 @@ static void build_other_page(gui_config_t *cfg) {
 	lv_label_set_text_fmt(volume_step_value, "%d", step);
 	input_set_volume_step(step);
 	settingsrow_add(container, "control_centre", NULL, switch_screen_cb, ccsettings_screen);
+	settingsrow_add(container, "homescreen", NULL, switch_screen_cb, homescreensettings_screen);
 
 	// Which alphabets the keyboard can be laid out in, above the shape of the
 	// keys: the letters matter more than whether they come ten to a row or

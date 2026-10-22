@@ -6,6 +6,7 @@
 #include "src/gui/bluetooth/btsettings.h"
 #include "src/gui/wireless/dlna.h"
 #include "src/gui/shell/gridpage.h"
+#include "src/gui/shell/homescreen.h"
 #include "src/gui/wireless/sonixlink.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
@@ -27,7 +28,8 @@ void wireless_init(gui_config_t *cfg) {
 	// Two columns and three rows' worth of tile, like the Music section, so a
 	// tile here is exactly the size of a tile there. Six entries fill the grid
 	// exactly.
-	gridpage_build(wireless_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
+	lv_obj_t *grid = gridpage_build(wireless_screen, cfg, NULL, 0, 2, 3, true);
+	homescreen_register_section(grid, cfg, "wireless", entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
 
 	settingsrow_title(wireless_screen, cfg, "wireless");
 }

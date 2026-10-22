@@ -178,6 +178,12 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Keyboard** - ten layouts (English, Italian, German, Spanish, French, Dutch, Polish, Brazilian Portuguese, Czech, Russian), as a full keyboard or as a phone keypad (T9).
 - **Screenshots** - turn them on in Settings > More, then press volume up + power to save the screen to the card.
 
+## Home screen
+
+- **Homescreen** in Settings > More - drag each section (Music, Streaming, Wireless, Audiobooks, More) and each tile of the More page between the home screen, More and Hidden, and into the order you want. Hide Streaming and put the DAC on the home screen in its place, for example. Both pages hold six tiles.
+- Settings is always on the home screen, or in More while More is on the home screen.
+- Hide the tiles you don't use inside Streaming and Wireless too.
+
 ## Screen and appearance
 
 - **Dark and light theme**, accent colours, and a **dynamic tint** that colours the whole interface with the accent.

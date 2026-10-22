@@ -3,6 +3,7 @@
 #include "lvgl/lvgl.h"
 
 #include "src/gui/shell/gridpage.h"
+#include "src/gui/shell/homescreen.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/streaming/podcastpage.h"
 #include "src/gui/streaming/qobuzpage.h"
@@ -27,7 +28,8 @@ void streaming_init(gui_config_t *cfg) {
 	// Two columns and three rows of tile, exactly like Music and Wireless, so a
 	// tile here is the same size as a tile there. Four of them fill the first
 	// two rows; the third stays empty rather than the tiles growing to fill it.
-	gridpage_build(streaming_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
+	lv_obj_t *grid = gridpage_build(streaming_screen, cfg, NULL, 0, 2, 3, true);
+	homescreen_register_section(grid, cfg, "streaming", entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
 
 	settingsrow_title(streaming_screen, cfg, "streaming");
 }
