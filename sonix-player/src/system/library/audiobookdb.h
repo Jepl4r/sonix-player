@@ -32,6 +32,11 @@
 bool audiobookdb_open(const char *db_path);
 void audiobookdb_close(void);
 
+// The card identity used by background writes, advanced on open and close.
+unsigned audiobookdb_card_epoch(void);
+// False if the card has changed; the check and write share the database lock.
+bool audiobookdb_set_part_duration_on_card(const char *path, double seconds, unsigned epoch);
+
 // Closes and reopens the index when its file was deleted or replaced under the
 // open handle, as library_reopen_if_replaced() does for the music. True when it
 // reopened.

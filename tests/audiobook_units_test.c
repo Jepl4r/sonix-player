@@ -1,3 +1,4 @@
+#include "../sonix-player/src/system/decode/decode.h"
 #include "../sonix-player/src/system/playback/audiobook.c"
 #include <assert.h>
 
@@ -560,6 +561,108 @@ static void book_progress(void) {
 	puts("PASS audiobook-progress-single");
 }
 
+static unsigned stub_card_epoch = 1;
+static int probe_mode, probe_opens, probe_closes;
+unsigned audiobookdb_card_epoch(void) { return stub_card_epoch; }
+void thread_be_background(const char *name) { (void)name; }
+decode_format_t decode_detect_format(const char *path) { return DECODE_FORMAT_MP3; }
+decoder_t *decoder_open_info(const char *path, decode_format_t format) {
+	assert(pthread_mutex_trylock(&lock) == 0);
+	pthread_mutex_unlock(&lock);
+	assert(audiobook_working_out());
+	audiobook_work_out_lengths(); // A second request cannot start another worker.
+	probe_opens++;
+	if (probe_mode == 2 && probe_opens == 2)
+		audiobook_track_changed("/other.m4b");
+	if (probe_mode == 6)
+		stub_card_epoch++;
+	if (probe_mode == 4)
+		return NULL;
+	return (decoder_t *)&probe_opens;
+}
+uint64_t decoder_total_pcm_frames(const decoder_t *dec) { return 6000; }
+int decoder_sample_rate(const decoder_t *dec) { return probe_mode == 5 ? 0 : 100; }
+void decoder_close(decoder_t *dec) { probe_closes++; }
+bool audiobookdb_set_part_duration_on_card(const char *path, double seconds, unsigned epoch) {
+	if (epoch != stub_card_epoch)
+		return false;
+	audiobookdb_set_part_duration(path, seconds);
+	if (probe_mode == 1)
+		audiobook_track_changed("/other.m4b");
+	if (probe_mode == 3)
+		stub_card_epoch++;
+	return true;
+}
+static void work_out_lengths(void) {
+	for (int mode = 0; mode <= 6; mode++) {
+		reset();
+		snprintf(current_book, sizeof(current_book), "/book");
+		set_parts(3, 0);
+		parts[0].duration = 120;
+		probe_mode = mode;
+		probe_opens = probe_closes = length_writes = 0;
+		unsigned before = audiobook_serial();
+		assert(audiobook_lengths_missing());
+		audiobook_work_out_lengths();
+		for (int i = 0; i < 2000 && audiobook_working_out(); i++) {
+			struct timespec delay = {0, 1000000};
+			nanosleep(&delay, NULL);
+		}
+		assert(!audiobook_working_out());
+		if (mode == 0) {
+			assert(probe_opens == 2 && probe_closes == 2 && length_writes == 2);
+			assert(audiobook_part_duration(0) == 120);
+			assert(audiobook_part_duration(1) == 60 && audiobook_part_duration(2) == 60);
+			assert(!audiobook_lengths_missing());
+			assert(audiobook_serial() == before + 1);
+			audiobook_work_out_lengths();
+			assert(!audiobook_working_out() && probe_opens == 2);
+			assert(audiobook_take_lengths_done());
+		} else if (mode <= 3) {
+			assert(length_writes == 1);
+			assert(probe_opens == (mode == 2 ? 2 : 1));
+			assert(probe_closes == probe_opens);
+			assert(!audiobook_take_lengths_done());
+		} else if (mode <= 5) {
+			assert(length_writes == 0 && probe_opens == 2);
+			assert(audiobook_lengths_missing());
+			assert(!audiobook_take_lengths_done());
+		} else {
+			assert(length_writes == 0 && probe_opens == 1 && probe_closes == 1);
+			assert(audiobook_lengths_missing() && !audiobook_take_lengths_done());
+		}
+		assert(!audiobook_take_lengths_done());
+	}
+	puts("PASS audiobook-work-out-lengths");
+	puts("PASS audiobook-work-out-book-change");
+	puts("PASS audiobook-work-out-card-change");
+	puts("PASS audiobook-work-out-probe-failure");
+}
+
+static void work_out_single_length(void) {
+	audiobook_track_changed(NULL);
+	assert(!audiobook_lengths_missing());
+	audiobook_work_out_lengths();
+	assert(!audiobook_working_out());
+	reset();
+	snprintf(current_book, sizeof(current_book), "/other.m4b");
+	snprintf(current_path, sizeof(current_path), "/other.m4b");
+	probe_mode = probe_opens = probe_closes = length_writes = 0;
+	audiobook_work_out_lengths();
+	for (int i = 0; i < 2000 && audiobook_working_out(); i++) {
+		struct timespec delay = {0, 1000000};
+		nanosleep(&delay, NULL);
+	}
+	assert(!audiobook_working_out());
+	assert(probe_opens == 1 && probe_closes == 1 && length_writes == 0);
+	audiobook_progress_t p;
+	assert(audiobook_book_progress(15, 2, &p));
+	assert(p.known_total && p.known_left && p.fraction == 0.25 && p.left_seconds == 22.5);
+	audiobook_track_changed(NULL);
+	assert(!audiobook_take_lengths_done());
+	puts("PASS audiobook-work-out-single");
+}
+
 int main(void) {
 	book_progress();
 	measured_lengths();
@@ -576,5 +679,7 @@ int main(void) {
 	natural_finish_starts_over();
 	folder_finish_starts_at_first_part();
 	checkpoints_do_not_finish();
-  return 0;
+        work_out_lengths();
+	work_out_single_length();
+        return 0;
 }

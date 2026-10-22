@@ -175,6 +175,12 @@ bool audiobook_step_target(double seconds, int direction, audiobook_step_t *out)
 // redraw only when there is something new.
 unsigned audiobook_serial(void);
 
+// Resolve unknown lengths on request; completion is consumed on the GUI thread.
+bool audiobook_lengths_missing(void);
+void audiobook_work_out_lengths(void);
+bool audiobook_working_out(void);
+bool audiobook_take_lengths_done(void);
+
 // Where this book was left last time, in seconds. 0 when it is new, when it
 // is not a book, when it was heard to the end -- a finished book starts over,
 // and is listed as finished so that fact is not simply lost -- or when `filepath`

@@ -130,7 +130,8 @@ int main(int argc, char **argv) {
                NULL, NULL, NULL) == SQLITE_OK);
     sqlite3_close(old);
   }
-  if (!strcmp(argv[1], "duration-column")) {
+  if (!strcmp(argv[1], "duration-column") ||
+      !strcmp(argv[1], "duration-card")) {
     sqlite3 *old;
     assert(sqlite3_open(dbpath, &old) == SQLITE_OK);
     assert(
@@ -142,7 +143,19 @@ int main(int argc, char **argv) {
     sqlite3_close(old);
   }
   assert(audiobookdb_open(dbpath));
-  if (!strcmp(argv[1], "duration-column")) {
+  if (!strcmp(argv[1], "duration-card")) {
+    unsigned epoch = audiobookdb_card_epoch();
+    assert(audiobookdb_set_part_duration_on_card("p", 12, epoch));
+    assert(scalar("SELECT duration FROM AUDIOBOOK_PARTS") == 12);
+    audiobookdb_close();
+    assert(!audiobookdb_set_part_duration_on_card("p", 24, epoch));
+    assert(audiobookdb_open(dbpath));
+    assert(!audiobookdb_set_part_duration_on_card("p", 24, epoch));
+    assert(scalar("SELECT duration FROM AUDIOBOOK_PARTS") == 12);
+    assert(audiobookdb_set_part_duration_on_card("p", 36,
+                                                 audiobookdb_card_epoch()));
+    assert(scalar("SELECT duration FROM AUDIOBOOK_PARTS") == 36);
+  } else if (!strcmp(argv[1], "duration-column")) {
     assert(scalar("SELECT count(*) FROM AUDIOBOOK_PARTS") == 1);
     assert(scalar("SELECT COALESCE(duration,0) FROM AUDIOBOOK_PARTS") == 0);
     assert(scalar("PRAGMA user_version") == 4);

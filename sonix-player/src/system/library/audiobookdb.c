@@ -61,6 +61,8 @@ static bool outdated;
 // card can tell that it would now land on another.
 static unsigned card_epoch;
 
+unsigned audiobookdb_card_epoch(void) { return __atomic_load_n(&card_epoch, __ATOMIC_ACQUIRE); }
+
 static void position_queue_drain(void);
 static void position_writes_clear(void);
 
@@ -770,19 +772,25 @@ int audiobookdb_get_speed(const char *book_path) {
 	return permille;
 }
 
-void audiobookdb_set_part_duration(const char *path, double seconds) {
+static bool set_part_duration(const char *path, double seconds, bool check_card, unsigned epoch) {
 	if (!path || !path[0] || !isfinite(seconds) || seconds <= 0)
-		return;
+		return false;
 	pthread_mutex_lock(&db_lock);
+	bool written = false;
 	sqlite3_stmt *stmt = NULL;
-	if (db && !sqlite3_db_readonly(db, "main") && sqlite3_prepare_v2(db, "UPDATE AUDIOBOOK_PARTS SET duration=? WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
+	if ((!check_card || epoch == audiobookdb_card_epoch()) && db && !sqlite3_db_readonly(db, "main") && sqlite3_prepare_v2(db, "UPDATE AUDIOBOOK_PARTS SET duration=? WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
 		sqlite3_bind_double(stmt, 1, seconds);
 		sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
-		sqlite3_step(stmt);
+		written = sqlite3_step(stmt) == SQLITE_DONE;
 		sqlite3_finalize(stmt);
 	}
 	pthread_mutex_unlock(&db_lock);
+	return written;
 }
+
+void audiobookdb_set_part_duration(const char *path, double seconds) { set_part_duration(path, seconds, false, 0); }
+
+bool audiobookdb_set_part_duration_on_card(const char *path, double seconds, unsigned epoch) { return set_part_duration(path, seconds, true, epoch); }
 
 void audiobookdb_set_speed(const char *book_path, int permille) {
 	if (!book_path || !book_path[0]) {

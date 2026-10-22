@@ -1,10 +1,12 @@
 #include "audiobook.h"
 
-#include "src/system/library/audiobookdb.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
+#include "src/system/core/utils.h"
+#include "src/system/decode/decode.h"
 #include "src/system/decode/mp4.h"
+#include "src/system/library/audiobookdb.h"
 #include "src/system/library/id3chap.h"
 #include "src/system/library/vorbischap.h"
 
@@ -47,6 +49,8 @@ static int part_capacity;
 static int part_index;
 static bool length_noted;
 static double file_length;
+static bool lengths_working;
+static bool lengths_done;
 
 static time_t last_save;
 static double last_saved_position;
@@ -61,6 +65,7 @@ double audiobook_clamp_seek(double target, double length) {
 }
 
 static void clear_locked(void) {
+	lengths_done = false;
 	length_noted = false;
 	file_length = 0;
 	free(chapters);
@@ -466,6 +471,139 @@ static bool resume_part_cb(const char *path, const char *title, double duration,
 	return true;
 }
 
+static bool lengths_missing_locked(void) {
+	if (!current_is_book)
+		return false;
+	if (!part_count)
+		return file_length <= 0;
+	for (int i = 0; i < part_count; i++) {
+		if (parts[i].duration <= 0)
+			return true;
+	}
+	return false;
+}
+
+bool audiobook_lengths_missing(void) {
+	pthread_mutex_lock(&lock);
+	bool missing = lengths_missing_locked();
+	pthread_mutex_unlock(&lock);
+	return missing;
+}
+
+bool audiobook_working_out(void) {
+	pthread_mutex_lock(&lock);
+	bool working = lengths_working;
+	pthread_mutex_unlock(&lock);
+	return working;
+}
+
+bool audiobook_take_lengths_done(void) {
+	pthread_mutex_lock(&lock);
+	bool done = lengths_done;
+	lengths_done = false;
+	pthread_mutex_unlock(&lock);
+	return done;
+}
+
+typedef struct {
+	char book[512];
+	unsigned serial, card;
+	int count;
+	bool single;
+	part_t parts[];
+} lengths_job_t;
+
+static bool lengths_current_locked(const lengths_job_t *job) { return current_is_book && serial == job->serial && !strcmp(current_book, job->book) && audiobookdb_card_epoch() == job->card; }
+
+static void *lengths_thread_func(void *arg) {
+	lengths_job_t *job = arg;
+	thread_be_background("book lengths");
+	bool changed = false;
+	for (int i = 0; i < job->count; i++) {
+		pthread_mutex_lock(&lock);
+		bool valid = lengths_current_locked(job);
+		pthread_mutex_unlock(&lock);
+		if (!valid)
+			break;
+		if (job->parts[i].duration > 0)
+			continue;
+
+		const char *path = job->parts[i].path;
+		decoder_t *dec = decoder_open_info(path, decode_detect_format(path));
+		double seconds = 0;
+		if (dec) {
+			int rate = decoder_sample_rate(dec);
+			if (rate > 0)
+				seconds = (double)decoder_total_pcm_frames(dec) / rate;
+			decoder_close(dec);
+		}
+		pthread_mutex_lock(&lock);
+		valid = lengths_current_locked(job);
+		pthread_mutex_unlock(&lock);
+		if (!valid)
+			break;
+		if (!isfinite(seconds) || seconds <= 0)
+			continue;
+		// The card check also happens under db_lock, beside the write, so a
+		// close/open between this check and the write cannot cross cards.
+		if (!job->single && !audiobookdb_set_part_duration_on_card(path, seconds, job->card))
+			continue;
+		pthread_mutex_lock(&lock);
+		if (lengths_current_locked(job)) {
+			if (job->single)
+				file_length = seconds;
+			else if (parts[i].duration <= 0)
+				parts[i].duration = seconds;
+			changed = true;
+		}
+		pthread_mutex_unlock(&lock);
+	}
+	pthread_mutex_lock(&lock);
+	if (lengths_current_locked(job)) {
+		lengths_done = !lengths_missing_locked();
+		if (changed)
+			serial++;
+	}
+	lengths_working = false;
+	pthread_mutex_unlock(&lock);
+	free(job);
+	return NULL;
+}
+
+void audiobook_work_out_lengths(void) {
+	pthread_mutex_lock(&lock);
+	if (lengths_working || !lengths_missing_locked()) {
+		pthread_mutex_unlock(&lock);
+		return;
+	}
+	int count = part_count ? part_count : 1;
+	lengths_job_t *job = calloc(1, sizeof(*job) + (size_t)count * sizeof(*parts));
+	if (!job) {
+		pthread_mutex_unlock(&lock);
+		return;
+	}
+	snprintf(job->book, sizeof(job->book), "%s", current_book);
+	job->serial = serial;
+	job->card = audiobookdb_card_epoch();
+	job->count = count;
+	job->single = part_count == 0;
+	if (job->single)
+		snprintf(job->parts[0].path, sizeof(job->parts[0].path), "%s", current_path);
+	else
+		memcpy(job->parts, parts, (size_t)count * sizeof(*parts));
+	lengths_done = false;
+	lengths_working = true;
+	pthread_t thread;
+	int rc = pthread_create(&thread, NULL, lengths_thread_func, job);
+	if (rc != 0) {
+		lengths_working = false;
+		free(job);
+	} else {
+		pthread_detach(thread);
+	}
+	pthread_mutex_unlock(&lock);
+}
+
 double audiobook_part_duration(int index) {
 	pthread_mutex_lock(&lock);
 	double duration = index >= 0 && index < part_count ? parts[index].duration : 0;
@@ -743,7 +881,12 @@ bool audiobook_step_target(double seconds, int direction, audiobook_step_t *out)
 	return ok;
 }
 
-unsigned audiobook_serial(void) { return serial; }
+unsigned audiobook_serial(void) {
+	pthread_mutex_lock(&lock);
+	unsigned value = serial;
+	pthread_mutex_unlock(&lock);
+	return value;
+}
 
 double audiobook_saved_position(const char *filepath) {
 	if (!filepath || !filepath[0]) {

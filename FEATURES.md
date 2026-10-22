@@ -63,7 +63,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Cover Flow** - swipe up from the bottom edge of the Music page to flip through your albums.
 - **Queue**, **Details** (format, bitrate, size, ReplayGain and more) and **Show album** from the menu.
 - **Chapters** and **speed** when an audiobook or a podcast is playing.
-- **Whole-book progress** - in audiobooks, see the book percentage and time left at the current speed; unknown part lengths are shown honestly.
+- **Whole-book progress** - in audiobooks, see the book percentage and time left at the current speed; unknown part lengths are shown honestly. Choose Work out book length in the book menu to resolve missing lengths in the background.
 - **Chapter row** when an audiobook has chapters - previous/next chapter buttons, the chapter's number and title; tap the text to open the chapter list.
 - **Sleep timer** - see the countdown on Now Playing and tap it to set the timer. For audiobooks, you can tap the moon even when the timer is off.
 

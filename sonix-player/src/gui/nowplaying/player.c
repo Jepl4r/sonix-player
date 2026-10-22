@@ -4921,6 +4921,11 @@ static void book_summary_action(void *user) {
 	audiobookextras_open_current_summary();
 }
 
+static void book_work_out_length_action(void *user) {
+	(void)user;
+	audiobook_work_out_lengths();
+}
+
 // The overflow button: the book's menu on a book, the episode queue on a
 // podcast, the track menu on anything else.
 static void more_btn_event_cb(lv_event_t *e) {
@@ -4930,8 +4935,12 @@ static void more_btn_event_cb(lv_event_t *e) {
 			{"audiobook_add_bookmark", book_add_bookmark_action, NULL},
 			{"bookmarks", book_bookmarks_action, NULL},
 			{"audiobook_summary", book_summary_action, NULL},
+			{"audiobook_work_out_length", book_work_out_length_action, NULL},
 		};
-		popover_show(lv_event_get_current_target(e), BOOK_ITEMS, (int)(sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0])));
+		int count = (int)(sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0]));
+		if (!audiobook_lengths_missing() || audiobook_working_out())
+			count--;
+		popover_show(lv_event_get_current_target(e), BOOK_ITEMS, count);
 		return;
 	}
 	// A podcast has no chapters: it has episodes, and the episodes are already
@@ -5025,6 +5034,8 @@ static void smooth_timer_cb(lv_timer_t *timer) {
 
 static void progress_slider_timer_cb(lv_timer_t *timer) {
 	(void)timer;
+	if (audiobook_take_lengths_done())
+		toast_plain("audiobook_length_done");
 	apply_cover_id_result(); // "is the new track's picture the one already up?"
 	apply_cover_result();	 // artwork the worker has finished since last tick
 	update_progress();
