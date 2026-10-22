@@ -102,7 +102,8 @@ static void section_toggled_cb(lv_event_t *e) {
 	}
 }
 
-// Named with the section in front, "Streaming → Tidal".
+// Named with the section in front, "Streaming -> Tidal"; the language file
+// says how the two are joined.
 static void add_section_row(lv_obj_t *container, const char *section, const char *label) {
 	if (section_row_count >= MAX_SECTION_ROWS) {
 		return;
@@ -114,7 +115,7 @@ static void add_section_row(lv_obj_t *container, const char *section, const char
 	if (homescreen_section_tile_visible(section, label)) {
 		lv_obj_add_state(row->toggle, LV_STATE_CHECKED);
 	}
-	lv_label_set_text_fmt(lv_obj_get_child(row->card, 0), "%s → %s", tr(section), tr(label));
+	lv_label_set_text_fmt(lv_obj_get_child(row->card, 0), tr("homescreen_section_tile"), tr(section), tr(label));
 }
 
 // ---------------------------------------------------------------------------
