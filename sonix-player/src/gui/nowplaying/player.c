@@ -674,7 +674,7 @@ static void audiobook_seek_by(double delta, const device_state_t *state) {
 	double length = state->progress_total_secs > 0 ? state->progress_total_secs : current_total_length;
 	double target = audiobook_clamp_seek(state->progress_current_secs + delta, length);
 
-	device_state_seek(target);
+	device_state_seek_skip(target);
 }
 
 // Applies a playback status to the play/pause button and the progress timer.
@@ -2504,7 +2504,7 @@ static void lyrics_tap_cb(lv_event_t *e) {
 			if (ms < 0) {
 				return;
 			}
-			device_state_seek((double)ms / 1000.0);
+			device_state_seek_skip((double)ms / 1000.0);
 			// Back to following at once: the finger chose this line.
 			lyrics_user_until = 0;
 			lyrics_centred = false;

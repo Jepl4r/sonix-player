@@ -9,6 +9,6 @@ awk '/^static (double current_chapter_end|bool audiobook_auto_stop|void audioboo
  "$repo/sonix-player/src/gui/nowplaying/player.c" > "$build/gui-player-navigation.h"
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$build" -I"$repo/tests/stubs" -I"$repo/sonix-player" \
  "$repo/tests/gui_book_navigation_test.c" -Wl,--gc-sections -lpthread -o "$build/test"
-for scenario in ${@:-failed-bookmark outgoing-floor failed-chapter library-resume}; do
+for scenario in ${@:-failed-bookmark outgoing-floor failed-chapter library-resume skip-origin}; do
  "$build/test" "$scenario"
 done

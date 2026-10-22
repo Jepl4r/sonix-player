@@ -75,6 +75,24 @@ int main(int argc, char **argv) {
     puts("PASS chapter-failed-load-keeps-floor-and-origin");
     return 0;
   }
+  if (!strcmp(argv[1], "skip-origin")) {
+    player_step_chapter(1);
+    assert(jump_marks == before + 1 && origin_seconds == 123);
+    char before_file[512];
+    snprintf(before_file, sizeof(before_file), "%s", origin_file);
+    device_state_t state;
+    device_state_get(&state);
+    floor_armed = true;
+    suppress_rewind = false;
+    unsigned serial = device_state_seek_serial();
+    audiobook_seek_by(10, &state);
+    assert(jump_marks == before + 1 && origin_seconds == 123 &&
+           !strcmp(origin_file, before_file));
+    assert(!floor_armed && suppress_rewind &&
+           device_state_seek_serial() == serial + 1 && sought == 10);
+    puts("PASS skip-after-chapter-keeps-origin");
+    return 0;
+  }
   if (!strcmp(argv[1], "outgoing-floor")) {
     snprintf(open_book, sizeof(open_book), "other-book");
     mark_pick_cb(NULL);

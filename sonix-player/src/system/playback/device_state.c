@@ -1841,7 +1841,7 @@ static unsigned seek_serial;
 
 unsigned device_state_seek_serial(void) { return __atomic_load_n(&seek_serial, __ATOMIC_RELAXED); }
 
-static void seek_book_position(double seconds) {
+static void seek_book_position(double seconds, bool mark_jump) {
 	abandon_book_restore();
 	audiobook_clear_rewind_floor();
 	invalidate_sleep_checkpoint(false);
@@ -1862,7 +1862,8 @@ static void seek_book_position(double seconds) {
 		seconds = audiobook_clamp_seek(seconds, length);
 		char file[512];
 		audio_get_current_file(file, sizeof(file));
-		audiobook_mark_jump(file, current);
+		if (mark_jump)
+			audiobook_mark_jump(file, current);
 	}
 
 	// If playback already ended, restart the current track first so seeking
@@ -1881,7 +1882,13 @@ static void seek_book_position(double seconds) {
 
 void device_state_seek(double seconds) {
 	pthread_mutex_lock(&book_transition_lock);
-	seek_book_position(seconds);
+	seek_book_position(seconds, true);
+	pthread_mutex_unlock(&book_transition_lock);
+}
+
+void device_state_seek_skip(double seconds) {
+	pthread_mutex_lock(&book_transition_lock);
+	seek_book_position(seconds, false);
 	pthread_mutex_unlock(&book_transition_lock);
 }
 
