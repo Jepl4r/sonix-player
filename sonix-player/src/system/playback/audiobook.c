@@ -392,6 +392,10 @@ int audiobook_rewind_seconds(void) {
 
 void audiobook_set_rewind_seconds(int seconds) { config_set_int("audiobook", "rewind_seconds", seconds); }
 
+static char jump_file[512];
+static char jump_book[512];
+static double jump_seconds;
+
 static char rewind_floor_file[512];
 static char rewind_floor_book[512];
 static double rewind_floor_seconds;
@@ -458,6 +462,7 @@ void audiobook_track_changed(const char *filepath) {
 
 	if (!filepath || !filepath[0]) {
 		rewind_floor_file[0] = '\0';
+		jump_file[0] = '\0';
 		pthread_mutex_unlock(&lock);
 		return;
 	}
@@ -465,10 +470,13 @@ void audiobook_track_changed(const char *filepath) {
 	char book[512];
 	if (!audiobookdb_book_for_file(filepath, book, sizeof(book))) {
 		rewind_floor_file[0] = '\0';
+		jump_file[0] = '\0';
 		pthread_mutex_unlock(&lock);
 		return;
 	}
 
+	if (strcmp(book, jump_book) != 0)
+		jump_file[0] = '\0';
 	if (strcmp(book, rewind_floor_book) != 0)
 		rewind_floor_file[0] = '\0';
 	snprintf(current_path, sizeof(current_path), "%s", filepath);
@@ -1099,5 +1107,32 @@ void audiobook_place_label(double seconds, char *out, size_t size) {
 	if (part_index >= 0 && part_index < part_count) {
 		snprintf(out, size, "%s", parts[part_index].title);
 	}
+	pthread_mutex_unlock(&lock);
+}
+
+void audiobook_mark_jump(const char *file, double seconds) {
+	pthread_mutex_lock(&lock);
+	if (current_is_book && file && strcmp(file, current_path) == 0 && isfinite(seconds) && seconds >= 0) {
+		snprintf(jump_file, sizeof(jump_file), "%s", file);
+		snprintf(jump_book, sizeof(jump_book), "%s", current_book);
+		jump_seconds = seconds;
+	}
+	pthread_mutex_unlock(&lock);
+}
+bool audiobook_jump_origin(char *file_out, size_t size, double *seconds_out) {
+	pthread_mutex_lock(&lock);
+	bool found = current_is_book && jump_file[0] && strcmp(jump_book, current_book) == 0;
+	if (found) {
+		if (file_out && size)
+			snprintf(file_out, size, "%s", jump_file);
+		if (seconds_out)
+			*seconds_out = jump_seconds;
+	}
+	pthread_mutex_unlock(&lock);
+	return found;
+}
+void audiobook_clear_jump(void) {
+	pthread_mutex_lock(&lock);
+	jump_file[0] = '\0';
 	pthread_mutex_unlock(&lock);
 }

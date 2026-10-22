@@ -27,6 +27,7 @@
 #include <stdlib.h>
 #include <string.h>
 #include <time.h>
+#include <unistd.h>
 
 // Cache of the currently loaded track's metadata, refreshed whenever a new
 // file is loaded via device_state_play_file(). Only ever touched from the
@@ -1797,6 +1798,9 @@ void device_state_seek(double seconds) {
 		double current = 0;
 		audio_get_progress(&current, &length);
 		seconds = audiobook_clamp_seek(seconds, length);
+		char file[512];
+		audio_get_current_file(file, sizeof(file));
+		audiobook_mark_jump(file, current);
 	}
 
 	// If playback already ended, restart the current track first so seeking
@@ -1810,6 +1814,62 @@ void device_state_seek(double seconds) {
 	if (book) {
 		audiobook_note_position(seconds, length, true);
 	}
+}
+
+bool device_state_seek_book_part(const char *file, double seconds) {
+	char book[512], current[512];
+	if (!file || !audiobook_current_book(book, sizeof(book), current, sizeof(current)))
+		return false;
+	if (strcmp(file, current) != 0) {
+		if (access(file, R_OK) != 0)
+			return false;
+		int count = audiobook_part_count(), index = -1;
+		char **paths = calloc((size_t)count, sizeof(char *));
+		if (!paths)
+			return false;
+		int filled = 0;
+		for (int i = 0; i < count; i++) {
+			char path[512];
+			if (!audiobook_part(i, NULL, 0, path, sizeof(path)) || !(paths[filled] = strdup(path)))
+				break;
+			if (strcmp(path, file) == 0)
+				index = i;
+			filled++;
+		}
+		bool loaded = false;
+		if (filled == count && index >= 0) {
+			bool playing = audio_get_status() == AUDIO_STATUS_PLAYING;
+			loaded = playing ? device_state_play_list_ordered((const char *const *)paths, count, index)
+							 : device_state_load_list_ordered_paused((const char *const *)paths, count, index);
+		}
+		for (int i = 0; i < filled; i++)
+			free(paths[i]);
+		free(paths);
+		if (!loaded)
+			return false;
+	}
+	// The caller marks before a cross-file load; this seek must not replace it.
+	supersede_book_restore();
+	if (audio_get_status() == AUDIO_STATUS_PAUSED)
+		audiobook_suppress_rewind_once();
+	__atomic_fetch_add(&seek_serial, 1, __ATOMIC_RELAXED);
+	scrub_cancel();
+	double current_seconds = 0, total = 0;
+	audio_get_progress(&current_seconds, &total);
+	seconds = audiobook_clamp_seek(seconds, total);
+	audio_seek(seconds);
+	audiobook_note_position(seconds, total, true);
+	return true;
+}
+
+bool device_state_back_before_jump(void) {
+	char file[512];
+	double seconds;
+	if (!audiobook_jump_origin(file, sizeof(file), &seconds) || !device_state_seek_book_part(file, seconds))
+		return false;
+	audiobook_clear_jump();
+	audiobook_clear_rewind_floor();
+	return true;
 }
 
 void device_state_pause_book_at(double seconds) {

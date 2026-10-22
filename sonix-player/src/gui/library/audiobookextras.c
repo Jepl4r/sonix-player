@@ -166,6 +166,13 @@ static void mark_pick_cb(lv_event_t *e) {
 	if (audiobook_current_book(book, sizeof(book), file, sizeof(file)) && strcmp(book, open_book) == 0 && strcmp(file, mark->file) == 0) {
 		device_state_seek(mark->seconds);
 		player_refresh_now_playing();
+	} else if (book[0] && strcmp(book, open_book) == 0) {
+		double current = 0, total = 0;
+		audio_get_progress(&current, &total);
+		audiobook_mark_jump(file, current);
+		if (!device_state_seek_book_part(mark->file, mark->seconds))
+			return;
+		player_refresh_now_playing();
 	} else {
 		audiobooks_play_at(open_book, mark->file, mark->seconds);
 	}

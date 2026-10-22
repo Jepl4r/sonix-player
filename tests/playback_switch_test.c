@@ -114,3 +114,6 @@ void audiobook_clear_rewind_floor(void) {}
 
 double audiobook_take_boot_break(void) { return 0; }
 bool audiobook_take_rewind_suppression(void) { return false; }
+
+void audio_get_current_file(char *out, size_t size) { if (size) out[0] = 0; }
+void audiobook_mark_jump(const char *file, double seconds) {}

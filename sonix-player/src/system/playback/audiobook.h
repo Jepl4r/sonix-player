@@ -222,4 +222,9 @@ bool audiobook_current_book(char *book_out, size_t book_size, char *file_out, si
 // chapter's title, else the part's, else "".
 void audiobook_place_label(double seconds, char *out, size_t size);
 
+// One return point for manual navigation in the loaded book.
+void audiobook_mark_jump(const char *file, double seconds);
+bool audiobook_jump_origin(char *file_out, size_t size, double *seconds_out);
+void audiobook_clear_jump(void);
+
 #endif /* AUDIOBOOK_H */

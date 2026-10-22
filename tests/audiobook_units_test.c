@@ -849,6 +849,26 @@ static void rewind_floor_and_boot(void) {
 	puts("PASS audiobook-rewind-floor-and-boot");
 }
 
+static void jump_origin_lifecycle(void) {
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/book/0.mp3");
+	char file[512];
+	double seconds;
+	assert(!audiobook_jump_origin(file, sizeof(file), &seconds));
+	audiobook_mark_jump("/book/0.mp3", 300);
+	assert(audiobook_jump_origin(file, sizeof(file), &seconds));
+	assert(strcmp(file, "/book/0.mp3") == 0 && seconds == 300);
+	audiobook_mark_jump("/book/0.mp3", 400);
+	audiobook_track_changed("/book/1.mp3");
+	assert(audiobook_jump_origin(file, sizeof(file), &seconds) && seconds == 400);
+	audiobook_track_changed("/other.m4b");
+	assert(!audiobook_jump_origin(file, sizeof(file), &seconds));
+	audiobook_mark_jump("/other.m4b", 12);
+	audiobook_clear_jump();
+	assert(!audiobook_jump_origin(file, sizeof(file), &seconds));
+	puts("PASS audiobook-jump-origin-lifecycle");
+}
+
 int main(void) {
 	rewind_break_rule();
 	rewind_long_setting();
@@ -877,5 +897,6 @@ int main(void) {
 	work_out_single_length();
 	work_out_cancel();
 	rewind_floor_and_boot();
+	jump_origin_lifecycle();
   return 0;
 }

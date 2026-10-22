@@ -7,12 +7,36 @@ static int test_clock_gettime(clockid_t clock, struct timespec *ts) {
 	ts->tv_nsec = (test_now_ms % 1000) * 1000000;
 	return 0;
 }
+#define access test_access
 #define clock_gettime test_clock_gettime
 #include "../sonix-player/src/system/playback/device_state.c"
 #undef clock_gettime
+#undef access
+static bool navigation_readable = true;
+int test_access(const char *path, int mode) { return navigation_readable ? 0 : -1; }
 static audio_status_t test_status = AUDIO_STATUS_PLAYING;
 static double sought = -1;
+static int jump_marks;
+static bool navigation_test;
+static char origin_file[512];
+static double origin_seconds;
+
 static double current_position = 123;
+void audiobook_mark_jump(const char *file, double seconds) {
+	assert(seconds == current_position);
+	jump_marks++;
+	snprintf(origin_file, sizeof(origin_file), "%s", file);
+	origin_seconds = seconds;
+}
+bool audiobook_jump_origin(char *file, size_t size, double *seconds) {
+	if (!origin_file[0])
+		return false;
+	snprintf(file, size, "%s", origin_file);
+	*seconds = origin_seconds;
+	return true;
+}
+void audiobook_clear_jump(void) { origin_file[0] = 0; }
+
 static bool crossing;
 static bool floor_armed;
 static bool ordered_restore;
@@ -32,12 +56,18 @@ static bool loaded;
 static bool fail_load;
 static bool playing;
 static char selected[512] = "a.mp3";
+bool audiobook_current_book(char *book, size_t bs, char *file, size_t fs) {
+	snprintf(book, bs, "book");
+	snprintf(file, fs, "%s", selected);
+	return book_loaded;
+}
 bool audiobook_is_playing(void) { return book_loaded; }
 void audio_get_progress(double *current, double *total) {
   *current = current_position;
   *total = 1000;
 }
 void audiobook_note_position(double current, double total, bool force) {
+  if (navigation_test) { assert(force); saved = true; current_position = current; return; }
   if (automatic_stop_test) {
     assert(current == 100 && total == 0 && force && floor_armed);
     return;
@@ -65,12 +95,14 @@ bool playlist_current_path(char *out, size_t out_size) {
 }
 int audio_play_paused(const char *path, double position) {
   assert(saved);
-  assert(strcmp(path, crossing ? "a.mp3" : "b.mp3") == 0 && position == 0);
+  assert((navigation_test || strcmp(path, crossing ? "a.mp3" : "b.mp3") == 0) && position == 0);
+  if (navigation_test) test_status = AUDIO_STATUS_PAUSED;
   loaded = true;
   return 0;
 }
 int audio_play(const char *path) {
-	assert(playing && saved && strcmp(path, "b.mp3") == 0);
+	assert(saved && (navigation_test || (playing && strcmp(path, "b.mp3") == 0)));
+	if (navigation_test) test_status = AUDIO_STATUS_PLAYING;
 	loaded = true;
 	return 0;
 }
@@ -107,6 +139,41 @@ int main(void) {
 	assert(boot_gap == 0);
 	suppress_rewind = false;
 	rewind_after_break();
+	navigation_test = true;
+	crossing = false;
+	test_status = AUDIO_STATUS_PAUSED;
+	current_position = 123;
+	snprintf(selected, sizeof(selected), "a.mp3");
+	audiobook_mark_jump("a.mp3", 123);
+	assert(device_state_seek_book_part("b.mp3", 50));
+	assert(test_status == AUDIO_STATUS_PAUSED && sought == 50 && saved);
+	assert(strcmp(origin_file, "a.mp3") == 0 && origin_seconds == 123);
+	navigation_readable = false;
+	assert(!device_state_back_before_jump());
+	assert(strcmp(origin_file, "a.mp3") == 0 && origin_seconds == 123);
+	navigation_readable = true;
+	fail_load = true;
+	assert(!device_state_back_before_jump());
+	assert(strcmp(origin_file, "a.mp3") == 0 && origin_seconds == 123);
+	fail_load = false;
+	floor_armed = true;
+	assert(device_state_back_before_jump());
+	assert(test_status == AUDIO_STATUS_PAUSED && sought == 123 && saved);
+	assert(!origin_file[0] && !floor_armed);
+	assert(suppress_rewind);
+	puts("PASS playback-jump-cross-part-paused-return-retry");
+	test_status = AUDIO_STATUS_PLAYING;
+	current_position = 55;
+	snprintf(selected, sizeof(selected), "b.mp3");
+	audiobook_mark_jump("b.mp3", 55);
+	assert(device_state_seek_book_part("a.mp3", 10));
+	assert(device_state_back_before_jump());
+	assert(test_status == AUDIO_STATUS_PLAYING && sought == 55 && !origin_file[0]);
+	device_state_seek(100);
+	assert(origin_seconds == 55 && jump_marks > 0);
+	assert(device_state_back_before_jump());
+	assert(test_status == AUDIO_STATUS_PLAYING && sought == 55 && !origin_file[0]);
+	puts("PASS playback-jump-playing-and-same-file-return");
 	return 0;
 }
 void audio_set_speed(double speed) {}
@@ -251,8 +318,14 @@ static void rewind_after_break(void) {
 	device_state_get(&state);
 	sought = -1;
 	// A bookmark/slider seek while paused suppresses exactly the next rewind.
+	book_loaded = true;
+	snprintf(selected, sizeof(selected), "%s", "a.mp3");
+	int before_marks = jump_marks;
+	device_state_seek(123);
+	assert(jump_marks == before_marks + 1);
 	book_loaded = false;
 	device_state_seek(321);
+	assert(jump_marks == before_marks + 1);
 	book_loaded = true;
 	assert(sought == 321);
 	assert(device_state_toggle_play_pause() == AUDIO_STATUS_PLAYING);
@@ -293,9 +366,11 @@ static void rewind_after_break(void) {
 	floor_armed = true;
 	test_status = AUDIO_STATUS_PLAYING;
 	unsigned serial = device_state_seek_serial();
+	int marks_before_automatic = jump_marks;
 	device_state_pause_book_at(100);
 	assert(sought == 100 && floor_armed && test_status == AUDIO_STATUS_PAUSED);
 	assert(device_state_seek_serial() == serial);
+	assert(jump_marks == marks_before_automatic);
 	puts("PASS playback-automatic-chapter-stop-preserves-floor");
 }
 

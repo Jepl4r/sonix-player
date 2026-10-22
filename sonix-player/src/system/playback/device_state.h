@@ -180,6 +180,9 @@ bool device_state_take_completion(void);
 audio_status_t device_state_toggle_play_pause(void);
 
 void device_state_seek(double seconds);
+// Explicit navigation within the loaded book, retaining its playback choice.
+bool device_state_seek_book_part(const char *file, double seconds);
+bool device_state_back_before_jump(void);
 // Automatic chapter boundary stop preserves rewind protection and manual seek serial.
 void device_state_pause_book_at(double seconds);
 // Generation of explicit seeks across input and GUI threads, including slider and scrub commits.

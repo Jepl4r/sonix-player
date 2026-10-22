@@ -4843,6 +4843,7 @@ void player_step_chapter(int direction) {
 	if (target.kind == AUDIOBOOK_STEP_SEEK) {
 		device_state_seek(target.seconds);
 	} else if (target.kind == AUDIOBOOK_STEP_PART) {
+		audiobook_mark_jump(state.current_file, state.progress_current_secs);
 		if (!chapter_load_part(target.part, state.status == AUDIO_STATUS_PLAYING)) {
 			return; // the part still loaded keeps its place
 		}
@@ -4936,6 +4937,14 @@ static void book_bookmarks_action(void *user) {
 	audiobookextras_open_current_bookmarks();
 }
 
+static void book_back_before_jump_action(void *user) {
+	(void)user;
+	if (device_state_back_before_jump()) {
+		player_refresh_now_playing();
+		update_progress();
+	}
+}
+
 static void book_summary_action(void *user) {
 	(void)user;
 	audiobookextras_open_current_summary();
@@ -4955,11 +4964,14 @@ static void more_btn_event_cb(lv_event_t *e) {
 			{"audiobook_add_bookmark", book_add_bookmark_action, NULL},
 			{"bookmarks", book_bookmarks_action, NULL},
 			{"audiobook_summary", book_summary_action, NULL},
+			{"audiobook_back_before_jump", book_back_before_jump_action, NULL},
 			{"audiobook_work_out_length", book_work_out_length_action, NULL},
 		};
 		popover_item_t items[sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0])];
 		int count = 0;
 		for (size_t i = 0; i < sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0]); i++) {
+			if (BOOK_ITEMS[i].action == book_back_before_jump_action && !audiobook_jump_origin(NULL, 0, NULL))
+				continue;
 			if (BOOK_ITEMS[i].action == book_work_out_length_action && (!audiobook_lengths_missing() || audiobook_working_out()))
 				continue;
 			items[count++] = BOOK_ITEMS[i];
