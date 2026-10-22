@@ -169,6 +169,12 @@ void audiobookdb_save_position(const char *book_path, const char *file, double s
 void audiobookdb_queue_position(const char *book_path, const char *file, double seconds);
 bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file_size, double *seconds_out);
 
+// The speed this book was last played at, in permille, or 0 when it has none.
+// Kept in the book's row beside its position, and carried through a rescan the
+// same way. The write is synchronous: one row, once per pick.
+int audiobookdb_get_speed(const char *book_path);
+void audiobookdb_set_speed(const char *book_path, int permille);
+
 // Which book a file belongs to, copying the book's path into `book_out`: the
 // file itself for a single-file book, the folder for a part of a folder book.
 // False for a file that is no book's.

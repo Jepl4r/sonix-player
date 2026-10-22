@@ -98,6 +98,25 @@ int main(int argc, char **argv) {
   }
   char dbpath[768], book[512], a[768], b[768];
   snprintf(dbpath, sizeof(dbpath), "%s/test.db", argv[2]);
+  if (!strcmp(argv[1], "speed-column")) {
+    // A card indexed before there was a speed column, as version 4 wrote it.
+    sqlite3 *old;
+    assert(sqlite3_open(dbpath, &old) == SQLITE_OK);
+    assert(sqlite3_exec(
+               old,
+               "CREATE TABLE AUDIOBOOK_TABLE("
+               "path TEXT PRIMARY KEY, name TEXT COLLATE NOCASE, size INT, "
+               "mtime INT, last_played INT DEFAULT 0, resume_file TEXT, "
+               "resume_pos REAL, author TEXT DEFAULT '', series TEXT DEFAULT "
+               "'', series_part REAL, added INT DEFAULT 0, folder INT DEFAULT "
+               "0, summary TEXT);"
+               "PRAGMA user_version=4;"
+               "INSERT INTO "
+               "AUDIOBOOK_TABLE(path,name,last_played,resume_file,resume_pos) "
+               "VALUES('A','A',1,'A.mp3',1900)",
+               NULL, NULL, NULL) == SQLITE_OK);
+    sqlite3_close(old);
+  }
   assert(audiobookdb_open(dbpath));
   if (!strcmp(argv[1], "cancel")) {
     seed();
@@ -166,6 +185,17 @@ int main(int argc, char **argv) {
     assert(is_disc_folder("ДИСК-3"));
     assert(!is_disc_folder("Дискуссия 1"));
     assert(is_disc_folder("CD 1"));
+  } else if (!strcmp(argv[1], "speed-column")) {
+    // The column is there, empty, and nothing else about the card has moved:
+    // no rescan asked for, the position where it was.
+    assert(scalar("SELECT COALESCE(speed,0) FROM AUDIOBOOK_TABLE WHERE "
+                  "path='A'") == 0);
+    assert(audiobookdb_get_speed("A") == 0);
+    assert(scalar("SELECT resume_pos FROM AUDIOBOOK_TABLE WHERE path='A'") ==
+           1900);
+    assert(scalar("PRAGMA user_version") == 4);
+    assert(!audiobookdb_needs_rescan());
+    assert(audiobookdb_count() == 1);
   } else if (!strcmp(argv[1], "scan-error")) {
     seed();
     scan_now("/does/not/exist/sonix-test");
@@ -218,6 +248,7 @@ int main(int argc, char **argv) {
       assert(audiobookdb_count() == 2);
     } else if (!strcmp(argv[1], "publish-failure")) {
       seed();
+      audiobookdb_set_speed("A", 1250);
       exec("INSERT INTO AUDIOBOOK_PARTS VALUES('A.mp3','A',0,'A')");
       sqlite3_set_authorizer(db, deny_publish, NULL);
       scan_now(argv[2]);
@@ -226,6 +257,20 @@ int main(int argc, char **argv) {
       assert(scalar("SELECT resume_pos FROM AUDIOBOOK_TABLE WHERE path='A'") ==
              1800);
       assert(scalar("SELECT count(*) FROM AUDIOBOOK_PARTS") == 1);
+      assert(audiobookdb_get_speed("A") == 1250);
+    } else if (!strcmp(argv[1], "speed-kept")) {
+      scan_now(argv[2]);
+      assert(audiobookdb_get_speed(book) == 0);
+      audiobookdb_save_position(book, b, 1900);
+      audiobookdb_set_speed(book, 1250);
+      assert(audiobookdb_get_speed(book) == 1250);
+      scan_now(argv[2]);
+      assert(audiobookdb_count() == 1);
+      assert(audiobookdb_get_speed(book) == 1250);
+      char file[512];
+      double seconds = 0;
+      assert(audiobookdb_get_position(book, file, sizeof(file), &seconds));
+      assert(seconds == 1900 && !strcmp(file, b));
     } else if (!strcmp(argv[1], "prune")) {
       seed();
       scan_now(argv[2]);

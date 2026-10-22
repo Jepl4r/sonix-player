@@ -139,7 +139,7 @@ bool audiobookdb_open(const char *db_path) {
 		 "path TEXT PRIMARY KEY, name TEXT COLLATE NOCASE, size INT, mtime INT,"
 		 "last_played INT DEFAULT 0, resume_file TEXT, resume_pos REAL,"
 		 "author TEXT DEFAULT '', series TEXT DEFAULT '', series_part REAL, added INT DEFAULT 0,"
-		 "folder INT DEFAULT 0, summary TEXT)");
+		 "folder INT DEFAULT 0, summary TEXT, speed INT DEFAULT 0)");
 
 	// The columns a database written by an older scan does not have. They fail
 	// harmlessly once they are there, and must run after the CREATE, or on a
@@ -152,6 +152,9 @@ bool audiobookdb_open(const char *db_path) {
 	exec_quiet("ALTER TABLE AUDIOBOOK_TABLE ADD COLUMN added INT DEFAULT 0");
 	exec_quiet("ALTER TABLE AUDIOBOOK_TABLE ADD COLUMN folder INT DEFAULT 0");
 	exec_quiet("ALTER TABLE AUDIOBOOK_TABLE ADD COLUMN summary TEXT");
+	// Without a new user_version: an older card gains the column empty and keeps
+	// its index, rather than being rescanned at first start for nothing.
+	exec_quiet("ALTER TABLE AUDIOBOOK_TABLE ADD COLUMN speed INT DEFAULT 0");
 
 	// The files of the folder books, a row each, in the book's order.
 	exec("CREATE TABLE IF NOT EXISTS AUDIOBOOK_PARTS(path TEXT PRIMARY KEY, book TEXT, idx INT, title TEXT)");
@@ -743,6 +746,41 @@ bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file
 
 	pthread_mutex_unlock(&db_lock);
 	return found;
+}
+
+int audiobookdb_get_speed(const char *book_path) {
+	if (!book_path || !book_path[0]) {
+		return 0;
+	}
+
+	pthread_mutex_lock(&db_lock);
+	int permille = 0;
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "SELECT speed FROM AUDIOBOOK_TABLE WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_text(stmt, 1, book_path, -1, SQLITE_TRANSIENT);
+		if (sqlite3_step(stmt) == SQLITE_ROW) {
+			permille = sqlite3_column_int(stmt, 0); // NULL, a book never given one, reads as 0
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return permille;
+}
+
+void audiobookdb_set_speed(const char *book_path, int permille) {
+	if (!book_path || !book_path[0]) {
+		return;
+	}
+
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && sqlite3_prepare_v2(db, "UPDATE AUDIOBOOK_TABLE SET speed=? WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_int(stmt, 1, permille);
+		sqlite3_bind_text(stmt, 2, book_path, -1, SQLITE_TRANSIENT);
+		sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
 }
 
 // One or two primary-key lookups per track change, with nothing cached to go
@@ -1808,7 +1846,8 @@ static bool publish_scan(void) {
 	bool ok = exec("UPDATE scan_books SET"
 				   " last_played=COALESCE((SELECT last_played FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path),0),"
 				   " resume_file=(SELECT resume_file FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path),"
-				   " resume_pos=(SELECT resume_pos FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path)") &&
+				   " resume_pos=(SELECT resume_pos FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path),"
+				   " speed=(SELECT speed FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path)") &&
 			  exec("DELETE FROM AUDIOBOOK_TABLE")
 		&& exec("INSERT INTO AUDIOBOOK_TABLE SELECT * FROM scan_books")
 		&& exec("DELETE FROM AUDIOBOOK_PARTS")

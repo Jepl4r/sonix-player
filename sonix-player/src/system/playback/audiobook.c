@@ -52,6 +52,7 @@ static int part_index;
 static time_t last_save;
 static double last_saved_position;
 static bool finished_marked; // this book has already been put on the shelf
+static int book_speed;		 // the loaded book's own speed in permille, 0 for none
 
 static void clear_locked(void) {
 	free(chapters);
@@ -200,9 +201,20 @@ void audiobook_set_skip_forward(int seconds) { config_set_int("audiobook", "skip
 // nothing here caches it. They are read when something is about to act on
 // them, which on this device means a few times a second at worst.
 
+// Except the speed, which a book can have of its own, read once when the book
+// loads. Without one the setting applies. A pick is both: the book's from now
+// on, and the setting for every book that has never been given one.
+static bool speed_valid(long permille) { return permille >= 250 && permille <= 4000; }
+
 int audiobook_speed_permille(void) {
+	pthread_mutex_lock(&lock);
+	int own = current_is_book ? book_speed : 0;
+	pthread_mutex_unlock(&lock);
+	if (own) {
+		return own;
+	}
 	long value = config_get_int("audiobook", "speed", AUDIOBOOK_SPEED_NORMAL);
-	if (value < 250 || value > 4000) {
+	if (!speed_valid(value)) {
 		value = AUDIOBOOK_SPEED_NORMAL;
 	}
 	return (int)value;
@@ -211,10 +223,22 @@ int audiobook_speed_permille(void) {
 double audiobook_speed(void) { return (double)audiobook_speed_permille() / 1000.0; }
 
 void audiobook_set_speed_permille(int permille) {
-	if (permille < 250 || permille > 4000) {
+	if (!speed_valid(permille)) {
 		permille = AUDIOBOOK_SPEED_NORMAL;
 	}
 	config_set_int("audiobook", "speed", permille);
+
+	char book[512] = "";
+	pthread_mutex_lock(&lock);
+	if (current_is_book) {
+		book_speed = permille;
+		snprintf(book, sizeof(book), "%s", current_book);
+	}
+	pthread_mutex_unlock(&lock);
+	// Outside `lock`: a write to the card is no reason to hold up the player.
+	if (book[0]) {
+		audiobookdb_set_speed(book, permille);
+	}
 }
 
 bool audiobook_stop_at_chapter_end(void) { return config_get_int("audiobook", "stop_chapter_end", 0) != 0; }
@@ -344,6 +368,8 @@ void audiobook_track_changed(const char *filepath) {
 		return;
 	}
 
+	char previous_book[512];
+	snprintf(previous_book, sizeof(previous_book), "%s", current_book);
 	clear_locked();
 	serial++;
 
@@ -364,6 +390,13 @@ void audiobook_track_changed(const char *filepath) {
 	last_save = 0;
 	last_saved_position = -1;
 	finished_marked = false;
+
+	// Asked once per book, not per part: a folder book is the same book from
+	// one file to the next, and a pick while it plays updates both copies.
+	if (strcmp(book, previous_book) != 0) {
+		int stored = audiobookdb_get_speed(book);
+		book_speed = speed_valid(stored) ? stored : 0;
+	}
 
 	if (strcmp(book, filepath) != 0) {
 		audiobookdb_parts_for_each(book, add_part, NULL);

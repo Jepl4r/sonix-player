@@ -1,13 +1,46 @@
 #include "../sonix-player/src/system/playback/audiobook.c"
 #include <assert.h>
 
-// What audiobook.c links against, none of which these cases reach.
+// What audiobook.c links against.
 int audiobookdb_parts_for_each(const char *book,
                                bool (*cb)(const char *, const char *, void *),
                                void *user) {
   return 0;
 }
 const char *tr(const char *key) { return key; }
+
+// The database side of the per-book speed: "/book" has 1500 stored, the rest
+// none. Each write is recorded.
+static int get_speed_calls;
+static int set_speed_calls;
+static char set_speed_book[512];
+static int set_speed_value;
+
+int audiobookdb_get_speed(const char *book_path) {
+  get_speed_calls++;
+  return strcmp(book_path, "/book") == 0 ? 1500 : 0;
+}
+void audiobookdb_set_speed(const char *book_path, int permille) {
+  set_speed_calls++;
+  snprintf(set_speed_book, sizeof(set_speed_book), "%s", book_path);
+  set_speed_value = permille;
+}
+
+// Two parts of the folder book "/book", a single-file book, and nothing else.
+bool audiobookdb_book_for_file(const char *file_path, char *book_out,
+                               size_t book_size) {
+  const char *book = NULL;
+  if (strncmp(file_path, "/book/", 6) == 0) {
+    book = "/book";
+  } else if (strcmp(file_path, "/other.m4b") == 0) {
+    book = file_path;
+  }
+  snprintf(book_out, book_size, "%s", book ? book : "");
+  return book != NULL;
+}
+mp4_file_t *mp4_open(const char *path) { return NULL; }
+int id3chap_read(const char *path, id3chap_t *out, int max) { return 0; }
+int vorbischap_read(const char *path, vorbischap_t *out, int max) { return 0; }
 
 // An in-memory [audiobook] config, for the equalizer setting.
 #define STUB_MAX 16
@@ -44,6 +77,17 @@ void config_set(const char *section, const char *key, const char *value) {
 bool config_save(void) {
   saves++;
   return true;
+}
+
+long config_get_int(const char *section, const char *key, long fallback) {
+  const char *value = config_get(section, key, NULL);
+  return value ? strtol(value, NULL, 10) : fallback;
+}
+
+void config_set_int(const char *section, const char *key, long value) {
+  char text[32];
+  snprintf(text, sizeof(text), "%ld", value);
+  config_set(section, key, text);
 }
 
 // The engine side, recorded: which override was last put on it.
@@ -276,6 +320,46 @@ static void eq_apply(void) {
   assert(!audiobook_take_eq_fallback());
 }
 
+static void speed_per_book(void) {
+  stub_count = 0;
+  audiobook_track_changed(NULL);
+  assert(audiobook_speed_permille() == AUDIOBOOK_SPEED_NORMAL);
+
+  // Nothing loaded: the default alone.
+  audiobook_set_speed_permille(1250);
+  assert(set_speed_calls == 0);
+  assert(config_get_int("audiobook", "speed", 0) == 1250);
+  assert(audiobook_speed_permille() == 1250);
+
+  // A book with a speed of its own plays at it, and another part of the same
+  // book does not ask again.
+  audiobook_track_changed("/book/0.mp3");
+  assert(get_speed_calls == 1);
+  assert(audiobook_speed_permille() == 1500);
+  audiobook_track_changed("/book/1.mp3");
+  assert(get_speed_calls == 1);
+  assert(audiobook_speed_permille() == 1500);
+
+  // A pick is the book's and the new default.
+  audiobook_set_speed_permille(750);
+  assert(set_speed_calls == 1 && set_speed_value == 750);
+  assert(strcmp(set_speed_book, "/book") == 0);
+  assert(config_get_int("audiobook", "speed", 0) == 750);
+  assert(audiobook_speed_permille() == 750);
+
+  // A book with none plays at the default.
+  audiobook_track_changed("/other.m4b");
+  assert(get_speed_calls == 2);
+  assert(audiobook_speed_permille() == 750);
+
+  // A song is no book: the default, and a pick goes nowhere else.
+  audiobook_track_changed("/song.mp3");
+  assert(audiobook_speed_permille() == 750);
+  audiobook_set_speed_permille(1000);
+  assert(set_speed_calls == 1);
+  assert(audiobook_speed_permille() == 1000);
+}
+
 int main(void) {
   chapters_next_prev();
   parts_next_prev();
@@ -284,5 +368,6 @@ int main(void) {
   no_units();
   eq_setting();
   eq_apply();
+  speed_per_book();
   return 0;
 }

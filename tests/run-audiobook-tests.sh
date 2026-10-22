@@ -10,7 +10,7 @@ esac
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/sonix-player" -c "$repo/sonix-player/src/system/library/library.c" -o "$build/library.o"
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/sonix-player" "$repo/tests/audiobookdb_test.c" "$build/library.o" $gc_flags -lsqlite3 -lpthread -o "$build/test"
 failed=0
-for test in cancel partial-cancel stat-error stale scan-error cyrillic live-save crash prune disc authors natural write-retry late-other-book publish-failure; do
+for test in cancel partial-cancel stat-error stale scan-error cyrillic live-save crash prune disc authors natural write-retry late-other-book publish-failure speed-column speed-kept; do
  mkdir "$build/$test"
  if ! "$build/test" "$test" "$build/$test"; then failed=$((failed + 1)); fi
 done
