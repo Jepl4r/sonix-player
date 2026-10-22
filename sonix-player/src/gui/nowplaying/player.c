@@ -32,6 +32,7 @@
 #include "src/system/gearboy/gearboy.h"
 #include "src/system/streaming/radio.h"
 #include "src/system/audio/audio.h"
+#include "src/system/audio/sleepfade.h"
 #include "src/system/audio/readahead.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/playback/device_state.h"
@@ -5147,10 +5148,14 @@ static void sleep_timer_cb(lv_timer_t *timer) {
 	// somebody interrupted, not for one the player stopped on purpose -- and
 	// the position, written through rather than left to the ten second throttle.
 	if (audiobook_is_playing()) {
-		device_state_t state;
-		device_state_get(&state);
 		audiobook_suppress_rewind_once();
 		audio_pause();
+		double current = 0, total = 0;
+		audio_get_progress(&current, &total);
+		double back = current - SLEEPFADE_SPAN_MS / 1000;
+		audio_seek(back > 0 ? back : 0);
+		device_state_t state;
+		device_state_get(&state);
 		apply_playback_status(AUDIO_STATUS_PAUSED);
 		audiobook_note_position(state.progress_current_secs, 0, true);
 		return;
