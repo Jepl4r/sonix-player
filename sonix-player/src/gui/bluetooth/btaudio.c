@@ -15,6 +15,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/device/power.h"
 #include "src/system/bluetooth/airpods.h"
 #include "src/system/audio/alsa-controls.h"
@@ -248,7 +249,7 @@ static void codec_row_cb(lv_event_t *e) {
 // value would use on any other row.
 // ---------------------------------------------------------------------------
 
-#define AIRPODS_ICON_INSET 48 // clears the chevron at the row's right edge
+#define AIRPODS_ICON_INSET ui_px(48) // clears the chevron at the row's right edge
 
 static void airpods_row_cb(lv_event_t *e) {
 	(void)e;
@@ -412,7 +413,7 @@ static void screen_unloaded_cb(lv_event_t *e) {
 
 // The player's own Bluetooth name, and the sheet that changes it: a field and a
 // keyboard over the page, the same shape the preset and playlist names use.
-#define NAME_CANCEL_SIZE 56
+#define NAME_CANCEL_SIZE ui_px(56)
 
 static lv_obj_t *name_row_value;
 static lv_obj_t *name_layer;
@@ -485,7 +486,7 @@ static void build_name_layer(gui_config_t *cfg) {
 	lv_label_set_text(heading, tr("bt_rename"));
 	lv_obj_add_style(heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(heading, &font_ui_24, 0);
-	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 10);
+	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(10));
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
 	lv_obj_set_size(cancel, NAME_CANCEL_SIZE, NAME_CANCEL_SIZE);
@@ -507,18 +508,18 @@ static void build_name_layer(gui_config_t *cfg) {
 	// name the adapter will take whole.
 	lv_textarea_set_max_length(name_field, BT_NAME_MAX - 1);
 	lv_textarea_set_placeholder_text(name_field, tr("name"));
-	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(name_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 60);
+	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(60));
 	lv_obj_add_style(name_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(name_field, 12, 0);
+	lv_obj_set_style_radius(name_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(name_field, 0, 0);
 	lv_obj_set_style_shadow_width(name_field, 0, 0);
-	lv_obj_set_style_pad_all(name_field, 14, 0);
+	lv_obj_set_style_pad_all(name_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", name_accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, ui_px(316), name_field, NULL, "ok", name_accept_cb, NULL);
 }
 
 void btaudio_init(gui_config_t *cfg) {

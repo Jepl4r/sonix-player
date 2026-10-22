@@ -25,6 +25,7 @@
 #include "src/gui/shell/tabbar.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/gui/streaming/podcastpage.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
@@ -39,7 +40,7 @@
 
 #define CARD_MAX_EPISODES 400
 #define FEED_MAX_EPISODES PODCASTPAGE_FEED_MAX
-#define HERO_COVER 112
+#define HERO_COVER ui_px(112)
 
 // Below this an episode has not really been started (see podcaststate.c).
 #define RESUME_MIN_SECONDS 5.0
@@ -417,12 +418,12 @@ typedef enum {
 	FILTER_HEARD,
 } filter_t;
 
-#define EP_ROW_HEIGHT 96
-#define EP_ROW_GAP 10
+#define EP_ROW_HEIGHT ui_px(96)
+#define EP_ROW_GAP ui_px(10)
 #define EP_ROW_PITCH (EP_ROW_HEIGHT + EP_ROW_GAP)
 #define EP_ROW_POOL 10
-#define STATUS_BOX 30
-#define SEL_FAB_SIZE 72
+#define STATUS_BOX ui_px(30)
+#define SEL_FAB_SIZE ui_px(72)
 
 typedef struct {
 	lv_obj_t *button;
@@ -1543,7 +1544,7 @@ static void selection_show(page_t *p) {
 	}
 	// Room under the last row while the round button is up, so that row can be
 	// scrolled clear of it.
-	lv_obj_set_style_pad_bottom(p->page, p->selecting ? g_cfg->padding + SEL_FAB_SIZE + 12 : g_cfg->padding, 0);
+	lv_obj_set_style_pad_bottom(p->page, p->selecting ? g_cfg->padding + SEL_FAB_SIZE + ui_px(12) : g_cfg->padding, 0);
 	rows_invalidate(p);
 	window_update(p);
 }
@@ -1871,13 +1872,13 @@ static void build_rows(page_t *p, int width) {
 		lv_obj_set_size(row->button, width, EP_ROW_HEIGHT);
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row->button, 12, 0);
+		lv_obj_set_style_radius(row->button, ui_px(12), 0);
 		lv_obj_set_style_border_width(row->button, 0, 0);
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
-		lv_obj_set_style_pad_left(row->button, 12, 0);
-		lv_obj_set_style_pad_right(row->button, 4, 0);
+		lv_obj_set_style_pad_left(row->button, ui_px(12), 0);
+		lv_obj_set_style_pad_right(row->button, ui_px(4), 0);
 		lv_obj_set_style_pad_ver(row->button, 0, 0);
-		lv_obj_set_style_pad_column(row->button, 10, 0);
+		lv_obj_set_style_pad_column(row->button, ui_px(10), 0);
 		lv_obj_set_scrollable(row->button, false);
 		lv_obj_set_hidden(row->button, true);
 		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
@@ -1896,7 +1897,7 @@ static void build_rows(page_t *p, int width) {
 
 		row->dot = lv_obj_create(status);
 		lv_obj_remove_style_all(row->dot);
-		lv_obj_set_size(row->dot, 12, 12);
+		lv_obj_set_size(row->dot, ui_px(12), ui_px(12));
 		lv_obj_set_style_radius(row->dot, LV_RADIUS_CIRCLE, 0);
 		lv_obj_set_style_bg_opa(row->dot, LV_OPA_COVER, 0);
 		lv_obj_set_style_bg_color(row->dot, theme()->accent, 0);
@@ -1904,14 +1905,14 @@ static void build_rows(page_t *p, int width) {
 		lv_obj_set_event_bubble(row->dot, true);
 
 		row->arc = lv_arc_create(status);
-		lv_obj_set_size(row->arc, 24, 24);
+		lv_obj_set_size(row->arc, ui_px(24), ui_px(24));
 		lv_obj_center(row->arc);
 		lv_arc_set_rotation(row->arc, 270);
 		lv_arc_set_bg_angles(row->arc, 0, 360);
 		lv_arc_set_range(row->arc, 0, 100);
 		lv_obj_remove_style(row->arc, NULL, LV_PART_KNOB);
-		lv_obj_set_style_arc_width(row->arc, 4, LV_PART_MAIN);
-		lv_obj_set_style_arc_width(row->arc, 4, LV_PART_INDICATOR);
+		lv_obj_set_style_arc_width(row->arc, ui_px(4), LV_PART_MAIN);
+		lv_obj_set_style_arc_width(row->arc, ui_px(4), LV_PART_INDICATOR);
 		lv_obj_set_style_arc_color(row->arc, theme()->surface_pressed, LV_PART_MAIN);
 		lv_obj_set_style_arc_color(row->arc, theme()->accent, LV_PART_INDICATOR);
 		lv_obj_set_style_pad_all(row->arc, 0, 0);
@@ -1929,7 +1930,7 @@ static void build_rows(page_t *p, int width) {
 		lv_obj_remove_style_all(texts);
 		lv_obj_set_flex_grow(texts, 1);
 		lv_obj_set_height(texts, LV_SIZE_CONTENT);
-		lv_obj_set_style_pad_row(texts, 6, 0);
+		lv_obj_set_style_pad_row(texts, ui_px(6), 0);
 		lv_obj_set_scrollable(texts, false);
 		lv_obj_set_event_bubble(texts, true);
 		lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
@@ -1949,7 +1950,7 @@ static void build_rows(page_t *p, int width) {
 		lv_obj_set_style_text_font(row->detail, &font_ui_18, 0);
 
 		row->bar = lv_bar_create(texts);
-		lv_obj_set_size(row->bar, lv_pct(100), 5);
+		lv_obj_set_size(row->bar, lv_pct(100), ui_px(5));
 		lv_bar_set_range(row->bar, 0, 1000);
 		lv_obj_set_style_bg_color(row->bar, theme()->surface_pressed, LV_PART_MAIN);
 		lv_obj_set_style_bg_opa(row->bar, LV_OPA_COVER, LV_PART_MAIN);
@@ -1959,7 +1960,7 @@ static void build_rows(page_t *p, int width) {
 		lv_obj_set_event_bubble(row->bar, true);
 
 		row->menu_btn = lv_btn_create(row->button);
-		lv_obj_set_size(row->menu_btn, 44, 44);
+		lv_obj_set_size(row->menu_btn, ui_px(44), ui_px(44));
 		lv_obj_set_style_bg_opa(row->menu_btn, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(row->menu_btn, 0, 0);
 		lv_obj_set_style_shadow_width(row->menu_btn, 0, 0);
@@ -1975,7 +1976,7 @@ static void build_rows(page_t *p, int width) {
 		lv_image_set_src(row->mark, &icon_check);
 		lv_obj_add_style(row->mark, &theme_style_icon, 0);
 		lv_obj_set_style_image_recolor_opa(row->mark, LV_OPA_COVER, 0);
-		lv_obj_set_style_margin_right(row->mark, 6, 0);
+		lv_obj_set_style_margin_right(row->mark, ui_px(6), 0);
 		lv_obj_set_clickable(row->mark, false);
 		lv_obj_set_event_bubble(row->mark, true);
 		lv_obj_set_hidden(row->mark, true);
@@ -2113,7 +2114,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 
 	// Sort on the card; follow on the catalogue.
 	lv_obj_t *corner = lv_btn_create(p->screen);
-	lv_obj_set_size(corner, 56, 56);
+	lv_obj_set_size(corner, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(corner, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(corner, 0, 0);
 	lv_obj_set_style_shadow_width(corner, 0, 0);
@@ -2128,7 +2129,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 
 	// In the same place while choosing: the cross that ends it.
 	p->sel_close_btn = lv_btn_create(p->screen);
-	lv_obj_set_size(p->sel_close_btn, 56, 56);
+	lv_obj_set_size(p->sel_close_btn, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(p->sel_close_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(p->sel_close_btn, 0, 0);
 	lv_obj_set_style_shadow_width(p->sel_close_btn, 0, 0);
@@ -2154,7 +2155,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(p->page, cfg->padding, 0);
 	lv_obj_set_style_pad_top(p->page, 0, 0);
 	lv_obj_set_style_pad_bottom(p->page, cfg->padding, 0);
-	lv_obj_set_style_pad_gap(p->page, 14, 0);
+	lv_obj_set_style_pad_gap(p->page, ui_px(14), 0);
 	lv_obj_set_scroll_dir(p->page, LV_DIR_VER);
 	lv_obj_set_flex_flow(p->page, LV_FLEX_FLOW_COLUMN);
 	lv_obj_add_event_cb(p->page, page_scrolled_cb, LV_EVENT_SCROLL, p);
@@ -2163,7 +2164,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 	lv_obj_t *hero = lv_obj_create(p->page);
 	lv_obj_remove_style_all(hero);
 	lv_obj_set_size(hero, width, HERO_COVER);
-	lv_obj_set_style_pad_column(hero, 16, 0);
+	lv_obj_set_style_pad_column(hero, ui_px(16), 0);
 	lv_obj_set_scrollable(hero, false);
 	lv_obj_set_event_bubble(hero, true);
 	lv_obj_set_flex_flow(hero, LV_FLEX_FLOW_ROW);
@@ -2172,7 +2173,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 	p->hero_cover = lv_image_create(hero);
 	lv_obj_set_size(p->hero_cover, HERO_COVER, HERO_COVER);
 	lv_image_set_inner_align(p->hero_cover, LV_IMAGE_ALIGN_CENTER);
-	lv_obj_set_style_radius(p->hero_cover, 10, 0);
+	lv_obj_set_style_radius(p->hero_cover, ui_px(10), 0);
 	lv_obj_set_style_clip_corner(p->hero_cover, true, 0);
 	lv_obj_set_event_bubble(p->hero_cover, true);
 	hero_placeholder(p);
@@ -2181,7 +2182,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 	lv_obj_remove_style_all(texts);
 	lv_obj_set_flex_grow(texts, 1);
 	lv_obj_set_height(texts, LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_row(texts, 8, 0);
+	lv_obj_set_style_pad_row(texts, ui_px(8), 0);
 	lv_obj_set_scrollable(texts, false);
 	lv_obj_set_event_bubble(texts, true);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
@@ -2215,12 +2216,12 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 
 	// The big button: the episode left halfway most recently.
 	p->resume_btn = lv_btn_create(p->page);
-	lv_obj_set_size(p->resume_btn, width, 56);
+	lv_obj_set_size(p->resume_btn, width, ui_px(56));
 	lv_obj_set_style_radius(p->resume_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(p->resume_btn, 0, 0);
 	lv_obj_set_style_border_width(p->resume_btn, 0, 0);
 	lv_obj_set_style_bg_color(p->resume_btn, theme()->accent, 0);
-	lv_obj_set_style_pad_column(p->resume_btn, 8, 0);
+	lv_obj_set_style_pad_column(p->resume_btn, ui_px(8), 0);
 	lv_obj_set_flex_flow(p->resume_btn, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(p->resume_btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_add_event_cb(p->resume_btn, resume_cb, LV_EVENT_CLICKED, p);
@@ -2267,7 +2268,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 		lv_obj_set_hidden(p->more_spinner, true);
 
 		p->loader = spinner_create(p->screen, &icon_loader_big);
-		lv_obj_align(p->loader, LV_ALIGN_TOP_MID, 0, top + HERO_COVER + 180);
+		lv_obj_align(p->loader, LV_ALIGN_TOP_MID, 0, top + HERO_COVER + ui_px(180));
 		lv_obj_set_hidden(p->loader, true);
 	}
 
@@ -2295,7 +2296,7 @@ static void build_page(page_t *p, gui_config_t *cfg) {
 	lv_obj_set_style_border_width(p->sel_action_btn, 0, 0);
 	lv_obj_set_style_shadow_width(p->sel_action_btn, 0, 0);
 	lv_obj_set_style_pad_all(p->sel_action_btn, 0, 0);
-	lv_obj_align(p->sel_action_btn, LV_ALIGN_BOTTOM_RIGHT, -cfg->padding - 6, -cfg->padding - 6);
+	lv_obj_align(p->sel_action_btn, LV_ALIGN_BOTTOM_RIGHT, -cfg->padding - ui_px(6), -cfg->padding - ui_px(6));
 	lv_obj_add_event_cb(p->sel_action_btn, sel_action_cb, LV_EVENT_CLICKED, p);
 	lv_obj_t *action_icon = lv_image_create(p->sel_action_btn);
 	lv_image_set_src(action_icon, p->feed ? &icon_download : &icon_trash);

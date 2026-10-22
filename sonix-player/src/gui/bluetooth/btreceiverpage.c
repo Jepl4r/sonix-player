@@ -12,6 +12,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/bluetooth/btreceiver.h"
 #include "src/system/core/lang.h"
@@ -19,7 +20,7 @@
 lv_obj_t *btreceiverpage_screen;
 
 #define POLL_MS 500
-#define CODEC_BTN_SIZE 56
+#define CODEC_BTN_SIZE ui_px(56)
 
 static lv_obj_t *big_icon;
 static lv_obj_t *format_label;
@@ -296,7 +297,7 @@ void btreceiverpage_init(gui_config_t *cfg) {
 	// space.
 	big_icon = lv_image_create(container);
 	lv_image_set_src(big_icon, &icon_bluetooth_receiver_page);
-	lv_obj_set_style_margin_top(big_icon, 40, 0);
+	lv_obj_set_style_margin_top(big_icon, ui_px(40), 0);
 
 	format_label = lv_label_create(container);
 	lv_obj_set_width(format_label, lv_pct(100));
@@ -304,7 +305,7 @@ void btreceiverpage_init(gui_config_t *cfg) {
 	lv_obj_add_style(format_label, &theme_style_text, 0);
 	lv_obj_set_style_text_align(format_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_set_style_text_font(format_label, &font_ui_24_bold, 0);
-	lv_obj_set_style_margin_top(format_label, 20, 0);
+	lv_obj_set_style_margin_top(format_label, ui_px(20), 0);
 	lv_label_set_text(format_label, "");
 
 	device_label = lv_label_create(container);
@@ -313,7 +314,7 @@ void btreceiverpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(device_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(device_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(device_label, &font_ui_22, 0);
-	lv_obj_set_style_margin_top(device_label, 10, 0);
+	lv_obj_set_style_margin_top(device_label, ui_px(10), 0);
 	lv_label_set_text(device_label, "");
 
 	// The track the sender names, under the device it comes from. Hidden when
@@ -325,7 +326,7 @@ void btreceiverpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(title_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(title_label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(title_label, &font_ui_24, 0);
-	lv_obj_set_style_margin_top(title_label, 18, 0);
+	lv_obj_set_style_margin_top(title_label, ui_px(18), 0);
 	lv_label_set_text(title_label, "");
 	lv_obj_set_hidden(title_label, true);
 
@@ -335,7 +336,7 @@ void btreceiverpage_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(status_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(status_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(status_label, &font_ui_22, 0);
-	lv_obj_set_style_margin_top(status_label, 10, 0);
+	lv_obj_set_style_margin_top(status_label, ui_px(10), 0);
 	lv_label_set_text(status_label, "");
 	status_normal_color = lv_obj_get_style_text_color(status_label, LV_PART_MAIN);
 

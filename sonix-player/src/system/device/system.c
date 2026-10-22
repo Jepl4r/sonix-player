@@ -1993,6 +1993,83 @@ void input_host_button(int code, bool down) {
 }
 #endif
 
+#ifndef HOST_BUILD
+// ---------------------------------------------------------------------------
+// The volume wheel (sysinfo.h: volume_wheel)
+//
+// The R3 II 2025's wheel ("sa-ring-keys", HiBy's ring driver) reports a click
+// clockwise as KEY_RIGHT and one anti-clockwise as KEY_LEFT, each a press and
+// its release at once. It has a thread of its own rather than a place in
+// input_thread_func(): a click is simply the volume key it stands for -- a
+// volume step, or with power held the key lock or the screenshot -- and none of
+// the buttons' holds, repeats and double clicks apply to it.
+// ---------------------------------------------------------------------------
+
+#define WHEEL_DEVICE_NAME "sa-ring-keys"
+
+static void *wheel_thread_func(void *arg) {
+	char *node = arg;
+	int fd = open(node, O_RDONLY | O_CLOEXEC);
+	if (fd < 0) {
+		fprintf(stderr, "input: cannot open %s: %s\n", node, strerror(errno));
+		free(node);
+		return NULL;
+	}
+
+	for (;;) {
+		struct input_event ev;
+		if (read(fd, &ev, sizeof(ev)) != sizeof(ev)) {
+			break;
+		}
+		if (ev.type != EV_KEY || (ev.code != KEY_LEFT && ev.code != KEY_RIGHT)) {
+			continue;
+		}
+		ev.code = ev.code == KEY_RIGHT ? KEY_VOLUMEUP : KEY_VOLUMEDOWN;
+		log_key_event(node, &ev);
+
+		if (ev.value == 0) {
+			combo_release(ev.code);
+			continue;
+		}
+		if (ev.value != 1) {
+			continue;
+		}
+		power_notify_activity();
+		// Power down: this click completes the key lock or the screenshot. It
+		// is counted even with the keys locked, or the lock could not be undone.
+		if (combo_press(ev.code) || keys_locked()) {
+			continue;
+		}
+		apply_volume_step(ev.code);
+	}
+
+	close(fd);
+	free(node);
+	return NULL;
+}
+
+// Only on a model that has the wheel: a device of that name anywhere else is
+// left alone.
+static void start_wheel_thread(const char *node) {
+	const sysinfo_model_t *model = sysinfo_model();
+	if (!model || !model->volume_wheel) {
+		return;
+	}
+	char *arg = strdup(node);
+	if (!arg) {
+		return;
+	}
+	printf("input: %s is the volume wheel (%s)\n", node, WHEEL_DEVICE_NAME);
+	pthread_t thread;
+	if (pthread_create(&thread, NULL, wheel_thread_func, arg) == 0) {
+		pthread_detach(thread);
+	} else {
+		free(arg);
+	}
+}
+
+#endif
+
 // One thread per built-in button device, and one on the touch panel.
 //
 // The buttons are found by the names their drivers register -- the power key
@@ -2029,6 +2106,10 @@ static void start_builtin_input_threads(void) {
 		bool named = ioctl(fd, EVIOCGNAME(sizeof(name) - 1), name) >= 0;
 		close(fd);
 		if (!named || (touch && strcmp(node, touch) == 0)) {
+			continue;
+		}
+		if (strcmp(name, WHEEL_DEVICE_NAME) == 0) {
+			start_wheel_thread(node);
 			continue;
 		}
 		for (size_t i = 0; i < sizeof(NAMES) / sizeof(NAMES[0]); i++) {

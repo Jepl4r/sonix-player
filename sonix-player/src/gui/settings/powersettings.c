@@ -5,6 +5,7 @@
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/axpcharge.h"
@@ -41,7 +42,7 @@ static const struct {
 // The standby card while standby is off: as low as a toggle with pills under
 // it when they are folded away ("Split artists" in the music settings), the
 // switch and the card's padding and nothing else.
-#define STANDBY_CLOSED_H 76
+#define STANDBY_CLOSED_H ui_px(76)
 
 static lv_obj_t *charge_value, *charge_slider;
 static lv_obj_t *auto_off_switch, *auto_off_value, *auto_off_slider, *auto_off_card;

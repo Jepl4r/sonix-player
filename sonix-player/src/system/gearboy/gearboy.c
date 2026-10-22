@@ -17,6 +17,7 @@ bool gearboy_start(const char *rom_path, const char *title) {
 	return false;
 }
 void gearboy_stop(void) {}
+void gearboy_set_scale(int scale) { (void)scale; }
 bool gearboy_running(void) { return false; }
 bool gearboy_failed(void) { return true; }
 const char *gearboy_title(void) { return ""; }
@@ -101,6 +102,9 @@ static uint16_t *screen;					// 480x432, the upscaled image
 static uint16_t *gb_frames[GB_FRAME_BUFFERS]; // 160x144, as they leave the core
 static int16_t *audio_buf;					// one frame's samples
 
+// 3, or 2 for a panel 320 px wide (gearboy_set_scale()).
+static int screen_scale = 3;
+
 // Which of the two the core is writing, and which one it has finished.
 // `frame_count` doubles as the sequence number.
 static volatile int gb_write_index;
@@ -167,6 +171,14 @@ const uint16_t *gearboy_screen(void) { return screen; }
 
 static void blit3x(const uint16_t *src, uint16_t *dst);
 static void blit3x_grid(const uint16_t *src, uint16_t *dst, int shader);
+static void blit2x(const uint16_t *src, uint16_t *dst);
+static void blit2x_grid(const uint16_t *src, uint16_t *dst, int shader);
+
+void gearboy_set_scale(int scale) {
+	if (scale == 2 || scale == 3) {
+		screen_scale = scale;
+	}
+}
 
 bool gearboy_present(void) {
 	if (!screen || gb_ready_index < 0) {
@@ -182,7 +194,13 @@ bool gearboy_present(void) {
 			return false;
 		}
 		__sync_synchronize();
-		if (g_shader != 0) {
+		if (screen_scale == 2) {
+			if (g_shader != 0) {
+				blit2x_grid(gb_frames[index], screen, g_shader);
+			} else {
+				blit2x(gb_frames[index], screen);
+			}
+		} else if (g_shader != 0) {
 			blit3x_grid(gb_frames[index], screen, g_shader);
 		} else {
 			blit3x(gb_frames[index], screen);
@@ -327,6 +345,51 @@ static void blit3x_grid(const uint16_t *src, uint16_t *dst, int shader) {
 			d[1] = dimmed;
 			d[2] = corner ? dim25(p) : dimmed;
 			d += 3;
+		}
+	}
+}
+
+// The same at 2x, 160x144 -> 320x288, for a panel 320 px wide. A game pixel is
+// one aligned 32-bit store, and the second row a memcpy of the first.
+static void blit2x(const uint16_t *src, uint16_t *dst) {
+	const int dst_w = GB_WIDTH * 2;
+	const size_t row_bytes = (size_t)dst_w * 2;
+
+	for (int y = 0; y < GB_HEIGHT; y++) {
+		const uint16_t *s = src + (size_t)y * GB_WIDTH;
+		uint16_t *row = dst + (size_t)(y * 2) * dst_w;
+		uint32_t *d = (uint32_t *)row;
+
+		for (int x = 0; x < GB_WIDTH; x++) {
+			uint32_t p = s[x];
+			d[x] = p | (p << 16);
+		}
+
+		memcpy(row + dst_w, row, row_bytes);
+	}
+}
+
+// And the shaders at 2x: a 2x2 square with the pixel itself top left, its
+// second column and second row dimmed, and the corner dimmed further for the
+// GB dot matrix. More of the square is grid than at 3x, so the picture comes
+// out a little darker.
+static void blit2x_grid(const uint16_t *src, uint16_t *dst, int shader) {
+	const int dst_w = GB_WIDTH * 2;
+	const bool strong = shader >= 2; // both dot matrix modes
+	const bool corner = shader == 3; // GB dot matrix only
+
+	for (int y = 0; y < GB_HEIGHT; y++) {
+		const uint16_t *s = src + (size_t)y * GB_WIDTH;
+		uint16_t *row0 = dst + (size_t)(y * 2) * dst_w;
+		uint16_t *row1 = row0 + dst_w;
+
+		for (int x = 0; x < GB_WIDTH; x++) {
+			uint16_t p = s[x];
+			uint16_t dimmed = strong ? dim50(p) : dim75(p);
+			row0[2 * x] = p;
+			row0[2 * x + 1] = dimmed;
+			row1[2 * x] = dimmed;
+			row1[2 * x + 1] = corner ? dim25(p) : dimmed;
 		}
 	}
 }
@@ -504,7 +567,7 @@ bool gearboy_start(const char *rom_path_in, const char *title_in) {
 	audio_stop();
 
 	if (!screen) {
-		screen = calloc(1, (size_t)GEARBOY_SCREEN_W * GEARBOY_SCREEN_H * 2);
+		screen = calloc(1, (size_t)GB_WIDTH * screen_scale * GB_HEIGHT * screen_scale * 2);
 	}
 	for (int i = 0; i < GB_FRAME_BUFFERS; i++) {
 		if (!gb_frames[i]) {

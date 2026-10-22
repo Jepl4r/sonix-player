@@ -4,11 +4,12 @@
 
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 
-#define TAB_HEIGHT 46
-#define TROUGH_PAD 4
-#define TAB_PAD 10
+#define TAB_HEIGHT ui_px(46)
+#define TROUGH_PAD ui_px(4)
+#define TAB_PAD ui_px(10)
 
 // Each tab as wide as its name plus an equal share of the width left over, so a
 // long name in a language that has one is not cut to fit a third while the
@@ -48,7 +49,7 @@ lv_obj_t *tabbar_create(tabbar_t *t, lv_obj_t *parent) {
 	lv_obj_remove_style_all(t->bar);
 	lv_obj_set_size(t->bar, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_add_style(t->bar, &theme_style_card, 0);
-	lv_obj_set_style_radius(t->bar, 14, 0);
+	lv_obj_set_style_radius(t->bar, ui_px(14), 0);
 	lv_obj_set_style_border_width(t->bar, 0, 0);
 	lv_obj_set_style_shadow_width(t->bar, 0, 0);
 	lv_obj_set_style_pad_all(t->bar, TROUGH_PAD, 0);
@@ -68,7 +69,7 @@ lv_obj_t *tabbar_add(tabbar_t *t, const char *text, lv_event_cb_t cb, void *user
 	}
 	lv_obj_t *tab = lv_btn_create(t->bar);
 	lv_obj_set_size(tab, LV_SIZE_CONTENT, TAB_HEIGHT);
-	lv_obj_set_style_radius(tab, 10, 0);
+	lv_obj_set_style_radius(tab, ui_px(10), 0);
 	lv_obj_set_style_shadow_width(tab, 0, 0);
 	lv_obj_set_style_border_width(tab, 0, 0);
 	lv_obj_set_style_pad_hor(tab, TAB_PAD, 0);

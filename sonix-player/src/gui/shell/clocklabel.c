@@ -2,17 +2,19 @@
 
 #include <time.h>
 
+#include "src/gui/shell/uiscale.h"
 #include "src/system/device/clock.h"
 
 // Between the last figure and the suffix.
-#define SUFFIX_GAP_PX 3
+#define SUFFIX_GAP_PX ui_px(3)
 
 // The height of a figure as a share of the font's size, in hundredths: what
 // the top of the suffix is lined up with.
 #define FIGURE_HEIGHT_PCT 71
 
-// How far down the top of a figure sits in a label set in `font`.
-static int32_t figure_top(const lv_font_t *font, int px) { return (int32_t)(font->line_height - font->base_line) - (int32_t)(px * FIGURE_HEIGHT_PCT / 100); }
+// How far down the top of a figure sits in a label set in `font`. `px` is the
+// font's nominal size, which it is drawn at scaled to the panel (fonts.c).
+static int32_t figure_top(const lv_font_t *font, int px) { return (int32_t)(font->line_height - font->base_line) - (int32_t)(ui_px(px) * FIGURE_HEIGHT_PCT / 100); }
 
 lv_obj_t *clocklabel_create(lv_obj_t *parent, const lv_font_t *font, int font_px, const lv_font_t *suffix_font, int suffix_px) {
 	lv_obj_t *label = lv_label_create(parent);

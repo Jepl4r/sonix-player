@@ -20,6 +20,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 #include "src/system/library/playlists.h"
@@ -41,13 +42,13 @@ lv_obj_t *search_screen;
 // work.
 // ---------------------------------------------------------------------------
 
-#define SEARCH_THUMB 56
-#define SEARCH_ROW_H 76
-#define SEARCH_ROW_GAP 8
+#define SEARCH_THUMB ui_px(56)
+#define SEARCH_ROW_H ui_px(76)
+#define SEARCH_ROW_GAP ui_px(8)
 #define SEARCH_PITCH (SEARCH_ROW_H + SEARCH_ROW_GAP)
 #define SEARCH_THUMB_POLL_MS 200
-#define SEARCH_PILLS_H 56
-#define SEARCH_PILLS_GAP 10
+#define SEARCH_PILLS_H ui_px(56)
+#define SEARCH_PILLS_GAP ui_px(10)
 
 // Rows on screen at once on the tallest panel, plus one beyond each edge. One
 // coverloader slot each, out of the page's COVERLOADER_SEARCH_COUNT.
@@ -509,14 +510,14 @@ static void row_create(row_t *row) {
 	lv_obj_set_size(button, lv_pct(100), SEARCH_ROW_H);
 	lv_obj_add_style(button, &theme_style_card, 0);
 	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(button, 12, 0);
+	lv_obj_set_style_radius(button, ui_px(12), 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
-	lv_obj_set_style_pad_hor(button, 16, 0);
+	lv_obj_set_style_pad_hor(button, ui_px(16), 0);
 	lv_obj_set_event_bubble(button, true);
 	lv_obj_set_flex_flow(button, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(button, 12, 0);
+	lv_obj_set_style_pad_column(button, ui_px(12), 0);
 	lv_obj_add_event_cb(button, row_clicked_cb, LV_EVENT_CLICKED, row);
 	lv_obj_add_event_cb(button, track_long_pressed_cb, LV_EVENT_LONG_PRESSED, row);
 	lv_obj_set_hidden(button, true);
@@ -526,7 +527,7 @@ static void row_create(row_t *row) {
 	lv_obj_set_style_image_recolor_opa(row->icon, LV_OPA_COVER, 0);
 	lv_obj_set_size(row->icon, SEARCH_THUMB, SEARCH_THUMB);
 	lv_image_set_inner_align(row->icon, LV_IMAGE_ALIGN_CENTER);
-	lv_obj_set_style_radius(row->icon, 8, 0);
+	lv_obj_set_style_radius(row->icon, ui_px(8), 0);
 	lv_obj_set_style_clip_corner(row->icon, true, 0);
 
 	lv_obj_t *texts = lv_obj_create(button);
@@ -535,7 +536,7 @@ static void row_create(row_t *row) {
 	lv_obj_set_style_bg_opa(texts, 0, 0);
 	lv_obj_set_style_border_width(texts, 0, 0);
 	lv_obj_set_style_pad_all(texts, 0, 0);
-	lv_obj_set_style_pad_row(texts, 2, 0);
+	lv_obj_set_style_pad_row(texts, ui_px(2), 0);
 	lv_obj_set_scrollable(texts, false);
 	lv_obj_set_clickable(texts, false);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
@@ -610,8 +611,8 @@ static lv_obj_t *pill_create(category_t cat) {
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
-	lv_obj_set_style_pad_hor(btn, 8, 0);
-	lv_obj_set_style_pad_ver(btn, 4, 0);
+	lv_obj_set_style_pad_hor(btn, ui_px(8), 0);
+	lv_obj_set_style_pad_ver(btn, ui_px(4), 0);
 	lv_obj_set_style_pad_row(btn, 0, 0);
 	lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -764,8 +765,8 @@ static void layout_results(void) {
 	bool kb_visible = keyboard_is_visible(keyboard);
 	int top = results_top + SEARCH_PILLS_H + SEARCH_PILLS_GAP;
 	int height = screen_h - top - (kb_visible ? keyboard_height : 0);
-	if (height < 60) {
-		height = 60;
+	if (height < ui_px(60)) {
+		height = ui_px(60);
 	}
 	lv_obj_set_height(results, height);
 	window_update();
@@ -828,24 +829,24 @@ void search_init(gui_config_t *cfg) {
 	settingsrow_title(search_screen, cfg, "search_2");
 
 	int top = settingsrow_content_top(cfg);
-	int keyboard_h = 316; // tall enough for honest fingertip-sized keys
+	int keyboard_h = ui_px(316); // tall enough for honest fingertip-sized keys
 	screen_h = cfg->screen_height;
 	keyboard_height = keyboard_h;
-	results_top = top + 62 + 10;
+	results_top = top + ui_px(62) + ui_px(10);
 
 	field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(field, true);
 	lv_textarea_set_placeholder_text(field, tr("search"));
 	// Tall enough for the 24 px line plus its padding: at 56 the text does not
 	// quite fit and the content bobs on every keystroke.
-	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(field, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_align(field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
 	lv_obj_add_style(field, &theme_style_card, 0);
-	lv_obj_set_style_radius(field, 12, 0);
+	lv_obj_set_style_radius(field, ui_px(12), 0);
 	lv_obj_set_style_border_width(field, 0, 0);
 	lv_obj_set_style_shadow_width(field, 0, 0);
-	lv_obj_set_style_pad_all(field, 14, 0);
+	lv_obj_set_style_pad_all(field, ui_px(14), 0);
 	lv_obj_set_style_text_font(field, &font_ui_24, 0);
 	lv_obj_add_event_cb(field, field_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
 	lv_obj_add_event_cb(field, field_clicked_cb, LV_EVENT_CLICKED, NULL);
@@ -855,8 +856,8 @@ void search_init(gui_config_t *cfg) {
 	// The clear button, over the field's right edge: wipes the query and the
 	// results in one tap. Hidden while the field is empty.
 	clear_btn = lv_btn_create(search_screen);
-	lv_obj_set_size(clear_btn, 56, 56);
-	lv_obj_align(clear_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + (62 - 56) / 2);
+	lv_obj_set_size(clear_btn, ui_px(56), ui_px(56));
+	lv_obj_align(clear_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - ui_px(4), top + (ui_px(62) - ui_px(56)) / 2);
 	lv_obj_set_style_bg_opa(clear_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(clear_btn, 0, 0);
 	lv_obj_set_style_border_width(clear_btn, 0, 0);
@@ -871,7 +872,7 @@ void search_init(gui_config_t *cfg) {
 	lv_obj_center(clear_icon);
 
 	// Room for it, so a long query never runs underneath the x.
-	lv_obj_set_style_pad_right(field, 60, 0);
+	lv_obj_set_style_pad_right(field, ui_px(60), 0);
 
 	// The three categories, in a row under the field.
 	pills = lv_obj_create(search_screen);
@@ -880,7 +881,7 @@ void search_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(pills, 0, 0);
 	lv_obj_set_style_border_width(pills, 0, 0);
 	lv_obj_set_style_pad_all(pills, 0, 0);
-	lv_obj_set_style_pad_column(pills, 10, 0);
+	lv_obj_set_style_pad_column(pills, ui_px(10), 0);
 	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_event_bubble(pills, true);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW);
@@ -898,7 +899,7 @@ void search_init(gui_config_t *cfg) {
 	lv_obj_set_style_radius(results, 0, 0);
 	lv_obj_set_style_pad_hor(results, cfg->padding, 0);
 	lv_obj_set_style_pad_ver(results, 0, 0);
-	lv_obj_set_style_pad_bottom(results, 12, 0);
+	lv_obj_set_style_pad_bottom(results, ui_px(12), 0);
 	lv_obj_set_scroll_dir(results, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(results, LV_SCROLLBAR_MODE_AUTO);
 	lv_obj_set_event_bubble(results, true);
@@ -924,7 +925,7 @@ void search_init(gui_config_t *cfg) {
 	lv_label_set_text(empty_label, tr("no_results"));
 	lv_obj_add_style(empty_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(empty_label, &font_ui_24, 0);
-	lv_obj_align(empty_label, LV_ALIGN_TOP_LEFT, cfg->padding, results_top + 16);
+	lv_obj_align(empty_label, LV_ALIGN_TOP_LEFT, cfg->padding, results_top + ui_px(16));
 	lv_obj_set_hidden(empty_label, true);
 
 	keyboard = keyboard_create(search_screen, cfg->screen_width, keyboard_h, field, &icon_search, NULL, kb_search_cb,

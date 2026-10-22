@@ -8,32 +8,36 @@
 #   sonix_firmware_packer.sh   this script
 #   r3proii_original.upt       the stock firmware of the R3 Pro II
 #   r1_original.upt            the stock firmware of the R1
-#   sonix_player               the binary to install, the same one for both
+#   r3ii_2025_original.upt     the stock firmware of the R3 II 2025
+#   sonix_player               the binary to install, the same one for all
 #   sonix_launch               waits for the player and reboots when it exits
 #                              (optional: without it the launcher's shell does)
 #   kernel/xImage-R3PII        a kernel to install instead of the stock one
 #   kernel/xImage-R1           (optional, per model: without it the stock
-#                              kernel stays, untouched)
+#                              kernel stays, untouched -- as it does for the
+#                              R3 II 2025, whose drivers are HiBy's own)
 #   assets/
 #       R3PII/
 #       R1/
+#       R3II2025/
 #       |
 #       v
 #   r3proii.upt                one result per stock firmware present
 #   r1.upt
+#   r3ii_2025.upt
 #
 # A model whose stock firmware is not here is skipped with a warning, so
-# somebody who owns one of the two players can still run this and get theirs.
+# somebody who owns one of the players can still run this and get theirs.
 #
 # One complete tree per model, and no shared layer: too much of what goes into
 # an image belongs to the machine it is going into -- the touch driver is built
 # against that kernel, the boot logos are drawn for that panel, and the audio
-# pieces answer to that hardware. The files that really are the same in both,
-# the language files and some of the images, are cheaper to copy than a rule
-# about which layer wins.
+# pieces answer to that hardware. The files that really are the same in all of
+# them, the language files and some of the images, are cheaper to copy than a
+# rule about which layer wins.
 #
-# What that costs is the two trees drifting apart, so before each image this
-# script lists the files the OTHER model has and this one does not. Usually
+# What that costs is the trees drifting apart, so before each image this
+# script lists the files the OTHER models have and this one does not. Usually
 # that is deliberate; the once it is not, it says so.
 #
 # No questions asked: run it and it does the lot.
@@ -76,6 +80,7 @@ KERNEL_DIR="$SCRIPT_DIR/kernel"
 MODELS=(
 	"R3PII|r3proii_original.upt|r3proii.upt|HiBy R3 Pro II"
 	"R1|r1_original.upt|r1.upt|HiBy R1"
+	"R3II2025|r3ii_2025_original.upt|r3ii_2025.upt|HiBy R3 II 2025"
 )
 
 WORK_DIR="$SCRIPT_DIR/temp"
@@ -96,8 +101,9 @@ SYSTEM_INFO="usr/resource/sonix/components/system-info.json"
 #
 # Note what is NOT in this list: usr/resource/sonix, which is where the assets
 # folder lands. The stock fonts and strings live one level above it and go;
-# ours stay.
-STOCK_UI_DIRS=(usr/resource/litegui usr/resource/layout usr/resource/str usr/resource/fonts)
+# ours stay. R3II_2025_fonts is the R3 II 2025's second set of stock fonts.
+STOCK_UI_DIRS=(usr/resource/litegui usr/resource/layout usr/resource/str usr/resource/fonts
+	usr/resource/R3II_2025_fonts)
 
 # The working folders always go, whether the run succeeded or not.
 cleanup() { rm -rf "$WORK_DIR" "$SQUASH_DIR" "$MERGED_SQUASHFS" 2>/dev/null || true; }
@@ -268,7 +274,7 @@ for entry in "${MODELS[@]}"; do
 done
 
 [ -n "$BUILDABLE" ] || die "no stock firmware to start from. Put at least one of
-  r3proii_original.upt / r1_original.upt next to this script."
+  r3proii_original.upt / r1_original.upt / r3ii_2025_original.upt next to this script."
 
 BUILD_STAMP="$(get_stamp "$PLAYER_BIN")"
 TODAY="$(date +%d%m%Y)"
@@ -295,7 +301,7 @@ say ""
 # One image, start to finish
 # ==========================================================================
 # Called once per model. Everything it touches -- the work folder, the unpacked
-# rootfs -- is torn down by cleanup() before the next model starts, so the two
+# rootfs -- is torn down by cleanup() before the next model starts, so the
 # builds cannot see each other's files.
 build_one() {
 	local MODEL_DIR="$1" MODEL_NAME="$2"

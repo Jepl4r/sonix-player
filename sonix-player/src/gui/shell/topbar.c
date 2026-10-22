@@ -15,6 +15,7 @@
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/shell/quickpanel.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/remote/airplay.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/audio/audio.h"
@@ -36,7 +37,7 @@
 // The battery bitmaps are rendered from 24x24 SVGs at this size. The shell is
 // drawn by the icon; the charge level is a plain rectangle behind it, showing
 // through the icon's transparent middle.
-#define BATTERY_ICON_SIZE 38
+#define BATTERY_ICON_SIZE ui_px(38)
 
 // The inner cavity of the battery shell, in the SVG's 24x24 coordinates: the
 // body rect runs 2..18 with a 2px stroke centred on it, so the hole is 3..17
@@ -79,13 +80,13 @@
 // How far down a press has to end, with no drag having started, for the pull on
 // the status bar to count as a flick and open the control centre anyway.
 // Comfortably more than the wobble of a tap.
-#define FLICK_OPEN_PX 24
+#define FLICK_OPEN_PX ui_px(24)
 
 // Over the player's artwork the bar blurs whatever is drawn under it, as it is
 // drawn, and darkens it towards black about as far as the block behind the
 // player's controls (BACKDROP_BRIGHTNESS_PCT in cover.c), so the white type
 // reads on any picture.
-#define OVER_ART_BLUR_RADIUS 24
+#define OVER_ART_BLUR_RADIUS ui_px(24)
 #define OVER_ART_DIM_OPA 148
 
 static lv_obj_t *top_bar;
@@ -883,7 +884,7 @@ void topbar_init(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(container_left, 0, 0);
 	lv_obj_set_style_radius(container_left, 0, 0);
 	lv_obj_set_style_pad_all(container_left, 0, 0);
-	lv_obj_set_style_pad_gap(container_left, 8, 0);
+	lv_obj_set_style_pad_gap(container_left, ui_px(8), 0);
 	lv_obj_set_scrollable(container_left, false);
 	// Not clickable, so presses reach the bar itself, whose drag handler pulls
 	// the control panel down.
@@ -942,7 +943,7 @@ void topbar_init(gui_config_t *cfg) {
 	// The container's default padding would push the battery about ten pixels
 	// further in than the page padding everything else lines up with.
 	lv_obj_set_style_pad_all(container_right, 0, 0);
-	lv_obj_set_style_pad_gap(container_right, 8, 0);
+	lv_obj_set_style_pad_gap(container_right, ui_px(8), 0);
 	lv_obj_set_scrollable(container_right, false);
 	lv_obj_set_clickable(container_right, false);
 	lv_obj_set_flex_flow(container_right, LV_FLEX_FLOW_ROW);

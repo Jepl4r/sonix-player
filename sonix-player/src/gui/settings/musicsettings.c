@@ -24,6 +24,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/playback/sleeptimer.h"
@@ -41,8 +42,9 @@
 lv_obj_t *musicsettings_screen;
 
 // ---------------------------------------------------------------------------
-// Filters: the CS43198's four digital filters, the same set the stock player
-// exposes (ALSA "Digital Filter" 0..3, decompile FUN_004803e0).
+// Filters: the DAC's digital filters, the same set the stock player exposes.
+// The CS43198's four (ALSA "Digital Filter" 0..3, decompile FUN_004803e0), the
+// CS43131's the same four, and the ES9219's two (alsa-controls.c).
 // ---------------------------------------------------------------------------
 
 static lv_obj_t *dacfilter_screen;
@@ -55,9 +57,31 @@ static const char *const FILTER_NAMES[4] = {
 	"musicsettings_slow_roll_off_phase_compensated",
 };
 
+static const char *const ES9219_FILTER_NAMES[2] = {
+	"musicsettings_apodizing_fast_roll_off",
+	"musicsettings_linear_phase_fast_roll_off",
+};
+
+static const char *filter_name(int i) { return alsa_board_is_es9219() ? ES9219_FILTER_NAMES[i] : FILTER_NAMES[i]; }
+
+// The saved choice, or the first filter when it names one this DAC does not
+// have, as the stock player does: one saved on the R3 Pro II's four comes back
+// as the default here.
+static int saved_filter(void) {
+	int filter = (int)config_get_int("audio", "dac_filter", 0);
+	return filter >= 0 && filter < dac_filter_count() ? filter : 0;
+}
+
+static const char *filter_note(void) {
+	if (alsa_board_is_cs43131()) {
+		return "musicsettings_filter_note_cs43131";
+	}
+	return alsa_board_is_es9219() ? "musicsettings_filter_note_es9219" : "musicsettings_filter_note";
+}
+
 static void refresh_filter_checks(void) {
-	int active = (int)config_get_int("audio", "dac_filter", 0);
-	for (int i = 0; i < 4; i++) {
+	int active = saved_filter();
+	for (int i = 0; i < dac_filter_count(); i++) {
 		if (filter_checks[i]) {
 			lv_label_set_text(filter_checks[i], i == active ? "\xE2\x9C\x93" : "");
 			lv_obj_set_style_text_color(filter_checks[i], theme()->accent, 0);
@@ -78,8 +102,8 @@ static void build_filter_page(gui_config_t *cfg) {
 	dacfilter_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(dacfilter_screen, cfg, "musicsettings_filters");
 
-	for (int i = 0; i < 4; i++) {
-		settingsrow_add(container, FILTER_NAMES[i], &filter_checks[i], filter_row_cb, (void *)(intptr_t)i);
+	for (int i = 0; i < dac_filter_count(); i++) {
+		settingsrow_add(container, filter_name(i), &filter_checks[i], filter_row_cb, (void *)(intptr_t)i);
 		lv_obj_set_style_text_font(filter_checks[i], &font_ui_26, 0);
 	}
 
@@ -89,7 +113,7 @@ static void build_filter_page(gui_config_t *cfg) {
 	lv_obj_set_width(note, lv_pct(100));
 	lv_obj_add_style(note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(note, &font_ui_22, 0);
-	lv_label_set_text(note, tr(alsa_board_is_cs43131() ? "musicsettings_filter_note_cs43131" : "musicsettings_filter_note"));
+	lv_label_set_text(note, tr(filter_note()));
 
 	refresh_filter_checks();
 	switcher_attach_back_gesture(dacfilter_screen);
@@ -781,12 +805,12 @@ static void dsd_gain_pick_cb(lv_event_t *e) {
 static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph,
 							   lv_event_cb_t cb, void *user) {
 	lv_obj_t *button = lv_btn_create(screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (ui_px(56) + ui_px(6)), cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, user);
 
 	lv_obj_t *icon = lv_image_create(button);
@@ -861,13 +885,13 @@ static void build_mseb_page(gui_config_t *cfg) {
 	for (int i = 0; i < MSEB_BANDS; i++) {
 		lv_obj_t *card = lv_obj_create(container);
 		lv_obj_set_width(card, lv_pct(100));
-		lv_obj_set_height(card, 104);
+		lv_obj_set_height(card, ui_px(104));
 		lv_obj_add_style(card, &theme_style_card, 0);
-		lv_obj_set_style_radius(card, 12, 0);
+		lv_obj_set_style_radius(card, ui_px(12), 0);
 		lv_obj_set_style_border_width(card, 0, 0);
 		lv_obj_set_style_shadow_width(card, 0, 0);
-		lv_obj_set_style_pad_hor(card, 20, 0);
-		lv_obj_set_style_pad_ver(card, 12, 0);
+		lv_obj_set_style_pad_hor(card, ui_px(20), 0);
+		lv_obj_set_style_pad_ver(card, ui_px(12), 0);
 		lv_obj_set_scrollable(card, false);
 		lv_obj_set_event_bubble(card, true);
 
@@ -885,8 +909,8 @@ static void build_mseb_page(gui_config_t *cfg) {
 
 		lv_obj_t *slider = lv_slider_create(card);
 		lv_obj_set_width(slider, lv_pct(100));
-		lv_obj_set_height(slider, 10);
-		lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, -10);
+		lv_obj_set_height(slider, ui_px(10));
+		lv_obj_align(slider, LV_ALIGN_BOTTOM_MID, 0, ui_px(-10));
 		lv_slider_set_range(slider, -mseb_get_range(), mseb_get_range());
 		// MSEB sliders are bipolar: zero sits in the middle and the coloured
 		// bar grows from there, forwards for positives and backwards for
@@ -903,8 +927,8 @@ static void build_mseb_page(gui_config_t *cfg) {
 		lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 		lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
 		theme_apply_slider_knob(slider);
-		lv_obj_set_style_pad_all(slider, 7, LV_PART_KNOB);
-		lv_obj_set_style_shadow_width(slider, 6, LV_PART_KNOB);
+		lv_obj_set_style_pad_all(slider, ui_px(7), LV_PART_KNOB);
+		lv_obj_set_style_shadow_width(slider, ui_px(6), LV_PART_KNOB);
 		lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
 		lv_obj_set_style_shadow_color(slider, lv_color_black(), LV_PART_KNOB);
 		// Drag the knob, do not tap the track. A plain LVGL slider jumps its
@@ -915,7 +939,7 @@ static void build_mseb_page(gui_config_t *cfg) {
 		lv_obj_set_adv_hittest(slider, true);
 		// The knob is 24 px across, and with ADV_HITTEST the extended click area
 		// belongs to the knob alone rather than padding the whole track.
-		lv_obj_set_ext_click_area(slider, 18);
+		lv_obj_set_ext_click_area(slider, ui_px(18));
 		lv_obj_add_event_cb(slider, mseb_slider_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
 		lv_obj_add_event_cb(slider, mseb_released_cb, LV_EVENT_RELEASED, NULL);
 
@@ -1045,12 +1069,12 @@ static void build_eq_page(gui_config_t *cfg) {
 	// The band card: ten vertical sliders side by side, frequency underneath.
 	lv_obj_t *card = lv_obj_create(container);
 	lv_obj_set_width(card, lv_pct(100));
-	lv_obj_set_height(card, 360);
+	lv_obj_set_height(card, ui_px(360));
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 14, 0);
+	lv_obj_set_style_pad_all(card, ui_px(14), 0);
 	lv_obj_set_style_pad_gap(card, 0, 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_ROW);
@@ -1058,17 +1082,17 @@ static void build_eq_page(gui_config_t *cfg) {
 
 	for (int i = 0; i < EQ_BANDS; i++) {
 		lv_obj_t *column = lv_obj_create(card);
-		lv_obj_set_size(column, 38, lv_pct(100));
+		lv_obj_set_size(column, ui_px(38), lv_pct(100));
 		lv_obj_set_style_bg_opa(column, 0, 0);
 		lv_obj_set_style_border_width(column, 0, 0);
 		lv_obj_set_style_pad_all(column, 0, 0);
-		lv_obj_set_style_pad_gap(column, 8, 0);
+		lv_obj_set_style_pad_gap(column, ui_px(8), 0);
 		lv_obj_set_scrollable(column, false);
 		lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
 		lv_obj_set_flex_align(column, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 
 		lv_obj_t *slider = lv_slider_create(column);
-		lv_obj_set_size(slider, 6, lv_pct(80));
+		lv_obj_set_size(slider, ui_px(6), lv_pct(80));
 		lv_slider_set_range(slider, EQ_GAIN_MIN_DB, EQ_GAIN_MAX_DB);
 		lv_slider_set_value(slider, eq_get_band(i), LV_ANIM_OFF);
 
@@ -1080,12 +1104,12 @@ static void build_eq_page(gui_config_t *cfg) {
 		lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 		lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
 		theme_apply_slider_knob(slider);
-		lv_obj_set_style_pad_all(slider, 7, LV_PART_KNOB);
-		lv_obj_set_style_shadow_width(slider, 6, LV_PART_KNOB);
+		lv_obj_set_style_pad_all(slider, ui_px(7), LV_PART_KNOB);
+		lv_obj_set_style_shadow_width(slider, ui_px(6), LV_PART_KNOB);
 		lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
 		lv_obj_set_style_shadow_color(slider, lv_color_black(), LV_PART_KNOB);
 		// A 6 px trough is no touch target; each column's full width is.
-		lv_obj_set_ext_click_area(slider, 16);
+		lv_obj_set_ext_click_area(slider, ui_px(16));
 		lv_obj_add_event_cb(slider, eq_slider_cb, LV_EVENT_VALUE_CHANGED, (void *)(intptr_t)i);
 
 		eq_sliders[i] = slider;
@@ -2006,14 +2030,17 @@ void musicsettings_init(gui_config_t *cfg) {
 	settingsrow_add(container, "musicsettings_filters", NULL, switch_screen_cb, dacfilter_screen);
 
 	// Non-oversampling off and dynamic-range enhancement on by default, like the
-	// stock player. The R1's CS43131 has no DRE: no row there, and
-	// alsa-controls.c keeps it off.
-	settingsrow_toggle(container, "musicsettings_nos", &nos_switch, nos_toggle_cb);
-	if (config_get_int("audio", "dac_nos", 0)) {
-		lv_obj_add_state(nos_switch, LV_STATE_CHECKED);
+	// stock player. The R1's CS43131 has no DRE and the R3 II 2025's ES9219
+	// neither DRE nor NOS: no row for what the DAC lacks, and alsa-controls.c
+	// keeps it off.
+	if (dac_has_nos()) {
+		settingsrow_toggle(container, "musicsettings_nos", &nos_switch, nos_toggle_cb);
+		if (config_get_int("audio", "dac_nos", 0)) {
+			lv_obj_add_state(nos_switch, LV_STATE_CHECKED);
+		}
 	}
 
-	if (!alsa_board_is_cs43131()) {
+	if (dac_has_dre()) {
 		settingsrow_toggle(container, "musicsettings_dac_dre", &dre_switch, dre_toggle_cb);
 		if (config_get_int("audio", "dac_dre", 1)) {
 			lv_obj_add_state(dre_switch, LV_STATE_CHECKED);
@@ -2029,7 +2056,7 @@ void musicsettings_init(gui_config_t *cfg) {
 	// keep the two consistent.
 	fade_apply_setting();
 
-	set_dac_filter((int)config_get_int("audio", "dac_filter", 0));
+	set_dac_filter(saved_filter());
 	set_dac_dre((int)config_get_int("audio", "dac_dre", 1));
 	set_dac_nos((int)config_get_int("audio", "dac_nos", 0));
 	set_high_gain((int)config_get_int("audio", "high_gain", 0));

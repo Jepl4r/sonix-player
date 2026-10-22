@@ -30,11 +30,17 @@ lv_obj_t *flappybird_screen;
 // drawing is shown at four times its size, drawn straight into `frame`. The
 // background and the ground are kept already widened four times
 // (`bg_wide`, `ground_wide`), so a row of either is one or two memcpy.
+//
+// On a panel 320 px wide it is twice its size instead: the largest whole
+// number that does not show less of the game than the R3 Pro II does.
 
 #define ART_DIR SONIX_RESOURCE_DIR "/gui/flappybird"
 #define ART_MAX_BYTES (256 * 1024)
 
-#define SCALE 4
+// 4, or 2 on a panel 320 px wide (flappybird_init()).
+static int art_scale = 4;
+#define SCALE art_scale
+#define SCALE_MAX 4
 
 #define STEP_US 16667
 #define MAX_STEPS_PER_TICK 4
@@ -132,16 +138,18 @@ lv_obj_t *flappybird_screen;
 
 // Screen positions, in panel pixels, for the 720-row panel. On a taller one
 // the menus and the labels move down by half the extra rows (layout_shift).
-#define TITLE_LOGO_Y 96
-#define TITLE_PLAY_ABOVE_GROUND 20
-#define CORNER_MARGIN 24
-#define SCORE_Y 40
-#define READY_LABEL_Y 100
-#define HOW_TO_ABOVE_GROUND 16
-#define READY_BIRD_ABOVE_HOW_TO 34
-#define OVER_LABEL_Y 60
-#define OVER_BOARD_Y 170
-#define OVER_BUTTONS_GAP 24
+// They are for drawings at four times their size, and follow SCALE.
+#define AT_SCALE(px) ((px) * SCALE / 4)
+#define TITLE_LOGO_Y AT_SCALE(96)
+#define TITLE_PLAY_ABOVE_GROUND AT_SCALE(20)
+#define CORNER_MARGIN AT_SCALE(24)
+#define SCORE_Y AT_SCALE(40)
+#define READY_LABEL_Y AT_SCALE(100)
+#define HOW_TO_ABOVE_GROUND AT_SCALE(16)
+#define READY_BIRD_ABOVE_HOW_TO AT_SCALE(34)
+#define OVER_LABEL_Y AT_SCALE(60)
+#define OVER_BOARD_Y AT_SCALE(170)
+#define OVER_BUTTONS_GAP AT_SCALE(24)
 #define BUTTON_PRESS_SHIFT SCALE
 
 // Artwork pixels between two digits: the running score's overlap by one, the
@@ -265,7 +273,7 @@ static bool sprite_load(sprite_t *s, const char *name) {
 }
 
 // Pixel pairs, so each artwork pixel goes in as two 32-bit stores.
-static void widen_row(uint16_t *dst, const uint16_t *src, int n) {
+static void widen_row_4x(uint16_t *dst, const uint16_t *src, int n) {
 	uint32_t *d = (uint32_t *)dst;
 	for (int x = 0; x < n; x++) {
 		uint32_t pair = (uint32_t)src[x] | ((uint32_t)src[x] << 16);
@@ -273,6 +281,17 @@ static void widen_row(uint16_t *dst, const uint16_t *src, int n) {
 		d[2 * x + 1] = pair;
 	}
 }
+
+// At 2x an artwork pixel is one pair, one 32-bit store.
+static void widen_row_2x(uint16_t *dst, const uint16_t *src, int n) {
+	uint32_t *d = (uint32_t *)dst;
+	for (int x = 0; x < n; x++) {
+		d[x] = (uint32_t)src[x] | ((uint32_t)src[x] << 16);
+	}
+}
+
+// The one for SCALE, chosen once in flappybird_init().
+static void (*widen_row)(uint16_t *dst, const uint16_t *src, int n) = widen_row_4x;
 
 static bool sprite_keep_wide(sprite_t *s) {
 	s->wide = malloc((size_t)s->w * s->h * SCALE * sizeof(uint16_t));
@@ -571,7 +590,7 @@ static uint16_t blend565(uint16_t fg, uint16_t bg, unsigned opa) {
 	return (uint16_t)((r << 11) | (g << 5) | b);
 }
 
-// `s` at four times its size with its top left at (x, y) on the panel, down
+// `s` at SCALE times its size with its top left at (x, y) on the panel, down
 // to row `y_end` (exclusive). Opaque runs go in with memcpy.
 static void blit4_clipped(const sprite_t *s, int x, int y, int y_end, unsigned opa) {
 	if (opa == 0) {
@@ -580,7 +599,7 @@ static void blit4_clipped(const sprite_t *s, int x, int y, int y_end, unsigned o
 	if (y_end > panel_h) {
 		y_end = panel_h;
 	}
-	uint32_t pairs[BG_W * SCALE / 2];
+	uint32_t pairs[BG_W * SCALE_MAX / 2];
 	for (int j = 0; j < s->h; j++) {
 		int top = y + j * SCALE;
 		if (top >= y_end) {
@@ -638,7 +657,7 @@ static void blit4_clipped(const sprite_t *s, int x, int y, int y_end, unsigned o
 
 static void blit4(const sprite_t *s, int x, int y, unsigned opa) { blit4_clipped(s, x, y, panel_h, opa); }
 
-// `s` at four times its size, centred on (cx, cy) and turned by `deg`,
+// `s` at SCALE times its size, centred on (cx, cy) and turned by `deg`,
 // positive anticlockwise. Nearest neighbour, so the pixels stay square.
 static void blit4_turned(const sprite_t *s, float cx, float cy, float deg) {
 	if (fabsf(deg) < 0.5f) {
@@ -792,7 +811,18 @@ static button_t button_at(const lv_point_t *p) {
 	static const button_t ALL[] = {BTN_PLAY, BTN_MENU, BTN_EXIT, BTN_SOUND};
 	for (size_t i = 0; i < sizeof(ALL) / sizeof(ALL[0]); i++) {
 		lv_area_t a;
-		if (button_rect(ALL[i], &a) && p->x >= a.x1 && p->x <= a.x2 && p->y >= a.y1 && p->y <= a.y2) {
+		if (!button_rect(ALL[i], &a)) {
+			continue;
+		}
+		// At twice their size the two corner buttons are smaller than a
+		// fingertip, so there a press reaches out to the edges of the panel.
+		if (SCALE == 2 && (ALL[i] == BTN_EXIT || ALL[i] == BTN_SOUND)) {
+			a.x1 -= CORNER_MARGIN;
+			a.y1 -= CORNER_MARGIN;
+			a.x2 += CORNER_MARGIN;
+			a.y2 += CORNER_MARGIN;
+		}
+		if (p->x >= a.x1 && p->x <= a.x2 && p->y >= a.y1 && p->y <= a.y2) {
 			return ALL[i];
 		}
 	}
@@ -1539,9 +1569,11 @@ void flappybird_open(void) {
 void flappybird_init(gui_config_t *cfg) {
 	panel_w = (int)cfg->screen_width;
 	panel_h = (int)cfg->screen_height;
+	art_scale = panel_w >= 480 ? 4 : 2;
+	widen_row = art_scale == 2 ? widen_row_2x : widen_row_4x;
 	view_h = panel_h / SCALE;
 	ground_top = view_h - GROUND_H;
-	layout_shift = (panel_h - 720) / 2;
+	layout_shift = (panel_h - AT_SCALE(720)) / 2;
 	// The background stands on the bottom of the panel.
 	bg_row0 = BG_H - view_h;
 
