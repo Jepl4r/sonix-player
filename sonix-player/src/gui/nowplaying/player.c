@@ -660,7 +660,7 @@ static bool audiobook_auto_stop(const device_state_t *state) {
 		return false;
 	}
 	double end = current_chapter_end(state->progress_current_secs);
-	if (end > 0 && state->progress_current_secs >= end - 0.5) {
+	if (end > 0 && state->progress_current_secs >= end - 0.5 && !audiobook_rewind_floor_beyond(end)) {
 		device_state_pause_book_at(end);
 		return true;
 	}
@@ -4968,7 +4968,7 @@ static void more_btn_event_cb(lv_event_t *e) {
 		popover_item_t items[sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0])];
 		int count = 0;
 		for (size_t i = 0; i < sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0]); i++) {
-			if (BOOK_ITEMS[i].action == book_back_before_jump_action && !audiobook_jump_origin(NULL, 0, NULL))
+			if (BOOK_ITEMS[i].action == book_back_before_jump_action && (audio_get_status() == AUDIO_STATUS_STOPPED || !audiobook_jump_origin(NULL, 0, NULL)))
 				continue;
 			if (BOOK_ITEMS[i].action == book_work_out_length_action && (!audiobook_lengths_missing() || audiobook_working_out()))
 				continue;

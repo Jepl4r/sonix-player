@@ -869,6 +869,29 @@ static void jump_origin_lifecycle(void) {
 	puts("PASS audiobook-jump-origin-lifecycle");
 }
 
+static void rewind_floor_boundaries(void) {
+  audiobook_track_changed(NULL);
+  audiobook_track_changed("/other.m4b");
+  assert(!audiobook_rewind_floor_beyond(100));
+  audiobook_set_rewind_floor("/other.m4b", 125);
+  assert(audiobook_rewind_floor_beyond(100));
+  assert(!audiobook_rewind_floor_beyond(125));
+  audiobook_note_position(125, 600, true);
+  assert(!audiobook_rewind_floor_beyond(100));
+  audiobook_track_changed("/book/2.mp3");
+  audiobook_set_rewind_floor("/book/2.mp3", 10);
+  audiobook_track_changed("/book/1.mp3");
+  set_parts(3, 1);
+  assert(audiobook_rewind_floor_beyond(600));
+  audiobook_track_changed("/book/2.mp3");
+  set_parts(3, 2);
+  assert(audiobook_rewind_floor_beyond(0));
+  assert(!audiobook_rewind_floor_beyond(10));
+  audiobook_clear_rewind_floor();
+  assert(!audiobook_rewind_floor_beyond(0));
+  puts("PASS audiobook-rewind-floor-boundaries");
+}
+
 int main(void) {
 	rewind_break_rule();
 	rewind_long_setting();
@@ -898,5 +921,6 @@ int main(void) {
 	work_out_cancel();
 	rewind_floor_and_boot();
 	jump_origin_lifecycle();
-  return 0;
+        rewind_floor_boundaries();
+        return 0;
 }

@@ -24,6 +24,7 @@
 #include "src/system/streaming/radio.h"
 #include "src/system/streaming/tidalcache.h"
 
+#include <float.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -1472,7 +1473,7 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 		if (!playlist_advance_auto(next, sizeof(next))) {
 			return false;
 		}
-		if (audiobook_stop_at_chapter_end()) {
+		if (audiobook_stop_at_chapter_end() && !audiobook_rewind_floor_beyond(DBL_MAX)) {
 			load_paused(next);
 		} else {
 			load_and_play(next);

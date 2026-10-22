@@ -40,6 +40,35 @@ bool audiobook_resume_point(const char *book, char *file, size_t size,
   return true;
 }
 
+bool audiobook_stop_at_chapter_end(void) { return true; }
+int audiobook_chapter_at(double seconds) { return 0; }
+bool audiobook_chapter(int index, char *title, size_t size, double *seconds) {
+  *seconds = 200;
+  return index == 1;
+}
+bool audiobook_rewind_floor_beyond(double seconds) {
+  return floor_armed && seconds < 250;
+}
+static bool audiobook_mode = true;
+static bool podcast_mode;
+static bool menu_has_back;
+static void book_chapters_action(void *user) {}
+static void book_add_bookmark_action(void *user) {}
+static void book_bookmarks_action(void *user) {}
+static void book_summary_action(void *user) {}
+static void book_back_before_jump_action(void *user) {}
+static void book_work_out_length_action(void *user) {}
+bool audiobook_lengths_missing(void) { return false; }
+bool audiobook_working_out(void) { return false; }
+void *lv_event_get_current_target(lv_event_t *event) { return NULL; }
+void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
+  menu_has_back = false;
+  for (int i = 0; i < count; i++)
+    if (!strcmp(items[i].label, "audiobook_back_before_jump"))
+      menu_has_back = true;
+}
+void trackmenu_open_queue(void) {}
+void trackmenu_open(lv_obj_t *anchor) {}
 static double current_total_length;
 static void update_progress(void) {}
 #include "gui-player-navigation.h"
@@ -73,6 +102,30 @@ int main(int argc, char **argv) {
     player_step_chapter(1);
     assert(floor_armed && jump_marks == before);
     puts("PASS chapter-failed-load-keeps-floor-and-origin");
+    return 0;
+  }
+  if (!strcmp(argv[1], "stopped-menu")) {
+    test_status = AUDIO_STATUS_STOPPED;
+    more_btn_event_cb(NULL);
+    assert(!menu_has_back && origin_file[0]);
+    test_status = AUDIO_STATUS_PAUSED;
+    more_btn_event_cb(NULL);
+    assert(menu_has_back);
+    test_status = AUDIO_STATUS_PLAYING;
+    more_btn_event_cb(NULL);
+    assert(menu_has_back);
+    puts("PASS back-menu-hidden-while-stopped");
+    return 0;
+  }
+  if (!strcmp(argv[1], "auto-stop")) {
+    device_state_t state = {.status = AUDIO_STATUS_PLAYING,
+                            .progress_current_secs = 199.7};
+    test_status = AUDIO_STATUS_PLAYING;
+    assert(!audiobook_auto_stop(&state));
+    floor_armed = false;
+    assert(audiobook_auto_stop(&state));
+    assert(test_status == AUDIO_STATUS_PAUSED && sought == 200);
+    puts("PASS chapter-auto-stop-yields-to-floor");
     return 0;
   }
   if (!strcmp(argv[1], "skip-origin")) {

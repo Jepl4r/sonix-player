@@ -48,9 +48,11 @@ void audiobook_mark_jump(const char *file, double seconds) {
 bool audiobook_jump_origin(char *file, size_t size, double *seconds) {
 	if (!origin_file[0])
 		return false;
-	snprintf(file, size, "%s", origin_file);
-	*seconds = origin_seconds;
-	return true;
+        if (file && size)
+          snprintf(file, size, "%s", origin_file);
+        if (seconds)
+          *seconds = origin_seconds;
+        return true;
 }
 void audiobook_clear_jump(void) { origin_file[0] = 0; }
 

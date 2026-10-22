@@ -8,6 +8,8 @@
 // Automatic rewinds retain the original saved point until caught up or explicitly cleared.
 void audiobook_set_rewind_floor(const char *file, double seconds);
 void audiobook_clear_rewind_floor(void);
+// True while replay must cross this position (or this part's end) to regain the floor.
+bool audiobook_rewind_floor_beyond(double seconds);
 void audiobook_note_boot_break(time_t last_played);
 double audiobook_take_boot_break(void);
 

@@ -415,6 +415,25 @@ void audiobook_clear_rewind_floor(void) {
 	rewind_floor_file[0] = '\0';
 	pthread_mutex_unlock(&lock);
 }
+bool audiobook_rewind_floor_beyond(double seconds) {
+	pthread_mutex_lock(&lock);
+	bool beyond = false;
+	if (rewind_floor_file[0] && current_is_book && strcmp(current_book, rewind_floor_book) == 0) {
+		if (strcmp(current_path, rewind_floor_file) == 0) {
+			beyond = rewind_floor_seconds > seconds;
+		} else if (part_index >= 0) {
+			for (int i = part_index + 1; i < part_count; i++) {
+				if (strcmp(parts[i].path, rewind_floor_file) == 0) {
+					beyond = true;
+					break;
+				}
+			}
+		}
+	}
+	pthread_mutex_unlock(&lock);
+	return beyond;
+}
+
 void audiobook_note_boot_break(time_t last_played) {
 	double gap = difftime(time(NULL), last_played);
 	pthread_mutex_lock(&lock);
