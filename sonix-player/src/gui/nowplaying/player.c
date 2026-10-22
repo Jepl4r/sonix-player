@@ -919,7 +919,7 @@ static void update_sleep_label(void) {
 		if (strcmp(lv_label_get_text(queue_position_label), text) != 0) {
 			lv_label_set_text(queue_position_label, text);
 		}
-		lv_obj_set_style_image_recolor(sleep_icon, lv_color_make(100, 100, 100), 0);
+		lv_obj_set_style_image_recolor(sleep_icon, chrome_over_cover ? lv_color_white() : theme()->text_primary, 0);
 		set_sleep_icon(&icon_sleep_audiobook_quick);
 	} else {
 		update_queue_position();
@@ -1159,6 +1159,8 @@ static void set_over_cover(bool on) {
 
 	// The floating chevron parks over the artwork's top-left corner.
 	back_btn_over_cover(on);
+	update_sleep_label();
+	update_speed_button();
 }
 
 // Told before the loaded track's artwork is freed. The screensaver borrows
@@ -4323,7 +4325,8 @@ static void update_speed_button(void) {
 		return;
 	}
 	bool normal = speed_current_permille() == AUDIOBOOK_SPEED_NORMAL;
-	lv_obj_set_style_image_recolor(speed_btn_icon, normal ? lv_color_make(100, 100, 100) : chrome_accent(), 0);
+	lv_color_t available = chrome_over_cover ? lv_color_white() : theme()->text_primary;
+	lv_obj_set_style_image_recolor(speed_btn_icon, normal ? available : chrome_accent(), 0);
 	lv_obj_set_style_image_recolor_opa(speed_btn_icon, LV_OPA_COVER, 0);
 }
 
