@@ -1317,8 +1317,8 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 	// A book ends where it ends. The queue behind a book in one file is its
 	// folder, and on a card that folder is a shelf of other books -- rolling
 	// straight into somebody else's novel at the end of this one is not what
-	// finishing a book should do. (The position was already cleared by then,
-	// so opening it again starts it over.)
+	// finishing a book should do. The caller records the natural end and puts
+	// its position back to the start when there is no next part.
 	//
 	// A folder book goes on into its next file: its queue is its parts. With
 	// "stop at end of chapter" on, that file is loaded paused at its start,

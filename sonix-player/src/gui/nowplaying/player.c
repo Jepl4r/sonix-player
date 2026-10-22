@@ -4355,6 +4355,12 @@ static void handle_track_finished(void) {
 	if (device_state_advance_auto(NULL, 0)) {
 		refresh_now_playing();
 	} else {
+		if (audiobook_is_playing() && !audiobook_has_next_part()) {
+			// Keep later checkpoints at the start too: the stopped engine still
+			// reports the end of the file until its position is moved.
+			audio_seek(0);
+			audiobook_note_finished();
+		}
 		// The queue ran out: the track it ended on went into the history.
 		trackmenu_notify_now_playing();
 	}

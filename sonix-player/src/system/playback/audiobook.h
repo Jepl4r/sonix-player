@@ -171,10 +171,12 @@ double audiobook_saved_position(const char *filepath);
 // background writer; `force` writes now, before returning -- used when
 // playback pauses or seeks, when the track changes, and on the way out.
 //
-// `total` is the book's length, and it is what makes a finished book start
-// over instead of resuming into its own last seconds; pass 0 when it is not
-// known yet.
+// `total` is retained for callers; a position never marks a book finished.
 void audiobook_note_position(double seconds, double total, bool force);
+
+// The loaded book reached its natural end. Marks it finished once and saves
+// zero in its first part, so the next listen starts from the beginning.
+void audiobook_note_finished(void);
 
 // The book loaded now and the file of it playing. False when no book is.
 bool audiobook_current_book(char *book_out, size_t book_size, char *file_out, size_t file_size);

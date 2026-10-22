@@ -19,11 +19,6 @@
 // pause, seek, stop -- are written before returning.
 #define SAVE_EVERY_SECONDS 10
 
-// Within this much of the end counts as finished: the last words of a book are
-// followed by credits nobody sits through, and a listener who stops there has
-// finished it.
-#define FINISHED_MARGIN 45.0
-
 typedef struct {
 	double start;
 	char title[192];
@@ -655,38 +650,36 @@ double audiobook_saved_position(const char *filepath) {
 	return seconds > 0 ? seconds : 0;
 }
 
-void audiobook_note_position(double seconds, double total, bool force) {
+// Only the natural end of the last part puts a book on the "Finished" shelf.
+// Its next listen starts at zero, in the first part of a folder book. Position
+// checkpoints, pauses and deliberate moves keep their place even near the end.
+void audiobook_note_finished(void) {
 	pthread_mutex_lock(&lock);
-	if (!current_is_book || seconds < 0) {
+	if (!current_is_book || finished_marked) {
 		pthread_mutex_unlock(&lock);
 		return;
 	}
 
-	// A book heard to the end goes onto the "Finished" shelf and its position
-	// goes back to zero. Both halves matter: keeping the position would drop
-	// anyone returning to it into its last few seconds, and zeroing it without
-	// the shelf mark would make a finished book look like one never opened.
-	//
-	// In a folder book only the end of the last part is the end of the book,
-	// and the book starts over from its first part.
-	bool last_part = part_count == 0 || part_index == part_count - 1;
+	char book[512];
 	char resume_file[512];
-	snprintf(resume_file, sizeof(resume_file), "%s", current_path);
-	if (last_part && total > FINISHED_MARGIN && seconds >= total - FINISHED_MARGIN) {
-		seconds = 0;
-		force = true;
-		if (part_count > 0) {
-			snprintf(resume_file, sizeof(resume_file), "%s", parts[0].path);
-		}
-		if (!finished_marked) {
-			finished_marked = true;
-			char done[512];
-			snprintf(done, sizeof(done), "%s", current_book);
-			pthread_mutex_unlock(&lock);
-			audiobookdb_mark_finished(done);
-			printf("audiobook: finished %s\n", done);
-			pthread_mutex_lock(&lock);
-		}
+	snprintf(book, sizeof(book), "%s", current_book);
+	snprintf(resume_file, sizeof(resume_file), "%s", part_count > 0 ? parts[0].path : current_path);
+	finished_marked = true;
+	last_save = time(NULL);
+	last_saved_position = 0;
+	pthread_mutex_unlock(&lock);
+
+	audiobookdb_save_position(book, resume_file, 0);
+	audiobookdb_mark_finished(book);
+	printf("audiobook: finished %s\n", book);
+}
+
+void audiobook_note_position(double seconds, double total, bool force) {
+	(void)total;
+	pthread_mutex_lock(&lock);
+	if (!current_is_book || seconds < 0) {
+		pthread_mutex_unlock(&lock);
+		return;
 	}
 
 	time_t now = time(NULL);
@@ -699,7 +692,9 @@ void audiobook_note_position(double seconds, double total, bool force) {
 	}
 
 	char book[512];
+	char resume_file[512];
 	snprintf(book, sizeof(book), "%s", current_book);
+	snprintf(resume_file, sizeof(resume_file), "%s", current_path);
 	last_save = now;
 	last_saved_position = seconds;
 	pthread_mutex_unlock(&lock);

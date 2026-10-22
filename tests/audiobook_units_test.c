@@ -9,6 +9,100 @@ int audiobookdb_parts_for_each(const char *book,
 }
 const char *tr(const char *key) { return key; }
 
+static int position_writes;
+static int position_queues;
+static int finished_calls;
+static char saved_book[512];
+static char saved_file[512];
+static char finished_book[512];
+static double saved_seconds;
+static void set_parts(int count, int index);
+
+void audiobookdb_save_position(const char *book, const char *file, double seconds) {
+	position_writes++;
+	snprintf(saved_book, sizeof(saved_book), "%s", book);
+	snprintf(saved_file, sizeof(saved_file), "%s", file);
+	saved_seconds = seconds;
+}
+
+void audiobookdb_queue_position(const char *book, const char *file, double seconds) {
+	position_queues++;
+	snprintf(saved_book, sizeof(saved_book), "%s", book);
+	snprintf(saved_file, sizeof(saved_file), "%s", file);
+	saved_seconds = seconds;
+}
+
+void audiobookdb_mark_finished(const char *book) {
+	finished_calls++;
+	snprintf(finished_book, sizeof(finished_book), "%s", book);
+}
+
+static void late_position_is_kept(void) {
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/other.m4b");
+	position_writes = position_queues = finished_calls = 0;
+	audiobook_note_position(50, 60, true);
+	assert(position_writes == 1 && position_queues == 0);
+	assert(saved_seconds == 50);
+	assert(strcmp(saved_book, "/other.m4b") == 0);
+	assert(strcmp(saved_file, "/other.m4b") == 0);
+	assert(finished_calls == 0);
+}
+
+static void natural_finish_starts_over(void) {
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/other.m4b");
+	position_writes = position_queues = finished_calls = 0;
+	audiobook_note_position(50, 60, true);
+	audiobook_note_finished();
+	assert(finished_calls == 1);
+	assert(strcmp(finished_book, "/other.m4b") == 0);
+	assert(position_writes == 2 && position_queues == 0);
+	assert(saved_seconds == 0);
+	assert(strcmp(saved_book, "/other.m4b") == 0);
+	assert(strcmp(saved_file, "/other.m4b") == 0);
+	audiobook_note_finished();
+	assert(finished_calls == 1 && position_writes == 2);
+}
+
+static void folder_finish_starts_at_first_part(void) {
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/book/2.mp3");
+	set_parts(3, 2);
+	position_writes = position_queues = finished_calls = 0;
+	audiobook_note_finished();
+	assert(finished_calls == 1);
+	assert(strcmp(finished_book, "/book") == 0);
+	assert(position_writes == 1 && position_queues == 0);
+	assert(saved_seconds == 0);
+	assert(strcmp(saved_book, "/book") == 0);
+	assert(strcmp(saved_file, "/book/0.mp3") == 0);
+	audiobook_note_finished();
+	audiobook_note_position(0, 60, true);
+	assert(finished_calls == 1 && position_writes == 1);
+	audiobook_track_changed("/song.mp3");
+	audiobook_note_finished();
+	assert(finished_calls == 1 && position_writes == 1);
+}
+
+static void checkpoints_do_not_finish(void) {
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/book/2.mp3");
+	set_parts(3, 2);
+	position_writes = position_queues = finished_calls = 0;
+	audiobook_note_position(50, 60, false);
+	assert(position_queues == 1 && position_writes == 0);
+	assert(saved_seconds == 50 && finished_calls == 0);
+	assert(strcmp(saved_file, "/book/2.mp3") == 0);
+	audiobook_note_position(55, 60, false);
+	assert(position_queues == 1);
+	audiobook_note_position(55, 60, true);
+	assert(position_writes == 1 && saved_seconds == 55);
+	audiobook_note_position(60, 60, true);
+	assert(position_writes == 2 && saved_seconds == 60);
+	assert(finished_calls == 0);
+}
+
 // The database side of the per-book speed: "/book" has 1500 stored, the rest
 // none. Each write is recorded.
 static int get_speed_calls;
@@ -369,5 +463,9 @@ int main(void) {
   eq_setting();
   eq_apply();
   speed_per_book();
+	late_position_is_kept();
+	natural_finish_starts_over();
+	folder_finish_starts_at_first_part();
+	checkpoints_do_not_finish();
   return 0;
 }
