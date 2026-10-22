@@ -8,6 +8,7 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/growfile.h"
+#include "src/system/device/clock.h"
 #include "src/system/device/system.h"
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
@@ -135,6 +136,7 @@ static bool remember_should_write(remember_state_t *st, const char *file, audio_
 }
 
 static uint32_t remember_now_ms(void) {
+	// Persistence intervals use MONOTONIC; rewind breaks use BOOTTIME below.
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
@@ -148,7 +150,7 @@ double device_state_break_seconds(void) {
 	pthread_mutex_lock(&break_lock);
 	// Observe the engine inside the lock; GUI snapshots may already be stale.
 	audio_status_t status = radio_is_active() ? AUDIO_STATUS_STOPPED : audio_get_status();
-	uint32_t now = remember_now_ms();
+	uint32_t now = clock_boottime_ms();
 	if (status == AUDIO_STATUS_PAUSED) {
 		if (break_last_status != AUDIO_STATUS_PAUSED)
 			paused_since_ms = now;
@@ -390,6 +392,7 @@ void device_state_get(device_state_t *out) {
 		out->metadata = current_metadata;
 	}
 
+	// Observe pause transitions using BOOTTIME so the break includes suspend.
 	device_state_break_seconds();
 
 	char *battery = read_battery_percent();
@@ -1888,6 +1891,7 @@ static void sample_sleep_checkpoint(long long deadline_ms) {
 		return;
 	}
 	struct timespec ts;
+	// Sleep deadlines and fade use MONOTONIC, unlike rewind breaks.
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
 	double seconds = 0, total = 0;

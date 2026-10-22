@@ -1,6 +1,23 @@
 #include <assert.h>
 #include <time.h>
 static long long test_now_ms;
+static unsigned break_clock_reads;
+static int test_break_clock_gettime(clockid_t clock, struct timespec *ts) {
+#ifdef CLOCK_BOOTTIME
+	assert(clock == CLOCK_BOOTTIME);
+#else
+	assert(clock == CLOCK_MONOTONIC);
+#endif
+	break_clock_reads++;
+	ts->tv_sec = test_now_ms / 1000;
+	ts->tv_nsec = (test_now_ms % 1000) * 1000000;
+	return 0;
+}
+#define clock_gettime test_break_clock_gettime
+#include "../sonix-player/src/system/device/clock.h"
+#undef clock_gettime
+
+// Position persistence and sleep-checkpoint deadlines stay on MONOTONIC.
 static int test_clock_gettime(clockid_t clock, struct timespec *ts) {
 	assert(clock == CLOCK_MONOTONIC);
 	ts->tv_sec = test_now_ms / 1000;
@@ -245,7 +262,9 @@ int audiobook_rewind_for_break(double seconds, int short_s, int long_s) {
 
 static void rewind_after_break(void) {
 	device_state_t state;
+	unsigned reads_before = break_clock_reads;
 	assert(device_state_break_seconds() == 0);
+	assert(break_clock_reads == reads_before + 1);
 	device_state_get(&state);
 	test_now_ms = 1000;
 	assert(device_state_toggle_play_pause() == AUDIO_STATUS_PAUSED);

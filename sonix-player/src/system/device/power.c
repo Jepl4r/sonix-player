@@ -267,21 +267,6 @@ static void set_indevs_enabled(bool enable) {
 	}
 }
 
-// CLOCK_BOOTTIME, which -- unlike lv_tick_get()'s CLOCK_MONOTONIC -- keeps
-// counting while the SoC is suspended. Everything measured in wall-clock
-// terms (the automatic shutdown) has to use this one, or a device that spends
-// the night suspended would come back thinking no time had passed.
-static uint32_t boottime_ms(void) {
-	struct timespec ts;
-#ifdef CLOCK_BOOTTIME
-	if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
-		return (uint32_t)(ts.tv_sec * 1000) + (uint32_t)(ts.tv_nsec / 1000000);
-	}
-#endif
-	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint32_t)(ts.tv_sec * 1000) + (uint32_t)(ts.tv_nsec / 1000000);
-}
-
 // current idle time in ms considering both touch (LVGL) and physical buttons
 static uint32_t input_idle_ms(uint32_t now) {
 	uint32_t touch_idle = lv_display_get_inactive_time(g_disp);
@@ -978,7 +963,7 @@ static void rtc_alarm_arm(void) {
 
 	long auto_off_s = 0;
 	if (g_auto_off_enabled && g_auto_off_ms > 0) {
-		uint32_t idle_wall = boottime_ms() - g_last_active_boot_ms;
+		uint32_t idle_wall = clock_boottime_ms() - g_last_active_boot_ms;
 		// Already expired: the normal awake tick handles it.
 		if (idle_wall < g_auto_off_ms) {
 			auto_off_s = (long)((g_auto_off_ms - idle_wall) / 1000u) + 5; // margin
@@ -1007,8 +992,8 @@ static void rtc_alarm_arm(void) {
 	g_rtc_alarm_armed = true;
 	g_rtc_auto_off_armed = auto_off_s > 0;
 	g_rtc_battery_armed = battery_first;
-	g_rtc_alarm_boot_at = boottime_ms() + (uint32_t)auto_off_s * 1000u;
-	g_rtc_battery_boot_at = boottime_ms() + (uint32_t)battery_s * 1000u;
+	g_rtc_alarm_boot_at = clock_boottime_ms() + (uint32_t)auto_off_s * 1000u;
+	g_rtc_battery_boot_at = clock_boottime_ms() + (uint32_t)battery_s * 1000u;
 	printf("power: mem: RTC wake in %ld s %s\n", remaining_s,
 		   battery_first ? "to look at the battery" : "for the automatic shutdown");
 }
@@ -1125,7 +1110,7 @@ static void suspend_to_ram(void) {
 
 	// 5. The write that stops the SoC. Blocks until the wake: everything after
 	//    it already runs on the other side.
-	uint32_t before_wall = boottime_ms();
+	uint32_t before_wall = clock_boottime_ms();
 	printf("power: mem: writing '%s'\n", path);
 	fflush(stdout);
 	headset_keys_sleep();
@@ -1147,7 +1132,7 @@ static void suspend_to_ram(void) {
 	// it comes up falls inside the window and is ignored.
 	headset_suspend_finish();
 	headset_keys_wake();
-	uint32_t slept_s = (boottime_ms() - before_wall) / 1000;
+	uint32_t slept_s = (clock_boottime_ms() - before_wall) / 1000;
 
 	// --- awake from here on ---
 	// The line is flushed at once: if the wake ends badly, the log must at least
@@ -1234,13 +1219,12 @@ static void suspend_to_ram(void) {
 	pthread_mutex_unlock(&g_lock);
 
 	bool rtc_woke_it = rc == 0 && g_rtc_alarm_armed && !user_woke_it;
-	if (rtc_woke_it && g_rtc_auto_off_armed && (int32_t)(boottime_ms() - g_rtc_alarm_boot_at) >= 0) {
+	if (rtc_woke_it && g_rtc_auto_off_armed && (int32_t)(clock_boottime_ms() - g_rtc_alarm_boot_at) >= 0) {
 		power_auto_off_now("RTC wake after mem: the idle time has run out");
 	}
 	// The battery's own wake: a few seconds of slack, as the RTC counts whole
 	// seconds and the wake takes a moment.
-	bool battery_wake =
-		rtc_woke_it && g_rtc_battery_armed && (int32_t)(boottime_ms() - g_rtc_battery_boot_at) >= -5000;
+	bool battery_wake = rtc_woke_it && g_rtc_battery_armed && (int32_t)(clock_boottime_ms() - g_rtc_battery_boot_at) >= -5000;
 	if (battery_wake) {
 		printf("power: mem: RTC wake to look at the battery\n");
 	}
@@ -1587,7 +1571,7 @@ void power_screen_on(void) {
 	// dark again -- that is what makes it a shutdown timer rather than a
 	// stopwatch that happens to notice the screen.
 	rtc_alarm_disarm();
-	g_last_active_boot_ms = boottime_ms();
+	g_last_active_boot_ms = clock_boottime_ms();
 
 	// A new dark spell gets a clean slate: whatever went wrong with the last
 	// suspend, the countdown starts again the next time the screen goes off.
@@ -1770,9 +1754,9 @@ static void power_timer_cb(lv_timer_t *timer) {
 	// suspended, so a device that spends the wait asleep still switches off at
 	// the right moment.
 	if (g_screen_on || player_is_busy(playing, input_idle)) {
-		g_last_active_boot_ms = boottime_ms();
+		g_last_active_boot_ms = clock_boottime_ms();
 	}
-	uint32_t off_idle_wall = boottime_ms() - g_last_active_boot_ms;
+	uint32_t off_idle_wall = clock_boottime_ms() - g_last_active_boot_ms;
 
 	// 4. auto screen-off after the configured input-idle timeout
 	if (g_screen_on && g_cfg.screen_off_enabled && !g_screen_on_hold && !g_screen_view_hold &&
@@ -1952,7 +1936,7 @@ void power_init(const power_config_t *cfg, lv_display_t *disp) {
 	g_last_playing_ms = now;
 	g_ignore_button_until = now;
 
-	g_last_active_boot_ms = boottime_ms(); // the wall-clock idle marker starts now
+	g_last_active_boot_ms = clock_boottime_ms(); // the wall-clock idle marker starts now
 
 	// Suspend to RAM: on by default, 60 seconds after the screen goes dark,
 	// matching the stock binary's standby.
