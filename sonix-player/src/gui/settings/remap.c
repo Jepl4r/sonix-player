@@ -16,6 +16,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/image/stb_image_decl.h"
 #include "src/system/input/keymap.h"
 #include "src/system/core/lang.h"
@@ -35,6 +36,11 @@ lv_obj_t *remap_screen;
 // The R1 has every button on its right flank -- power, the volume rocker, then
 // play/pause over next -- so there it is one photo, the media side's files, cut
 // off at the bottom and sitting on the bottom edge, with four taller rows.
+//
+// The R3 II 2025 has the R3 Pro II's three media buttons on its right flank,
+// under a volume wheel, and no volume keys. Its photo is that whole flank, with
+// a row for each button and none for the wheel: the wheel always sets the
+// volume, so it has nothing to choose.
 //
 // The photos live in /usr/resource/sonix/gui rather than in the binary, and are
 // loaded when the page opens and freed when it closes: a picture seen once a
@@ -56,10 +62,10 @@ lv_obj_t *remap_screen;
 #define PHOTO_MAX_BYTES (2 * 1024 * 1024)
 
 // Length of the leader line tying a row to its button, and the row heights.
-#define LEADER_W 18
-#define ROW_H 44
-#define R1_ROW_H 56
-#define DOUBLE_ROW_GAP 40 // between the last button's row and the double-click row
+#define LEADER_W ui_px(18)
+#define ROW_H ui_px(44)
+#define R1_ROW_H ui_px(56)
+#define DOUBLE_ROW_GAP ui_px(40) // between the last button's row and the double-click row
 
 // The buttons, as rectangles inside the photo. They are generous in width --
 // the pictured button is thirty pixels wide, which is not a touch target -- but
@@ -94,9 +100,16 @@ static const hit_t R1_HITS[] = {
 	{KEYMAP_BTN_NEXT, 426, 67},
 };
 
+// The R3 II 2025's right flank, top to bottom under the wheel.
+static const hit_t WHEEL_HITS[] = {
+	{KEYMAP_BTN_PREV, 124, 38},
+	{KEYMAP_BTN_PLAY, 168, 40},
+	{KEYMAP_BTN_NEXT, 208, 40},
+};
+
 // How wide the touch zone over a flank is: the buttons sit on its outer edge,
 // on the right of a right flank and on the left of a left one.
-#define HIT_W 86
+#define HIT_W ui_px(86)
 
 typedef struct {
 	const char *dark;  // file for the dark theme
@@ -361,8 +374,8 @@ static lv_obj_t *dialog_heading(lv_obj_t *parent, const char *text) {
 // Pills a size down from the settings pages' own: the dialog holds ten of them.
 static lv_obj_t *dialog_pill(lv_obj_t *parent, const char *text, int value, lv_event_cb_t cb) {
 	lv_obj_t *pill = settingsrow_pill(parent, text, value, cb);
-	lv_obj_set_height(pill, 46);
-	lv_obj_set_style_pad_hor(pill, 18, 0);
+	lv_obj_set_height(pill, ui_px(46));
+	lv_obj_set_style_pad_hor(pill, ui_px(18), 0);
 	lv_obj_set_style_text_font(lv_obj_get_child(pill, 0), &font_ui_20, 0);
 	return pill;
 }
@@ -371,7 +384,7 @@ static lv_obj_t *dialog_pills(lv_obj_t *parent) {
 	lv_obj_t *pills = lv_obj_create(parent);
 	lv_obj_remove_style_all(pills);
 	lv_obj_set_size(pills, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_gap(pills, 8, 0);
+	lv_obj_set_style_pad_gap(pills, ui_px(8), 0);
 	lv_obj_set_scrollable(pills, false);
 	lv_obj_set_flex_flow(pills, LV_FLEX_FLOW_ROW_WRAP);
 	return pills;
@@ -395,11 +408,11 @@ static void build_double_dialog(gui_config_t *cfg, const hit_t *hits, int hit_co
 	lv_obj_t *card = lv_obj_create(double_veil);
 	lv_obj_set_size(card, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 16, 0);
+	lv_obj_set_style_radius(card, ui_px(16), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 10, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_row(card, ui_px(10), 0);
 	// Scrolls rather than running off the panel with large text or a long
 	// language.
 	lv_obj_set_style_max_height(card, cfg->screen_height - 2 * cfg->padding, 0);
@@ -437,7 +450,7 @@ static void build_double_dialog(gui_config_t *cfg, const hit_t *hits, int hit_co
 
 	lv_obj_t *done = lv_btn_create(card);
 	double_done = done;
-	lv_obj_set_size(done, lv_pct(100), 50);
+	lv_obj_set_size(done, lv_pct(100), ui_px(50));
 	lv_obj_set_style_radius(done, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(done, 0, 0);
 	lv_obj_set_style_border_width(done, 0, 0);
@@ -457,12 +470,12 @@ static void build_double_row(gui_config_t *cfg, int x, int y, int w) {
 	lv_obj_set_size(row, w, LV_SIZE_CONTENT);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 10, 0);
+	lv_obj_set_style_radius(row, ui_px(10), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 14, 0);
-	lv_obj_set_style_pad_ver(row, 10, 0);
-	lv_obj_set_style_pad_row(row, 2, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(14), 0);
+	lv_obj_set_style_pad_ver(row, ui_px(10), 0);
+	lv_obj_set_style_pad_row(row, ui_px(2), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_COLUMN);
 	lv_obj_add_event_cb(row, double_open_cb, LV_EVENT_CLICKED, NULL);
@@ -571,7 +584,7 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 		lv_obj_t *leader = lv_obj_create(remap_screen);
 		lv_obj_remove_style_all(leader);
 		lv_obj_set_pos(leader, leader_x, centre - 1);
-		lv_obj_set_size(leader, LEADER_W, 2);
+		lv_obj_set_size(leader, LEADER_W, ui_px(2));
 		lv_obj_set_style_bg_color(leader, theme()->text_secondary, 0);
 		lv_obj_set_style_bg_opa(leader, LV_OPA_40, 0);
 
@@ -583,17 +596,17 @@ static void build_side(side_t *side, gui_config_t *cfg) {
 		lv_obj_set_size(row, col_w, row_h);
 		lv_obj_add_style(row, &theme_style_card, 0);
 		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 10, 0);
+		lv_obj_set_style_radius(row, ui_px(10), 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 14, 0);
+		lv_obj_set_style_pad_hor(row, ui_px(14), 0);
 		lv_obj_set_scrollable(row, false);
 		lv_obj_add_event_cb(row, pick_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)hit->button);
 
 		lv_obj_t *value = lv_label_create(row);
 		value_labels[hit->button] = value;
 		lv_label_set_long_mode(value, LV_LABEL_LONG_DOT);
-		lv_obj_set_width(value, col_w - 28);
+		lv_obj_set_width(value, col_w - ui_px(28));
 		// One line, cut with dots: the rows sit a few pixels apart, and a name
 		// that wrapped would spill out of its row onto the next one. The size
 		// is chosen with the text, in refresh_values().
@@ -637,6 +650,7 @@ void remap_init(gui_config_t *cfg) {
 		model = sysinfo_model_by_panel(cfg->screen_width, cfg->screen_height);
 	}
 	bool one_flank = model && model->one_flank;
+	bool wheel = model && model->volume_wheel;
 
 	lv_obj_t *title = settingsrow_title(remap_screen, cfg, "remap_buttons");
 	settingsrow_title_corner_slots(title, cfg, 0);
@@ -649,17 +663,26 @@ void remap_init(gui_config_t *cfg) {
 	// Sizes are those of the files; positions put the photos where the design
 	// has them. The R3 Pro II's right flank starts under the title and its left
 	// flank runs four pixels past the bottom edge; the R1's photo stands on the
-	// bottom edge.
-	play_side.hits = one_flank ? R1_HITS : PLAY_HITS;
-	play_side.hit_count = one_flank ? (int)(sizeof(R1_HITS) / sizeof(R1_HITS[0]))
-									: (int)(sizeof(PLAY_HITS) / sizeof(PLAY_HITS[0]));
+	// bottom edge; the R3 II 2025's starts under the title, as the R3 Pro II's
+	// does, and ends just short of the bottom edge.
 	play_side.rows_on_right = true;
 	if (one_flank) {
+		play_side.hits = R1_HITS;
+		play_side.hit_count = (int)(sizeof(R1_HITS) / sizeof(R1_HITS[0]));
 		play_side.w = 229;
 		play_side.h = 663;
 		play_side.x = 0;
 		play_side.y = cfg->screen_height - play_side.h;
+	} else if (wheel) {
+		play_side.hits = WHEEL_HITS;
+		play_side.hit_count = (int)(sizeof(WHEEL_HITS) / sizeof(WHEEL_HITS[0]));
+		play_side.w = 124;
+		play_side.h = 387;
+		play_side.x = 0;
+		play_side.y = 84;
 	} else {
+		play_side.hits = PLAY_HITS;
+		play_side.hit_count = (int)(sizeof(PLAY_HITS) / sizeof(PLAY_HITS[0]));
 		play_side.w = 185;
 		play_side.h = 411;
 		play_side.x = -1; // the first column of the light photo is not opaque
@@ -667,7 +690,7 @@ void remap_init(gui_config_t *cfg) {
 	}
 	build_side(&play_side, cfg);
 
-	if (!one_flank) {
+	if (!one_flank && !wheel) {
 		vol_side.hits = VOL_HITS;
 		vol_side.hit_count = (int)(sizeof(VOL_HITS) / sizeof(VOL_HITS[0]));
 		vol_side.rows_on_right = false;
@@ -676,7 +699,7 @@ void remap_init(gui_config_t *cfg) {
 		vol_side.x = cfg->screen_width - vol_side.w;
 		vol_side.y = cfg->screen_height - vol_side.h + 4;
 		build_side(&vol_side, cfg);
-	} else {
+	} else if (one_flank) {
 		// Under the last row, in the column the rows use.
 		const hit_t *last = &R1_HITS[sizeof(R1_HITS) / sizeof(R1_HITS[0]) - 1];
 		int col_x = play_side.x + play_side.w + LEADER_W;

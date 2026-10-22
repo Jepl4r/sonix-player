@@ -29,6 +29,7 @@
 #include "src/system/core/lang.h"
 #include "src/gui/streaming/podcastcard.h"
 #include "src/gui/streaming/podcastpage.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/tidalcache.h"
@@ -45,21 +46,21 @@ lv_obj_t *details_screen;
 // widgets rides the scroll position, and each row looks up its title (one
 // indexed database lookup) at the moment it binds. Opening the page costs a
 // dozen binds, not hundreds, which is what makes it instant.
-#define QUEUE_THUMB_SIZE 56
-#define QUEUE_ROW_HEIGHT 72
-#define QUEUE_ROW_GAP 8
+#define QUEUE_THUMB_SIZE ui_px(56)
+#define QUEUE_ROW_HEIGHT ui_px(72)
+#define QUEUE_ROW_GAP ui_px(8)
 #define QUEUE_ROW_PITCH (QUEUE_ROW_HEIGHT + QUEUE_ROW_GAP)
 #define QUEUE_ROW_POOL 12
-#define QUEUE_GRIP_SIZE 56
+#define QUEUE_GRIP_SIZE ui_px(56)
 
 // The room a heading takes above its rows: History over the tracks already
 // played, Now playing over the track playing and the ones after it.
-#define QUEUE_HEADER_H 48
+#define QUEUE_HEADER_H ui_px(48)
 
 // The history is split by day, under a smaller heading of its own: Today,
 // Yesterday or the date. Only the ones near the top of the page are drawn, from
 // a pool of labels, as the rows are.
-#define QUEUE_SEP_H 40
+#define QUEUE_SEP_H ui_px(40)
 #define QUEUE_SEP_POOL 8
 
 // The page rests with Now playing at the top, and the history sits above it.
@@ -68,14 +69,14 @@ lv_obj_t *details_screen;
 // it has moved QUEUE_PULL_OPEN_PX. Let go before that and it springs back.
 #define QUEUE_PULL_NUM 2
 #define QUEUE_PULL_DEN 5
-#define QUEUE_PULL_OPEN_PX 56
+#define QUEUE_PULL_OPEN_PX ui_px(56)
 
 // Carrying a row: how far the finger has to travel before a release counts as
 // a drop, and how close to an edge of the list it has to be before the list
 // moves under it, by QUEUE_EDGE_STEP each time the finger is read.
-#define QUEUE_DROP_MIN_TRAVEL 8
-#define QUEUE_EDGE_PX 70
-#define QUEUE_EDGE_STEP 18
+#define QUEUE_DROP_MIN_TRAVEL ui_px(8)
+#define QUEUE_EDGE_PX ui_px(70)
+#define QUEUE_EDGE_STEP ui_px(18)
 
 typedef struct {
 	lv_obj_t *button;
@@ -518,7 +519,7 @@ static void queue_seps_update(int scroll) {
 			char text[64];
 			queue_day_text(queue_seps[sep].when, text, sizeof(text));
 			lv_label_set_text(queue_sep_labels[i], text);
-			lv_obj_set_y(queue_sep_labels[i], queue_seps[sep].y + 8);
+			lv_obj_set_y(queue_sep_labels[i], queue_seps[sep].y + ui_px(8));
 			queue_sep_bound[i] = sep;
 		}
 		lv_obj_set_hidden(queue_sep_labels[i], false);
@@ -619,8 +620,8 @@ static void queue_layout(void) {
 
 	lv_obj_set_hidden(queue_history_header, queue_hist_count == 0);
 	lv_obj_set_hidden(queue_now_header, queue_total == 0);
-	lv_obj_set_y(queue_now_header, queue_now_top() + 10);
-	lv_obj_align(queue_empty, LV_ALIGN_TOP_MID, 0, queue_now_top() + 72);
+	lv_obj_set_y(queue_now_header, queue_now_top() + ui_px(10));
+	lv_obj_align(queue_empty, LV_ALIGN_TOP_MID, 0, queue_now_top() + ui_px(72));
 
 	// Tall enough for Now playing to reach the top of the page however little
 	// comes after it.
@@ -816,10 +817,10 @@ static void queue_drop_line_show(int before) {
 		lv_obj_set_style_shadow_width(queue_drop_line, 0, 0);
 		lv_obj_set_style_pad_all(queue_drop_line, 0, 0);
 		lv_obj_add_style(queue_drop_line, &theme_style_accent_bg, 0);
-		lv_obj_set_style_radius(queue_drop_line, 2, 0);
-		lv_obj_set_size(queue_drop_line, lv_obj_get_width(queue_body), 4);
+		lv_obj_set_style_radius(queue_drop_line, ui_px(2), 0);
+		lv_obj_set_size(queue_drop_line, lv_obj_get_width(queue_body), ui_px(4));
 	}
-	lv_obj_set_pos(queue_drop_line, 0, queue_row_y(before) - QUEUE_ROW_GAP / 2 - 2);
+	lv_obj_set_pos(queue_drop_line, 0, queue_row_y(before) - QUEUE_ROW_GAP / 2 - ui_px(2));
 	lv_obj_set_hidden(queue_drop_line, false);
 	lv_obj_move_foreground(queue_drop_line);
 }
@@ -861,12 +862,12 @@ static void queue_drag_start(queue_row_t *row, lv_obj_t *held, lv_point_t point)
 	queue_ghost = lv_obj_create(queue_drag_layer);
 	lv_obj_set_size(queue_ghost, lv_area_get_width(&area), QUEUE_ROW_HEIGHT);
 	lv_obj_add_style(queue_ghost, &theme_style_card, 0);
-	lv_obj_set_style_radius(queue_ghost, 12, 0);
-	lv_obj_set_style_border_width(queue_ghost, 2, 0);
+	lv_obj_set_style_radius(queue_ghost, ui_px(12), 0);
+	lv_obj_set_style_border_width(queue_ghost, ui_px(2), 0);
 	lv_obj_set_style_border_color(queue_ghost, theme()->accent, 0);
 	lv_obj_set_style_shadow_width(queue_ghost, 0, 0);
-	lv_obj_set_style_pad_all(queue_ghost, 8, 0);
-	lv_obj_set_style_pad_column(queue_ghost, 14, 0);
+	lv_obj_set_style_pad_all(queue_ghost, ui_px(8), 0);
+	lv_obj_set_style_pad_column(queue_ghost, ui_px(14), 0);
 	lv_obj_set_scrollable(queue_ghost, false);
 	lv_obj_set_clickable(queue_ghost, false);
 	lv_obj_set_flex_flow(queue_ghost, LV_FLEX_FLOW_ROW);
@@ -883,7 +884,7 @@ static void queue_drag_start(queue_row_t *row, lv_obj_t *held, lv_point_t point)
 	lv_label_set_text(label, lv_label_get_text(row->label));
 	lv_label_set_long_mode(label, LV_LABEL_LONG_DOT);
 	lv_obj_set_flex_grow(label, 1);
-	lv_obj_set_height(label, 32);
+	lv_obj_set_height(label, ui_px(32));
 	lv_obj_add_style(label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(label, &font_ui_24, 0);
 
@@ -1206,12 +1207,12 @@ static void queue_unloaded_cb(lv_event_t *e) {
 
 static lv_obj_t *queue_corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(queue_screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (ui_px(56) + ui_px(6)), cfg->padding + cfg->top_bar_height);
 	lv_obj_add_event_cb(button, cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
@@ -1227,7 +1228,7 @@ static lv_obj_t *queue_header(const char *tag, int y) {
 	lv_label_set_text(label, tr(tag));
 	lv_obj_add_style(label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(label, &font_ui_22_bold, 0);
-	lv_obj_set_pos(label, 4, y + 10);
+	lv_obj_set_pos(label, ui_px(4), y + ui_px(10));
 	lv_obj_set_hidden(label, true);
 	return label;
 }
@@ -1276,7 +1277,7 @@ static void build_queue_page(gui_config_t *cfg) {
 		queue_sep_labels[i] = lv_label_create(queue_body);
 		lv_obj_add_style(queue_sep_labels[i], &theme_style_text_dim, 0);
 		lv_obj_set_style_text_font(queue_sep_labels[i], &font_ui_18, 0);
-		lv_obj_set_x(queue_sep_labels[i], 4);
+		lv_obj_set_x(queue_sep_labels[i], ui_px(4));
 		lv_obj_set_hidden(queue_sep_labels[i], true);
 		queue_sep_bound[i] = -1;
 	}
@@ -1286,7 +1287,7 @@ static void build_queue_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(queue_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(queue_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(queue_empty, &font_ui_24, 0);
-	lv_obj_align(queue_empty, LV_ALIGN_TOP_MID, 0, 72);
+	lv_obj_align(queue_empty, LV_ALIGN_TOP_MID, 0, ui_px(72));
 	lv_obj_set_hidden(queue_empty, true);
 
 	for (int i = 0; i < QUEUE_ROW_POOL; i++) {
@@ -1297,11 +1298,11 @@ static void build_queue_page(gui_config_t *cfg) {
 		lv_obj_set_x(row->button, 0);
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row->button, 12, 0);
+		lv_obj_set_style_radius(row->button, ui_px(12), 0);
 		lv_obj_set_style_border_width(row->button, 0, 0);
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
-		lv_obj_set_style_pad_all(row->button, 8, 0);
-		lv_obj_set_style_pad_column(row->button, 14, 0);
+		lv_obj_set_style_pad_all(row->button, ui_px(8), 0);
+		lv_obj_set_style_pad_column(row->button, ui_px(14), 0);
 		lv_obj_set_hidden(row->button, true);
 		lv_obj_set_event_bubble(row->button, true);
 		lv_obj_add_event_cb(row->button, queue_row_pressed_cb, LV_EVENT_PRESSED, NULL);
@@ -1320,7 +1321,7 @@ static void build_queue_page(gui_config_t *cfg) {
 		row->label = lv_label_create(row->button);
 		lv_label_set_long_mode(row->label, LV_LABEL_LONG_DOT);
 		lv_obj_set_flex_grow(row->label, 1);
-		lv_obj_set_height(row->label, 32);
+		lv_obj_set_height(row->label, ui_px(32));
 		lv_obj_add_style(row->label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(row->label, &font_ui_24, 0);
 
@@ -1393,7 +1394,7 @@ static void details_add_row(const char *name, const char *value) {
 	lv_obj_set_style_bg_opa(row, 0, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, 2, 0);
+	lv_obj_set_style_pad_gap(row, ui_px(2), 0);
 	lv_obj_set_scrollable(row, false);
 	// Presses over the text must climb to the scroll surface, or the swipe
 	// gestures can never start on the card's content.
@@ -1661,11 +1662,11 @@ static void build_details_page(gui_config_t *cfg) {
 	lv_obj_set_width(details_card, lv_pct(100));
 	lv_obj_set_height(details_card, LV_SIZE_CONTENT);
 	lv_obj_add_style(details_card, &theme_style_card, 0);
-	lv_obj_set_style_radius(details_card, 12, 0);
+	lv_obj_set_style_radius(details_card, ui_px(12), 0);
 	lv_obj_set_style_border_width(details_card, 0, 0);
 	lv_obj_set_style_shadow_width(details_card, 0, 0);
-	lv_obj_set_style_pad_all(details_card, 18, 0);
-	lv_obj_set_style_pad_gap(details_card, 14, 0);
+	lv_obj_set_style_pad_all(details_card, ui_px(18), 0);
+	lv_obj_set_style_pad_gap(details_card, ui_px(14), 0);
 	lv_obj_set_scrollable(details_card, false);
 	lv_obj_set_event_bubble(details_card, true);
 	lv_obj_set_flex_flow(details_card, LV_FLEX_FLOW_COLUMN);

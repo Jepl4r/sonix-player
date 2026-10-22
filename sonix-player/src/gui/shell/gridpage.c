@@ -11,11 +11,12 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/usb.h"
 
-#define GRID_GAP 14
-#define TILE_RADIUS 12 // Adwaita card radius
+#define GRID_GAP ui_px(14)
+#define TILE_RADIUS ui_px(12) // Adwaita card radius
 
 static void unavailable_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active() || coverflow_drag_active()) {
@@ -67,7 +68,7 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 	lv_obj_add_style(tile, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_radius(tile, TILE_RADIUS, 0);
 	lv_obj_set_style_shadow_width(tile, 0, 0);
-	lv_obj_set_style_pad_all(tile, 8, 0);
+	lv_obj_set_style_pad_all(tile, ui_px(8), 0);
 
 	// Presses bubble up to the grid so a swipe can start on a tile: the whole
 	// page has to be draggable, not just the gaps between the tiles.
@@ -75,7 +76,7 @@ static void add_tile(lv_obj_t *grid, const grid_entry_t *entry, int width, int h
 
 	lv_obj_set_flex_flow(tile, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(tile, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(tile, 8, 0);
+	lv_obj_set_style_pad_gap(tile, ui_px(8), 0);
 	lv_obj_set_scrollable(tile, false);
 
 	// The tile artwork keeps its own colours, so unlike the interface glyphs it
@@ -233,7 +234,7 @@ lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_ima
 	lv_obj_align(panel, LV_ALIGN_TOP_LEFT, 0, top);
 	lv_obj_set_style_pad_hor(panel, cfg->padding * 2, 0);
 	lv_obj_set_style_pad_bottom(panel, cfg->padding * 2, 0);
-	lv_obj_set_style_pad_row(panel, 22, 0);
+	lv_obj_set_style_pad_row(panel, ui_px(22), 0);
 	lv_obj_set_scrollable(panel, false);
 	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -253,7 +254,7 @@ lv_obj_t *gridpage_empty_panel(lv_obj_t *screen, gui_config_t *cfg, const lv_ima
 	lv_obj_set_style_text_font(label, &font_ui_24, 0);
 
 	lv_obj_t *button = lv_btn_create(panel);
-	lv_obj_set_size(button, 240, 68);
+	lv_obj_set_size(button, ui_px(240), ui_px(68));
 	lv_obj_add_style(button, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_bg_color(button, theme()->accent, 0);
 	lv_obj_set_style_bg_opa(button, LV_OPA_COVER, 0);

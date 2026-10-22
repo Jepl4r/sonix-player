@@ -10,6 +10,11 @@ new one is added:
     pip install cairosvg pillow
     python3 tools/svg_to_lvgl.py
 
+Every icon is drawn twice: at its size for a 480 px wide panel, which is the
+one its name points at, and at two thirds of it for the R3 II 2025's 320 px
+panel. icons_follow_panel() (called by ui_scale_init(), uiscale.h) points the
+names at the second set on such a panel; nothing that draws an icon changes.
+
 Two kinds of icon come out of this:
 
   * SVGs are emitted as ARGB8888 *white* shapes. The colour comes from LVGL at
@@ -457,6 +462,20 @@ COLOR_ICONS = [
 ]
 
 
+# The narrower panel the second set is drawn for, and the share of each size it
+# gets: the same rounding as ui_px() (src/gui/shell/uiscale.h).
+DESIGN_WIDTH = 480
+SMALL_PANEL_WIDTH = 320
+
+
+def small_size(size):
+    def one(px):
+        return max(1, (px * SMALL_PANEL_WIDTH + DESIGN_WIDTH // 2) // DESIGN_WIDTH)
+    if isinstance(size, tuple):
+        return (one(size[0]), one(size[1]))
+    return one(size)
+
+
 def render(svg_path, size):
     """SVG -> list of BGRA bytes, forced to white so recolouring works.
 
@@ -477,13 +496,14 @@ def render(svg_path, size):
 
 def render_color(path, size):
     """PNG or SVG -> list of BGRA bytes with the original colours kept."""
+    width, height = size if isinstance(size, tuple) else (size, size)
     if path.lower().endswith(".svg"):
-        png = cairosvg.svg2png(url=path, output_width=size, output_height=size)
+        png = cairosvg.svg2png(url=path, output_width=width, output_height=height)
         img = Image.open(io.BytesIO(png)).convert("RGBA")
     else:
         img = Image.open(path).convert("RGBA")
-    if img.size != (size, size):
-        img = img.resize((size, size), Image.LANCZOS)
+    if img.size != (width, height):
+        img = img.resize((width, height), Image.LANCZOS)
 
     raw = img.tobytes()  # RGBA, 4 bytes per pixel
     out = bytearray()
@@ -503,7 +523,9 @@ def c_array(data, per_line=12):
 
 def main():
     parts_c = []
+    parts_small = []
     parts_h = []
+    small_rows = []
 
     entries = [(f, n, s, False) for f, n, s in ICONS]
     entries += [(f, n, size, True) for f, n, size in COLOR_ICONS]
@@ -514,11 +536,20 @@ def main():
             sys.exit("missing icon: %s" % path)
 
         data, w, h = render_color(path, size) if keep_colour else render(path, size)
+        small = small_size(size)
+        sdata, sw, sh = render_color(path, small) if keep_colour else render(path, small)
 
+        parts_small.append(
+            "// %s, %dx%d for the 320 px panel\n"
+            "static const uint8_t icon_%s_data_320[] = {\n%s\n};\n\n"
+            % (filename, sw, sh, name, c_array(sdata))
+        )
+        small_rows.append("\t{&icon_%s, icon_%s_data_320, sizeof(icon_%s_data_320), %d, %d},"
+                          % (name, name, name, sw, sh))
         parts_c.append(
             "// %s, %dx%d\n"
             "static const uint8_t icon_%s_data[] = {\n%s\n};\n\n"
-            "const lv_image_dsc_t icon_%s = {\n"
+            "lv_image_dsc_t icon_%s = {\n"
             "\t.header = {\n"
             "\t\t.magic = LV_IMAGE_HEADER_MAGIC,\n"
             "\t\t.cf = LV_COLOR_FORMAT_ARGB8888,\n"
@@ -531,7 +562,37 @@ def main():
             "};\n"
             % (filename, w, h, name, c_array(data), name, w, h, w * 4, name, name)
         )
-        parts_h.append("extern const lv_image_dsc_t icon_%s;" % name)
+        parts_h.append("extern lv_image_dsc_t icon_%s;" % name)
+
+    parts_c.extend(parts_small)
+    parts_c.append(
+        "// The second set, for a panel %d px wide (uiscale.h).\n"
+        "static const struct {\n"
+        "\tlv_image_dsc_t *icon;\n"
+        "\tconst uint8_t *data;\n"
+        "\tuint32_t data_size;\n"
+        "\tuint16_t w, h;\n"
+        "} ICONS_SMALL[] = {\n%s\n};\n\n"
+        "void icons_follow_panel(int panel_width) {\n"
+        "\tif (panel_width != %d) {\n"
+        "\t\treturn;\n"
+        "\t}\n"
+        "\tfor (size_t i = 0; i < sizeof(ICONS_SMALL) / sizeof(ICONS_SMALL[0]); i++) {\n"
+        "\t\tlv_image_dsc_t *icon = ICONS_SMALL[i].icon;\n"
+        "\t\ticon->header.w = ICONS_SMALL[i].w;\n"
+        "\t\ticon->header.h = ICONS_SMALL[i].h;\n"
+        "\t\ticon->header.stride = (uint32_t)ICONS_SMALL[i].w * 4;\n"
+        "\t\ticon->data_size = ICONS_SMALL[i].data_size;\n"
+        "\t\ticon->data = ICONS_SMALL[i].data;\n"
+        "\t}\n"
+        "}\n"
+        % (SMALL_PANEL_WIDTH, "\n".join(small_rows), SMALL_PANEL_WIDTH)
+    )
+    parts_h.append(
+        "\n// On a panel the second set is drawn for (%d px wide), points every icon above at\n"
+        "// it; on any other, does nothing. Once, before the first widget is made.\n"
+        "void icons_follow_panel(int panel_width);" % SMALL_PANEL_WIDTH
+    )
 
     header = (
         "/*\n"
@@ -544,7 +605,7 @@ def main():
 
     with open(OUT_C, "w") as f:
         f.write(header)
-        f.write('#include "icons.h"\n\n#include <stdint.h>\n\n')
+        f.write('#include "icons.h"\n\n#include <stddef.h>\n#include <stdint.h>\n\n')
         f.write("\n".join(parts_c))
 
     with open(OUT_H, "w") as f:

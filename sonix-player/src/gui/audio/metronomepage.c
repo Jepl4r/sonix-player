@@ -9,6 +9,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/gui/shell/volume_overlay.h"
 #include "src/system/audio/audio.h"
 #include "src/system/audio/metronome.h"
@@ -35,11 +36,11 @@ lv_obj_t *metronomepage_screen;
 #define TAP_RESET_MS 2000
 #define TAP_KEEP 5
 
-#define ROUND_BTN 64
-#define PLAY_BTN 88
-#define PILL_H 56
-#define DOT 16
-#define DOT_FIRST 20
+#define ROUND_BTN ui_px(64)
+#define PLAY_BTN ui_px(88)
+#define PILL_H ui_px(56)
+#define DOT ui_px(16)
+#define DOT_FIRST ui_px(20)
 
 static lv_obj_t *drawing;
 static lv_obj_t *dots[METRONOME_BEATS_MAX];
@@ -416,8 +417,8 @@ static lv_obj_t *round_button(lv_obj_t *parent, int size, const lv_image_dsc_t *
 static lv_obj_t *pill_button(lv_obj_t *parent, const char *text, lv_obj_t **label_out) {
 	lv_obj_t *btn = lv_btn_create(parent);
 	lv_obj_set_size(btn, LV_SIZE_CONTENT, PILL_H);
-	lv_obj_set_style_min_width(btn, 104, 0);
-	lv_obj_set_style_pad_hor(btn, 24, 0);
+	lv_obj_set_style_min_width(btn, ui_px(104), 0);
+	lv_obj_set_style_pad_hor(btn, ui_px(24), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0); // Adwaita pill button
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -512,8 +513,8 @@ void metronomepage_init(gui_config_t *cfg) {
 
 	// A dot for each beat of the bar, the first one larger.
 	lv_obj_t *dot_row = plain_row(page);
-	lv_obj_set_style_pad_column(dot_row, 14, 0);
-	lv_obj_set_style_margin_top(dot_row, 14, 0);
+	lv_obj_set_style_pad_column(dot_row, ui_px(14), 0);
+	lv_obj_set_style_margin_top(dot_row, ui_px(14), 0);
 	lv_obj_set_height(dot_row, DOT_FIRST);
 	for (int i = 0; i < METRONOME_BEATS_MAX; i++) {
 		dots[i] = lv_obj_create(dot_row);
@@ -526,11 +527,11 @@ void metronomepage_init(gui_config_t *cfg) {
 
 	// The tempo, with a step either side of it.
 	lv_obj_t *tempo_row = plain_row(page);
-	lv_obj_set_style_pad_column(tempo_row, 18, 0);
-	lv_obj_set_style_margin_top(tempo_row, 10, 0);
+	lv_obj_set_style_pad_column(tempo_row, ui_px(18), 0);
+	lv_obj_set_style_margin_top(tempo_row, ui_px(10), 0);
 	round_btns[0] = round_button(tempo_row, ROUND_BTN, &icon_minus, &round_glyphs[0]);
 	bpm_label = lv_label_create(tempo_row);
-	lv_obj_set_width(bpm_label, 170);
+	lv_obj_set_width(bpm_label, ui_px(170));
 	lv_obj_add_style(bpm_label, &theme_style_text, 0);
 	lv_obj_set_style_text_font(bpm_label, &font_ui_64_bold, 0);
 	lv_obj_set_style_text_align(bpm_label, LV_TEXT_ALIGN_CENTER, 0);
@@ -548,26 +549,26 @@ void metronomepage_init(gui_config_t *cfg) {
 
 	slider = lv_slider_create(page);
 	lv_obj_set_width(slider, lv_pct(92));
-	lv_obj_set_height(slider, 8);
-	lv_obj_set_style_margin_top(slider, 22, 0);
+	lv_obj_set_height(slider, ui_px(8));
+	lv_obj_set_style_margin_top(slider, ui_px(22), 0);
 	lv_slider_set_range(slider, METRONOME_BPM_MIN, METRONOME_BPM_MAX);
 	lv_obj_add_style(slider, &theme_style_slider_track, LV_PART_MAIN);
 	lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_INDICATOR);
 	lv_obj_add_style(slider, &theme_style_accent_bg, LV_PART_INDICATOR);
 	lv_obj_set_style_radius(slider, LV_RADIUS_CIRCLE, LV_PART_KNOB);
 	lv_obj_set_style_bg_color(slider, lv_color_white(), LV_PART_KNOB);
-	lv_obj_set_style_pad_all(slider, 8, LV_PART_KNOB);
-	lv_obj_set_style_shadow_width(slider, 8, LV_PART_KNOB);
+	lv_obj_set_style_pad_all(slider, ui_px(8), LV_PART_KNOB);
+	lv_obj_set_style_shadow_width(slider, ui_px(8), LV_PART_KNOB);
 	lv_obj_set_style_shadow_opa(slider, LV_OPA_30, LV_PART_KNOB);
 	lv_obj_set_style_shadow_color(slider, lv_color_black(), LV_PART_KNOB);
 	lv_obj_set_style_shadow_offset_y(slider, 1, LV_PART_KNOB);
-	lv_obj_set_ext_click_area(slider, 20);
+	lv_obj_set_ext_click_area(slider, ui_px(20));
 	lv_obj_add_event_cb(slider, slider_cb, LV_EVENT_VALUE_CHANGED, NULL);
 
 	// Tap, start and stop, the bar.
 	lv_obj_t *bottom = plain_row(page);
 	lv_obj_set_flex_align(bottom, LV_FLEX_ALIGN_SPACE_EVENLY, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_margin_top(bottom, 24, 0);
+	lv_obj_set_style_margin_top(bottom, ui_px(24), 0);
 	pill_btns[0] = pill_button(bottom, tr("metronome_tap"), &pill_labels[0]);
 	// On the press, not the release: a tap is timed by when the finger lands.
 	lv_obj_add_event_cb(pill_btns[0], tap_cb, LV_EVENT_PRESSED, NULL);

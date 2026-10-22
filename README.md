@@ -1,7 +1,7 @@
 ﻿# Sonix Player
 
-A replacement player for the **HiBy R3 Pro II** and the **HiBy R1**, written on
-LVGL.
+A replacement player for the **HiBy R3 Pro II**, the **HiBy R1** and the
+**HiBy R3 II 2025**, written on LVGL.
 
 Everything it can do is in **[FEATURES.md](FEATURES.md)**.
 
@@ -9,8 +9,9 @@ Everything it can do is in **[FEATURES.md](FEATURES.md)**.
 
 1. Download the firmware for your player from the
    **[latest release](https://github.com/Jepl4r/sonix-player/releases/latest)**:
-   `r3proii.upt` for the R3 Pro II, `r1.upt` for the R1. **Never the other
-   one**: the update does not check which player it is given.
+   `r3proii.upt` for the R3 Pro II, `r1.upt` for the R1, `r3ii_2025.upt` for
+   the R3 II 2025. **Never another player's**: the update does not check
+   which player it is given.
 2. Charge the player **above 30%**.
 3. Copy the `.upt` file to the **root of the microSD card** and put the card
    in the player.
@@ -33,24 +34,24 @@ right file from the latest release by itself.
 
 ## Supported players
 
-One binary runs on both. It reads which player it is on from
+One binary runs on all three. It reads which player it is on from
 `system-info.json` at startup, and the firmware packer writes a different one
 into each image.
 
-| | HiBy R3 Pro II | HiBy R1 |
-|---|---|---|
-| panel | 480x720 | 480x800 |
-| DAC | two Cirrus Logic CS43198 | one Cirrus Logic CS43131 |
-| headphone outputs | 3.5 mm, 4.4 mm balanced | 3.5 mm |
-| DAC controls | digital filters, DRE, NOS | digital filters, NOS |
-| touch | Goodix gt9xx, open-source driver, five fingers | Hynitron CST8xx, open-source driver, two fingers |
-| charger | MP2731 | the AXP2101 PMIC |
-| kernel | custom 4.4.94, see [hiby-custom-kernel](https://github.com/Jepl4r/hiby-custom-kernel) | the same |
-| double tap to wake | yes | no |
-| buttons | volume on the left flank, playback on the right | all on the right flank, one skip key |
-| firmware image | `r3proii.upt` | `r1.upt` |
+| | HiBy R3 Pro II | HiBy R1 | HiBy R3 II 2025 |
+|---|---|---|---|
+| panel | 480x720 | 480x800 | 320x480 |
+| DAC | two Cirrus Logic CS43198 | one Cirrus Logic CS43131 | one ESS ES9219 |
+| headphone outputs | 3.5 mm, 4.4 mm balanced | 3.5 mm | 3.5 mm, 4.4 mm balanced |
+| DAC controls | digital filters, DRE, NOS | digital filters, NOS | two digital filters, as on the stock firmware |
+| touch | Goodix gt9xx, open-source driver, five fingers | Hynitron CST8xx, open-source driver, two fingers | Goodix gt9xx, HiBy's driver, five fingers |
+| charger | MP2731 | the AXP2101 PMIC | the AXP2101 PMIC |
+| kernel | custom 4.4.94, see [hiby-custom-kernel](https://github.com/Jepl4r/hiby-custom-kernel) | the same | HiBy's own 4.4.94 and modules, unchanged |
+| double tap to wake | yes | no | yes |
+| buttons | volume on the left flank, playback on the right | all on the right flank, one skip key | a volume wheel instead of volume keys, playback as on the R3 Pro II |
+| firmware image | `r3proii.upt` | `r1.upt` | `r3ii_2025.upt` |
 
-Each player only looks for its own image, and never offers the other's: the
+Each player only looks for its own image, and never offers another's: the
 recovery system does not check what it is given.
 
 There are two builds from one tree:
@@ -120,7 +121,8 @@ usr/
 ```
 
 The easiest way to get one is to copy `usr/resource/` out of
-`sonix-packer/assets/R3PII/` or `sonix-packer/assets/R1/` into `usr/resource/`
+`sonix-packer/assets/R3PII/`, `sonix-packer/assets/R1/` or
+`sonix-packer/assets/R3II2025/` into `usr/resource/`
 next to `sonix_player_host`: the language files, the fonts, the images and the
 `system-info.json` of that player come with it.
 
@@ -136,7 +138,8 @@ Fonts are looked for in `usr/resource/sonix/fonts` first and fall back to
 ```
 
 The window is the panel of the player named in `system-info.json`: 480x720 for
-the R3 Pro II, 480x800 for the R1, and 480x720 when the file is missing. The
+the R3 Pro II, 480x800 for the R1, 320x480 for the R3 II 2025, and 480x720
+when the file is missing. The
 mouse is the finger, and dragging scrolls.
 
 `SONIX_PANEL=480x800` opens the window at a given size whatever the file says.
@@ -156,14 +159,14 @@ cover cache, the playlists.
 
 The device's buttons are on the keyboard:
 
-| key | R3 Pro II | R1 |
-|---|---|---|
-| `p` | power — a tap toggles the screen, held opens the power menu | same |
-| `u` | volume up | same |
-| `i` | volume down | same |
-| `b` | previous track | the skip key: next track |
-| `n` | play / pause | same |
-| `m` | next track | previous track (no such key on the R1) |
+| key | R3 Pro II | R1 | R3 II 2025 |
+|---|---|---|---|
+| `p` | power — a tap toggles the screen, held opens the power menu | same | same |
+| `u` | volume up | same | volume up (the simulator has no wheel) |
+| `i` | volume down | same | volume down |
+| `b` | previous track | the skip key: next track | as on the R3 Pro II |
+| `n` | play / pause | same | same |
+| `m` | next track | previous track (no such key on the R1) | as on the R3 Pro II |
 
 
 ### Other environment variables
@@ -236,17 +239,19 @@ sonix-packer/
 ├── sonix_firmware_packer.sh
 ├── r3proii_original.upt     the stock firmware of the R3 Pro II, from HiBy
 ├── r1_original.upt          the stock firmware of the R1, from HiBy
+├── r3ii_2025_original.upt   the stock firmware of the R3 II 2025, from HiBy
 ├── sonix_player             the binary from `make target`
 ├── sonix_launch             also from `make target`; optional
 ├── kernel/                  xImage-R3PII and xImage-R1; optional
 └── assets/
     ├── R3PII/               the overlay for the R3 Pro II
-    └── R1/                  the overlay for the R1
+    ├── R1/                  the overlay for the R1
+    └── R3II2025/            the overlay for the R3 II 2025
 ```
 
-It builds one image for each stock firmware it finds. With only one of the two
-`.upt` files next to it, it builds that player's image and says it skipped the
-other.
+It builds one image for each stock firmware it finds. With only some of the
+`.upt` files next to it, it builds those players' images and says it skipped
+the others.
 
 Each model has a complete overlay of its own and nothing is shared.
 
@@ -254,7 +259,7 @@ An overlay mirrors the rootfs from its root, so a file goes to the path it has
 inside the folder. That is how the resource tree gets installed:
 
 ```
-assets/R3PII/                           (and assets/R1/, the same shape)
+assets/R3PII/                           (and assets/R1/ and assets/R3II2025/, the same shape)
 ├── etc/
 │   ├── boot-logo/                   the default boot logo at the panel's size, one per theme and accent colour
 │   ├── init.d/                      the changed start scripts: boot logo, zram, the user data partition, Wi-Fi, Bluetooth
@@ -275,10 +280,12 @@ assets/R3PII/                           (and assets/R1/, the same shape)
 │           └── gui/                 some of the .png assets the UI loads at runtime (Flappy Bird, the remap pictures,
 │                                    the donation QR codes) - the rest are inside the binary.
 └── module_driver/                   the open-source modules and the changed load scripts
+                                     (on the R3 II 2025, the changed load scripts alone)
 ```
 
 `system-info.json` has to be there, and its `device-name` has to be the model
-the folder is for: `HiBy R3 Pro II` in `R3PII/`, `HiBy R1` in `R1/`. The packer
+the folder is for: `HiBy R3 Pro II` in `R3PII/`, `HiBy R1` in `R1/`,
+`HiBy R3 II 2025` in `R3II2025/`. The packer
 checks it, writes the build stamp into the `build_version` key, and stops if
 either is wrong. An image carrying the other player's name would offer that
 player's update to a device that cannot survive it.
@@ -292,7 +299,7 @@ it does not hand them out as a text file.
 
 1. Copy `sonix-player/streaming-keys.ini.example` to
    `sonix-player/streaming-keys.ini` and fill it in.
-2. Seal it into both assets trees:
+2. Seal it into every assets tree:
    ```bash
    cd sonix-player
    python3 tools/seal_streamkeys.py seal
@@ -348,12 +355,12 @@ It runs through without asking anything, once for each model:
    `ntfs-3g` has linked in. The stock Wi-Fi driver (`cywdhd`) goes too, once
    `brcmfmac` and `bcm_wlbt_power` are there to replace it
 6. deletes the stock interface's own resources - `litegui`, `layout`, `str`,
-   `fonts`.
+   `fonts`, and on the R3 II 2025 `R3II_2025_fonts`.
 7. checks the `device-name` in `system-info.json` and writes the build stamp
    into it
 8. repacks the squashfs, splits it into 512 KB chunks and rebuilds the md5
    chain the recovery kernel checks
-9. writes `r3proii.upt` or `r1.upt`
+9. writes `r3proii.upt`, `r1.upt` or `r3ii_2025.upt`
 
 With `kernel/xImage-R3PII` or `kernel/xImage-R1` present, that kernel replaces
 the stock one: it may not be bigger than the stock kernel, and its size and md5
@@ -362,6 +369,13 @@ untouched, size and md5 copied from the original rather than recomputed. The
 kernels in `kernel/` are built from
 [hiby-custom-kernel](https://github.com/Jepl4r/hiby-custom-kernel), and the
 modules in `assets/<model>/module_driver/` are built against them.
+
+The R3 II 2025 has no kernel there and no modules of its own: its ES9219,
+ST77903 panel, volume wheel and Wi-Fi chip have no open driver in that
+kernel, so its image keeps HiBy's kernel and every one of HiBy's modules.
+`assets/R3II2025/module_driver/` changes three load scripts only, the way
+the other two models change theirs: no `soc_gpio` or `sa_hgl_dma` (the stock
+interface's), five touch points, three more LED patterns.
 
 Most of those modules are open-source replacements for HiBy's closed ones,
 from the same kit: same file names and parameters, so the stock `.sh` that
@@ -384,7 +398,7 @@ carried across from the stock firmware.
 ### System libraries
 
 `assets/<model>/usr/lib` and `usr/bin` carry newer builds of libraries and
-programs the stock firmware has, the same files in both models:
+programs the stock firmware has, the same files in every model:
 
 | | stock | assets |
 |---|---|---|
@@ -409,7 +423,8 @@ apt install gcc-9-mipsel-linux-gnu binutils-mipsel-linux-gnu libc6-dev-mipsel-cr
 tools/system-libs/build.sh <extracted stock rootfs> out
 ```
 
-`out/usr/lib` and `out/usr/bin` then go into `assets/R3PII/` and `assets/R1/`.
+`out/usr/lib` and `out/usr/bin` then go into `assets/R3PII/`, `assets/R1/` and
+`assets/R3II2025/`.
 
 ### Patches
 
@@ -419,7 +434,8 @@ the overlay - any other file need to be in the respective folder mirroring the r
 ### Flashing
 
 1. Copy the image for your player to the **root of the microSD card**:
-   `r3proii.upt` for the R3 Pro II, `r1.upt` for the R1. Never the other one.
+   `r3proii.upt` for the R3 Pro II, `r1.upt` for the R1, `r3ii_2025.upt` for
+   the R3 II 2025. Never another player's.
 2. Insert the SD card into the player.
 3. Start the update:
    - **from the stock firmware** - use its firmware update from the microSD
@@ -470,10 +486,14 @@ sonix-player/
 │   │   │   ├── etc/                 boot logos (480x720), start scripts, D-Bus policy, cert.pem
 │   │   │   ├── module_driver/       the open-source modules, gt9xx_touch.ko among them; gt9xx_touch.sh for five fingers and leds_sgm31324_add.sh with 3 added LED registers
 │   │   │   └── usr/                 bluealsa 4.3.1, resources required by Sonix Player
-│   │   └── R1/                      the R1 overlay
-│   │       ├── etc/                 boot logos (480x800), start scripts, D-Bus policy, cert.pem
-│   │       ├── module_driver/       the open-source modules, cst8xx_touch.ko among them; cst8xx_touch.sh for two fingers
-│   │       └── usr/                 bluealsa 4.3.1, resources required by Sonix Player
+│   │   ├── R1/                      the R1 overlay
+│   │   │   ├── etc/                 boot logos (480x800), start scripts, D-Bus policy, cert.pem
+│   │   │   ├── module_driver/       the open-source modules, cst8xx_touch.ko among them; cst8xx_touch.sh for two fingers
+│   │   │   └── usr/                 bluealsa 4.3.1, resources required by Sonix Player
+│   │   └── R3II2025/                the R3 II 2025 overlay
+│   │       ├── etc/                 boot logos (320x480), start scripts, D-Bus policy, cert.pem
+│   │       ├── module_driver/       HiBy's load list without soc_gpio and sa_hgl_dma; gt9xx_touch.sh for five fingers and leds_sgm31324_add.sh with 3 added LED registers
+│   │       └── usr/                 bluealsa 4.3.1, resources required by Sonix Player, the remap pictures without volume keys
 │   │                                
 │   ├── kernel/                      xImage-R3PII and xImage-R1, from hiby-custom-kernel
 │   └── sonix_firmware_packer.sh     

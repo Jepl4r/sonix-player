@@ -15,6 +15,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/gui/streaming/podcastpage.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
@@ -26,7 +27,7 @@
 #include "src/system/streaming/podcastrss.h"
 #include "src/system/streaming/podcastsubs.h"
 
-#define FEED_ROW_HEIGHT 80
+#define FEED_ROW_HEIGHT ui_px(80)
 #define EXPORT_NAME "Sonix.opml"
 
 static gui_config_t *g_cfg;
@@ -142,7 +143,7 @@ static void paint_feed(feed_t *f) {
 	bool ticked = f->checked && usable;
 	lv_obj_set_style_bg_opa(f->box, ticked || f->state == FEED_ALREADY ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
 	lv_obj_set_style_bg_color(f->box, f->state == FEED_ALREADY ? theme()->surface_pressed : theme()->accent, 0);
-	lv_obj_set_style_border_width(f->box, ticked || f->state == FEED_ALREADY ? 0 : 2, 0);
+	lv_obj_set_style_border_width(f->box, ticked || f->state == FEED_ALREADY ? 0 : ui_px(2), 0);
 	lv_obj_set_hidden(f->tick, !(ticked || f->state == FEED_ALREADY));
 	lv_obj_set_style_opa(f->row, usable || f->state == FEED_LOOKING ? LV_OPA_COVER : LV_OPA_60, 0);
 }
@@ -308,11 +309,11 @@ static void make_feed_row(int i) {
 	lv_obj_set_size(f->row, lv_pct(100), FEED_ROW_HEIGHT);
 	lv_obj_add_style(f->row, &theme_style_card, 0);
 	lv_obj_add_style(f->row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(f->row, 12, 0);
+	lv_obj_set_style_radius(f->row, ui_px(12), 0);
 	lv_obj_set_style_border_width(f->row, 0, 0);
 	lv_obj_set_style_shadow_width(f->row, 0, 0);
-	lv_obj_set_style_pad_hor(f->row, 16, 0);
-	lv_obj_set_style_pad_column(f->row, 14, 0);
+	lv_obj_set_style_pad_hor(f->row, ui_px(16), 0);
+	lv_obj_set_style_pad_column(f->row, ui_px(14), 0);
 	lv_obj_set_scrollable(f->row, false);
 	lv_obj_set_flex_flow(f->row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(f->row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -321,10 +322,10 @@ static void make_feed_row(int i) {
 
 	f->box = lv_obj_create(f->row);
 	lv_obj_remove_style_all(f->box);
-	lv_obj_set_size(f->box, 30, 30);
-	lv_obj_set_style_radius(f->box, 8, 0);
+	lv_obj_set_size(f->box, ui_px(30), ui_px(30));
+	lv_obj_set_style_radius(f->box, ui_px(8), 0);
 	lv_obj_set_style_border_color(f->box, theme()->text_secondary, 0);
-	lv_obj_set_style_border_width(f->box, 2, 0);
+	lv_obj_set_style_border_width(f->box, ui_px(2), 0);
 	lv_obj_set_scrollable(f->box, false);
 	lv_obj_set_event_bubble(f->box, true);
 	f->tick = lv_image_create(f->box);
@@ -338,7 +339,7 @@ static void make_feed_row(int i) {
 	lv_obj_remove_style_all(texts);
 	lv_obj_set_flex_grow(texts, 1);
 	lv_obj_set_height(texts, LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_row(texts, 4, 0);
+	lv_obj_set_style_pad_row(texts, ui_px(4), 0);
 	lv_obj_set_event_bubble(texts, true);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
 
@@ -416,7 +417,7 @@ static void feeds_fill(void) {
 	// Room under the last row for the button floating over it.
 	lv_obj_t *spacer = lv_obj_create(feeds_list);
 	lv_obj_remove_style_all(spacer);
-	lv_obj_set_size(spacer, 1, 70);
+	lv_obj_set_size(spacer, 1, ui_px(70));
 	paint_totals();
 	lookup_start();
 }
@@ -433,12 +434,12 @@ static lv_obj_t *result_line(const char *name, int count, lv_color_t color, bool
 		return NULL;
 	}
 	lv_obj_t *row = lv_obj_create(result_list);
-	lv_obj_set_size(row, lv_pct(100), 72);
+	lv_obj_set_size(row, lv_pct(100), ui_px(72));
 	lv_obj_add_style(row, &theme_style_card, 0);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 20, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(20), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_event_bubble(row, true);
 	lv_obj_t *label = lv_label_create(row);
@@ -519,8 +520,8 @@ static void follow_cb(lv_event_t *e) {
 	lv_obj_t *head = lv_obj_create(result_list);
 	lv_obj_remove_style_all(head);
 	lv_obj_set_size(head, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_ver(head, 10, 0);
-	lv_obj_set_style_pad_row(head, 10, 0);
+	lv_obj_set_style_pad_ver(head, ui_px(10), 0);
+	lv_obj_set_style_pad_row(head, ui_px(10), 0);
 	lv_obj_set_flex_flow(head, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(head, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_t *icon = lv_image_create(head);
@@ -562,12 +563,12 @@ static void follow_cb(lv_event_t *e) {
 		lv_obj_set_style_text_font(full, &font_ui_18, 0);
 	}
 	lv_obj_t *open = lv_btn_create(result_list);
-	lv_obj_set_size(open, lv_pct(100), 60);
+	lv_obj_set_size(open, lv_pct(100), ui_px(60));
 	lv_obj_set_style_radius(open, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(open, 0, 0);
 	lv_obj_set_style_border_width(open, 0, 0);
 	lv_obj_add_style(open, &theme_style_accent_bg, 0);
-	lv_obj_set_style_margin_top(open, 10, 0);
+	lv_obj_set_style_margin_top(open, ui_px(10), 0);
 	lv_obj_add_event_cb(open, open_followed_cb, LV_EVENT_CLICKED, NULL);
 	lv_obj_t *open_label = lv_label_create(open);
 	lv_label_set_text(open_label, tr("podcast_opml_open_followed"));
@@ -605,11 +606,11 @@ static void files_fill(void) {
 		lv_obj_set_size(row, lv_pct(100), FEED_ROW_HEIGHT);
 		lv_obj_add_style(row, &theme_style_card, 0);
 		lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row, 12, 0);
+		lv_obj_set_style_radius(row, ui_px(12), 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_hor(row, 16, 0);
-		lv_obj_set_style_pad_column(row, 14, 0);
+		lv_obj_set_style_pad_hor(row, ui_px(16), 0);
+		lv_obj_set_style_pad_column(row, ui_px(14), 0);
 		lv_obj_set_scrollable(row, false);
 		lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 		lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -625,7 +626,7 @@ static void files_fill(void) {
 		lv_obj_remove_style_all(texts);
 		lv_obj_set_flex_grow(texts, 1);
 		lv_obj_set_height(texts, LV_SIZE_CONTENT);
-		lv_obj_set_style_pad_row(texts, 4, 0);
+		lv_obj_set_style_pad_row(texts, ui_px(4), 0);
 		lv_obj_set_event_bubble(texts, true);
 		lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
 		lv_obj_t *name = lv_label_create(texts);
@@ -807,7 +808,7 @@ static lv_obj_t *centred_note(lv_obj_t *parent) {
 	lv_obj_set_style_text_align(label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(label, &font_ui_22, 0);
-	lv_obj_set_style_pad_top(label, 40, 0);
+	lv_obj_set_style_pad_top(label, ui_px(40), 0);
 	return label;
 }
 
@@ -824,7 +825,7 @@ void podcastopml_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(files_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(files_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(files_empty, &font_ui_22, 0);
-	lv_obj_align(files_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + 100);
+	lv_obj_align(files_empty, LV_ALIGN_TOP_MID, 0, settingsrow_content_top(cfg) + ui_px(100));
 	lv_obj_set_hidden(files_empty, true);
 	switcher_attach_back_gesture(files_screen);
 	lv_obj_add_event_cb(files_screen, files_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
@@ -839,14 +840,14 @@ void podcastopml_init(gui_config_t *cfg) {
 	// list, which is emptied at every fill.
 	int top = settingsrow_content_top(cfg);
 	lv_obj_t *chip = lv_obj_create(feeds_screen);
-	lv_obj_set_size(chip, cfg->screen_width - 2 * cfg->padding, 74);
+	lv_obj_set_size(chip, cfg->screen_width - 2 * cfg->padding, ui_px(74));
 	lv_obj_align(chip, LV_ALIGN_TOP_LEFT, cfg->padding, top);
 	lv_obj_add_style(chip, &theme_style_card, 0);
-	lv_obj_set_style_radius(chip, 12, 0);
+	lv_obj_set_style_radius(chip, ui_px(12), 0);
 	lv_obj_set_style_border_width(chip, 0, 0);
 	lv_obj_set_style_shadow_width(chip, 0, 0);
-	lv_obj_set_style_pad_hor(chip, 16, 0);
-	lv_obj_set_style_pad_column(chip, 12, 0);
+	lv_obj_set_style_pad_hor(chip, ui_px(16), 0);
+	lv_obj_set_style_pad_column(chip, ui_px(12), 0);
 	lv_obj_set_scrollable(chip, false);
 	lv_obj_set_flex_flow(chip, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(chip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -857,7 +858,7 @@ void podcastopml_init(gui_config_t *cfg) {
 	lv_obj_remove_style_all(chip_texts);
 	lv_obj_set_flex_grow(chip_texts, 1);
 	lv_obj_set_height(chip_texts, LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_row(chip_texts, 2, 0);
+	lv_obj_set_style_pad_row(chip_texts, ui_px(2), 0);
 	lv_obj_set_flex_flow(chip_texts, LV_FLEX_FLOW_COLUMN);
 	feeds_file_label = lv_label_create(chip_texts);
 	lv_label_set_long_mode(feeds_file_label, LV_LABEL_LONG_DOT);
@@ -871,20 +872,20 @@ void podcastopml_init(gui_config_t *cfg) {
 	feeds_status = lv_label_create(feeds_screen);
 	lv_obj_add_style(feeds_status, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(feeds_status, &font_ui_18, 0);
-	lv_obj_align(feeds_status, LV_ALIGN_TOP_LEFT, cfg->padding + 4, top + 84);
+	lv_obj_align(feeds_status, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(4), top + ui_px(84));
 
 	// The list starts under the file and the count.
-	int list_top = top + 116;
+	int list_top = top + ui_px(116);
 	lv_obj_set_size(feeds_list, lv_pct(100), cfg->screen_height - list_top);
 	lv_obj_align(feeds_list, LV_ALIGN_TOP_LEFT, 0, list_top);
 
 	feeds_note = centred_note(feeds_screen);
 	lv_obj_set_width(feeds_note, cfg->screen_width - 4 * cfg->padding);
-	lv_obj_align(feeds_note, LV_ALIGN_TOP_MID, 0, top + 90);
+	lv_obj_align(feeds_note, LV_ALIGN_TOP_MID, 0, top + ui_px(90));
 	lv_obj_set_hidden(feeds_note, true);
 
 	follow_btn = lv_btn_create(feeds_screen);
-	lv_obj_set_size(follow_btn, cfg->screen_width - 2 * cfg->padding, 60);
+	lv_obj_set_size(follow_btn, cfg->screen_width - 2 * cfg->padding, ui_px(60));
 	lv_obj_align(follow_btn, LV_ALIGN_BOTTOM_MID, 0, -cfg->padding);
 	lv_obj_set_style_radius(follow_btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(follow_btn, 0, 0);

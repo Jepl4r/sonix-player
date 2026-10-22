@@ -20,9 +20,11 @@
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/settings.h"
+#include "src/gui/settings/wheelpage.h"
 #include "src/system/device/adb.h"
 #include "src/system/audio/alsa-controls.h"
 #include "src/system/playback/sleeptimer.h"
@@ -1971,6 +1973,13 @@ int main(int argc, char **argv) {
 	// After lv_init(), never before: it would overwrite this.
 	lv_rand_set_seed((uint32_t)time(NULL) ^ (uint32_t)getpid());
 
+	// The interface's fixed sizes follow the panel's width (uiscale.h), the
+	// fonts' among them: so before the fonts are opened. The model's panel, as
+	// panel_size() answers it before the display is up.
+	int scale_w = 0, scale_h = 0;
+	panel_size(&scale_w, &scale_h, 0, 0);
+	ui_scale_init(scale_w);
+
 	// The fonts, before anything can create a widget: every lv_font_t the
 	// interface points at is filled in here, from /usr/resource/sonix/fonts through
 	// FreeType -- the stock player's own mechanism. Without default.otf there
@@ -2087,8 +2096,8 @@ int main(int argc, char **argv) {
 	gui_config_t gui_cfg = {
 		.screen_width = (uint32_t)panel_w,
 		.screen_height = (uint32_t)panel_h,
-		.top_bar_height = 44,
-		.padding = 15,
+		.top_bar_height = ui_px(44),
+		.padding = ui_px(15),
 #ifdef HOST_BUILD
 		.sd_root_path = music_path,
 #else
@@ -2345,6 +2354,7 @@ int main(int argc, char **argv) {
 	// Charge limit, automatic shutdown and standby, as they were left. The
 	// screen timeout is the Screen page's setting and comes from there.
 	powersettings_apply();
+	wheelpage_apply();
 	settings_apply_screen_off();
 
 #ifndef HOST_BUILD

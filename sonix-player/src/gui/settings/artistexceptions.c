@@ -12,6 +12,7 @@
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 #include "src/system/library/library.h"
 
@@ -57,13 +58,13 @@ static void rebuild(void) {
 	lv_obj_clean(list);
 	for (int i = 0; i < name_count; i++) {
 		lv_obj_t *row = lv_obj_create(list);
-		lv_obj_set_size(row, lv_pct(100), 84);
+		lv_obj_set_size(row, lv_pct(100), ui_px(84));
 		lv_obj_add_style(row, &theme_style_card, 0);
-		lv_obj_set_style_radius(row, 12, 0);
+		lv_obj_set_style_radius(row, ui_px(12), 0);
 		lv_obj_set_style_border_width(row, 0, 0);
 		lv_obj_set_style_shadow_width(row, 0, 0);
-		lv_obj_set_style_pad_left(row, 20, 0);
-		lv_obj_set_style_pad_right(row, 8, 0);
+		lv_obj_set_style_pad_left(row, ui_px(20), 0);
+		lv_obj_set_style_pad_right(row, ui_px(8), 0);
 		lv_obj_set_style_pad_ver(row, 0, 0);
 		lv_obj_set_scrollable(row, false);
 		lv_obj_set_event_bubble(row, true);
@@ -78,7 +79,7 @@ static void rebuild(void) {
 		lv_obj_set_style_text_font(label, &font_ui_24, 0);
 
 		lv_obj_t *del = lv_btn_create(row);
-		lv_obj_set_size(del, 64, 64);
+		lv_obj_set_size(del, ui_px(64), ui_px(64));
 		lv_obj_set_style_bg_opa(del, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(del, 0, 0);
 		lv_obj_set_style_shadow_width(del, 0, 0);
@@ -179,7 +180,7 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	settingsrow_title_corner_slots(settingsrow_page_title(artistexceptions_screen), cfg, 1);
 
 	lv_obj_t *add = lv_btn_create(artistexceptions_screen);
-	lv_obj_set_size(add, 56, 56);
+	lv_obj_set_size(add, ui_px(56), ui_px(56));
 	lv_obj_align(add, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(add, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(add, 0, 0);
@@ -201,7 +202,7 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	list = lv_obj_create(container);
 	lv_obj_remove_style_all(list);
 	lv_obj_set_size(list, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_row(list, 8, 0);
+	lv_obj_set_style_pad_row(list, ui_px(8), 0);
 	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_event_bubble(list, true);
 
@@ -211,7 +212,7 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	lv_obj_set_style_text_align(empty_label, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(empty_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(empty_label, &font_ui_24, 0);
-	lv_obj_set_style_pad_top(empty_label, 40, 0);
+	lv_obj_set_style_pad_top(empty_label, ui_px(40), 0);
 	lv_label_set_text(empty_label, tr("artistexceptions_empty"));
 
 	// The naming dialog: the field at the top and the shared keyboard at the
@@ -232,10 +233,10 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	lv_obj_add_style(heading, &theme_style_text, 0);
 	lv_obj_set_style_text_font(heading, &font_ui_24, 0);
 	// Clear of the floating back chevron, which sits on top of this layer.
-	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + 56 + 14, cfg->padding + cfg->top_bar_height + 10);
+	lv_obj_align(heading, LV_ALIGN_TOP_LEFT, cfg->padding + ui_px(56) + ui_px(14), cfg->padding + cfg->top_bar_height + ui_px(10));
 
 	lv_obj_t *cancel = lv_btn_create(name_layer);
-	lv_obj_set_size(cancel, 56, 56);
+	lv_obj_set_size(cancel, ui_px(56), ui_px(56));
 	lv_obj_align(cancel, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding + cfg->top_bar_height);
 	lv_obj_set_style_bg_opa(cancel, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
@@ -251,18 +252,18 @@ void artistexceptions_init(gui_config_t *cfg, void (*changed)(void)) {
 	lv_textarea_set_one_line(name_field, true);
 	lv_textarea_set_max_length(name_field, NAME_MAX_LEN);
 	lv_textarea_set_placeholder_text(name_field, tr("name"));
-	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(name_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(name_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + 60);
+	lv_obj_align(name_field, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding + cfg->top_bar_height + ui_px(60));
 	lv_obj_add_style(name_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(name_field, 12, 0);
+	lv_obj_set_style_radius(name_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(name_field, 0, 0);
 	lv_obj_set_style_shadow_width(name_field, 0, 0);
-	lv_obj_set_style_pad_all(name_field, 14, 0);
+	lv_obj_set_style_pad_all(name_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(name_field, &font_ui_24, 0);
 	keyboard_style_caret(name_field);
 
-	name_keyboard = keyboard_create(name_layer, cfg->screen_width, 316, name_field, NULL, "ok", accept_cb, NULL);
+	name_keyboard = keyboard_create(name_layer, cfg->screen_width, ui_px(316), name_field, NULL, "ok", accept_cb, NULL);
 
 	lv_obj_add_event_cb(artistexceptions_screen, screen_cb, LV_EVENT_SCREEN_LOAD_START, NULL);
 	lv_obj_add_event_cb(artistexceptions_screen, screen_cb, LV_EVENT_SCREEN_UNLOADED, NULL);

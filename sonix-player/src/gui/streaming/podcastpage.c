@@ -26,6 +26,7 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/tabbar.h"
 #include "src/gui/shell/theme.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/gui/wireless/wifisettings.h"
 #include "src/system/decode/growfile.h"
 #include "src/system/playback/device_state.h"
@@ -304,7 +305,7 @@ static void build_busy_layer(void) {
 	lv_label_set_text(busy_label, tr("loading"));
 	lv_obj_set_style_text_color(busy_label, lv_color_white(), 0);
 	lv_obj_set_style_text_font(busy_label, &font_ui_22, 0);
-	lv_obj_set_style_margin_top(busy_label, 16, 0);
+	lv_obj_set_style_margin_top(busy_label, ui_px(16), 0);
 	lv_obj_set_hidden(busy_label, true);
 }
 
@@ -317,7 +318,7 @@ static void build_busy_layer(void) {
 // services cannot tread on each other even by accident (see qobuzart.h).
 // ---------------------------------------------------------------------------
 
-#define ROW_THUMB 60
+#define ROW_THUMB ui_px(60)
 
 static lv_obj_t *list_container;
 static lv_obj_t *list_title;
@@ -352,8 +353,8 @@ static int list_count;
 // Everything ABOUT an entry -- its cover, whether that cover failed, which row
 // lent it -- stays indexed by the entry, not by the widget. The widget is only
 // what draws it this second.
-#define ROW_HEIGHT 88
-#define ROW_GAP 12
+#define ROW_HEIGHT ui_px(88)
+#define ROW_GAP ui_px(12)
 #define ROW_PITCH (ROW_HEIGHT + ROW_GAP)
 #define ROW_POOL 12
 
@@ -488,7 +489,7 @@ static void paint_thumb(lv_obj_t *thumb, int index) {
 	if (index >= 0 && row_has_image[index]) {
 		lv_obj_remove_style(thumb, &theme_style_icon, 0);
 		lv_obj_set_style_image_recolor_opa(thumb, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_radius(thumb, 6, 0);
+		lv_obj_set_style_radius(thumb, ui_px(6), 0);
 		lv_obj_set_style_clip_corner(thumb, true, 0);
 		lv_image_set_src(thumb, &row_images[row_image_source[index]].dsc);
 		return;
@@ -943,12 +944,12 @@ static void build_rows(int width) {
 		lv_obj_set_x(row->button, 0);
 		lv_obj_add_style(row->button, &theme_style_card, 0);
 		lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-		lv_obj_set_style_radius(row->button, 12, 0);
+		lv_obj_set_style_radius(row->button, ui_px(12), 0);
 		lv_obj_set_style_border_width(row->button, 0, 0);
 		lv_obj_set_style_shadow_width(row->button, 0, 0);
-		lv_obj_set_style_pad_hor(row->button, 16, 0);
+		lv_obj_set_style_pad_hor(row->button, ui_px(16), 0);
 		lv_obj_set_style_pad_ver(row->button, 0, 0);
-		lv_obj_set_style_pad_column(row->button, 8, 0);
+		lv_obj_set_style_pad_column(row->button, ui_px(8), 0);
 		lv_obj_set_scrollable(row->button, false);
 		lv_obj_set_hidden(row->button, true);
 		lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
@@ -973,11 +974,11 @@ static void build_rows(int width) {
 		row->badge = lv_obj_create(row->button);
 		lv_obj_remove_style_all(row->badge);
 		lv_obj_set_ignore_layout(row->badge, true);
-		lv_obj_set_size(row->badge, 24, 24);
+		lv_obj_set_size(row->badge, ui_px(24), ui_px(24));
 		lv_obj_set_style_radius(row->badge, LV_RADIUS_CIRCLE, 0);
 		lv_obj_set_style_bg_opa(row->badge, LV_OPA_COVER, 0);
 		lv_obj_set_style_bg_color(row->badge, theme()->screen_bg, 0);
-		lv_obj_set_pos(row->badge, ROW_THUMB - 10, (ROW_HEIGHT + ROW_THUMB) / 2 - 18);
+		lv_obj_set_pos(row->badge, ROW_THUMB - ui_px(10), (ROW_HEIGHT + ROW_THUMB) / 2 - ui_px(18));
 		lv_obj_set_event_bubble(row->badge, true);
 		lv_obj_set_hidden(row->badge, true);
 		row->badge_icon = lv_image_create(row->badge);
@@ -992,7 +993,7 @@ static void build_rows(int width) {
 		lv_obj_set_style_bg_opa(texts, 0, 0);
 		lv_obj_set_style_border_width(texts, 0, 0);
 		lv_obj_set_style_pad_all(texts, 0, 0);
-		lv_obj_set_style_pad_row(texts, 6, 0);
+		lv_obj_set_style_pad_row(texts, ui_px(6), 0);
 		lv_obj_set_scrollable(texts, false);
 		lv_obj_set_event_bubble(texts, true);
 		lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
@@ -1013,7 +1014,7 @@ static void build_rows(int width) {
 		lv_obj_set_style_text_font(row->detail, &font_ui_18, 0);
 
 		row->menu_btn = lv_btn_create(row->button);
-		lv_obj_set_size(row->menu_btn, 44, 44);
+		lv_obj_set_size(row->menu_btn, ui_px(44), ui_px(44));
 		lv_obj_set_style_bg_opa(row->menu_btn, LV_OPA_TRANSP, 0);
 		lv_obj_set_style_border_width(row->menu_btn, 0, 0);
 		lv_obj_set_style_shadow_width(row->menu_btn, 0, 0);
@@ -2279,11 +2280,11 @@ static void dl_build(gui_config_t *cfg) {
 	lv_obj_t *card = lv_obj_create(dl_veil);
 	lv_obj_set_size(card, cfg->screen_width - 2 * cfg->padding, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 16, 0);
+	lv_obj_set_style_radius(card, ui_px(16), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_row(card, 14, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_row(card, ui_px(14), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
 	lv_obj_align(card, LV_ALIGN_CENTER, 0, cfg->top_bar_height / 2);
@@ -2301,7 +2302,7 @@ static void dl_build(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(dl_name, &font_ui_20, 0);
 
 	dl_bar = lv_bar_create(card);
-	lv_obj_set_size(dl_bar, lv_pct(100), 12);
+	lv_obj_set_size(dl_bar, lv_pct(100), ui_px(12));
 	lv_bar_set_range(dl_bar, 0, 1000);
 	lv_obj_set_style_bg_color(dl_bar, theme()->surface_pressed, LV_PART_MAIN);
 	lv_obj_set_style_bg_opa(dl_bar, LV_OPA_COVER, LV_PART_MAIN);
@@ -2314,7 +2315,7 @@ static void dl_build(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(dl_amount, &font_ui_18, 0);
 
 	lv_obj_t *cancel = lv_btn_create(card);
-	lv_obj_set_size(cancel, lv_pct(100), 56);
+	lv_obj_set_size(cancel, lv_pct(100), ui_px(56));
 	lv_obj_set_style_radius(cancel, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(cancel, 0, 0);
 	lv_obj_set_style_border_width(cancel, 0, 0);
@@ -2548,11 +2549,11 @@ static void build_offline_banner(lv_obj_t *column, gui_config_t *cfg) {
 	lv_obj_set_height(offline_banner, LV_SIZE_CONTENT);
 	lv_obj_set_style_margin_left(offline_banner, cfg->padding, 0);
 	lv_obj_add_style(offline_banner, &theme_style_card, 0);
-	lv_obj_set_style_radius(offline_banner, 12, 0);
+	lv_obj_set_style_radius(offline_banner, ui_px(12), 0);
 	lv_obj_set_style_border_width(offline_banner, 0, 0);
 	lv_obj_set_style_shadow_width(offline_banner, 0, 0);
-	lv_obj_set_style_pad_all(offline_banner, 12, 0);
-	lv_obj_set_style_pad_column(offline_banner, 12, 0);
+	lv_obj_set_style_pad_all(offline_banner, ui_px(12), 0);
+	lv_obj_set_style_pad_column(offline_banner, ui_px(12), 0);
 	lv_obj_set_scrollable(offline_banner, false);
 	lv_obj_set_flex_flow(offline_banner, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(offline_banner, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -2577,10 +2578,10 @@ static void build_offline_banner(lv_obj_t *column, gui_config_t *cfg) {
 // "Now listening" and "Continue listening"
 // ---------------------------------------------------------------------------
 
-#define LISTEN_ROW_HEIGHT 96
+#define LISTEN_ROW_HEIGHT ui_px(96)
 // Between the block and the rows: wider than the gap between two rows, so the
 // list of podcasts reads as starting there.
-#define TOP_BLOCK_GAP (ROW_GAP + 18)
+#define TOP_BLOCK_GAP (ROW_GAP + ui_px(18))
 
 // The episode the first row shows: "" while it is hidden.
 static char listen_now_path[512];
@@ -2593,7 +2594,7 @@ static void listen_thumb(listen_row_t *row, bool pictured) {
 	if (pictured) {
 		lv_obj_remove_style(row->thumb, &theme_style_icon, 0);
 		lv_obj_set_style_image_recolor_opa(row->thumb, LV_OPA_TRANSP, 0);
-		lv_obj_set_style_radius(row->thumb, 6, 0);
+		lv_obj_set_style_radius(row->thumb, ui_px(6), 0);
 		lv_obj_set_style_clip_corner(row->thumb, true, 0);
 		lv_image_set_src(row->thumb, &row->image.dsc);
 	} else {
@@ -2697,7 +2698,7 @@ static void place_list_body(void) {
 	// The empty notice sits under whatever is above the list.
 	if (list_empty && list_container) {
 		lv_obj_update_layout(list_container);
-		lv_obj_align_to(list_empty, list_container, LV_ALIGN_TOP_MID, 0, y + 60);
+		lv_obj_align_to(list_empty, list_container, LV_ALIGN_TOP_MID, 0, y + ui_px(60));
 	}
 }
 
@@ -2852,11 +2853,11 @@ static void build_listen_row(listen_row_t *row, lv_obj_t *parent) {
 	lv_obj_set_size(row->button, lv_pct(100), LISTEN_ROW_HEIGHT);
 	lv_obj_add_style(row->button, &theme_style_card, 0);
 	lv_obj_add_style(row->button, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row->button, 12, 0);
+	lv_obj_set_style_radius(row->button, ui_px(12), 0);
 	lv_obj_set_style_border_width(row->button, 0, 0);
 	lv_obj_set_style_shadow_width(row->button, 0, 0);
-	lv_obj_set_style_pad_hor(row->button, 14, 0);
-	lv_obj_set_style_pad_column(row->button, 12, 0);
+	lv_obj_set_style_pad_hor(row->button, ui_px(14), 0);
+	lv_obj_set_style_pad_column(row->button, ui_px(12), 0);
 	lv_obj_set_scrollable(row->button, false);
 	lv_obj_set_flex_flow(row->button, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row->button, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
@@ -2873,7 +2874,7 @@ static void build_listen_row(listen_row_t *row, lv_obj_t *parent) {
 	lv_obj_remove_style_all(texts);
 	lv_obj_set_flex_grow(texts, 1);
 	lv_obj_set_height(texts, LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_row(texts, 5, 0);
+	lv_obj_set_style_pad_row(texts, ui_px(5), 0);
 	lv_obj_set_event_bubble(texts, true);
 	lv_obj_set_flex_flow(texts, LV_FLEX_FLOW_COLUMN);
 
@@ -2892,7 +2893,7 @@ static void build_listen_row(listen_row_t *row, lv_obj_t *parent) {
 	lv_obj_set_style_text_font(row->detail, &font_ui_16, 0);
 
 	row->bar = lv_bar_create(texts);
-	lv_obj_set_size(row->bar, lv_pct(100), 5);
+	lv_obj_set_size(row->bar, lv_pct(100), ui_px(5));
 	lv_bar_set_range(row->bar, 0, 1000);
 	lv_obj_set_style_bg_color(row->bar, theme()->surface_pressed, LV_PART_MAIN);
 	lv_obj_set_style_bg_opa(row->bar, LV_OPA_COVER, LV_PART_MAIN);
@@ -2904,7 +2905,7 @@ static void build_listen_row(listen_row_t *row, lv_obj_t *parent) {
 	// Bubbling, so a swipe that starts on it still reaches the page.
 	row->action = lv_btn_create(row->button);
 	lv_obj_remove_style_all(row->action);
-	lv_obj_set_size(row->action, 52, 52);
+	lv_obj_set_size(row->action, ui_px(52), ui_px(52));
 	lv_obj_set_style_radius(row->action, LV_RADIUS_CIRCLE, 0);
 	lv_obj_add_style(row->action, &theme_style_accent_bg, 0);
 	lv_obj_set_style_bg_opa(row->action, LV_OPA_COVER, 0);
@@ -2925,7 +2926,7 @@ static void build_top_block(int width) {
 	lv_obj_remove_style_all(top_block);
 	lv_obj_set_size(top_block, width, LV_SIZE_CONTENT);
 	lv_obj_set_pos(top_block, 0, 0);
-	lv_obj_set_style_pad_row(top_block, 10, 0);
+	lv_obj_set_style_pad_row(top_block, ui_px(10), 0);
 	lv_obj_set_scrollable(top_block, false);
 	lv_obj_set_event_bubble(top_block, true);
 	lv_obj_set_flex_flow(top_block, LV_FLEX_FLOW_COLUMN);
@@ -2943,7 +2944,7 @@ static void build_card_empty(lv_obj_t *parent) {
 	card_empty = lv_obj_create(parent);
 	lv_obj_remove_style_all(card_empty);
 	lv_obj_set_size(card_empty, lv_pct(100), LV_SIZE_CONTENT);
-	lv_obj_set_style_pad_row(card_empty, 10, 0);
+	lv_obj_set_style_pad_row(card_empty, ui_px(10), 0);
 	lv_obj_set_scrollable(card_empty, false);
 	lv_obj_set_event_bubble(card_empty, true);
 	lv_obj_set_flex_flow(card_empty, LV_FLEX_FLOW_COLUMN);
@@ -2972,10 +2973,10 @@ static void build_card_empty(lv_obj_t *parent) {
 	lv_obj_t *tree = lv_obj_create(card_empty);
 	lv_obj_set_size(tree, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_add_style(tree, &theme_style_card, 0);
-	lv_obj_set_style_radius(tree, 12, 0);
+	lv_obj_set_style_radius(tree, ui_px(12), 0);
 	lv_obj_set_style_border_width(tree, 0, 0);
 	lv_obj_set_style_shadow_width(tree, 0, 0);
-	lv_obj_set_style_pad_all(tree, 14, 0);
+	lv_obj_set_style_pad_all(tree, ui_px(14), 0);
 	lv_obj_set_scrollable(tree, false);
 	lv_obj_set_event_bubble(tree, true);
 	lv_obj_t *tree_text = lv_label_create(tree);
@@ -2983,7 +2984,7 @@ static void build_card_empty(lv_obj_t *parent) {
 						  tr("podcast_tree_show"), tr("podcast_tree_episode"));
 	lv_obj_add_style(tree_text, &theme_style_text, 0);
 	lv_obj_set_style_text_font(tree_text, &font_ui_18, 0);
-	lv_obj_set_style_text_line_space(tree_text, 4, 0);
+	lv_obj_set_style_text_line_space(tree_text, ui_px(4), 0);
 
 	lv_obj_set_hidden(card_empty, true);
 }
@@ -3044,7 +3045,7 @@ static void build_page(gui_config_t *cfg) {
 	lv_obj_set_style_border_width(column, 0, 0);
 	lv_obj_set_style_radius(column, 0, 0);
 	lv_obj_set_style_pad_all(column, 0, 0);
-	lv_obj_set_style_pad_gap(column, 12, 0);
+	lv_obj_set_style_pad_gap(column, ui_px(12), 0);
 	lv_obj_set_scrollable(column, false);
 	lv_obj_set_flex_flow(column, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(column, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_START);
@@ -3113,7 +3114,7 @@ static void build_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_align(list_empty, LV_TEXT_ALIGN_CENTER, 0);
 	lv_obj_add_style(list_empty, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(list_empty, &font_ui_24, 0);
-	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, content_top + 140);
+	lv_obj_align(list_empty, LV_ALIGN_TOP_MID, 0, content_top + ui_px(140));
 	lv_obj_set_hidden(list_empty, true);
 
 	// The same spot, for when the section cannot work at all.
@@ -3124,7 +3125,7 @@ static void build_page(gui_config_t *cfg) {
 	lv_obj_add_style(note_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(note_label, &font_ui_22, 0);
 	lv_obj_set_style_text_align(note_label, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_align(note_label, LV_ALIGN_TOP_LEFT, cfg->padding, content_top + 14);
+	lv_obj_align(note_label, LV_ALIGN_TOP_LEFT, cfg->padding, content_top + ui_px(14));
 	lv_obj_set_hidden(note_label, true);
 
 	// The "Wi-Fi settings" row under the network notice, as on the transfer
@@ -3208,14 +3209,14 @@ static void build_search_page(gui_config_t *cfg) {
 	search_field = lv_textarea_create(search_screen);
 	lv_textarea_set_one_line(search_field, true);
 	lv_textarea_set_placeholder_text(search_field, tr("podcast_name_or_address"));
-	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(search_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(search_field, LV_SCROLLBAR_MODE_OFF);
 	lv_obj_align(search_field, LV_ALIGN_TOP_LEFT, cfg->padding, top);
 	lv_obj_add_style(search_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(search_field, 12, 0);
+	lv_obj_set_style_radius(search_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(search_field, 0, 0);
 	lv_obj_set_style_shadow_width(search_field, 0, 0);
-	lv_obj_set_style_pad_all(search_field, 14, 0);
+	lv_obj_set_style_pad_all(search_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(search_field, &font_ui_24, 0);
 	keyboard_style_caret(search_field);
 	lv_obj_add_event_cb(search_field, search_field_changed_cb, LV_EVENT_VALUE_CHANGED, NULL);
@@ -3223,8 +3224,8 @@ static void build_search_page(gui_config_t *cfg) {
 	// The x on the field's right edge: clears the query with one tap. Hidden
 	// while the field is empty.
 	search_clear_btn = lv_btn_create(search_screen);
-	lv_obj_set_size(search_clear_btn, 56, 56);
-	lv_obj_align(search_clear_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - 4, top + (62 - 56) / 2);
+	lv_obj_set_size(search_clear_btn, ui_px(56), ui_px(56));
+	lv_obj_align(search_clear_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding - ui_px(4), top + (ui_px(62) - ui_px(56)) / 2);
 	lv_obj_set_style_bg_opa(search_clear_btn, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_shadow_width(search_clear_btn, 0, 0);
 	lv_obj_set_style_border_width(search_clear_btn, 0, 0);
@@ -3239,12 +3240,12 @@ static void build_search_page(gui_config_t *cfg) {
 	lv_obj_center(search_clear_icon);
 
 	// Room for it, so a long query does not run underneath.
-	lv_obj_set_style_pad_right(search_field, 60, 0);
+	lv_obj_set_style_pad_right(search_field, ui_px(60), 0);
 
 	// No search-type pills, unlike Qobuz and Tidal: there the search runs over
 	// tracks, albums and artists, here there is one thing only to search for.
 	search_keyboard =
-		keyboard_create(search_screen, cfg->screen_width, 316, search_field, NULL, "ok", search_accept_cb, NULL);
+		keyboard_create(search_screen, cfg->screen_width, ui_px(316), search_field, NULL, "ok", search_accept_cb, NULL);
 	switcher_attach_back_gesture(search_screen);
 }
 
@@ -3353,12 +3354,12 @@ static void open_settings_cb(lv_event_t *e) {
 
 static lv_obj_t *corner_button(gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(podcast_screen);
-	lv_obj_set_size(button, 56, 56);
+	lv_obj_set_size(button, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(button, 0, 0);
 	lv_obj_set_style_shadow_width(button, 0, 0);
 	lv_obj_set_style_pad_all(button, 0, 0);
-	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (56 + 6), cfg->padding + cfg->top_bar_height);
+	lv_obj_align(button, LV_ALIGN_TOP_RIGHT, -cfg->padding - slot * (ui_px(56) + ui_px(6)), cfg->padding + cfg->top_bar_height);
 
 	lv_obj_t *icon = lv_image_create(button);
 	lv_image_set_src(icon, glyph);
@@ -3419,7 +3420,7 @@ static void show_note(const char *text) {
 			if (wifi_note) {
 				lv_obj_set_hidden(note_wifi_row, false);
 				lv_obj_update_layout(note_label); // the notice's real height
-				lv_obj_align_to(note_wifi_row, note_label, LV_ALIGN_OUT_BOTTOM_MID, 0, 16);
+				lv_obj_align_to(note_wifi_row, note_label, LV_ALIGN_OUT_BOTTOM_MID, 0, ui_px(16));
 			} else {
 				lv_obj_set_hidden(note_wifi_row, true);
 			}
@@ -3612,8 +3613,8 @@ static void pick_skip_forward_cb(lv_event_t *e) {
 
 static lv_obj_t *make_skip_choice(lv_obj_t *parent, const char *text, int seconds, lv_event_cb_t cb) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, 64);
-	lv_obj_set_style_pad_hor(btn, 22, 0);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, ui_px(64));
+	lv_obj_set_style_pad_hor(btn, ui_px(22), 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -3633,11 +3634,11 @@ static lv_obj_t *make_skip_card(lv_obj_t *parent, const char *title) {
 	lv_obj_set_width(card, lv_pct(100));
 	lv_obj_set_height(card, LV_SIZE_CONTENT);
 	lv_obj_add_style(card, &theme_style_card, 0);
-	lv_obj_set_style_radius(card, 12, 0);
+	lv_obj_set_style_radius(card, ui_px(12), 0);
 	lv_obj_set_style_border_width(card, 0, 0);
 	lv_obj_set_style_shadow_width(card, 0, 0);
-	lv_obj_set_style_pad_all(card, 20, 0);
-	lv_obj_set_style_pad_gap(card, 18, 0);
+	lv_obj_set_style_pad_all(card, ui_px(20), 0);
+	lv_obj_set_style_pad_gap(card, ui_px(18), 0);
 	lv_obj_set_scrollable(card, false);
 	lv_obj_set_event_bubble(card, true);
 	lv_obj_set_flex_flow(card, LV_FLEX_FLOW_COLUMN);
@@ -3653,7 +3654,7 @@ static lv_obj_t *make_skip_card(lv_obj_t *parent, const char *title) {
 	lv_obj_set_style_bg_opa(row, 0, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_pad_all(row, 0, 0);
-	lv_obj_set_style_pad_gap(row, 14, 0);
+	lv_obj_set_style_pad_gap(row, ui_px(14), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_event_bubble(row, true);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);

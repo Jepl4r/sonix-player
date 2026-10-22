@@ -16,6 +16,7 @@
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
 #include "src/gui/shell/topbar.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
@@ -138,7 +139,7 @@ static turn_mode_t opt_turn = TURN_INSTANT;
 // How much of the page the strip along the bottom takes, plus the gap that
 // keeps the last line off it. Not a constant: the reader chooses what is on the
 // strip, and a strip with nothing on it reserves no room.
-static int32_t bar_space(void) { return ebookbar_height() + 6; }
+static int32_t bar_space(void) { return ebookbar_height() + ui_px(6); }
 
 static void show_page(void);
 static void menu_open(void);
@@ -405,7 +406,7 @@ static lv_obj_t *build_block(lv_obj_t *parent, const ebook_block_t *b, uint32_t 
 	if (b->type == EBOOK_BLOCK_RULE) {
 		lv_obj_t *rule = lv_obj_create(parent);
 		lv_obj_remove_style_all(rule);
-		lv_obj_set_size(rule, width / 3, 2);
+		lv_obj_set_size(rule, width / 3, ui_px(2));
 		lv_obj_set_style_bg_color(rule, ink_colour(), 0);
 		lv_obj_set_style_bg_opa(rule, LV_OPA_30, 0);
 		lv_obj_set_clickable(rule, false);
@@ -1412,14 +1413,14 @@ static void chapter_step_cb(lv_event_t *e) {
 static void chapter_button(lv_obj_t *parent, const char *tag, int step) {
 	lv_obj_t *btn = lv_btn_create(parent);
 	lv_obj_set_width(btn, lv_pct(100));
-	lv_obj_set_height(btn, 72);
+	lv_obj_set_height(btn, ui_px(72));
 	lv_obj_set_user_data(btn, (void *)(uintptr_t)NOT_A_BLOCK);
 	lv_obj_set_style_bg_color(btn, ink_colour(), 0);
 	lv_obj_set_style_bg_opa(btn, LV_OPA_10, 0);
-	lv_obj_set_style_radius(btn, 12, 0);
+	lv_obj_set_style_radius(btn, ui_px(12), 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_margin_ver(btn, 10, 0);
+	lv_obj_set_style_margin_ver(btn, ui_px(10), 0);
 	lv_obj_add_event_cb(btn, chapter_step_cb, LV_EVENT_CLICKED, (void *)(intptr_t)step);
 
 	lv_obj_t *label = lv_label_create(btn);
@@ -1932,7 +1933,7 @@ static void page_pressed_cb(lv_event_t *e) {
 // How far the menu stays off the edges of the screen. A bar that runs to the
 // bottom and to both sides reads as a panel that has fallen off the page rather
 // than one that has come up.
-#define MENU_INSET 16
+#define MENU_INSET ui_px(16)
 
 typedef enum {
 	SECTION_CHAPTERS = 0,
@@ -2072,14 +2073,14 @@ static void chapter_entry(const char *title, uint32_t spine, uint8_t depth) {
 	lv_obj_set_height(row, LV_SIZE_CONTENT);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 20, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(20), 0);
 	// Enough that a one-line entry still looks like a row and not like a label,
 	// and a three-line one has the same air above and below it.
-	lv_obj_set_style_pad_ver(row, 22, 0);
-	lv_obj_set_style_min_height(row, 88, 0);
+	lv_obj_set_style_pad_ver(row, ui_px(22), 0);
+	lv_obj_set_style_min_height(row, ui_px(88), 0);
 	lv_obj_add_event_cb(row, chapter_pick_cb, LV_EVENT_CLICKED, (void *)(uintptr_t)spine);
 
 	lv_obj_t *name = lv_label_create(row);
@@ -2090,7 +2091,7 @@ static void chapter_entry(const char *title, uint32_t spine, uint8_t depth) {
 	// A sub-entry is indented rather than given a smaller font: at this size a
 	// smaller font is a font nobody can read.
 	lv_obj_set_width(name, lv_pct(100) - depth * 18);
-	lv_obj_align(name, LV_ALIGN_LEFT_MID, depth * 18, 0);
+	lv_obj_align(name, LV_ALIGN_LEFT_MID, depth * ui_px(18), 0);
 }
 
 // ---------------------------------------------------------------------------
@@ -2260,7 +2261,7 @@ static void option_cb(lv_event_t *e) {
 // the minus of every stepper.
 static void stepper_button(lv_obj_t *parent, const char *glyph, int which, bool up) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, 56, 56);
+	lv_obj_set_size(btn, ui_px(56), ui_px(56));
 	lv_obj_add_style(btn, &theme_style_accent_bg, 0);
 	lv_obj_set_style_radius(btn, LV_RADIUS_CIRCLE, 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
@@ -2289,7 +2290,7 @@ static void stepper_row(lv_obj_t *parent, int which) {
 	lv_obj_set_style_text_align(value, LV_TEXT_ALIGN_CENTER, 0);
 	// Wide enough for two digits at any of the four, so the plus does not walk
 	// left and right as the number changes under it.
-	lv_obj_set_width(value, 56);
+	lv_obj_set_width(value, ui_px(56));
 
 	stepper_button(pills, "+", which, true);
 	stepper_values[which] = value;
@@ -2399,16 +2400,16 @@ static void turn_cb(lv_event_t *e) {
 static void turn_row(lv_obj_t *parent, int index, const lv_image_dsc_t *icon, const char *tag) {
 	lv_obj_t *row = lv_btn_create(parent);
 	lv_obj_set_width(row, lv_pct(100));
-	lv_obj_set_height(row, 76);
+	lv_obj_set_height(row, ui_px(76));
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_bg_color(row, theme()->accent, 0);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(16), 0);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(row, 14, 0);
+	lv_obj_set_style_pad_column(row, ui_px(14), 0);
 	lv_obj_add_event_cb(row, turn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
 
 	lv_obj_t *glyph = lv_image_create(row);
@@ -2443,7 +2444,7 @@ static void build_theme(void) {
 	lv_label_set_text(heading, tr("ebookreader_page_turn"));
 	lv_obj_add_style(heading, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(heading, &font_ui_20, 0);
-	lv_obj_set_style_margin_top(heading, 10, 0);
+	lv_obj_set_style_margin_top(heading, ui_px(10), 0);
 
 	turn_row(menu_body, TURN_INSTANT, &icon_ebook_turn_fast, "ebookreader_turn_instant");
 	turn_row(menu_body, TURN_SLIDE, &icon_ebook_turn_slide, "ebookreader_turn_slide");
@@ -2462,13 +2463,13 @@ static void bar_button(lv_obj_t *parent, const lv_image_dsc_t *icon, const char 
 	lv_obj_set_flex_grow(btn, 1);
 	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
 	lv_obj_add_style(btn, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(btn, 14, 0);
+	lv_obj_set_style_radius(btn, ui_px(14), 0);
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
-	lv_obj_set_style_pad_ver(btn, 14, 0);
+	lv_obj_set_style_pad_ver(btn, ui_px(14), 0);
 	lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_row(btn, 8, 0);
+	lv_obj_set_style_pad_row(btn, ui_px(8), 0);
 	lv_obj_add_event_cb(btn, section_open, LV_EVENT_CLICKED, (void *)(intptr_t)which);
 
 	lv_obj_t *glyph = lv_image_create(btn);
@@ -2501,12 +2502,12 @@ static void build_menu(gui_config_t *cfg) {
 	lv_obj_add_style(menu_bar, &theme_style_panel, 0);
 	lv_obj_set_size(menu_bar, cfg->screen_width - 2 * MENU_INSET, LV_SIZE_CONTENT);
 	lv_obj_align(menu_bar, LV_ALIGN_BOTTOM_MID, 0, -MENU_INSET);
-	lv_obj_set_style_radius(menu_bar, 18, 0);
+	lv_obj_set_style_radius(menu_bar, ui_px(18), 0);
 	lv_obj_set_style_border_width(menu_bar, 0, 0);
 	lv_obj_set_style_shadow_width(menu_bar, 0, 0);
-	lv_obj_set_style_pad_all(menu_bar, 10, 0);
+	lv_obj_set_style_pad_all(menu_bar, ui_px(10), 0);
 	lv_obj_set_flex_flow(menu_bar, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(menu_bar, 8, 0);
+	lv_obj_set_style_pad_row(menu_bar, ui_px(8), 0);
 	lv_obj_set_scrollable(menu_bar, false);
 
 	lv_obj_t *icons = lv_obj_create(menu_bar);
@@ -2522,13 +2523,13 @@ static void build_menu(gui_config_t *cfg) {
 	// while reading, but it has to be somewhere and this is the only panel the
 	// reader has.
 	lv_obj_t *close_row = lv_btn_create(menu_bar);
-	lv_obj_set_size(close_row, lv_pct(100), 68);
+	lv_obj_set_size(close_row, lv_pct(100), ui_px(68));
 	// Same reason as the card below: on the light theme a card on a panel is
 	// white on white, and the one row that has to be found is the one that is
 	// not there.
 	lv_obj_add_style(close_row, &theme_style_screen, 0);
 	lv_obj_add_style(close_row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(close_row, 12, 0);
+	lv_obj_set_style_radius(close_row, ui_px(12), 0);
 	lv_obj_set_style_border_width(close_row, 0, 0);
 	lv_obj_set_style_shadow_width(close_row, 0, 0);
 	lv_obj_add_event_cb(close_row, close_book_cb, LV_EVENT_CLICKED, NULL);
@@ -2549,12 +2550,12 @@ static void build_menu(gui_config_t *cfg) {
 	lv_obj_add_style(menu_card, &theme_style_screen, 0);
 	lv_obj_set_size(menu_card, cfg->screen_width - 2 * MENU_INSET, cfg->screen_height * 3 / 4);
 	lv_obj_center(menu_card);
-	lv_obj_set_style_radius(menu_card, 18, 0);
+	lv_obj_set_style_radius(menu_card, ui_px(18), 0);
 	lv_obj_set_style_border_width(menu_card, 0, 0);
 	lv_obj_set_style_shadow_width(menu_card, 0, 0);
-	lv_obj_set_style_pad_all(menu_card, 12, 0);
+	lv_obj_set_style_pad_all(menu_card, ui_px(12), 0);
 	lv_obj_set_flex_flow(menu_card, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(menu_card, 10, 0);
+	lv_obj_set_style_pad_row(menu_card, ui_px(10), 0);
 	// Only the body scrolls. Left scrollable the card scrolls too, and the
 	// heading -- which carries the way back to the bar -- slides off the top.
 	lv_obj_set_scrollable(menu_card, false);
@@ -2565,11 +2566,11 @@ static void build_menu(gui_config_t *cfg) {
 	lv_obj_set_size(header, lv_pct(100), LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(header, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(header, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_column(header, 10, 0);
+	lv_obj_set_style_pad_column(header, ui_px(10), 0);
 	lv_obj_set_scrollable(header, false);
 
 	lv_obj_t *back = lv_btn_create(header);
-	lv_obj_set_size(back, 56, 56);
+	lv_obj_set_size(back, ui_px(56), ui_px(56));
 	lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
 	lv_obj_add_style(back, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_radius(back, LV_RADIUS_CIRCLE, 0);
@@ -2597,8 +2598,8 @@ static void build_menu(gui_config_t *cfg) {
 	lv_obj_set_width(menu_body, lv_pct(100));
 	lv_obj_set_flex_grow(menu_body, 1);
 	lv_obj_set_flex_flow(menu_body, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(menu_body, 8, 0);
-	lv_obj_set_style_pad_right(menu_body, 6, 0);
+	lv_obj_set_style_pad_row(menu_body, ui_px(8), 0);
+	lv_obj_set_style_pad_right(menu_body, ui_px(6), 0);
 	// The rest of a long chapter list arrives as it is scrolled to; the handler
 	// leaves every other section alone.
 	lv_obj_add_event_cb(menu_body, chapters_scrolled_cb, LV_EVENT_SCROLL, NULL);
@@ -2786,7 +2787,7 @@ void ebookreader_init(gui_config_t *cfg) {
 	lv_timer_pause(count_timer);
 
 	ebookbar_create(&status_bar, ebookreader_screen, cfg->screen_width);
-	lv_obj_align(status_bar.root, LV_ALIGN_BOTTOM_MID, 0, -6);
+	lv_obj_align(status_bar.root, LV_ALIGN_BOTTOM_MID, 0, ui_px(-6));
 
 	build_menu(cfg);
 

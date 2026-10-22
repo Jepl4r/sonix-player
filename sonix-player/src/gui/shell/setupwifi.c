@@ -12,17 +12,18 @@
 #include "src/gui/shell/keyboard.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
 #include "src/system/net/wifi.h"
 
-#define ROW_H 76
-#define HEADER_BTN 56
+#define ROW_H ui_px(76)
+#define HEADER_BTN ui_px(56)
 #define POLL_MS 500
 // A list left alone is scanned again this often, so a network switched on
 // while the page is up appears without a button to ask for it.
 #define RESCAN_MS 10000
-#define PASSWORD_KEYBOARD_H 316
+#define PASSWORD_KEYBOARD_H ui_px(316)
 
 static lv_obj_t *panel;
 static lv_obj_t *status_label;
@@ -152,12 +153,12 @@ static void add_row(const wifi_network_t *net) {
 	lv_obj_set_size(row, lv_pct(100), ROW_H);
 	lv_obj_add_style(row, &theme_style_card, 0);
 	lv_obj_add_style(row, &theme_style_card_pressed, LV_STATE_PRESSED);
-	lv_obj_set_style_radius(row, 12, 0);
+	lv_obj_set_style_radius(row, ui_px(12), 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 18, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(18), 0);
 	lv_obj_set_style_pad_ver(row, 0, 0);
-	lv_obj_set_style_pad_column(row, 14, 0);
+	lv_obj_set_style_pad_column(row, ui_px(14), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_event_bubble(row, true);
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
@@ -308,10 +309,10 @@ static void build_password_panel(gui_config_t *cfg) {
 
 	pw_title = lv_label_create(pw_panel);
 	lv_label_set_long_mode(pw_title, LV_LABEL_LONG_DOT);
-	lv_obj_set_width(pw_title, cfg->screen_width - 2 * cfg->padding - HEADER_BTN - 14);
+	lv_obj_set_width(pw_title, cfg->screen_width - 2 * cfg->padding - HEADER_BTN - ui_px(14));
 	lv_obj_add_style(pw_title, &theme_style_text, 0);
 	lv_obj_set_style_text_font(pw_title, &font_ui_32, 0);
-	lv_obj_align(pw_title, LV_ALIGN_TOP_LEFT, cfg->padding + HEADER_BTN + 14, cfg->padding + (HEADER_BTN - lv_font_get_line_height(&font_ui_32)) / 2);
+	lv_obj_align(pw_title, LV_ALIGN_TOP_LEFT, cfg->padding + HEADER_BTN + ui_px(14), cfg->padding + (HEADER_BTN - lv_font_get_line_height(&font_ui_32)) / 2);
 
 	int top = cfg->padding + HEADER_BTN + cfg->padding;
 	lv_obj_t *hint = lv_label_create(pw_panel);
@@ -323,14 +324,14 @@ static void build_password_panel(gui_config_t *cfg) {
 	pw_field = lv_textarea_create(pw_panel);
 	lv_textarea_set_one_line(pw_field, true);
 	lv_textarea_set_placeholder_text(pw_field, tr("password"));
-	lv_obj_set_size(pw_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_size(pw_field, cfg->screen_width - 2 * cfg->padding, ui_px(62));
 	lv_obj_set_scrollbar_mode(pw_field, LV_SCROLLBAR_MODE_OFF);
-	lv_obj_align(pw_field, LV_ALIGN_TOP_LEFT, cfg->padding, top + 36);
+	lv_obj_align(pw_field, LV_ALIGN_TOP_LEFT, cfg->padding, top + ui_px(36));
 	lv_obj_add_style(pw_field, &theme_style_card, 0);
-	lv_obj_set_style_radius(pw_field, 12, 0);
+	lv_obj_set_style_radius(pw_field, ui_px(12), 0);
 	lv_obj_set_style_border_width(pw_field, 0, 0);
 	lv_obj_set_style_shadow_width(pw_field, 0, 0);
-	lv_obj_set_style_pad_all(pw_field, 14, 0);
+	lv_obj_set_style_pad_all(pw_field, ui_px(14), 0);
 	lv_obj_set_style_text_font(pw_field, &font_ui_24, 0);
 	keyboard_style_caret(pw_field);
 	keyboard_style_password(pw_field, 0);
@@ -344,7 +345,7 @@ void setupwifi_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_top(panel, cfg->padding * 2, 0);
 	lv_obj_set_flex_flow(panel, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(panel, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_gap(panel, 14, 0);
+	lv_obj_set_style_pad_gap(panel, ui_px(14), 0);
 
 	lv_obj_t *title = lv_label_create(panel);
 	lv_label_set_text(title, tr("setupwifi_title"));
@@ -373,13 +374,13 @@ void setupwifi_init(gui_config_t *cfg) {
 	lv_obj_set_style_bg_opa(list, LV_OPA_TRANSP, 0);
 	lv_obj_set_style_border_width(list, 0, 0);
 	lv_obj_set_style_pad_all(list, 0, 0);
-	lv_obj_set_style_pad_gap(list, 8, 0);
+	lv_obj_set_style_pad_gap(list, ui_px(8), 0);
 	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_scroll_dir(list, LV_DIR_VER);
 	lv_obj_set_scrollbar_mode(list, LV_SCROLLBAR_MODE_AUTO);
 
 	lv_obj_t *skip = lv_btn_create(panel);
-	lv_obj_set_size(skip, 228, 64);
+	lv_obj_set_size(skip, ui_px(228), ui_px(64));
 	lv_obj_add_style(skip, &theme_style_card, 0);
 	lv_obj_add_style(skip, &theme_style_card_pressed, LV_STATE_PRESSED);
 	lv_obj_set_style_radius(skip, LV_RADIUS_CIRCLE, 0);

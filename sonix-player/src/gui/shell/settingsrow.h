@@ -82,6 +82,10 @@ lv_obj_t *settingsrow_toggle_slider(lv_obj_t *parent, const char *name, int step
 // Call it whenever the switch changes (and once at startup).
 void settingsrow_toggle_slider_expanded(lv_obj_t *card, bool expanded);
 
+// A card for an option that does not apply right now: greyed out, and its
+// controls take no taps. `controls` are the card's switches, pills or slider.
+void settingsrow_set_enabled(lv_obj_t *card, lv_obj_t *const *controls, int count, bool enabled);
+
 // ---------------------------------------------------------------------------
 // Pill cards
 //

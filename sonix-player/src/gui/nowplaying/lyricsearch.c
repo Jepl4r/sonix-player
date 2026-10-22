@@ -11,14 +11,15 @@
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
 #include "src/gui/shell/toast.h"
+#include "src/gui/shell/uiscale.h"
 #include "src/system/core/lang.h"
 
 lv_obj_t *lyricsearch_screen;
 
-#define ROW_HEIGHT 92
-#define ROW_RADIUS 12
-#define APPLY_W 230
-#define APPLY_H 64
+#define ROW_HEIGHT ui_px(92)
+#define ROW_RADIUS ui_px(12)
+#define APPLY_W ui_px(230)
+#define APPLY_H ui_px(64)
 
 static lv_obj_t *title_label;
 static lv_obj_t *list;		   // the records
@@ -159,9 +160,9 @@ static void add_row(int index) {
 	lv_obj_set_style_radius(row, ROW_RADIUS, 0);
 	lv_obj_set_style_border_width(row, 0, 0);
 	lv_obj_set_style_shadow_width(row, 0, 0);
-	lv_obj_set_style_pad_hor(row, 16, 0);
-	lv_obj_set_style_pad_ver(row, 10, 0);
-	lv_obj_set_style_pad_column(row, 12, 0);
+	lv_obj_set_style_pad_hor(row, ui_px(16), 0);
+	lv_obj_set_style_pad_ver(row, ui_px(10), 0);
+	lv_obj_set_style_pad_column(row, ui_px(12), 0);
 	lv_obj_set_scrollable(row, false);
 	lv_obj_set_event_bubble(row, true);
 	lv_obj_add_event_cb(row, row_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
@@ -174,7 +175,7 @@ static void add_row(int index) {
 	lv_obj_set_height(names, LV_SIZE_CONTENT);
 	lv_obj_set_flex_grow(names, 1);
 	lv_obj_set_flex_flow(names, LV_FLEX_FLOW_COLUMN);
-	lv_obj_set_style_pad_row(names, 4, 0);
+	lv_obj_set_style_pad_row(names, ui_px(4), 0);
 	lv_obj_set_scrollable(names, false);
 	lv_obj_set_event_bubble(names, true);
 
@@ -206,7 +207,7 @@ static void add_row(int index) {
 	lv_obj_set_size(facts, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
 	lv_obj_set_flex_flow(facts, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(facts, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_END, LV_FLEX_ALIGN_END);
-	lv_obj_set_style_pad_row(facts, 4, 0);
+	lv_obj_set_style_pad_row(facts, ui_px(4), 0);
 	lv_obj_set_scrollable(facts, false);
 	lv_obj_set_event_bubble(facts, true);
 
@@ -273,7 +274,7 @@ void lyricsearch_init(gui_config_t *cfg) {
 	lv_obj_set_style_pad_hor(list, cfg->padding, 0);
 	lv_obj_set_style_pad_top(list, 0, 0);
 	lv_obj_set_style_pad_bottom(list, cfg->padding, 0);
-	lv_obj_set_style_pad_gap(list, 8, 0);
+	lv_obj_set_style_pad_gap(list, ui_px(8), 0);
 	lv_obj_set_scroll_dir(list, LV_DIR_VER);
 	lv_obj_set_flex_flow(list, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_event_bubble(list, true);
@@ -297,7 +298,7 @@ void lyricsearch_init(gui_config_t *cfg) {
 	lv_label_set_long_mode(preview_text, LV_LABEL_LONG_WRAP);
 	lv_obj_set_width(preview_text, lv_pct(100));
 	lv_obj_set_style_text_align(preview_text, LV_TEXT_ALIGN_CENTER, 0);
-	lv_obj_set_style_text_line_space(preview_text, 8, 0);
+	lv_obj_set_style_text_line_space(preview_text, ui_px(8), 0);
 	lv_obj_add_style(preview_text, &theme_style_text, 0);
 	lv_obj_set_style_text_font(preview_text, &font_ui_24, 0);
 	lv_label_set_text(preview_text, "");
