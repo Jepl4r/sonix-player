@@ -7,6 +7,7 @@
 #include <unistd.h>
 
 #include "src/gui/shell/gui.h"
+#include "src/system/input/remotekeys.h"
 #include "src/system/audio/audio.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/bluetooth/dbuslite.h"
@@ -188,9 +189,9 @@ static void run_command(const char *member) {
 	audio_status_t status = audio_get_status();
 
 	if (strcmp(member, "Next") == 0) {
-		gui_notify_key(GUI_KEY_NEXT);
+		gui_notify_key(remote_skip_key(true));
 	} else if (strcmp(member, "Previous") == 0) {
-		gui_notify_key(GUI_KEY_PREV);
+		gui_notify_key(remote_skip_key(false));
 	} else if (strcmp(member, "PlayPause") == 0) {
 		gui_notify_key(GUI_KEY_PLAY_PAUSE);
 	} else if (strcmp(member, "Play") == 0) {

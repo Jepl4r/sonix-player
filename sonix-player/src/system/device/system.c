@@ -35,6 +35,7 @@
 #include "src/system/gearboy/gbdb.h"
 #include "src/system/input/hookclicks.h"
 #include "src/system/input/keymap.h"
+#include "src/system/input/remotekeys.h"
 #include "src/system/core/panel.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
@@ -1598,11 +1599,11 @@ static void handle_key_press(const char *node, int code, bool headset) {
 	// dispatched above. On a remote next is next -- the upper/lower swap
 	// compensates for the buttons on the case, and there are none here.
 	case KEY_NEXTSONG:
-		gui_notify_key(GUI_KEY_NEXT);
+		gui_notify_key(remote_skip_key(true));
 		break;
 
 	case KEY_PREVIOUSSONG:
-		gui_notify_key(GUI_KEY_PREV);
+		gui_notify_key(remote_skip_key(false));
 		break;
 
 	default:
@@ -1653,10 +1654,10 @@ static void run_hook_gesture(hook_clicks_t *clicks) {
 		gui_notify_key(GUI_KEY_PLAY_PAUSE);
 		break;
 	case HOOK_GESTURE_NEXT:
-		gui_notify_key(GUI_KEY_NEXT);
+		gui_notify_key(remote_skip_key(true));
 		break;
 	case HOOK_GESTURE_PREV:
-		gui_notify_key(GUI_KEY_PREV);
+		gui_notify_key(remote_skip_key(false));
 		break;
 	case HOOK_GESTURE_NONE:
 	default:
@@ -2312,12 +2313,20 @@ static void handle_bt_remote_key(const char *node, int code, bool usb) {
 	// No upper/lower swap here: that compensates for the buttons on the case,
 	// and these are headphones -- next is next.
 	case KEY_NEXTSONG:
+		printf("input: %s next\n", node);
+		gui_notify_key(remote_skip_key(true));
+		break;
+
 	case KEY_FASTFORWARD:
 		printf("input: %s next\n", node);
 		gui_notify_key(GUI_KEY_NEXT);
 		break;
 
 	case KEY_PREVIOUSSONG:
+		printf("input: %s previous\n", node);
+		gui_notify_key(remote_skip_key(false));
+		break;
+
 	case KEY_REWIND:
 		printf("input: %s previous\n", node);
 		gui_notify_key(GUI_KEY_PREV);

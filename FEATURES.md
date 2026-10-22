@@ -179,7 +179,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 - **Remap buttons** - give each media and volume button another action, including Previous chapter and Next chapter.
 - **Double click** - two quick presses of a button do the action you choose.
-- **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous. USB-C headphones with buttons work too.
+- **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous; wired, USB-C and Bluetooth next/previous step chapters while a book is loaded, including while paused.
 - **Lock the buttons** with the screen off: volume down + power. The power button and the remote always work.
 - **Keyboard** - ten layouts (English, Italian, German, Spanish, French, Dutch, Polish, Brazilian Portuguese, Czech, Russian), as a full keyboard or as a phone keypad (T9).
 - **Screenshots** - turn them on in Settings > More, then press volume up + power to save the screen to the card.
