@@ -1,4 +1,8 @@
+#include <math.h>
+static double rebuild_pow(double base, double exponent);
+#define pow rebuild_pow
 #include "../sonix-player/src/system/audio/eq.c"
+#undef pow
 #include <assert.h>
 #include <fcntl.h>
 
@@ -107,6 +111,43 @@ static void bypass_silences(void) {
   assert(eq_writes == 0);
 }
 
+// The math call interrupts the real rebuild after it reads its first gain.
+static bool change_during_build;
+static double rebuild_pow(double base, double exponent) {
+	if (change_during_build) {
+		change_during_build = false;
+		const int cuts[EQ_BANDS] = {-6, -6, -6, -6, -6, -6, -6, -6, -6, -6};
+		eq_override_bands(cuts);
+	}
+	return pow(base, exponent);
+}
+
+static void rebuild_retries_changed_override(void) {
+	music_curve(0, 0);
+	const int boosts[EQ_BANDS] = {6, 6, 6, 6, 6, 6, 6, 6, 6, 6};
+	eq_override_bands(boosts);
+	unsigned before = settings_version;
+	change_during_build = true;
+	assert(next_buffer_runs());
+	assert(!change_during_build);
+	assert(settings_version != before);
+	assert(built_version == before);
+	for (int i = 0; i < EQ_BANDS; i++) {
+		biquad_t expected = {0};
+		assert(biquad_set_coeffs(&expected, F_PEAK, eq_band_freq[i], 6, EQ_BAND_Q, 44100));
+		assert(chain[MSEB_FILTERS + i].b0 == expected.b0);
+	}
+	assert(fabsf(pregain_target - 0.5012f) < 0.001f);
+	assert(next_buffer_runs());
+	assert(built_version == settings_version);
+	for (int i = 0; i < EQ_BANDS; i++) {
+		biquad_t expected = {0};
+		assert(biquad_set_coeffs(&expected, F_PEAK, eq_band_freq[i], -6, EQ_BAND_Q, 44100));
+		assert(chain[MSEB_FILTERS + i].b0 == expected.b0);
+	}
+	assert(fabsf(pregain_target - 1.0f) < 0.001f);
+}
+
 static void preset_read(const char *dir) {
   char path[600];
   snprintf(path, sizeof(path), "%s/.local", dir);
@@ -166,6 +207,7 @@ int main(int argc, char **argv) {
   assert(argc == 2);
   override_wins();
   bypass_silences();
+	rebuild_retries_changed_override();
   preset_read(argv[1]);
   return 0;
 }

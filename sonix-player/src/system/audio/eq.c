@@ -1676,6 +1676,14 @@ static float mseb_auto_preamp_db(int rate) {
 }
 
 static void filters_rebuild(int rate) {
+	// Read the version first so a change during the snapshot or build retries.
+	unsigned v = settings_version;
+	bool geq_on = eq_effective_enabled();
+	int geq_gain[EQ_BANDS];
+	for (int i = 0; i < EQ_BANDS; i++) {
+		geq_gain[i] = eq_effective_band(i);
+	}
+
 	bool rate_changed = rate != built_rate;
 	double max_boost = 0;
 	int active = 0;
@@ -1689,9 +1697,8 @@ static void filters_rebuild(int rate) {
 			active++;
 		}
 	}
-	bool geq_on = eq_effective_enabled();
 	for (int i = 0; i < EQ_BANDS; i++) {
-		double gain = geq_on ? (double)eq_effective_band(i) : 0.0;
+		double gain = geq_on ? (double)geq_gain[i] : 0.0;
 		slot_update(MSEB_FILTERS + i, F_PEAK, eq_band_freq[i], gain, EQ_BAND_Q, rate, rate_changed);
 		if (chain_active[MSEB_FILTERS + i]) {
 			active++;
@@ -1749,7 +1756,7 @@ static void filters_rebuild(int rate) {
 		mseb_pregain = mseb_pregain_target;
 	}
 
-	built_version = settings_version;
+	built_version = v;
 	built_rate = rate;
 	fprintf(stderr, "eq: rebuilt (%d filters at %d Hz, mseb pregain %+.2f dB -> %.4f, geq/peq pregain -> %.3f)\n",
 			active, rate, (double)mseb_pregain_db, (double)mseb_pregain_target, (double)pregain_target);
