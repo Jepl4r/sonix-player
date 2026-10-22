@@ -15,6 +15,7 @@ static double sought = -1;
 static bool book_loaded = true;
 static bool rewind_on = true;
 static bool suppress_rewind;
+static bool interrupt_snapshot;
 static void rewind_after_break(void);
 static const char *const parts[] = {"a.mp3", "b.mp3"};
 static int queued = -1;
@@ -106,7 +107,15 @@ audio_status_t audio_get_status(void) { return test_status; }
 void audio_pause(void) { test_status = AUDIO_STATUS_PAUSED; }
 void audio_resume(void) { test_status = AUDIO_STATUS_PLAYING; }
 void audio_seek(double seconds) { sought = seconds; }
-void audio_get_current_file(char *out, size_t size) { snprintf(out, size, "%s", selected); }
+void audio_get_current_file(char *out, size_t size) {
+	if (interrupt_snapshot) {
+		interrupt_snapshot = false;
+		test_status = AUDIO_STATUS_PLAYING;
+		device_state_t newer;
+		device_state_get(&newer);
+	}
+	snprintf(out, size, "%s", selected);
+}
 void audio_get_stream_info(int *rate, int *channels) { *rate = 44100; *channels = 2; }
 bool radio_is_active(void) { return false; }
 bool radio_is_connecting(void) { return false; }
@@ -175,6 +184,25 @@ static void rewind_after_break(void) {
 	device_state_get(&state);
 	assert(device_state_break_seconds() == 0);
 	puts("PASS playback-break-clock-reset");
+
+	// A delayed snapshot must not reapply its old PAUSED status after a newer read.
+	interrupt_snapshot = true;
+	device_state_get(&state);
+	test_now_ms += 4000000;
+	test_status = AUDIO_STATUS_PAUSED;
+	device_state_get(&state);
+	assert(device_state_break_seconds() == 0);
+	puts("PASS playback-break-clock-stale-snapshot");
+
+	// A resume and another pause can both happen between GUI polls.
+	test_now_ms += 4000000;
+	suppress_rewind = true;
+	assert(device_state_toggle_play_pause() == AUDIO_STATUS_PLAYING);
+	test_now_ms += 100;
+	assert(device_state_toggle_play_pause() == AUDIO_STATUS_PAUSED);
+	test_now_ms += 1234;
+	assert(device_state_break_seconds() == 1.234);
+	puts("PASS playback-break-clock-fast-toggle");
 
 	// Existing suppression and non-book / disabled paths keep their positions.
 	for (int i = 0; i < 3; i++) {

@@ -137,13 +137,25 @@ static uint32_t remember_now_ms(void) {
 	return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
 }
 
+static pthread_mutex_t break_lock = PTHREAD_MUTEX_INITIALIZER;
 static audio_status_t break_last_status = AUDIO_STATUS_STOPPED;
 static uint32_t paused_since_ms;
 
 double device_state_break_seconds(void) {
-	if (break_last_status != AUDIO_STATUS_PAUSED || audio_get_status() != AUDIO_STATUS_PAUSED || radio_is_active())
-		return 0;
-	return (uint32_t)(remember_now_ms() - paused_since_ms) / 1000.0;
+	pthread_mutex_lock(&break_lock);
+	// Observe the engine inside the lock; GUI snapshots may already be stale.
+	audio_status_t status = radio_is_active() ? AUDIO_STATUS_STOPPED : audio_get_status();
+	uint32_t now = remember_now_ms();
+	if (status == AUDIO_STATUS_PAUSED) {
+		if (break_last_status != AUDIO_STATUS_PAUSED)
+			paused_since_ms = now;
+	} else {
+		paused_since_ms = 0;
+	}
+	break_last_status = status;
+	double seconds = status == AUDIO_STATUS_PAUSED ? (uint32_t)(now - paused_since_ms) / 1000.0 : 0;
+	pthread_mutex_unlock(&break_lock);
+	return seconds;
 }
 
 static bool remember_enabled(void) { return config_get_int("player", "remember_track", 0) != 0; }
@@ -304,14 +316,7 @@ void device_state_get(device_state_t *out) {
 		out->metadata = current_metadata;
 	}
 
-	// Every pause path reaches this snapshot, including paused loads and suspend.
-	if (out->status == AUDIO_STATUS_PAUSED) {
-		if (break_last_status != AUDIO_STATUS_PAUSED)
-			paused_since_ms = remember_now_ms();
-	} else {
-		paused_since_ms = 0;
-	}
-	break_last_status = out->status;
+	device_state_break_seconds();
 
 	char *battery = read_battery_percent();
 	strncpy(out->battery_percent, battery ? battery : "!!", sizeof(out->battery_percent) - 1);
@@ -1557,7 +1562,9 @@ audio_status_t device_state_toggle_play_pause(void) {
 
 	switch (audio_get_status()) {
 	case AUDIO_STATUS_PLAYING:
+		device_state_break_seconds();
 		audio_pause();
+		device_state_break_seconds();
 		return AUDIO_STATUS_PAUSED;
 	case AUDIO_STATUS_PAUSED:
 		// Rewind after pause: on a book, resuming winds back a few seconds,
@@ -1572,6 +1579,7 @@ audio_status_t device_state_toggle_play_pause(void) {
 		}
 		playhistory_resumed();
 		audio_resume();
+		device_state_break_seconds();
 		return AUDIO_STATUS_PLAYING;
 	case AUDIO_STATUS_STOPPED:
 	default:
