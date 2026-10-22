@@ -135,11 +135,15 @@ static void load_chapters_locked(const char *filepath) {
 			load_vorbis_chapters_locked(filepath);
 			return;
 		}
-		id3chap_t *found = calloc((size_t)count, sizeof(*found));
+		int capacity = count < ID3CHAP_MAX_CHAPTERS ? count : ID3CHAP_MAX_CHAPTERS;
+		id3chap_t *found = calloc((size_t)capacity, sizeof(*found));
 		if (!found) {
 			return;
 		}
-		count = id3chap_read(filepath, found, count);
+		count = id3chap_read(filepath, found, capacity);
+		if (count > capacity) {
+			count = capacity;
+		}
 		if (count > 0) {
 			chapters = calloc((size_t)count, sizeof(*chapters));
 			if (chapters) {

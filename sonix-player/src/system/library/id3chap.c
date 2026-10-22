@@ -23,7 +23,6 @@
 // A tag bigger than this is not a tag, it is a file that happens to start with
 // three familiar bytes. Real ones with cover art run to a megabyte.
 #define MAX_TAG (4u * 1024u * 1024u)
-#define MAX_CHAPTERS 1024
 
 static uint32_t be32(const uint8_t *p) {
 	return ((uint32_t)p[0] << 24) | ((uint32_t)p[1] << 16) | ((uint32_t)p[2] << 8) | p[3];
@@ -192,7 +191,7 @@ int id3chap_read(const char *path, id3chap_t *out, int max) {
 	bool syncsafe_frames = version >= 4;
 	int found = 0;
 
-	while (at + 10 <= tag_size && found < MAX_CHAPTERS) {
+	while (at + 10 <= tag_size && found < ID3CHAP_MAX_CHAPTERS) {
 		const uint8_t *frame = tag + at;
 		if (!frame[0]) {
 			break; // padding: the rest of the tag is zeroes

@@ -2,7 +2,7 @@
 
 #include <assert.h>
 
-static uint8_t bytes[4096];
+static uint8_t bytes[10 + 27 * (ID3CHAP_MAX_CHAPTERS + 1)];
 static size_t used;
 static int failures;
 
@@ -99,6 +99,26 @@ static void count_contract(const char *path) {
 	free(out);
 }
 
+static void chapter_limit(const char *path) {
+	// Reuse a minimal CHAP: empty element ID, four zero times/offsets, no title.
+	static const uint8_t chapter[27] = {'C', 'H', 'A', 'P', 0, 0, 0, 17};
+	begin_tag();
+	for (int i = 0; i < ID3CHAP_MAX_CHAPTERS + 1; i++) {
+		memcpy(bytes + used, chapter, sizeof(chapter));
+		used += sizeof(chapter);
+	}
+	write_tag(path);
+	CHECK(id3chap_read(path, NULL, 0) == ID3CHAP_MAX_CHAPTERS);
+	id3chap_t *out = calloc(ID3CHAP_MAX_CHAPTERS + 1, sizeof(*out));
+	assert(out);
+	out[ID3CHAP_MAX_CHAPTERS].start = -1;
+	CHECK(id3chap_read(path, out, ID3CHAP_MAX_CHAPTERS + 1) == ID3CHAP_MAX_CHAPTERS);
+	CHECK(out[ID3CHAP_MAX_CHAPTERS - 1].start == 0);
+	CHECK(out[ID3CHAP_MAX_CHAPTERS - 1].title[0] == '\0');
+	CHECK(out[ID3CHAP_MAX_CHAPTERS].start == -1);
+	free(out);
+}
+
 static void title_encodings(const char *path) {
 	static const uint8_t le[] = {1, 0xff, 0xfe, 0x13, 4, 0x3b, 4, 0x30, 4, 0x32, 4, 0x30, 4, 0x20, 0, 0x31, 0, 0, 0};
 	static const uint8_t be[] = {1, 0xfe, 0xff, 4, 0x13, 4, 0x3b, 4, 0x30, 4, 0x32, 4, 0x30, 0, 0x20, 0, 0x31, 0, 0};
@@ -108,12 +128,15 @@ static void title_encodings(const char *path) {
 	static const uint8_t latin1[] = {0, 'C', 'a', 'f', 0xe9, ' ', '\r', '\n', 0};
 	static const uint8_t bmp[] = {1, 0xfe, 0xff, 0x4e, 0x2d, 0, 0};
 	static const uint8_t surrogate[] = {1, 0xff, 0xfe, 0, 0xd8, 0, 0};
+	static const uint8_t odd_byte[] = {1, 0xff, 0xfe, 0x13, 4, 0x3b};
+	static const uint8_t encoding1_no_bom[] = {1, 4, 0x13, 4, 0x3b};
+	static const uint8_t after_nul[] = {1, 0xff, 0xfe, 0x13, 4, 0, 0, 0x3b, 4};
 	const struct {
 		const uint8_t *data;
 		size_t length;
 		const char *want;
 	} cases[] = {
-		{le, sizeof(le), cyrillic}, {be, sizeof(be), cyrillic}, {be_no_bom, sizeof(be_no_bom), cyrillic}, {utf8, sizeof(utf8), cyrillic}, {latin1, sizeof(latin1), "Caf\xc3\xa9"}, {bmp, sizeof(bmp), "\xe4\xb8\xad"}, {surrogate, sizeof(surrogate), "\xef\xbf\xbd"},
+		{le, sizeof(le), cyrillic}, {be, sizeof(be), cyrillic}, {be_no_bom, sizeof(be_no_bom), cyrillic}, {utf8, sizeof(utf8), cyrillic}, {latin1, sizeof(latin1), "Caf\xc3\xa9"}, {bmp, sizeof(bmp), "\xe4\xb8\xad"}, {surrogate, sizeof(surrogate), "\xef\xbf\xbd"}, {odd_byte, sizeof(odd_byte), "\xd0\x93"}, {encoding1_no_bom, sizeof(encoding1_no_bom), "\xd0\x93\xd0\xbb"}, {after_nul, sizeof(after_nul), "\xd0\x93"},
 	};
 	for (size_t i = 0; i < sizeof(cases) / sizeof(cases[0]); i++) {
 		begin_tag();
@@ -160,6 +183,7 @@ static void title_encodings(const char *path) {
 int main(int argc, char **argv) {
 	assert(argc == 2);
 	count_contract(argv[1]);
+	chapter_limit(argv[1]);
 	title_encodings(argv[1]);
 	begin_tag();
 	bytes[used++] = 0;
