@@ -1883,7 +1883,6 @@ void device_state_pause_book_at(double seconds) {
 	audiobook_note_position(seconds, 0, true);
 }
 
-
 void device_state_stop(void) { audio_stop(); }
 
 void device_state_set_volume(long volume) { set_volume(volume); }

@@ -53,7 +53,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Fade** - the end of a track fades into the next one, from 1 to 12 seconds.
 - **ReplayGain** - off, by track or by album, read from the tags.
 - **Remember track** - the queue and the position are still there after a restart. You can also open Now Playing straight away at startup.
-- **Sleep timer** - set a time and the playback pauses by itself when it runs out. There is one for music, one for audiobooks and one for podcasts. You can also set it from Now Playing.
+- **Sleep timer** - set a time and the playback pauses by itself when it runs out. There is one for music, one for audiobooks and one for podcasts. You can also set it from Now Playing. The sound fades out over the last 20 seconds, then playback pauses.
 
 ## Now Playing
 
@@ -63,7 +63,6 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Cover Flow** - swipe up from the bottom edge of the Music page to flip through your albums.
 - **Queue**, **Details** (format, bitrate, size, ReplayGain and more) and **Show album** from the menu.
 - **Chapters** and **speed** when an audiobook or a podcast is playing.
-- **Whole-book progress** - in audiobooks, see the book percentage and time left at the current speed; unknown part lengths are shown honestly. Choose Work out book length in the book menu to resolve missing lengths in the background.
 - **Chapter row** when an audiobook has chapters - previous/next chapter buttons, the chapter's number and title; tap the text to open the chapter list.
 - **Sleep timer** - see the countdown on Now Playing and tap it to set the timer. For audiobooks, you can tap the moon even when the timer is off.
 
@@ -133,9 +132,12 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Speed** from 0.5x to 2.0x without changing the pitch, remembered per book.
 - **Equalizer for audiobooks** - in Settings > Audiobooks, choose Same as music, Off or a graphic-EQ preset that applies while a book plays. PEQ and MSEB are not affected.
 - **Skip buttons** - choose how far back and forward they jump: 10, 30 or 60 seconds.
-- **Rewind after pause** by a few seconds, so you don't lose the thread.
+- **Rewind after pause** - choose a short rewind and a longer rewind after an hour away; the rewind grows between five minutes and an hour. It can cross into the previous part when its length is known, and keeps your saved position until you catch up.
 - **Stop at the end of the chapter**.
-- **Bookmarks** (up to 64 per book) and the **summary** from the tags.
+- **Whole-book progress** - Now Playing shows the book percentage and time left at the current speed when lengths are known, only the time left when earlier parts have unknown lengths, or "Book: length unknown".
+- **Work out book length** - resolve missing part lengths in the background from the book menu.
+- **Bookmarks** (up to 64 per book) and the **summary** from the tags. Tap the bookmark button on Now Playing to save your place; hold it to open the bookmarks.
+- **Back to before the jump** - return from the book menu to the place before your last chapter step, bookmark jump or progress-bar seek; paused playback stays paused.
 - The progress bar shows the whole book or just the current chapter.
 
 ## E-books
