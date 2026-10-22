@@ -392,6 +392,23 @@ int audiobook_rewind_seconds(void) {
 
 void audiobook_set_rewind_seconds(int seconds) { config_set_int("audiobook", "rewind_seconds", seconds); }
 
+int audiobook_rewind_for_break(double break_seconds, int short_s, int long_s) {
+	if (!(break_seconds >= 300))
+		return short_s;
+	if (break_seconds >= 3600)
+		return long_s;
+	return (int)(short_s + (long_s - short_s) * ((break_seconds - 300) / 3300) + 0.5);
+}
+
+int audiobook_rewind_long_seconds(void) {
+	long value = config_get_int("audiobook", "rewind_long_seconds", 30);
+	if (value != 15 && value != 30 && value != 45 && value != 60)
+		value = 30;
+	return (int)value;
+}
+
+void audiobook_set_rewind_long_seconds(int seconds) { config_set_int("audiobook", "rewind_long_seconds", seconds); }
+
 void audiobook_track_changed(const char *filepath) {
 	pthread_mutex_lock(&lock);
 	length_noted = false;

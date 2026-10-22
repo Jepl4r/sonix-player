@@ -1217,6 +1217,9 @@ static settingsrow_duration_t sleep_row;
 static toggle_pills_t rewind_card;
 static lv_obj_t *rewind_pill[REWIND_CHOICES];
 static const int REWIND_VALUES[REWIND_CHOICES] = {3, 5, 7, 10};
+static lv_obj_t *rewind_long_row;
+static lv_obj_t *rewind_long_pill[REWIND_CHOICES];
+static const int REWIND_LONG_VALUES[REWIND_CHOICES] = {15, 30, 45, 60};
 
 // The equalizer setting holds a built-in's tag or "user:<name>" in this much.
 #define PRESET_FIELD_MAX 128
@@ -1257,10 +1260,12 @@ static void refresh_settings_page(void) {
 		lv_obj_remove_state(rewind_card.toggle, LV_STATE_CHECKED);
 	}
 	toggle_pills_expanded(&rewind_card, rewind_on);
+	lv_obj_set_hidden(rewind_long_row, !rewind_on);
 
 	int seconds = audiobook_rewind_seconds();
 	for (int i = 0; i < REWIND_CHOICES; i++) {
 		paint_choice(rewind_pill[i], REWIND_VALUES[i] == seconds);
+		paint_choice(rewind_long_pill[i], REWIND_LONG_VALUES[i] == audiobook_rewind_long_seconds());
 	}
 }
 
@@ -1301,6 +1306,14 @@ static void rewind_pick_cb(lv_event_t *e) {
 	refresh_settings_page();
 }
 
+static void rewind_long_pick_cb(lv_event_t *e) {
+	if (switcher_back_drag_active()) {
+		return;
+	}
+	audiobook_set_rewind_long_seconds((int)(intptr_t)lv_event_get_user_data(e));
+	refresh_settings_page();
+}
+
 static void settings_loaded_cb(lv_event_t *e) {
 	(void)e;
 	refresh_settings_page();
@@ -1329,6 +1342,17 @@ static void build_settings_page(gui_config_t *cfg) {
 	static const char *const REWIND_LABELS[REWIND_CHOICES] = {"audiobook_3_sec", "audiobook_5_sec", "audiobook_7_sec", "audiobook_10_sec"};
 	for (int i = 0; i < REWIND_CHOICES; i++) {
 		rewind_pill[i] = make_pill(rewind_card.pills, REWIND_LABELS[i], REWIND_VALUES[i], rewind_pick_cb);
+	}
+
+	lv_obj_t *long_pills;
+	rewind_long_row = settingsrow_pills(container, "audiobook_rewind_long", &long_pills);
+	lv_obj_t *long_label = lv_obj_get_child(rewind_long_row, 0);
+	lv_obj_set_width(long_label, lv_pct(100));
+	lv_label_set_long_mode(long_label, LV_LABEL_LONG_WRAP);
+	static const char *const LONG_LABELS[REWIND_CHOICES] = {"audiobook_15_sec", "audiobook_30_sec", "audiobook_45_sec", "audiobook_60_sec"};
+	for (int i = 0; i < REWIND_CHOICES; i++) {
+		rewind_long_pill[i] = make_pill(long_pills, LONG_LABELS[i], REWIND_LONG_VALUES[i], rewind_long_pick_cb);
+		lv_obj_set_style_pad_hor(rewind_long_pill[i], 10, 0);
 	}
 
 	// Which curve a book plays through. The page behind it is built below.

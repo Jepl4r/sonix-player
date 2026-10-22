@@ -137,6 +137,15 @@ static uint32_t remember_now_ms(void) {
 	return (uint32_t)(ts.tv_sec * 1000u + ts.tv_nsec / 1000000u);
 }
 
+static audio_status_t break_last_status = AUDIO_STATUS_STOPPED;
+static uint32_t paused_since_ms;
+
+double device_state_break_seconds(void) {
+	if (break_last_status != AUDIO_STATUS_PAUSED || audio_get_status() != AUDIO_STATUS_PAUSED || radio_is_active())
+		return 0;
+	return (uint32_t)(remember_now_ms() - paused_since_ms) / 1000.0;
+}
+
 static bool remember_enabled(void) { return config_get_int("player", "remember_track", 0) != 0; }
 
 // A track this player must not offer to come back to: a live stream has no
@@ -294,6 +303,15 @@ void device_state_get(device_state_t *out) {
 
 		out->metadata = current_metadata;
 	}
+
+	// Every pause path reaches this snapshot, including paused loads and suspend.
+	if (out->status == AUDIO_STATUS_PAUSED) {
+		if (break_last_status != AUDIO_STATUS_PAUSED)
+			paused_since_ms = remember_now_ms();
+	} else {
+		paused_since_ms = 0;
+	}
+	break_last_status = out->status;
 
 	char *battery = read_battery_percent();
 	strncpy(out->battery_percent, battery ? battery : "!!", sizeof(out->battery_percent) - 1);
@@ -1549,7 +1567,7 @@ audio_status_t device_state_toggle_play_pause(void) {
 		if (audiobook_is_playing() && audiobook_rewind_enabled() && !audiobook_take_rewind_suppression()) {
 			double current = 0, total = 0;
 			audio_get_progress(&current, &total);
-			double back = current - (double)audiobook_rewind_seconds();
+			double back = current - audiobook_rewind_for_break(device_state_break_seconds(), audiobook_rewind_seconds(), audiobook_rewind_long_seconds());
 			audio_seek(back > 0 ? back : 0);
 		}
 		playhistory_resumed();

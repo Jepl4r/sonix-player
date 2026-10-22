@@ -771,7 +771,37 @@ static void work_out_cancel(void) {
 	puts("PASS audiobook-work-out-new-book-menu");
 }
 
+static void rewind_break_rule(void) {
+	assert(audiobook_rewind_for_break(0, 5, 30) == 5);
+	assert(audiobook_rewind_for_break(299, 5, 30) == 5);
+	assert(audiobook_rewind_for_break(300, 5, 30) == 5);
+	assert(audiobook_rewind_for_break(3600, 5, 30) == 30);
+	assert(audiobook_rewind_for_break(7200, 5, 30) == 30);
+	assert(audiobook_rewind_for_break(1950, 5, 30) == 18);
+	assert(audiobook_rewind_for_break(-1, 5, 30) == 5);
+	assert(audiobook_rewind_for_break(NAN, 5, 30) == 5);
+	assert(audiobook_rewind_for_break(1950, 10, 60) == 35);
+	puts("PASS audiobook-rewind-break-rule");
+}
+
+static void rewind_long_setting(void) {
+	assert(audiobook_rewind_long_seconds() == 30);
+	const int choices[] = {15, 30, 45, 60};
+	for (int i = 0; i < 4; i++) {
+		audiobook_set_rewind_long_seconds(choices[i]);
+		assert(config_get_int("audiobook", "rewind_long_seconds", 0) == choices[i]);
+		assert(audiobook_rewind_long_seconds() == choices[i]);
+	}
+	audiobook_set_rewind_long_seconds(16);
+	assert(audiobook_rewind_long_seconds() == 30);
+	audiobook_set_rewind_long_seconds(-1);
+	assert(audiobook_rewind_long_seconds() == 30);
+	puts("PASS audiobook-rewind-long-setting");
+}
+
 int main(void) {
+	rewind_break_rule();
+	rewind_long_setting();
 	pthread_mutex_destroy(&lock);
 	pthread_mutexattr_t attr;
 	assert(pthread_mutexattr_init(&attr) == 0);

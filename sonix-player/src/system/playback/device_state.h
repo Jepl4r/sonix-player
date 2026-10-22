@@ -38,6 +38,8 @@ typedef struct {
 
 // Fills out with a fresh snapshot of the current device state.
 void device_state_get(device_state_t *out);
+// Monotonic seconds since PAUSED was first observed; 0 outside a pause.
+double device_state_break_seconds(void);
 
 // The tags of the loaded track, and in *file_out the file they were read from,
 // which can differ from audio.c's for a moment while a track changes. No copy

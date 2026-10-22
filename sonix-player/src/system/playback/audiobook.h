@@ -96,6 +96,11 @@ bool audiobook_rewind_enabled(void);
 void audiobook_set_rewind_enabled(bool on);
 int audiobook_rewind_seconds(void);
 void audiobook_set_rewind_seconds(int seconds);
+// Short under five minutes, long from an hour, linear and rounded between.
+// A negative or unknown break counts as short.
+int audiobook_rewind_for_break(double break_seconds, int short_s, int long_s);
+int audiobook_rewind_long_seconds(void);
+void audiobook_set_rewind_long_seconds(int seconds);
 
 // Called whenever the loaded track changes: works out whether it is a book and
 // reads its chapter list if it is. Cheap for anything that is not one (a single
