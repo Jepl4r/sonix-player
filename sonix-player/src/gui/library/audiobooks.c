@@ -655,7 +655,6 @@ static bool collect_part(const char *path, const char *title, double duration, v
 static void play_from(const char *book, const char *file, double seconds, bool saved) {
 	if (saved && strcmp(audiobook_current_path(), file) == 0) {
 		if (audio_get_status() == AUDIO_STATUS_PAUSED) {
-			audiobook_suppress_rewind_once();
 			device_state_toggle_play_pause();
 		}
 		return;

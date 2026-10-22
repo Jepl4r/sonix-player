@@ -83,5 +83,18 @@ int main(int argc, char **argv) {
     return 0;
   }
 
-  assert(!"unknown scenario");
+  navigation_readable = true;
+  suppress_rewind = false;
+  book_loaded = rewind_on = true;
+  crossing = false;
+  current_position = 123;
+  device_state_t state;
+  device_state_get(&state);
+  boot_gap = 7200;
+  sought = -1;
+  play_book("book");
+  assert(sought == 93 && boot_gap == 0 && observed_gap == 7200);
+  play_book("book");
+  assert(sought == 93);
+  puts("PASS library-loaded-paused-book-rewinds-once");
 }
