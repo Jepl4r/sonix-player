@@ -2,7 +2,8 @@
 #include <assert.h>
 
 // What audiobook.c links against.
-int audiobookdb_parts_for_each(const char *book, audiobook_part_cb cb,
+int audiobookdb_parts_for_each(const char *book,
+                               bool (*cb)(const char *, const char *, double, void *),
                                void *user) {
   return 0;
 }
@@ -17,100 +18,98 @@ static char finished_book[512];
 static double saved_seconds;
 static void set_parts(int count, int index);
 
-void audiobookdb_save_position(const char *book, const char *file,
-                               double seconds) {
-  position_writes++;
-  snprintf(saved_book, sizeof(saved_book), "%s", book);
-  snprintf(saved_file, sizeof(saved_file), "%s", file);
-  saved_seconds = seconds;
+void audiobookdb_save_position(const char *book, const char *file, double seconds) {
+	position_writes++;
+	snprintf(saved_book, sizeof(saved_book), "%s", book);
+	snprintf(saved_file, sizeof(saved_file), "%s", file);
+	saved_seconds = seconds;
 }
 
-void audiobookdb_queue_position(const char *book, const char *file,
-                                double seconds) {
-  position_queues++;
-  snprintf(saved_book, sizeof(saved_book), "%s", book);
-  snprintf(saved_file, sizeof(saved_file), "%s", file);
-  saved_seconds = seconds;
+void audiobookdb_queue_position(const char *book, const char *file, double seconds) {
+	position_queues++;
+	snprintf(saved_book, sizeof(saved_book), "%s", book);
+	snprintf(saved_file, sizeof(saved_file), "%s", file);
+	saved_seconds = seconds;
 }
 
 void audiobookdb_mark_finished(const char *book) {
-  finished_calls++;
-  snprintf(finished_book, sizeof(finished_book), "%s", book);
+	finished_calls++;
+	snprintf(finished_book, sizeof(finished_book), "%s", book);
 }
 
 static void seeks_stay_short_of_eof(void) {
-  assert(audiobook_clamp_seek(60, 60) == 59);
-  assert(audiobook_clamp_seek(59.8, 60) == 59);
-  assert(audiobook_clamp_seek(55, 60) == 55);
-  assert(audiobook_clamp_seek(-5, 60) == 0);
-  assert(audiobook_clamp_seek(0.5, 0.5) == 0);
-  assert(audiobook_clamp_seek(5, 0) == 5);
+	assert(audiobook_clamp_seek(60, 60) == 59);
+	assert(audiobook_clamp_seek(59.8, 60) == 59);
+	assert(audiobook_clamp_seek(55, 60) == 55);
+	assert(audiobook_clamp_seek(-5, 60) == 0);
+	assert(audiobook_clamp_seek(0.5, 0.5) == 0);
+	assert(audiobook_clamp_seek(5, 0) == 5);
 }
 
 static void late_position_is_kept(void) {
-  audiobook_track_changed(NULL);
-  audiobook_track_changed("/other.m4b");
-  position_writes = position_queues = finished_calls = 0;
-  audiobook_note_position(50, 60, true);
-  assert(position_writes == 1 && position_queues == 0);
-  assert(saved_seconds == 50);
-  assert(strcmp(saved_book, "/other.m4b") == 0);
-  assert(strcmp(saved_file, "/other.m4b") == 0);
-  assert(finished_calls == 0);
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/other.m4b");
+	position_writes = position_queues = finished_calls = 0;
+	audiobook_note_position(50, 60, true);
+	assert(position_writes == 1 && position_queues == 0);
+	assert(saved_seconds == 50);
+	assert(strcmp(saved_book, "/other.m4b") == 0);
+	assert(strcmp(saved_file, "/other.m4b") == 0);
+	assert(finished_calls == 0);
 }
 
 static void natural_finish_starts_over(void) {
-  audiobook_track_changed(NULL);
-  audiobook_track_changed("/other.m4b");
-  position_writes = position_queues = finished_calls = 0;
-  audiobook_note_position(50, 60, true);
-  audiobook_note_finished();
-  assert(finished_calls == 1);
-  assert(strcmp(finished_book, "/other.m4b") == 0);
-  assert(position_writes == 2 && position_queues == 0);
-  assert(saved_seconds == 0);
-  assert(strcmp(saved_book, "/other.m4b") == 0);
-  assert(strcmp(saved_file, "/other.m4b") == 0);
-  audiobook_note_finished();
-  assert(finished_calls == 1 && position_writes == 2);
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/other.m4b");
+	position_writes = position_queues = finished_calls = 0;
+	audiobook_note_position(50, 60, true);
+	audiobook_note_finished();
+	assert(finished_calls == 1);
+	assert(strcmp(finished_book, "/other.m4b") == 0);
+	assert(position_writes == 2 && position_queues == 0);
+	assert(saved_seconds == 0);
+	assert(strcmp(saved_book, "/other.m4b") == 0);
+	assert(strcmp(saved_file, "/other.m4b") == 0);
+	audiobook_note_finished();
+	assert(finished_calls == 1 && position_writes == 2);
 }
 
 static void folder_finish_starts_at_first_part(void) {
-  audiobook_track_changed(NULL);
-  audiobook_track_changed("/book/2.mp3");
-  set_parts(3, 2);
-  position_writes = position_queues = finished_calls = 0;
-  audiobook_note_finished();
-  assert(finished_calls == 1);
-  assert(strcmp(finished_book, "/book") == 0);
-  assert(position_writes == 1 && position_queues == 0);
-  assert(saved_seconds == 0);
-  assert(strcmp(saved_book, "/book") == 0);
-  assert(strcmp(saved_file, "/book/0.mp3") == 0);
-  audiobook_note_finished();
-  audiobook_note_position(0, 60, true);
-  assert(finished_calls == 1 && position_writes == 1);
-  audiobook_track_changed("/song.mp3");
-  audiobook_note_finished();
-  assert(finished_calls == 1 && position_writes == 1);
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/book/2.mp3");
+	set_parts(3, 2);
+	position_writes = position_queues = finished_calls = 0;
+	audiobook_note_finished();
+	assert(finished_calls == 1);
+	assert(strcmp(finished_book, "/book") == 0);
+	assert(position_writes == 1 && position_queues == 0);
+	assert(saved_seconds == 0);
+	assert(strcmp(saved_book, "/book") == 0);
+	assert(strcmp(saved_file, "/book/0.mp3") == 0);
+	audiobook_note_finished();
+	audiobook_note_position(0, 60, true);
+	assert(finished_calls == 1 && position_writes == 1);
+	audiobook_track_changed("/song.mp3");
+	audiobook_note_finished();
+	assert(finished_calls == 1 && position_writes == 1);
 }
 
 static void checkpoints_do_not_finish(void) {
-  audiobook_track_changed(NULL);
-  audiobook_track_changed("/book/2.mp3");
-  set_parts(3, 2);
-  position_writes = position_queues = finished_calls = 0;
-  audiobook_note_position(50, 60, false);
-  assert(position_queues == 1 && position_writes == 0);
-  assert(saved_seconds == 50 && finished_calls == 0);
-  assert(strcmp(saved_file, "/book/2.mp3") == 0);
-  audiobook_note_position(55, 60, false);
-  assert(position_queues == 1);
-  audiobook_note_position(55, 60, true);
-  assert(position_writes == 1 && saved_seconds == 55);
-  audiobook_note_position(60, 60, true);
-  assert(position_writes == 2 && saved_seconds == 60);
-  assert(finished_calls == 0);
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/book/2.mp3");
+	set_parts(3, 2);
+	position_writes = position_queues = finished_calls = 0;
+	audiobook_note_position(50, 60, false);
+	assert(position_queues == 1 && position_writes == 0);
+	assert(saved_seconds == 50 && finished_calls == 0);
+	assert(strcmp(saved_file, "/book/2.mp3") == 0);
+	audiobook_note_position(55, 60, false);
+	assert(position_queues == 1);
+	audiobook_note_position(55, 60, true);
+	assert(position_writes == 1 && saved_seconds == 55);
+	audiobook_note_position(60, 60, true);
+	assert(position_writes == 2 && saved_seconds == 60);
+	assert(finished_calls == 0);
 }
 
 // The database side of the per-book speed: "/book" has 1500 stored, the rest
@@ -123,18 +122,18 @@ static int other_speed;
 static int folder_speed = 1500;
 
 int audiobookdb_get_speed(const char *book_path) {
-  get_speed_calls++;
-  return strcmp(book_path, "/book") == 0 ? folder_speed : other_speed;
+	get_speed_calls++;
+	return strcmp(book_path, "/book") == 0 ? folder_speed : other_speed;
 }
 void audiobookdb_set_speed(const char *book_path, int permille) {
-  set_speed_calls++;
-  snprintf(set_speed_book, sizeof(set_speed_book), "%s", book_path);
-  set_speed_value = permille;
-  if (strcmp(book_path, "/book") == 0) {
-    folder_speed = permille;
-  } else {
-    other_speed = permille;
-  }
+	set_speed_calls++;
+	snprintf(set_speed_book, sizeof(set_speed_book), "%s", book_path);
+	set_speed_value = permille;
+	if (strcmp(book_path, "/book") == 0) {
+		folder_speed = permille;
+	} else {
+		other_speed = permille;
+	}
 }
 
 // Two parts of the folder book "/book", a single-file book, and nothing else.
@@ -432,93 +431,95 @@ static void eq_apply(void) {
 }
 
 static void speed_per_book(void) {
-  stub_count = 0;
-  audiobook_track_changed(NULL);
-  assert(audiobook_speed_permille() == AUDIOBOOK_SPEED_NORMAL);
+	stub_count = 0;
+	audiobook_track_changed(NULL);
+	assert(audiobook_speed_permille() == AUDIOBOOK_SPEED_NORMAL);
 
-  // Nothing loaded: the default alone.
-  audiobook_set_speed_permille(1250);
-  assert(set_speed_calls == 0);
-  assert(config_get_int("audiobook", "speed", 0) == 1250);
-  assert(audiobook_speed_permille() == 1250);
+	// Nothing loaded: the default alone.
+	audiobook_set_speed_permille(1250);
+	assert(set_speed_calls == 0);
+	assert(config_get_int("audiobook", "speed", 0) == 1250);
+	assert(audiobook_speed_permille() == 1250);
 
-  // A book with a speed of its own plays at it, and another part of the same
-  // book does not ask again.
-  audiobook_track_changed("/book/0.mp3");
-  assert(get_speed_calls == 1);
-  assert(audiobook_speed_permille() == 1500);
-  audiobook_track_changed("/book/1.mp3");
-  assert(get_speed_calls == 1);
-  assert(audiobook_speed_permille() == 1500);
+	// A book with a speed of its own plays at it, and another part of the same
+	// book does not ask again.
+	audiobook_track_changed("/book/0.mp3");
+	assert(get_speed_calls == 1);
+	assert(audiobook_speed_permille() == 1500);
+	audiobook_track_changed("/book/1.mp3");
+	assert(get_speed_calls == 1);
+	assert(audiobook_speed_permille() == 1500);
 
-  // A pick is the book's and the new default.
-  audiobook_set_speed_permille(750);
-  assert(set_speed_calls == 1 && set_speed_value == 750);
-  assert(strcmp(set_speed_book, "/book") == 0);
-  assert(config_get_int("audiobook", "speed", 0) == 750);
-  assert(audiobook_speed_permille() == 750);
+	// A pick is the book's and the new default.
+	audiobook_set_speed_permille(750);
+	assert(set_speed_calls == 1 && set_speed_value == 750);
+	assert(strcmp(set_speed_book, "/book") == 0);
+	assert(config_get_int("audiobook", "speed", 0) == 750);
+	assert(audiobook_speed_permille() == 750);
 
-  // First listen pins the default, even after another book changes it.
-  audiobook_track_changed("/other.m4b");
-  assert(get_speed_calls == 2);
-  assert(audiobook_speed_permille() == 750);
-  assert(set_speed_calls == 2 && set_speed_value == 750);
-  assert(strcmp(set_speed_book, "/other.m4b") == 0);
-  audiobook_track_changed("/book/0.mp3");
-  audiobook_set_speed_permille(1500);
-  audiobook_track_changed("/other.m4b");
-  assert(audiobook_speed_permille() == 750);
-  assert(set_speed_calls == 3);
+	// First listen pins the default, even after another book changes it.
+	audiobook_track_changed("/other.m4b");
+	assert(get_speed_calls == 2);
+	assert(audiobook_speed_permille() == 750);
+	assert(set_speed_calls == 2 && set_speed_value == 750);
+	assert(strcmp(set_speed_book, "/other.m4b") == 0);
+	audiobook_track_changed("/book/0.mp3");
+	audiobook_set_speed_permille(1500);
+	audiobook_track_changed("/other.m4b");
+	assert(audiobook_speed_permille() == 750);
+	assert(set_speed_calls == 3);
 
-  // A song is no book: the default, and a pick goes nowhere else.
-  audiobook_track_changed("/song.mp3");
-  assert(audiobook_speed_permille() == 1500);
-  audiobook_set_speed_permille(1000);
-  assert(set_speed_calls == 3);
-  assert(audiobook_speed_permille() == 1000);
+	// A song is no book: the default, and a pick goes nowhere else.
+	audiobook_track_changed("/song.mp3");
+	assert(audiobook_speed_permille() == 1500);
+	audiobook_set_speed_permille(1000);
+	assert(set_speed_calls == 3);
+	assert(audiobook_speed_permille() == 1000);
 }
 
 static int length_writes;
 static char length_path[512];
 static double length_seconds;
 void audiobookdb_set_part_duration(const char *path, double seconds) {
-  length_writes++;
-  snprintf(length_path, sizeof(length_path), "%s", path);
-  length_seconds = seconds;
+	assert(pthread_mutex_trylock(&lock) == 0);
+	pthread_mutex_unlock(&lock);
+	length_writes++;
+	snprintf(length_path, sizeof(length_path), "%s", path);
+	length_seconds = seconds;
 }
 static void measured_lengths(void) {
-  const double stored[] = {0, 100, 100};
-  const double measured[] = {80, 100.4, 103};
-  for (int i = 0; i < 3; i++) {
-    reset();
-    snprintf(current_path, sizeof(current_path), "/book/0.mp3");
-    add_part(current_path, "First", stored[i], NULL);
-    part_index = 0;
-    length_writes = 0;
-    audiobook_note_length(0);
-    audiobook_note_length(measured[i]);
-    audiobook_note_length(measured[i]);
-    assert(length_writes == (i == 1 ? 0 : 1));
-    if (i != 1) {
-      assert(length_seconds == measured[i]);
-      assert(!strcmp(length_path, current_path));
-    }
-    assert(audiobook_part_duration(0) == (i == 1 ? 100 : measured[i]));
-    assert(audiobook_part_duration(-1) == 0 && audiobook_part_duration(1) == 0);
-  }
-  // A different measurement in the same load is ignored; reloading re-arms it.
-  audiobook_note_length(106);
-  assert(length_writes == 1);
-  audiobook_track_changed("/book/0.mp3");
-  audiobook_note_length(106);
-  assert(length_writes == 2 && length_seconds == 106);
-  audiobook_track_changed(NULL);
-  audiobook_note_length(200);
-  assert(length_writes == 2);
-  puts("PASS audiobook-length");
+	const double stored[] = {0, 100, 100};
+	const double measured[] = {80, 100.4, 103};
+	for (int i = 0; i < 3; i++) {
+		reset();
+		snprintf(current_path, sizeof(current_path), "/book/0.mp3");
+		add_part(current_path, "First", stored[i], NULL);
+		part_index = 0;
+		length_writes = 0;
+		audiobook_note_length(0);
+		audiobook_note_length(measured[i]);
+		audiobook_note_length(measured[i]);
+		assert(length_writes == (i == 1 ? 0 : 1));
+		if (i != 1) {
+			assert(length_seconds == measured[i]);
+			assert(!strcmp(length_path, current_path));
+		}
+		assert(audiobook_part_duration(0) == (i == 1 ? 100 : measured[i]));
+		assert(audiobook_part_duration(-1) == 0 && audiobook_part_duration(1) == 0);
+	}
+	// A different measurement in the same load is ignored; reloading re-arms it.
+	audiobook_note_length(106);
+	assert(length_writes == 1);
+	audiobook_track_changed("/book/0.mp3");
+	audiobook_note_length(106);
+	assert(length_writes == 2 && length_seconds == 106);
+	audiobook_track_changed(NULL);
+	audiobook_note_length(200);
+	assert(length_writes == 2);
+	puts("PASS audiobook-length");
 }
 int main(void) {
-  measured_lengths();
+	measured_lengths();
   chapters_next_prev();
   parts_next_prev();
   parts_win_over_chapters();
@@ -527,10 +528,10 @@ int main(void) {
   eq_setting();
   eq_apply();
   speed_per_book();
-  seeks_stay_short_of_eof();
-  late_position_is_kept();
-  natural_finish_starts_over();
-  folder_finish_starts_at_first_part();
-  checkpoints_do_not_finish();
+	seeks_stay_short_of_eof();
+	late_position_is_kept();
+	natural_finish_starts_over();
+	folder_finish_starts_at_first_part();
+	checkpoints_do_not_finish();
   return 0;
 }

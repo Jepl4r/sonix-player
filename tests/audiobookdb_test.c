@@ -143,6 +143,7 @@ int main(int argc, char **argv) {
   }
   assert(audiobookdb_open(dbpath));
   if (!strcmp(argv[1], "duration-column")) {
+    assert(scalar("SELECT count(*) FROM AUDIOBOOK_PARTS") == 1);
     assert(scalar("SELECT COALESCE(duration,0) FROM AUDIOBOOK_PARTS") == 0);
     assert(scalar("PRAGMA user_version") == 4);
   } else if (!strcmp(argv[1], "cancel")) {

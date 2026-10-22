@@ -95,6 +95,15 @@ int main(int argc, char **argv) {
          !(prefix[next] == 0xff && (prefix[next + 1] & 0xe0) == 0xe0))
     next++;
   assert(frame > 0 && next + 1 < n);
+  // ffmpeg generated MPEG-1 Layer III; the first surviving frame supplies
+  // the CBR bitrate. The padded fixture has no trailing ID3v1 tag.
+  assert((prefix[next + 1] & 0x1e) == 0x1a);
+  static const int kbps[] = {0, 32, 40, 48, 56, 64, 80, 96,
+                             112, 128, 160, 192, 224, 256, 320};
+  unsigned bitrate_index = prefix[next + 2] >> 4;
+  assert(bitrate_index > 0 && bitrate_index < 15);
+  double expected = (double)(2 * 1024 * 1024 - next) * 8 /
+                    (kbps[bitrate_index] * 1000);
   memset(prefix + frame, 0, next - frame);
   rewind(file);
   assert(fwrite(prefix, 1, n, file) == n);
@@ -106,8 +115,7 @@ int main(int argc, char **argv) {
          elapsed = milliseconds() - start;
   printf("probe headerless-2MiB.mp3: %.6f s, %.3f ms, %zu probe bytes\n",
          seconds, elapsed, probe_bytes);
-  assert(seconds == 0 ||
-         seconds > 10); // file-size CBR estimate, not a whole-file frame count
+  assert(fabs(seconds - expected) < 0.5);
   assert(probe_bytes <= 256 * 1024 + 128);
   assert(elapsed < 50);
   assert(durationprobe_seconds("/does/not/exist.mp3") == 0);

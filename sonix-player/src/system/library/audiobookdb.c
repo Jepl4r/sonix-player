@@ -1,7 +1,6 @@
 #define _GNU_SOURCE 1 // strcasestr
 #include "audiobookdb.h"
 #include "durationprobe.h"
-#include <math.h>
 
 #include "src/system/decode/mp4.h"
 #include "src/system/library/id3chap.h"
@@ -12,6 +11,7 @@
 #include <ctype.h>
 #include <dirent.h>
 #include <errno.h>
+#include <math.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -1788,7 +1788,8 @@ static void scan_directory(const char *path, int depth) {
 			metadata_read(parts.items[i], tags);
 			int found = -1;
 			for (int g = 0; g < albums.count; g++) {
-				if (library_collate_casefold(NULL, (int)strlen(albums.items[g]), albums.items[g], (int)strlen(tags->album), tags->album) == 0) {
+				if (library_collate_casefold(NULL, (int)strlen(albums.items[g]), albums.items[g],
+										(int)strlen(tags->album), tags->album) == 0) {
 					found = g;
 					break;
 				}
@@ -1869,7 +1870,11 @@ static bool publish_scan(void) {
 				   " resume_file=(SELECT resume_file FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path),"
 				   " resume_pos=(SELECT resume_pos FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path),"
 				   " speed=(SELECT speed FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path)") &&
-			  exec("DELETE FROM AUDIOBOOK_TABLE") && exec("INSERT INTO AUDIOBOOK_TABLE SELECT * FROM scan_books") && exec("UPDATE scan_parts SET duration=COALESCE((SELECT duration FROM AUDIOBOOK_PARTS p WHERE p.path=scan_parts.path AND p.duration IS NOT NULL), scan_parts.duration)") && exec("DELETE FROM AUDIOBOOK_PARTS") && exec("INSERT INTO AUDIOBOOK_PARTS(path,book,idx,title,duration) SELECT path,book,idx,title,duration FROM scan_parts");
+			  exec("DELETE FROM AUDIOBOOK_TABLE")
+		&& exec("INSERT INTO AUDIOBOOK_TABLE SELECT * FROM scan_books")
+		&& exec("UPDATE scan_parts SET duration=COALESCE((SELECT duration FROM AUDIOBOOK_PARTS p WHERE p.path=scan_parts.path AND p.duration IS NOT NULL), scan_parts.duration)")
+		&& exec("DELETE FROM AUDIOBOOK_PARTS")
+		&& exec("INSERT INTO AUDIOBOOK_PARTS(path,book,idx,title,duration) SELECT path,book,idx,title,duration FROM scan_parts");
 	if (ok) {
 		char sql[48];
 		snprintf(sql, sizeof(sql), "PRAGMA user_version=%d", SCHEMA_VERSION);
@@ -1890,7 +1895,12 @@ static void *scan_thread_func(void *arg) {
 	scan_failed = !db;
 	if (db) {
 		// TEMP tables disappear on crash; the persistent index remains intact.
-		scan_failed = !(exec("DROP TABLE IF EXISTS temp.scan_books") && exec("DROP TABLE IF EXISTS temp.scan_parts") && exec("CREATE TEMP TABLE scan_books AS SELECT * FROM AUDIOBOOK_TABLE WHERE 0") && exec("CREATE UNIQUE INDEX temp.scan_books_path ON scan_books(path)") && exec("CREATE TEMP TABLE scan_parts AS SELECT * FROM AUDIOBOOK_PARTS WHERE 0") && exec("CREATE UNIQUE INDEX temp.scan_parts_path ON scan_parts(path)"));
+		scan_failed = !(exec("DROP TABLE IF EXISTS temp.scan_books")
+			&& exec("DROP TABLE IF EXISTS temp.scan_parts")
+			&& exec("CREATE TEMP TABLE scan_books AS SELECT * FROM AUDIOBOOK_TABLE WHERE 0")
+			&& exec("CREATE UNIQUE INDEX temp.scan_books_path ON scan_books(path)")
+			&& exec("CREATE TEMP TABLE scan_parts AS SELECT * FROM AUDIOBOOK_PARTS WHERE 0")
+			&& exec("CREATE UNIQUE INDEX temp.scan_parts_path ON scan_parts(path)"));
 	}
 	pthread_mutex_unlock(&db_lock);
 

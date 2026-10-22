@@ -1,10 +1,10 @@
 #include "audiobook.h"
 
+#include "src/system/library/audiobookdb.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/mp4.h"
-#include "src/system/library/audiobookdb.h"
 #include "src/system/library/id3chap.h"
 #include "src/system/library/vorbischap.h"
 
@@ -200,7 +200,9 @@ static int clamp_skip(long value) {
 
 int audiobook_skip_back(void) { return clamp_skip(config_get_int("audiobook", "skip_back", AUDIOBOOK_SKIP_SHORT)); }
 
-int audiobook_skip_forward(void) { return clamp_skip(config_get_int("audiobook", "skip_forward", AUDIOBOOK_SKIP_SHORT)); }
+int audiobook_skip_forward(void) {
+	return clamp_skip(config_get_int("audiobook", "skip_forward", AUDIOBOOK_SKIP_SHORT));
+}
 
 void audiobook_set_skip_back(int seconds) { config_set_int("audiobook", "skip_back", clamp_skip(seconds)); }
 
@@ -470,8 +472,12 @@ double audiobook_part_duration(int index) {
 }
 
 void audiobook_note_length(double total) {
+	// Loads happen on the GUI thread, so the first valid total after a load
+	// belongs to the loaded part.
 	if (!isfinite(total) || total <= 0)
 		return;
+	char path[sizeof(current_path)] = "";
+	double seconds = 0;
 	pthread_mutex_lock(&lock);
 	if (current_is_book && !length_noted) {
 		length_noted = true;
@@ -479,11 +485,14 @@ void audiobook_note_length(double total) {
 			double known = parts[part_index].duration;
 			if (known <= 0 || fabs(known - total) > 1) {
 				parts[part_index].duration = total;
-				audiobookdb_set_part_duration(current_path, total);
+				snprintf(path, sizeof(path), "%s", current_path);
+				seconds = total;
 			}
 		}
 	}
 	pthread_mutex_unlock(&lock);
+	if (path[0])
+		audiobookdb_set_part_duration(path, seconds);
 }
 
 int audiobook_part_count(void) {

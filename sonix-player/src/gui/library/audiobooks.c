@@ -1075,8 +1075,10 @@ static void build_section_page(gui_config_t *cfg) {
 		{"audiobook_continue", &icon_menu_audiobook_continue, NULL, open_continue},
 	};
 	// The Music page's grid of two by three, so the tiles are the same size.
-	section_grid = gridpage_build(audiobooks_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
-	section_empty = gridpage_empty_panel(audiobooks_screen, cfg, &icon_book_headphones, "audiobook_no_database", section_scan_cb);
+	section_grid =
+		gridpage_build(audiobooks_screen, cfg, entries, (int)(sizeof(entries) / sizeof(entries[0])), 2, 3, true);
+	section_empty =
+		gridpage_empty_panel(audiobooks_screen, cfg, &icon_book_headphones, "audiobook_no_database", section_scan_cb);
 
 	// The options, to their left the finished books, and to the left of those
 	// the bookmarks -- the same glyph the ebook shelf opens its bookmarks with.
@@ -1271,7 +1273,9 @@ static void duration_pick_cb(lv_event_t *e) {
 	refresh_settings_page();
 }
 
-static void stop_chapter_cb(lv_event_t *e) { audiobook_set_stop_at_chapter_end(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED)); }
+static void stop_chapter_cb(lv_event_t *e) {
+	audiobook_set_stop_at_chapter_end(lv_obj_has_state(lv_event_get_target(e), LV_STATE_CHECKED));
+}
 
 static void sleep_toggle_cb(lv_event_t *e) {
 	(void)e;
@@ -1728,7 +1732,9 @@ static void start_scan(void *user) {
 
 static void scan_row_cb(lv_event_t *e) {
 	(void)e;
-	confirm_show("audiobook_scan_audiobooks", "audiobook_rescan_confirm_note", "scan", start_scan, NULL);
+	confirm_show("audiobook_scan_audiobooks",
+				 "audiobook_rescan_confirm_note",
+				 "scan", start_scan, NULL);
 }
 
 static lv_obj_t *scan_make_button(const char *text, lv_color_t colour, lv_event_cb_t cb, gui_config_t *cfg) {

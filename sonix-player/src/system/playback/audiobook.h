@@ -108,12 +108,13 @@ const char *audiobook_current_path(void);
 // The parts of the folder book playing now: its files, one per chapter, in
 // order. Zero parts for a book in one file. `path_out` is the file.
 int audiobook_part_count(void);
+bool audiobook_part(int index, char *title_out, size_t title_size, char *path_out, size_t path_size);
+
 // Duration in seconds, or 0 when unknown.
 double audiobook_part_duration(int index);
 // Corrects the current part once per load when its measured length is known.
 void audiobook_note_length(double total);
 
-bool audiobook_part(int index, char *title_out, size_t title_size, char *path_out, size_t path_size);
 // Which part is loaded, or -1 for a book in one file.
 int audiobook_part_current(void);
 // Whether the book goes on into another file when this one ends.

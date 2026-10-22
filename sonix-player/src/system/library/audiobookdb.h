@@ -134,9 +134,10 @@ bool audiobookdb_is_folder_book(const char *book);
 // Streams the parts of a folder book in their order: the file and the name it
 // is shown under. Returns how many were delivered; 0 for a single-file book.
 typedef bool (*audiobook_part_cb)(const char *path, const char *title, double duration, void *user);
+int audiobookdb_parts_for_each(const char *book, audiobook_part_cb cb, void *user);
+
 // Writes the duration the player measured for a part. Synchronous, under db_lock; no-op when the card is not writable.
 void audiobookdb_set_part_duration(const char *path, double seconds);
-int audiobookdb_parts_for_each(const char *book, audiobook_part_cb cb, void *user);
 
 // Stamps a book as listened right now.
 void audiobookdb_touch(const char *path);
