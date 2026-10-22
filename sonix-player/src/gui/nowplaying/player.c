@@ -1918,7 +1918,7 @@ static void lyrics_find_sync(bool full) {
 	if (!lyrics_find_btn) {
 		return;
 	}
-	bool show = full && lyrics_now;
+	bool show = full && lyrics_now && !(layout_studio_now && audiobook_mode && audiobook_has_chapters);
 	if (!show) {
 		lv_obj_set_hidden(lyrics_find_btn, true);
 		lyrics_find_make_room(NULL);
@@ -3067,6 +3067,7 @@ static void chapter_row_sync(void) {
 	if (format_label && !layout_studio_now && !layout_alt_now) {
 		lv_obj_set_hidden(format_label, on);
 	}
+	lyrics_find_sync(lyrics_progress == LYRICS_FULL);
 }
 
 // Moves the pieces between the two arrangements.
