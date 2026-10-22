@@ -32,4 +32,10 @@ for guard in ota firmware; do
  mkdir "$build/$guard"
  if "$build/$guard-test" "$build/$guard"; then printf "%s\n" "PASS $guard-guard"; else failed=$((failed + 1)); fi
 done
+sanitizer_flags=""
+case $(uname -s) in
+  Linux) sanitizer_flags="-fsanitize=address,undefined -fno-omit-frame-pointer" ;;
+esac
+${CC:-cc} -O1 -g $sanitizer_flags -I"$repo/sonix-player" "$repo/tests/id3chap_test.c" -o "$build/id3chap-test"
+if "$build/id3chap-test" "$build/id3chap.mp3"; then printf "%s\n" "PASS id3chap"; else failed=$((failed + 1)); fi
 exit "$failed"

@@ -37,10 +37,11 @@ static uint32_t syncsafe32(const uint8_t *p) {
 }
 
 // One text field out of a sub-frame: an encoding byte and then the text.
-// Encodings 1 and 2 are UTF-16 and are read as their low bytes, which is right
-// up to U+00FF and a question mark above it; anything else is copied byte for
-// byte.
+// Latin-1 and UTF-16 become UTF-8; encoding 3 already contains UTF-8.
 static void read_text(const uint8_t *data, uint32_t len, char *out, size_t out_size) {
+	if (!out_size) {
+		return;
+	}
 	out[0] = '\0';
 	if (!len) {
 		return;
@@ -50,23 +51,40 @@ static void read_text(const uint8_t *data, uint32_t len, char *out, size_t out_s
 	uint32_t text_len = len - 1;
 	size_t w = 0;
 
-	if (encoding == 1 || encoding == 2) {
-		// UTF-16. Skip a byte-order mark and step two bytes at a time; which of
-		// the pair is the character depends on the order.
+	if (encoding <= 2) {
+		bool utf16 = encoding != 0;
 		bool little = encoding == 1 && text_len >= 2 && text[0] == 0xFF && text[1] == 0xFE;
-		if (encoding == 1 && text_len >= 2) {
+		bool big = encoding == 1 && text_len >= 2 && text[0] == 0xFE && text[1] == 0xFF;
+		if (little || big) {
 			text += 2;
 			text_len -= 2;
 		}
-		for (uint32_t i = 0; i + 1 < text_len && w + 1 < out_size; i += 2) {
-			uint8_t c = little ? text[i] : text[i + 1];
-			uint8_t hi = little ? text[i + 1] : text[i];
-			if (!c && !hi) {
+		for (uint32_t i = 0; i < text_len; i += utf16 ? 2 : 1) {
+			uint32_t c = text[i];
+			if (utf16) {
+				if (i + 1 >= text_len) {
+					break;
+				}
+				c = little ? text[i] | ((uint32_t)text[i + 1] << 8) : ((uint32_t)text[i] << 8) | text[i + 1];
+			}
+			if (!c) {
 				break;
 			}
-			// Above U+00FF there is no single byte to write; a question mark
-			// says "a character was here" instead of writing half of one.
-			out[w++] = hi ? '?' : (char)c;
+			// Surrogates are not BMP characters; use the replacement character.
+			if (c >= 0xD800 && c <= 0xDFFF) {
+				c = 0xFFFD;
+			}
+			size_t n = c < 0x80 ? 1 : c < 0x800 ? 2 : 3;
+			if (w + n >= out_size) {
+				break;
+			}
+			if (n == 3) {
+				out[w++] = (char)(0xE0 | (c >> 12));
+				out[w++] = (char)(0x80 | ((c >> 6) & 0x3F));
+			} else if (n == 2) {
+				out[w++] = (char)(0xC0 | (c >> 6));
+			}
+			out[w++] = n == 1 ? (char)c : (char)(0x80 | (c & 0x3F));
 		}
 	} else {
 		for (uint32_t i = 0; i < text_len && w + 1 < out_size; i++) {
@@ -74,6 +92,12 @@ static void read_text(const uint8_t *data, uint32_t len, char *out, size_t out_s
 				break;
 			}
 			out[w++] = (char)text[i];
+		}
+		// A full buffer stops before a partial UTF-8 character.
+		if (w < text_len && (text[w] & 0xC0) == 0x80) {
+			while (w > 0 && (text[w] & 0xC0) == 0x80) {
+				w--;
+			}
 		}
 	}
 	out[w] = '\0';
@@ -117,7 +141,7 @@ static void read_chapter_title(const uint8_t *payload, uint32_t len, bool syncsa
 }
 
 int id3chap_read(const char *path, id3chap_t *out, int max) {
-	if (!path || !path[0]) {
+	if (!path || !path[0] || (out && max <= 0)) {
 		return 0;
 	}
 	FILE *f = fopen(path, "rb");
@@ -192,8 +216,8 @@ int id3chap_read(const char *path, id3chap_t *out, int max) {
 					read_chapter_title(tag + at, size, syncsafe_frames, out[found].title, sizeof(out[found].title));
 				}
 				found++;
-				if (!out) {
-					break; // only asked whether there are any
+				if (out && found >= max) {
+					break;
 				}
 			}
 		}
