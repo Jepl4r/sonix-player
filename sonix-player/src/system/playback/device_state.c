@@ -10,6 +10,7 @@
 #include "src/system/device/system.h"
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
+#include "src/system/library/audiobookdb.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/playback/playhistory.h"
 #include "src/system/playback/playlist.h"
@@ -204,6 +205,19 @@ static void flush_book_position(const device_state_t *state) {
 	}
 	audiobook_note_position(state->progress_current_secs, state->progress_total_secs, true);
 }
+
+// Read the power-off gap before the outgoing checkpoint can update last_played.
+static void capture_book_break(const char *filepath) {
+	char book[512], file[512];
+	time_t last_played = 0;
+	audiobook_take_rewind_suppression();
+	if (filepath && audiobookdb_book_for_file(filepath, book, sizeof(book))) {
+		audiobookdb_get_position(book, file, sizeof(file), NULL, &last_played);
+	}
+	audiobook_note_boot_break(last_played);
+}
+
+static bool automatic_rewind_load;
 
 // Sample the outgoing decoder before any load resets its progress or the
 // audiobook module forgets which book it belongs to. Every track-load path
@@ -666,6 +680,7 @@ static void load_paused(const char *filepath) {
 // tap on the file would build, but the track comes up paused at `position`
 // instead of playing.
 void device_state_restore_file(const char *filepath, double position) {
+	capture_book_break(filepath);
 	// Same reason as load_and_play: this changes the track too.
 	scrub_cancel();
 
@@ -720,6 +735,7 @@ static void restore_queue_album(void) {
 // next and prev work from the first press.
 void device_state_restore_index(library_index_t *ix, int start_index, const char *const *extra,
 								const int *extra_slots, int extra_count, const char *filepath, double position) {
+	capture_book_break(filepath);
 	// Same reason as load_and_play: this changes the track too.
 	scrub_cancel();
 
@@ -782,8 +798,17 @@ void device_state_restore_index(library_index_t *ix, int start_index, const char
 	device_state_remember_restored(current_metadata_file, position);
 }
 
+static void load_restored_paths(const char *const *list, int count, int index, const char *file) {
+	char book[512];
+	if (file && audiobookdb_book_for_file(file, book, sizeof(book)))
+		playlist_load_paths_ordered(list, count, index);
+	else
+		playlist_load_paths(list, count, index);
+}
+
 void device_state_restore_list(const char *const *list, int count, int start_index, bool custom, const char *filepath,
 							   double position) {
+	capture_book_break(filepath);
 	// Same reason as load_and_play: this changes the track too.
 	scrub_cancel();
 
@@ -792,7 +817,7 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 		return;
 	}
 
-	playlist_load_paths(list, count, start_index);
+	load_restored_paths(list, count, start_index, filepath);
 	// playlist_load_paths() always marks the queue custom; a queue that was a
 	// folder queue before the reboot has to stay one, or it would never be
 	// refreshed from the disk again.
@@ -838,6 +863,10 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 // load_and_play() because only a book has a position to come back to, and the
 // difference should be visible at the call site.
 void device_state_play_file_at(const char *filepath, double position) {
+	if (!automatic_rewind_load) {
+		audiobook_clear_rewind_floor();
+		audiobook_take_rewind_suppression();
+	}
 	// Same reason as load_and_play: this changes the track too.
 	scrub_cancel();
 
@@ -873,6 +902,10 @@ void device_state_play_file_at(const char *filepath, double position) {
 }
 
 void device_state_play_file(const char *filepath) {
+	if (!automatic_rewind_load) {
+		audiobook_clear_rewind_floor();
+		audiobook_take_rewind_suppression();
+	}
 	// The queue is built from the selected file's directory, so playback can
 	// continue past this track.
 	char folder[512];
@@ -930,6 +963,10 @@ bool device_state_play_list_ordered(const char *const *list, int count, int star
 }
 
 void device_state_play_list_ordered_at(const char *const *list, int count, int start_index, double position) {
+	if (!automatic_rewind_load) {
+		audiobook_clear_rewind_floor();
+		audiobook_take_rewind_suppression();
+	}
 	if (!list || count <= 0) {
 		return;
 	}
@@ -945,6 +982,11 @@ void device_state_play_list_ordered_at(const char *const *list, int count, int s
 }
 
 bool device_state_load_list_ordered_paused(const char *const *list, int count, int start_index) {
+	if (!automatic_rewind_load) {
+		audiobook_clear_rewind_floor();
+		if (audio_get_status() == AUDIO_STATUS_PAUSED)
+			audiobook_suppress_rewind_once();
+	}
 	if (!list || start_index < 0 || start_index >= count || !list[start_index]) {
 		return false;
 	}
@@ -960,6 +1002,10 @@ bool device_state_load_list_ordered_paused(const char *const *list, int count, i
 
 // Jumps to a specific entry of the current queue: the queue page's tap.
 bool device_state_play_queue_index(int index) {
+	if (!automatic_rewind_load) {
+		audiobook_clear_rewind_floor();
+		audiobook_take_rewind_suppression();
+	}
 	if (!playlist_set_current(index)) {
 		return false;
 	}
@@ -1483,6 +1529,8 @@ static void playlist_resync_to_current(void) {
 }
 
 bool device_state_next(char *out_path, size_t out_size) {
+	audiobook_clear_rewind_floor();
+	audiobook_take_rewind_suppression();
 	char path[512];
 	playlist_resync_to_current();
 
@@ -1511,6 +1559,8 @@ bool device_state_next(char *out_path, size_t out_size) {
 }
 
 bool device_state_prev(char *out_path, size_t out_size) {
+	audiobook_clear_rewind_floor();
+	audiobook_take_rewind_suppression();
 	char path[512];
 	playlist_resync_to_current();
 
@@ -1537,6 +1587,44 @@ bool device_state_prev(char *out_path, size_t out_size) {
 }
 
 bool device_state_take_completion(void) { return audio_take_completion(); }
+
+static void rewind_book_after_break(double gap) {
+	double current = 0, total = 0;
+	audio_get_progress(&current, &total);
+	char original[512];
+	audio_get_current_file(original, sizeof(original));
+	double back = current - audiobook_rewind_for_break(gap, audiobook_rewind_seconds(), audiobook_rewind_long_seconds());
+	int index = audiobook_part_current();
+	double previous = index > 0 ? audiobook_part_duration(index - 1) : 0;
+	if (back < 0 && previous > 0) {
+		int count = audiobook_part_count();
+		char **list = calloc((size_t)count, sizeof(*list));
+		bool ready = list != NULL;
+		for (int i = 0; ready && i < count; i++) {
+			list[i] = malloc(512);
+			ready = list[i] && audiobook_part(i, NULL, 0, list[i], 512);
+		}
+		bool loaded = false;
+		if (ready) {
+			automatic_rewind_load = true;
+			loaded = device_state_load_list_ordered_paused((const char *const *)list, count, index - 1);
+			automatic_rewind_load = false;
+			audiobook_take_rewind_suppression();
+		}
+		for (int i = 0; list && i < count; i++)
+			free(list[i]);
+		free(list);
+		if (loaded) {
+			// The outgoing flush must finish before the new floor is armed.
+			audiobook_set_rewind_floor(original, current);
+			audio_seek(previous + back > 0 ? previous + back : 0);
+			printf("audiobook: rewind previous part at %.1f, floor %s %.1f\n", previous + back > 0 ? previous + back : 0, original, current);
+			return;
+		}
+	}
+	audiobook_set_rewind_floor(original, current);
+	audio_seek(back > 0 ? back : 0);
+}
 
 audio_status_t device_state_toggle_play_pause(void) {
 	// A live stream cannot be paused: there is no position to come back to,
@@ -1571,11 +1659,13 @@ audio_status_t device_state_toggle_play_pause(void) {
 		// because whatever was being said when the pause landed was almost
 		// certainly mid-sentence. Done here rather than in the player, so the
 		// side key and the control centre get it too.
-		if (audiobook_is_playing() && audiobook_rewind_enabled() && !audiobook_take_rewind_suppression()) {
-			double current = 0, total = 0;
-			audio_get_progress(&current, &total);
-			double back = current - audiobook_rewind_for_break(device_state_break_seconds(), audiobook_rewind_seconds(), audiobook_rewind_long_seconds());
-			audio_seek(back > 0 ? back : 0);
+		{
+			double boot_gap = audiobook_take_boot_break();
+			bool suppressed = audiobook_take_rewind_suppression();
+			if (audiobook_is_playing() && audiobook_rewind_enabled() && !suppressed) {
+				double gap = device_state_break_seconds();
+				rewind_book_after_break(boot_gap > gap ? boot_gap : gap);
+			}
 		}
 		playhistory_resumed();
 		audio_resume();
@@ -1687,6 +1777,9 @@ static unsigned seek_serial;
 unsigned device_state_seek_serial(void) { return __atomic_load_n(&seek_serial, __ATOMIC_RELAXED); }
 
 void device_state_seek(double seconds) {
+	audiobook_clear_rewind_floor();
+	if (audio_get_status() == AUDIO_STATUS_PAUSED)
+		audiobook_suppress_rewind_once();
 	__atomic_fetch_add(&seek_serial, 1, __ATOMIC_RELAXED);
 	// A seek from anywhere else -- the slider, the queue -- ends a scrub that
 	// was still open, or the interface would go on drawing a thumb that no

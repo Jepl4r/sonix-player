@@ -735,7 +735,9 @@ static void position_queue_drain(void) {
 	}
 }
 
-bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file_size, double *seconds_out) {
+bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file_size, double *seconds_out, time_t *last_played_out) {
+	if (last_played_out)
+		*last_played_out = 0;
 	if (file_out && file_size) {
 		file_out[0] = '\0';
 	}
@@ -750,7 +752,7 @@ bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file
 
 	bool found = false;
 	sqlite3_stmt *stmt = NULL;
-	if (db && sqlite3_prepare_v2(db, "SELECT resume_file, resume_pos FROM AUDIOBOOK_TABLE WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
+	if (db && sqlite3_prepare_v2(db, "SELECT resume_file, resume_pos, last_played FROM AUDIOBOOK_TABLE WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
 		sqlite3_bind_text(stmt, 1, book_path, -1, SQLITE_TRANSIENT);
 		if (sqlite3_step(stmt) == SQLITE_ROW) {
 			const char *file = (const char *)sqlite3_column_text(stmt, 0);
@@ -761,6 +763,8 @@ bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file
 				if (seconds_out) {
 					*seconds_out = sqlite3_column_double(stmt, 1);
 				}
+				if (last_played_out)
+					*last_played_out = (time_t)sqlite3_column_int64(stmt, 2);
 				found = true;
 			}
 		}

@@ -154,6 +154,10 @@ static void mark_pick_cb(lv_event_t *e) {
 	}
 	const mark_t *mark = &marks[index];
 
+	audiobook_clear_rewind_floor();
+	if (audio_get_status() == AUDIO_STATUS_PAUSED)
+		audiobook_suppress_rewind_once();
+
 	char book[512] = "";
 	char file[512] = "";
 	if (audiobook_current_book(book, sizeof(book), file, sizeof(file)) && strcmp(book, open_book) == 0 && strcmp(file, mark->file) == 0) {

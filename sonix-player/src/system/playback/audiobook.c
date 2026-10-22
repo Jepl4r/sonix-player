@@ -392,6 +392,39 @@ int audiobook_rewind_seconds(void) {
 
 void audiobook_set_rewind_seconds(int seconds) { config_set_int("audiobook", "rewind_seconds", seconds); }
 
+static char rewind_floor_file[512];
+static char rewind_floor_book[512];
+static double rewind_floor_seconds;
+static double boot_break;
+
+void audiobook_set_rewind_floor(const char *file, double seconds) {
+	pthread_mutex_lock(&lock);
+	if (!rewind_floor_file[0] && current_is_book && file && file[0] && isfinite(seconds) && seconds >= 0) {
+		snprintf(rewind_floor_file, sizeof(rewind_floor_file), "%s", file);
+		snprintf(rewind_floor_book, sizeof(rewind_floor_book), "%s", current_book);
+		rewind_floor_seconds = seconds;
+	}
+	pthread_mutex_unlock(&lock);
+}
+void audiobook_clear_rewind_floor(void) {
+	pthread_mutex_lock(&lock);
+	rewind_floor_file[0] = '\0';
+	pthread_mutex_unlock(&lock);
+}
+void audiobook_note_boot_break(time_t last_played) {
+	double gap = difftime(time(NULL), last_played);
+	pthread_mutex_lock(&lock);
+	boot_break = last_played > 0 && gap >= 0 && gap <= 30 * 86400 ? gap : 0;
+	pthread_mutex_unlock(&lock);
+}
+double audiobook_take_boot_break(void) {
+	pthread_mutex_lock(&lock);
+	double gap = boot_break;
+	boot_break = 0;
+	pthread_mutex_unlock(&lock);
+	return gap;
+}
+
 int audiobook_rewind_for_break(double break_seconds, int short_s, int long_s) {
 	if (!(break_seconds >= 300))
 		return short_s;
@@ -424,16 +457,20 @@ void audiobook_track_changed(const char *filepath) {
 	serial++;
 
 	if (!filepath || !filepath[0]) {
+		rewind_floor_file[0] = '\0';
 		pthread_mutex_unlock(&lock);
 		return;
 	}
 
 	char book[512];
 	if (!audiobookdb_book_for_file(filepath, book, sizeof(book))) {
+		rewind_floor_file[0] = '\0';
 		pthread_mutex_unlock(&lock);
 		return;
 	}
 
+	if (strcmp(book, rewind_floor_book) != 0)
+		rewind_floor_file[0] = '\0';
 	snprintf(current_path, sizeof(current_path), "%s", filepath);
 	snprintf(current_book, sizeof(current_book), "%s", book);
 	current_is_book = true;
@@ -803,7 +840,7 @@ bool audiobook_resume_point(const char *book, char *file_out, size_t file_size, 
 
 	char file[512];
 	double seconds = 0;
-	bool saved = audiobookdb_get_position(book, file, sizeof(file), &seconds);
+	bool saved = audiobookdb_get_position(book, file, sizeof(file), &seconds, NULL);
 
 	if (!audiobookdb_is_folder_book(book)) {
 		snprintf(file_out, file_size, "%s", book);
@@ -959,7 +996,7 @@ double audiobook_saved_position(const char *filepath) {
 
 	char file[512];
 	double seconds = 0;
-	if (!audiobookdb_get_position(book, file, sizeof(file), &seconds)) {
+	if (!audiobookdb_get_position(book, file, sizeof(file), &seconds, NULL)) {
 		return 0;
 	}
 	if (file[0] && strcmp(file, filepath) != 0) {
@@ -1000,6 +1037,16 @@ void audiobook_note_position(double seconds, double total, bool force) {
 		return;
 	}
 
+	// Passing the original part naturally has also passed its saved point.
+	for (int i = 0; rewind_floor_file[0] && i < part_count; i++) {
+		if (strcmp(parts[i].path, rewind_floor_file) == 0 && part_index > i)
+			rewind_floor_file[0] = '\0';
+	}
+	bool behind_floor = rewind_floor_file[0] && (strcmp(current_path, rewind_floor_file) != 0 || seconds < rewind_floor_seconds);
+	if (rewind_floor_file[0] && !behind_floor)
+		rewind_floor_file[0] = '\0';
+	if (behind_floor)
+		seconds = rewind_floor_seconds;
 	time_t now = time(NULL);
 	bool due = force || last_save == 0 || (now - last_save) >= SAVE_EVERY_SECONDS;
 	// Nothing moved: a paused book being polled must not keep rewriting the
@@ -1012,7 +1059,7 @@ void audiobook_note_position(double seconds, double total, bool force) {
 	char book[512];
 	char resume_file[512];
 	snprintf(book, sizeof(book), "%s", current_book);
-	snprintf(resume_file, sizeof(resume_file), "%s", current_path);
+	snprintf(resume_file, sizeof(resume_file), "%s", behind_floor ? rewind_floor_file : current_path);
 	last_save = now;
 	last_saved_position = seconds;
 	pthread_mutex_unlock(&lock);

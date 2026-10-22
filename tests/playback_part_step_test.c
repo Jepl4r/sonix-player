@@ -12,6 +12,13 @@ static int test_clock_gettime(clockid_t clock, struct timespec *ts) {
 #undef clock_gettime
 static audio_status_t test_status = AUDIO_STATUS_PLAYING;
 static double sought = -1;
+static double current_position = 123;
+static bool crossing;
+static bool floor_armed;
+static bool ordered_restore;
+static double boot_gap;
+static double observed_gap;
+static double previous_duration = 600;
 static bool book_loaded = true;
 static bool rewind_on = true;
 static bool suppress_rewind;
@@ -26,12 +33,13 @@ static bool playing;
 static char selected[512] = "a.mp3";
 bool audiobook_is_playing(void) { return book_loaded; }
 void audio_get_progress(double *current, double *total) {
-  *current = 123;
+  *current = current_position;
   *total = 1000;
 }
 void audiobook_note_position(double current, double total, bool force) {
-  assert(current == 123 && total == 1000 && force);
-  assert(strcmp(selected, "a.mp3") == 0);
+  assert(current == current_position && total == 1000 && force);
+  assert(!crossing || !floor_armed);
+  assert(strcmp(selected, "a.mp3") == 0 || crossing);
   saved = true;
 }
 void audiobook_track_changed(const char *path) {
@@ -40,7 +48,8 @@ void audiobook_track_changed(const char *path) {
 }
 void playlist_load_paths_ordered(const char *const *list, int count,
                                  int start_index) {
-  assert(list == parts && count == 2);
+  ordered_restore = true;
+  assert(count == 2 && strcmp(list[0], parts[0]) == 0 && strcmp(list[1], parts[1]) == 0);
   queued = fail_load ? -1 : start_index;
 }
 bool playlist_current_path(char *out, size_t out_size) {
@@ -51,7 +60,7 @@ bool playlist_current_path(char *out, size_t out_size) {
 }
 int audio_play_paused(const char *path, double position) {
   assert(saved);
-  assert(strcmp(path, "b.mp3") == 0 && position == 0);
+  assert(strcmp(path, crossing ? "a.mp3" : "b.mp3") == 0 && position == 0);
   loaded = true;
   return 0;
 }
@@ -64,7 +73,16 @@ int audio_play_at(const char *path, double position) {
   assert(!"a paused step started playback");
   return 0;
 }
+void playlist_load_paths(const char *const *list, int count, int index) { ordered_restore = false; }
+bool audiobookdb_book_for_file(const char *file, char *book, size_t size) { return book_loaded; }
 int main(void) {
+	load_restored_paths(parts, 2, 1, "b.mp3");
+	assert(ordered_restore);
+	book_loaded = false;
+	load_restored_paths(parts, 2, 1, "b.mp3");
+	assert(!ordered_restore);
+	book_loaded = true;
+
 	fail_load = true;
 	assert(!device_state_load_list_ordered_paused(parts, 2, 1));
 	assert(!saved && !loaded && strcmp(selected, "a.mp3") == 0);
@@ -80,13 +98,14 @@ int main(void) {
 	assert(device_state_play_list_ordered(parts, 2, 1));
 	assert(queued == 1 && saved && loaded);
 	assert(strcmp(selected, "b.mp3") == 0);
+	suppress_rewind = false;
 	rewind_after_break();
 	return 0;
 }
 void audio_set_speed(double speed) {}
 double audiobook_speed(void) { return 1.0; }
 bool audiobook_apply_eq(bool book_playing) { return true; }
-void audiobook_suppress_rewind_once(void) {}
+void audiobook_suppress_rewind_once(void) { suppress_rewind = true; }
 void metadata_read(const char *path, song_metadata_t *out) {
   memset(out, 0, sizeof(*out));
 }
@@ -140,7 +159,8 @@ int audiobook_rewind_long_seconds(void) { return 30; }
 // The pure rule is covered with all boundaries in audiobook_units_test.c.
 int audiobook_rewind_for_break(double seconds, int short_s, int long_s) {
 	assert(short_s == 5 && long_s == 30);
-	assert(seconds == 90 || seconds == 4000);
+	assert(seconds >= 0);
+	observed_gap = seconds;
 	return seconds == 90 ? 5 : 30;
 }
 
@@ -219,4 +239,61 @@ static void rewind_after_break(void) {
 		assert(sought == -1);
 	}
 	puts("PASS playback-rewind-gates");
+	book_loaded = rewind_on = true;
+	test_status = AUDIO_STATUS_PAUSED;
+	device_state_get(&state);
+	sought = -1;
+	// A bookmark/slider seek while paused suppresses exactly the next rewind.
+	book_loaded = false;
+	device_state_seek(321);
+	book_loaded = true;
+	assert(sought == 321);
+	assert(device_state_toggle_play_pause() == AUDIO_STATUS_PLAYING);
+	assert(sought == 321);
+	puts("PASS playback-explicit-paused-seek");
+	test_status = AUDIO_STATUS_PAUSED;
+	rewind_on = false;
+	suppress_rewind = true;
+	boot_gap = 7200;
+	assert(device_state_toggle_play_pause() == AUDIO_STATUS_PLAYING);
+	assert(!suppress_rewind && boot_gap == 0);
+	rewind_on = true;
+	puts("PASS playback-disabled-consumes-suppression");
+	floor_armed = false;
+	crossing = true;
+	current_position = 10;
+	snprintf(selected, sizeof(selected), "b.mp3");
+	test_status = AUDIO_STATUS_PAUSED;
+	device_state_get(&state);
+	boot_gap = 7200;
+	sought = -1;
+	assert(device_state_toggle_play_pause() == AUDIO_STATUS_PLAYING);
+	assert(sought == 580 && strcmp(selected, "a.mp3") == 0);
+	assert(boot_gap == 0 && !suppress_rewind && observed_gap == 7200);
+	puts("PASS playback-rewind-previous-part-boot");
+	test_status = AUDIO_STATUS_PAUSED;
+	device_state_get(&state);
+	floor_armed = false;
+	previous_duration = 0;
+	boot_gap = 7200;
+	snprintf(selected, sizeof(selected), "b.mp3");
+	sought = -1;
+	assert(device_state_toggle_play_pause() == AUDIO_STATUS_PLAYING);
+	assert(sought == 0 && strcmp(selected, "b.mp3") == 0);
+	puts("PASS playback-rewind-unknown-previous");
 }
+
+void audiobook_clear_rewind_floor(void) { floor_armed = false; }
+
+void audiobook_set_rewind_floor(const char *file, double seconds) {
+	assert(strcmp(file, crossing ? "b.mp3" : selected) == 0 && seconds == current_position);
+	floor_armed = true;
+}
+double audiobook_take_boot_break(void) { double gap = boot_gap; boot_gap = 0; return gap; }
+int audiobook_part_current(void) { return crossing ? 1 : 0; }
+double audiobook_part_duration(int index) { assert(index == 0); return previous_duration; }
+int audiobook_part_count(void) { return 2; }
+bool audiobook_part(int index, char *title, size_t ts, char *path, size_t ps) {
+	snprintf(path, ps, "%s", parts[index]); return true;
+}
+double audiobook_clamp_seek(double seconds, double total) { return seconds; }

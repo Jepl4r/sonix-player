@@ -293,7 +293,9 @@ int main(int argc, char **argv) {
       scan_now(argv[2]);
       char file[512];
       double seconds = 0;
-      assert(audiobookdb_get_position(book, file, sizeof(file), &seconds));
+      time_t last_played = 0;
+      assert(audiobookdb_get_position(book, file, sizeof(file), &seconds, &last_played));
+      assert(last_played >= time(NULL) - 10 && last_played <= time(NULL));
       assert(seconds == 1900);
       assert(audiobookdb_count() == 1);
     } else if (!strcmp(argv[1], "crash")) {
@@ -334,7 +336,7 @@ int main(int argc, char **argv) {
       assert(audiobookdb_get_speed(book) == 1250);
       char file[512];
       double seconds = 0;
-      assert(audiobookdb_get_position(book, file, sizeof(file), &seconds));
+      assert(audiobookdb_get_position(book, file, sizeof(file), &seconds, NULL));
       assert(seconds == 1900 && !strcmp(file, b));
     } else if (!strcmp(argv[1], "prune")) {
       seed();

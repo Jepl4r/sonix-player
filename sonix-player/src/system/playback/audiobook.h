@@ -3,6 +3,13 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <time.h>
+
+// Automatic rewinds retain the original saved point until caught up or explicitly cleared.
+void audiobook_set_rewind_floor(const char *file, double seconds);
+void audiobook_clear_rewind_floor(void);
+void audiobook_note_boot_break(time_t last_played);
+double audiobook_take_boot_break(void);
 
 // What the player needs to know about a book while it is playing.
 //

@@ -4842,6 +4842,9 @@ void player_step_chapter(int direction) {
 	if (!audiobook_step_target(state.progress_current_secs, direction, &target)) {
 		return;
 	}
+	audiobook_clear_rewind_floor();
+	if (state.status == AUDIO_STATUS_PAUSED)
+		audiobook_suppress_rewind_once();
 	if (target.kind == AUDIOBOOK_STEP_SEEK) {
 		device_state_seek(target.seconds);
 	} else if (target.kind == AUDIOBOOK_STEP_PART) {

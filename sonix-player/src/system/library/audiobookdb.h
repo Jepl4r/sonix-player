@@ -3,6 +3,7 @@
 
 #include <stdbool.h>
 #include <stddef.h>
+#include <time.h>
 
 // The audiobook index: a small SQLite database of the books in the Audiobooks
 // folder, separate from the music library (which ignores .m4b -- an audiobook
@@ -178,7 +179,7 @@ bool audiobookdb_is_finished(const char *path);
 // written, and closing the database writes the one still waiting first.
 void audiobookdb_save_position(const char *book_path, const char *file, double seconds);
 void audiobookdb_queue_position(const char *book_path, const char *file, double seconds);
-bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file_size, double *seconds_out);
+bool audiobookdb_get_position(const char *book_path, char *file_out, size_t file_size, double *seconds_out, time_t *last_played_out);
 
 // The speed this book was last played at, in permille, or 0 when it has none.
 // Kept in the book's row beside its position, and carried through a rescan the

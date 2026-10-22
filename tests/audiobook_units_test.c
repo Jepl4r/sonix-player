@@ -799,6 +799,56 @@ static void rewind_long_setting(void) {
 	puts("PASS audiobook-rewind-long-setting");
 }
 
+static void rewind_floor_and_boot(void) {
+	audiobook_track_changed(NULL);
+	audiobook_track_changed("/other.m4b");
+	audiobook_set_rewind_floor("/other.m4b", 100);
+	for (int i = 0; i < 5; i++) {
+		audiobook_set_rewind_floor("/other.m4b", 80 - i);
+		audiobook_note_position(80 - i, 200, true);
+		assert(saved_seconds == 100);
+	}
+	audiobook_note_position(101, 200, true);
+	assert(saved_seconds == 101);
+	audiobook_note_position(80, 200, true);
+	assert(saved_seconds == 80);
+	audiobook_set_rewind_floor("/other.m4b", 100);
+	audiobook_clear_rewind_floor();
+	audiobook_note_position(79, 200, true);
+	assert(saved_seconds == 79);
+
+	audiobook_track_changed("/book/2.mp3");
+	audiobook_set_rewind_floor("/book/2.mp3", 10);
+	audiobook_track_changed("/book/1.mp3");
+	audiobook_note_position(580, 600, true);
+	assert(strcmp(saved_file, "/book/2.mp3") == 0 && saved_seconds == 10);
+	audiobook_set_rewind_floor("/book/1.mp3", 580);
+	audiobook_note_position(575, 600, true);
+	assert(strcmp(saved_file, "/book/2.mp3") == 0 && saved_seconds == 10);
+	audiobook_track_changed("/book/2.mp3");
+	audiobook_note_position(5, 600, true);
+	assert(saved_seconds == 10);
+	audiobook_note_position(11, 600, true);
+	assert(saved_seconds == 11);
+	audiobook_note_position(4, 600, true);
+	assert(saved_seconds == 4);
+	audiobook_track_changed("/book/1.mp3");
+	audiobook_set_rewind_floor("/book/1.mp3", 100);
+	audiobook_track_changed("/book/2.mp3");
+	set_parts(3, 2);
+	audiobook_note_position(20, 600, true);
+	assert(strcmp(saved_file, "/book/2.mp3") == 0 && saved_seconds == 20);
+	time_t now = time(NULL);
+	audiobook_note_boot_break(now - 7200);
+	assert(audiobook_take_boot_break() >= 7200);
+	assert(audiobook_take_boot_break() == 0);
+	audiobook_note_boot_break(now - 40 * 86400);
+	assert(audiobook_take_boot_break() == 0);
+	audiobook_note_boot_break(now + 60);
+	assert(audiobook_take_boot_break() == 0);
+	puts("PASS audiobook-rewind-floor-and-boot");
+}
+
 int main(void) {
 	rewind_break_rule();
 	rewind_long_setting();
@@ -826,5 +876,6 @@ int main(void) {
 	work_out_lengths();
 	work_out_single_length();
 	work_out_cancel();
+	rewind_floor_and_boot();
   return 0;
 }

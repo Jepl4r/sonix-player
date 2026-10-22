@@ -652,9 +652,21 @@ static bool collect_part(const char *path, const char *title, double duration, v
 // Starts `book` in `file` at `seconds`: a single-file book directly, a folder
 // book as a queue of its parts. A file that is no longer one of the book's
 // parts starts the book from its first, from the beginning.
-static void play_from(const char *book, const char *file, double seconds) {
+static void play_from(const char *book, const char *file, double seconds, bool saved) {
+	if (saved && strcmp(audiobook_current_path(), file) == 0) {
+		if (audio_get_status() == AUDIO_STATUS_PAUSED) {
+			audiobook_suppress_rewind_once();
+			device_state_toggle_play_pause();
+		}
+		return;
+	}
+	if (!saved)
+		audiobook_clear_rewind_floor();
 	if (!audiobookdb_is_folder_book(book)) {
-		if (seconds > 1.0) {
+		if (saved) {
+			device_state_restore_file(file, seconds);
+			device_state_toggle_play_pause();
+		} else if (seconds > 1.0) {
 			device_state_play_file_at(file, seconds);
 		} else {
 			device_state_play_file(file);
@@ -674,7 +686,12 @@ static void play_from(const char *book, const char *file, double seconds) {
 	}
 	if (count > 0) {
 		double at = start >= 0 && seconds > 1.0 ? seconds : -1.0;
-		device_state_play_list_ordered_at((const char *const *)list, count, start >= 0 ? start : 0, at);
+		if (saved) {
+			device_state_restore_list((const char *const *)list, count, start >= 0 ? start : 0, true, file, seconds);
+			device_state_toggle_play_pause();
+		} else {
+			device_state_play_list_ordered_at((const char *const *)list, count, start >= 0 ? start : 0, at);
+		}
 	}
 	for (int i = 0; i < count; i++) {
 		free(list[i]);
@@ -688,7 +705,7 @@ static void play_book(const char *book) {
 	if (!audiobook_resume_point(book, file, sizeof(file), &resume)) {
 		return;
 	}
-	play_from(book, file, resume);
+	play_from(book, file, resume, true);
 
 	audiobookdb_touch(book); // the order by last listened moves it to the top
 	player_refresh_now_playing();
@@ -699,7 +716,7 @@ void audiobooks_play_at(const char *book, const char *file, double seconds) {
 	if (!book || !book[0] || !file || !file[0]) {
 		return;
 	}
-	play_from(book, file, seconds);
+	play_from(book, file, seconds, false);
 	// Written through: this is where the book now stands, whatever comes next.
 	audiobookdb_save_position(book, file, seconds);
 	audiobookdb_touch(book);
