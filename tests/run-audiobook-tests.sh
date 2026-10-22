@@ -14,7 +14,7 @@ if sh "$repo/tests/run-gui-book-test.sh"; then :; else failed=$((failed + 1)); f
 if sh "$repo/tests/run-remote-keys-test.sh"; then :; else failed=$((failed + 1)); fi
 ${CC:-cc} -O1 -g -I"$repo/sonix-player" "$repo/tests/bookmark_guard_test.c" -o "$build/bookmark-guard-test"
 if "$build/bookmark-guard-test"; then :; else failed=$((failed + 1)); fi
-${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/sonix-player" "$repo/tests/bookmark_save_test.c" $gc_flags -o "$build/bookmark-save-test"
+${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/bookmark_save_test.c" $gc_flags -o "$build/bookmark-save-test"
 if "$build/bookmark-save-test"; then :; else failed=$((failed + 1)); fi
 for test in cancel partial-cancel stat-error stale scan-error cyrillic live-save crash prune disc authors natural write-retry late-other-book publish-failure speed-column speed-kept duration-column duration-card duration-kept duration-scan; do
  mkdir "$build/$test"
