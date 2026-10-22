@@ -145,7 +145,7 @@ typedef enum { AUDIOBOOK_STEP_NONE, AUDIOBOOK_STEP_SEEK, AUDIOBOOK_STEP_PART } a
 typedef struct {
 	audiobook_step_kind_t kind;
 	double seconds; // SEEK: where to seek in the loaded file
-	int part; // PART: which part to load, from its start
+	int part;		// PART: which part to load, from its start
 } audiobook_step_t;
 // Going back further into a unit than this returns to its start; within it,
 // to the unit before.

@@ -1475,8 +1475,7 @@ static bool mapped_action_repeats(keymap_button_t button) {
 
 static bool mapped_action_seeks(keymap_button_t button) {
 	keymap_action_t action = effective_action(button);
-	return action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_PREV || action == KEYMAP_ACTION_NEXT_CHAPTER ||
-		   action == KEYMAP_ACTION_PREV_CHAPTER;
+	return action == KEYMAP_ACTION_NEXT || action == KEYMAP_ACTION_PREV || action == KEYMAP_ACTION_NEXT_CHAPTER || action == KEYMAP_ACTION_PREV_CHAPTER;
 }
 
 // One step, in whichever direction the button means. Nothing is asked of the

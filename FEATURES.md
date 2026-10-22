@@ -53,7 +53,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Fade** - the end of a track fades into the next one, from 1 to 12 seconds.
 - **ReplayGain** - off, by track or by album, read from the tags.
 - **Remember track** - the queue and the position are still there after a restart. You can also open Now Playing straight away at startup.
-- **Sleep timer** - set a time and the playback pauses by itself when it runs out. There is one for music, one for audiobooks and one for podcasts.
+- **Sleep timer** - set a time and the playback pauses by itself when it runs out. There is one for music, one for audiobooks and one for podcasts. You can also set it from Now Playing.
 
 ## Now Playing
 
@@ -63,6 +63,8 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Cover Flow** - swipe up from the bottom edge of the Music page to flip through your albums.
 - **Queue**, **Details** (format, bitrate, size, ReplayGain and more) and **Show album** from the menu.
 - **Chapters** and **speed** when an audiobook or a podcast is playing.
+- **Chapter row** when an audiobook has chapters - previous/next chapter buttons, the chapter's number and title; tap the text to open the chapter list.
+- **Sleep timer** - see the countdown on Now Playing and tap it to set the timer. For audiobooks, you can tap the moon even when the timer is off.
 
 ## Lyrics
 
@@ -73,6 +75,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 ## Sound
 
 - **Graphic EQ** - 10 bands, ±12 dB, with 10 presets (Flat, Rock, Pop, Jazz, Classical, Dance, Bass, Treble, Vocal, Acoustic) and as many of your own as you like.
+- **Audiobook EQ** - while a book uses its own graphic-EQ setting, the EQ page shows your audiobook choice; its sliders and the control-centre EQ toggle still change your music settings.
 - **Parametric EQ (PEQ)** - 10 bands, each with its own frequency, gain, Q and shape (peak, low shelf, high shelf, low pass, high pass), plus a preamp. The graph shows the real curve. Tap a number to type it on a keypad.
   > PEQ presets are `.txt` files in the `PEQ` folder of the card, in the Equalizer APO format.
 - **AutoEq** - type the name of your headphones and the player downloads their correction over Wi-Fi.
@@ -124,8 +127,10 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 - **Library, Series, Authors and Continue**, each sortable. Continue shows the books you started, with the finished ones one tap away.
 - **A book can be one file or a whole folder** - an `.m4b`, an `.mp3` or any other file with chapters, or a folder of files (with `CD 1`, `Disc 2` subfolders too).
-- **Chapters** are read from the file, and the position is remembered for every book.
-- **Speed** from 0.5x to 2.0x without changing the pitch.
+- **Chapters** are read from the file, and the position is remembered for every book. ID3 chapter titles can be Latin-1, UTF-8 or UTF-16 (little- or big-endian).
+- **Previous/next chapter buttons** - step between embedded chapters or the files of a folder book.
+- **Speed** from 0.5x to 2.0x without changing the pitch, remembered per book.
+- **Equalizer for audiobooks** - in Settings > Audiobooks, choose Same as music, Off or a graphic-EQ preset that applies while a book plays. PEQ and MSEB are not affected.
 - **Skip buttons** - choose how far back and forward they jump: 10, 30 or 60 seconds.
 - **Rewind after pause** by a few seconds, so you don't lose the thread.
 - **Stop at the end of the chapter**.
@@ -171,7 +176,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 ## Buttons and remotes
 
-- **Remap buttons** - give each media and volume button another action.
+- **Remap buttons** - give each media and volume button another action, including Previous chapter and Next chapter.
 - **Double click** - two quick presses of a button do the action you choose.
 - **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous. USB-C headphones with buttons work too.
 - **Lock the buttons** with the screen off: volume down + power. The power button and the remote always work.
