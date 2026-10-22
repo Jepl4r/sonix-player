@@ -56,6 +56,7 @@ void audiobook_clear_jump(void) { origin_file[0] = 0; }
 
 static bool crossing;
 static bool floor_armed;
+static bool outgoing_floor;
 static bool ordered_restore;
 static bool automatic_stop_test;
 static double boot_gap;
@@ -84,7 +85,13 @@ void audio_get_progress(double *current, double *total) {
   *total = 1000;
 }
 void audiobook_note_position(double current, double total, bool force) {
-  if (navigation_test) { assert(force); saved = true; current_position = current; return; }
+  if (navigation_test) {
+    assert(force);
+    outgoing_floor = floor_armed;
+    saved = true;
+    current_position = current;
+    return;
+  }
   if (automatic_stop_test) {
     assert(current == 100 && total == 0 && force && floor_armed);
     return;
@@ -124,7 +131,9 @@ int audio_play(const char *path) {
 	return 0;
 }
 int audio_play_at(const char *path, double position) {
-  assert(!"a paused step started playback");
+  assert(navigation_test);
+  test_status = AUDIO_STATUS_PLAYING;
+  loaded = true;
   return 0;
 }
 void playlist_load_paths(const char *const *list, int count, int index) { ordered_restore = false; }

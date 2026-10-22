@@ -157,10 +157,6 @@ static void mark_pick_cb(lv_event_t *e) {
 	}
 	const mark_t *mark = &marks[index];
 
-	audiobook_clear_rewind_floor();
-	if (audio_get_status() == AUDIO_STATUS_PAUSED)
-		audiobook_suppress_rewind_once();
-
 	char book[512] = "";
 	char file[512] = "";
 	if (audiobook_current_book(book, sizeof(book), file, sizeof(file)) && strcmp(book, open_book) == 0 && strcmp(file, mark->file) == 0) {
@@ -169,9 +165,9 @@ static void mark_pick_cb(lv_event_t *e) {
 	} else if (book[0] && strcmp(book, open_book) == 0) {
 		double current = 0, total = 0;
 		audio_get_progress(&current, &total);
-		audiobook_mark_jump(file, current);
 		if (!device_state_seek_book_part(mark->file, mark->seconds))
 			return;
+		audiobook_mark_jump(file, current);
 		player_refresh_now_playing();
 	} else {
 		audiobooks_play_at(open_book, mark->file, mark->seconds);

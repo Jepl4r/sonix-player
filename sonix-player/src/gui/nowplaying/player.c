@@ -4838,16 +4838,13 @@ void player_step_chapter(int direction) {
 	if (!audiobook_step_target(state.progress_current_secs, direction, &target)) {
 		return;
 	}
-	audiobook_clear_rewind_floor();
-	if (state.status == AUDIO_STATUS_PAUSED)
-		audiobook_suppress_rewind_once();
 	if (target.kind == AUDIOBOOK_STEP_SEEK) {
 		device_state_seek(target.seconds);
 	} else if (target.kind == AUDIOBOOK_STEP_PART) {
-		audiobook_mark_jump(state.current_file, state.progress_current_secs);
 		if (!chapter_load_part(target.part, state.status == AUDIO_STATUS_PLAYING)) {
 			return; // the part still loaded keeps its place
 		}
+		audiobook_mark_jump(state.current_file, state.progress_current_secs);
 		audiobook_note_position(0, 0, true); // the new part, at its start
 		player_refresh_now_playing();
 	} else {

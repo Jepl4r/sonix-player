@@ -660,8 +660,6 @@ static void play_from(const char *book, const char *file, double seconds, bool s
 		}
 		return;
 	}
-	if (!saved)
-		audiobook_clear_rewind_floor();
 	if (!audiobookdb_is_folder_book(book)) {
 		if (saved) {
 			device_state_restore_file(file, seconds);
