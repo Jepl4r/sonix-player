@@ -34,6 +34,9 @@ void audiobookdb_close(void);
 
 // The card identity used by background writes, advanced on open and close.
 unsigned audiobookdb_card_epoch(void);
+// Admit the length worker on this card and register its bounded stop callback.
+// Close rejects new admissions until open, and calls stop without db_lock.
+bool audiobookdb_register_card_user(void (*stop)(unsigned ms), unsigned epoch);
 // False if the card has changed; the check and write share the database lock.
 bool audiobookdb_set_part_duration_on_card(const char *path, double seconds, unsigned epoch);
 

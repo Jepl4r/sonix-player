@@ -43,6 +43,17 @@
 
 static sqlite3 *db;
 static pthread_mutex_t db_lock = PTHREAD_MUTEX_INITIALIZER;
+static void (*card_user_stop)(unsigned ms);
+static bool card_closing;
+
+bool audiobookdb_register_card_user(void (*stop)(unsigned ms), unsigned epoch) {
+	pthread_mutex_lock(&db_lock);
+	bool admitted = !card_closing && epoch == audiobookdb_card_epoch();
+	if (admitted)
+		card_user_stop = stop;
+	pthread_mutex_unlock(&db_lock);
+	return admitted;
+}
 
 // The file the index was opened from, and which file that was.
 static char db_file[512];
@@ -193,6 +204,7 @@ bool audiobookdb_open(const char *db_path) {
 	pthread_mutex_lock(&db_lock);
 	bump_generation();
 	__atomic_add_fetch(&card_epoch, 1, __ATOMIC_RELEASE);
+	card_closing = false;
 	pthread_mutex_unlock(&db_lock);
 
 	snprintf(db_file, sizeof(db_file), "%s", db_path);
@@ -223,6 +235,12 @@ bool audiobookdb_reopen_if_replaced(void) {
 }
 
 void audiobookdb_close(void) {
+	pthread_mutex_lock(&db_lock);
+	card_closing = true;
+	void (*stop)(unsigned) = card_user_stop;
+	pthread_mutex_unlock(&db_lock);
+	if (stop)
+		stop(4000);
 	// Waited on, not just asked: a scan still running holds the database open,
 	// sqlite3_close() then answers SQLITE_BUSY without closing the file, and
 	// an open file on the card stops the card being unmounted.

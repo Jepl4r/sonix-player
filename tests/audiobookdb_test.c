@@ -99,6 +99,14 @@ static int deny_publish(void *u, int action, const char *table, const char *col,
              ? SQLITE_DENY
              : SQLITE_OK;
 }
+static int card_stop_calls;
+static void stop_card_user(unsigned ms) {
+	assert(ms == 4000);
+	// The callback must run outside db_lock and admission must already stop.
+	assert(!audiobookdb_register_card_user(stop_card_user, audiobookdb_card_epoch()));
+	card_stop_calls++;
+}
+
 int main(int argc, char **argv) {
   assert(argc == 3);
   if (!strcmp(argv[1], "crash-child")) {
@@ -145,11 +153,16 @@ int main(int argc, char **argv) {
   assert(audiobookdb_open(dbpath));
   if (!strcmp(argv[1], "duration-card")) {
     unsigned epoch = audiobookdb_card_epoch();
+    assert(audiobookdb_register_card_user(stop_card_user, epoch));
     assert(audiobookdb_set_part_duration_on_card("p", 12, epoch));
     assert(scalar("SELECT duration FROM AUDIOBOOK_PARTS") == 12);
     audiobookdb_close();
+    assert(card_stop_calls == 1);
+    assert(!audiobookdb_register_card_user(stop_card_user, epoch));
     assert(!audiobookdb_set_part_duration_on_card("p", 24, epoch));
     assert(audiobookdb_open(dbpath));
+    assert(!audiobookdb_register_card_user(stop_card_user, epoch));
+    assert(audiobookdb_register_card_user(stop_card_user, audiobookdb_card_epoch()));
     assert(!audiobookdb_set_part_duration_on_card("p", 24, epoch));
     assert(scalar("SELECT duration FROM AUDIOBOOK_PARTS") == 12);
     assert(audiobookdb_set_part_duration_on_card("p", 36,

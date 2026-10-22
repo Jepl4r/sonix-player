@@ -4937,10 +4937,14 @@ static void more_btn_event_cb(lv_event_t *e) {
 			{"audiobook_summary", book_summary_action, NULL},
 			{"audiobook_work_out_length", book_work_out_length_action, NULL},
 		};
-		int count = (int)(sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0]));
-		if (!audiobook_lengths_missing() || audiobook_working_out())
-			count--;
-		popover_show(lv_event_get_current_target(e), BOOK_ITEMS, count);
+		popover_item_t items[sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0])];
+		int count = 0;
+		for (size_t i = 0; i < sizeof(BOOK_ITEMS) / sizeof(BOOK_ITEMS[0]); i++) {
+			if (BOOK_ITEMS[i].action == book_work_out_length_action && (!audiobook_lengths_missing() || audiobook_working_out()))
+				continue;
+			items[count++] = BOOK_ITEMS[i];
+		}
+		popover_show(lv_event_get_current_target(e), items, count);
 		return;
 	}
 	// A podcast has no chapters: it has episodes, and the episodes are already

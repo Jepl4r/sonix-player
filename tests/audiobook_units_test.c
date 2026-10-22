@@ -2,6 +2,13 @@
 #include "../sonix-player/src/system/playback/audiobook.c"
 #include <assert.h>
 
+// Blocking lock succeeds after another thread releases it; EDEADLK detects
+// this thread calling a decoder or database stub with the module lock held.
+static void assert_module_unlocked(void) {
+	assert(pthread_mutex_lock(&lock) == 0);
+	pthread_mutex_unlock(&lock);
+}
+
 // What audiobook.c links against.
 int audiobookdb_parts_for_each(const char *book,
                                bool (*cb)(const char *, const char *, double, void *),
@@ -482,8 +489,7 @@ static int length_writes;
 static char length_path[512];
 static double length_seconds;
 void audiobookdb_set_part_duration(const char *path, double seconds) {
-	assert(pthread_mutex_trylock(&lock) == 0);
-	pthread_mutex_unlock(&lock);
+	assert_module_unlocked();
 	length_writes++;
 	snprintf(length_path, sizeof(length_path), "%s", path);
 	length_seconds = seconds;
@@ -563,17 +569,52 @@ static void book_progress(void) {
 
 static unsigned stub_card_epoch = 1;
 static int probe_mode, probe_opens, probe_closes;
+static pthread_mutex_t probe_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_cond_t probe_cond = PTHREAD_COND_INITIALIZER;
+static bool probe_entered, probe_release;
+static void (*card_stop)(unsigned);
 unsigned audiobookdb_card_epoch(void) { return stub_card_epoch; }
+bool audiobookdb_register_card_user(void (*stop)(unsigned), unsigned epoch) {
+	card_stop = stop;
+	return epoch == stub_card_epoch;
+}
 void thread_be_background(const char *name) { (void)name; }
 decode_format_t decode_detect_format(const char *path) { return DECODE_FORMAT_MP3; }
 decoder_t *decoder_open_info(const char *path, decode_format_t format) {
-	assert(pthread_mutex_trylock(&lock) == 0);
-	pthread_mutex_unlock(&lock);
+	assert_module_unlocked();
 	assert(audiobook_working_out());
 	audiobook_work_out_lengths(); // A second request cannot start another worker.
 	probe_opens++;
+	if (probe_mode == 8 || probe_mode == 9) {
+		pthread_mutex_lock(&probe_lock);
+		probe_entered = true;
+		pthread_cond_broadcast(&probe_cond);
+		if (probe_mode == 9) {
+			struct timespec until;
+			clock_gettime(CLOCK_REALTIME, &until);
+			until.tv_sec++;
+			// Simulate a decoder open returning within the close wait budget.
+			while (!probe_release)
+				if (pthread_cond_timedwait(&probe_cond, &probe_lock, &until) != 0)
+					break;
+		} else {
+			while (!probe_release)
+				pthread_cond_wait(&probe_cond, &probe_lock);
+		}
+		pthread_mutex_unlock(&probe_lock);
+	}
 	if (probe_mode == 2 && probe_opens == 2)
 		audiobook_track_changed("/other.m4b");
+	if (probe_mode == 7 && probe_opens == 2) {
+		audiobook_track_changed("/book/2.mp3");
+		// The refreshed DB list may have a different order or size.
+		set_parts(3, 2);
+		parts[0].duration = 120;
+		parts[1].duration = 60;
+		part_t swap = parts[0];
+		parts[0] = parts[2];
+		parts[2] = swap;
+	}
 	if (probe_mode == 6)
 		stub_card_epoch++;
 	if (probe_mode == 4)
@@ -594,7 +635,7 @@ bool audiobookdb_set_part_duration_on_card(const char *path, double seconds, uns
 	return true;
 }
 static void work_out_lengths(void) {
-	for (int mode = 0; mode <= 6; mode++) {
+	for (int mode = 0; mode <= 7; mode++) {
 		reset();
 		snprintf(current_book, sizeof(current_book), "/book");
 		set_parts(3, 0);
@@ -609,7 +650,11 @@ static void work_out_lengths(void) {
 			nanosleep(&delay, NULL);
 		}
 		assert(!audiobook_working_out());
-		if (mode == 0) {
+		if (mode == 7) {
+			assert(probe_opens == 2 && probe_closes == 2 && length_writes == 2);
+			assert(audiobook_part_duration(0) == 60 && audiobook_part_duration(2) == 120);
+			assert(audiobook_take_lengths_done());
+		} else if (mode == 0) {
 			assert(probe_opens == 2 && probe_closes == 2 && length_writes == 2);
 			assert(audiobook_part_duration(0) == 120);
 			assert(audiobook_part_duration(1) == 60 && audiobook_part_duration(2) == 60);
@@ -634,6 +679,7 @@ static void work_out_lengths(void) {
 		assert(!audiobook_take_lengths_done());
 	}
 	puts("PASS audiobook-work-out-lengths");
+	puts("PASS audiobook-work-out-part-change");
 	puts("PASS audiobook-work-out-book-change");
 	puts("PASS audiobook-work-out-card-change");
 	puts("PASS audiobook-work-out-probe-failure");
@@ -654,7 +700,9 @@ static void work_out_single_length(void) {
 		nanosleep(&delay, NULL);
 	}
 	assert(!audiobook_working_out());
-	assert(probe_opens == 1 && probe_closes == 1 && length_writes == 0);
+	assert(probe_opens == 0 && probe_closes == 0 && length_writes == 0);
+	assert(!audiobook_lengths_missing());
+	audiobook_note_length(60);
 	audiobook_progress_t p;
 	assert(audiobook_book_progress(15, 2, &p));
 	assert(p.known_total && p.known_left && p.fraction == 0.25 && p.left_seconds == 22.5);
@@ -663,7 +711,73 @@ static void work_out_single_length(void) {
 	puts("PASS audiobook-work-out-single");
 }
 
+static void work_out_cancel(void) {
+	for (int book_change = 0; book_change <= 2; book_change++) {
+		reset();
+		snprintf(current_book, sizeof(current_book), "/book");
+		set_parts(3, 0);
+		probe_mode = book_change == 2 ? 9 : 8;
+		probe_opens = probe_closes = length_writes = 0;
+		probe_entered = probe_release = false;
+		audiobook_work_out_lengths();
+		pthread_mutex_lock(&probe_lock);
+		while (!probe_entered)
+			pthread_cond_wait(&probe_cond, &probe_lock);
+		pthread_mutex_unlock(&probe_lock);
+		if (book_change == 1) {
+			audiobook_track_changed("/other.m4b");
+			pthread_mutex_lock(&lock);
+			set_parts(2, 0);
+			pthread_mutex_unlock(&lock);
+			assert(audiobook_lengths_missing());
+			assert(!audiobook_working_out());
+		} else {
+			struct timespec start, end;
+			clock_gettime(CLOCK_MONOTONIC, &start);
+			card_stop(book_change == 2 ? 1500 : 20);
+			clock_gettime(CLOCK_MONOTONIC, &end);
+			double elapsed = end.tv_sec - start.tv_sec + (end.tv_nsec - start.tv_nsec) / 1e9;
+			if (book_change == 2) {
+				assert(elapsed < 1.5);
+				assert(probe_closes == 1);
+			} else {
+				assert(elapsed >= 0.015 && elapsed < 0.5);
+			}
+			assert(!audiobook_working_out());
+		}
+		pthread_mutex_lock(&probe_lock);
+		probe_release = true;
+		pthread_cond_broadcast(&probe_cond);
+		pthread_mutex_unlock(&probe_lock);
+		// Wait on the actual worker lifetime, including decoder_close, even
+		// though it no longer appears as working on the current book.
+		for (int i = 0; i < 2000; i++) {
+			pthread_mutex_lock(&lock);
+			bool running = lengths_working;
+			pthread_mutex_unlock(&lock);
+			if (!running)
+				break;
+			struct timespec delay = {0, 1000000};
+			nanosleep(&delay, NULL);
+		}
+		pthread_mutex_lock(&lock);
+		assert(!lengths_working);
+		pthread_mutex_unlock(&lock);
+		assert(probe_opens == 1 && probe_closes == 1 && length_writes == 0);
+		assert(!audiobook_take_lengths_done());
+	}
+	puts("PASS audiobook-work-out-cancel-bound");
+	puts("PASS audiobook-work-out-cancel-waits-for-close");
+	puts("PASS audiobook-work-out-new-book-menu");
+}
+
 int main(void) {
+	pthread_mutex_destroy(&lock);
+	pthread_mutexattr_t attr;
+	assert(pthread_mutexattr_init(&attr) == 0);
+	assert(pthread_mutexattr_settype(&attr, PTHREAD_MUTEX_ERRORCHECK) == 0);
+	assert(pthread_mutex_init(&lock, &attr) == 0);
+	pthread_mutexattr_destroy(&attr);
 	book_progress();
 	measured_lengths();
   chapters_next_prev();
@@ -679,7 +793,8 @@ int main(void) {
 	natural_finish_starts_over();
 	folder_finish_starts_at_first_part();
 	checkpoints_do_not_finish();
-        work_out_lengths();
+	work_out_lengths();
 	work_out_single_length();
-        return 0;
+	work_out_cancel();
+  return 0;
 }

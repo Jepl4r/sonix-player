@@ -1,12 +1,12 @@
 #include "audiobook.h"
 
+#include "src/system/library/audiobookdb.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
 #include "src/system/decode/decode.h"
 #include "src/system/decode/mp4.h"
-#include "src/system/library/audiobookdb.h"
 #include "src/system/library/id3chap.h"
 #include "src/system/library/vorbischap.h"
 
@@ -49,8 +49,13 @@ static int part_capacity;
 static int part_index;
 static bool length_noted;
 static double file_length;
+// Physical worker lifetime, also used by card close to wait for decoder_close.
+// audiobook_working_out() reports only work belonging to the loaded book.
 static bool lengths_working;
 static bool lengths_done;
+static char lengths_book[512];
+static bool lengths_cancel;
+static pthread_cond_t lengths_idle = PTHREAD_COND_INITIALIZER;
 
 static time_t last_save;
 static double last_saved_position;
@@ -474,8 +479,6 @@ static bool resume_part_cb(const char *path, const char *title, double duration,
 static bool lengths_missing_locked(void) {
 	if (!current_is_book)
 		return false;
-	if (!part_count)
-		return file_length <= 0;
 	for (int i = 0; i < part_count; i++) {
 		if (parts[i].duration <= 0)
 			return true;
@@ -492,7 +495,7 @@ bool audiobook_lengths_missing(void) {
 
 bool audiobook_working_out(void) {
 	pthread_mutex_lock(&lock);
-	bool working = lengths_working;
+	bool working = lengths_working && !lengths_cancel && current_is_book && !strcmp(current_book, lengths_book);
 	pthread_mutex_unlock(&lock);
 	return working;
 }
@@ -507,13 +510,30 @@ bool audiobook_take_lengths_done(void) {
 
 typedef struct {
 	char book[512];
-	unsigned serial, card;
+	unsigned card;
 	int count;
-	bool single;
 	part_t parts[];
 } lengths_job_t;
 
-static bool lengths_current_locked(const lengths_job_t *job) { return current_is_book && serial == job->serial && !strcmp(current_book, job->book) && audiobookdb_card_epoch() == job->card; }
+static bool lengths_current_locked(const lengths_job_t *job) { return !lengths_cancel && current_is_book && !strcmp(current_book, job->book) && audiobookdb_card_epoch() == job->card; }
+
+static void lengths_cancel_and_wait(unsigned ms) {
+	struct timespec until;
+	clock_gettime(CLOCK_REALTIME, &until);
+	until.tv_sec += ms / 1000;
+	until.tv_nsec += (long)(ms % 1000) * 1000000;
+	if (until.tv_nsec >= 1000000000) {
+		until.tv_sec++;
+		until.tv_nsec -= 1000000000;
+	}
+	pthread_mutex_lock(&lock);
+	lengths_cancel = true;
+	while (lengths_working) {
+		if (pthread_cond_timedwait(&lengths_idle, &lock, &until) != 0)
+			break;
+	}
+	pthread_mutex_unlock(&lock);
+}
 
 static void *lengths_thread_func(void *arg) {
 	lengths_job_t *job = arg;
@@ -530,11 +550,16 @@ static void *lengths_thread_func(void *arg) {
 
 		const char *path = job->parts[i].path;
 		decoder_t *dec = decoder_open_info(path, decode_detect_format(path));
+		pthread_mutex_lock(&lock);
+		valid = lengths_current_locked(job);
+		pthread_mutex_unlock(&lock);
 		double seconds = 0;
 		if (dec) {
-			int rate = decoder_sample_rate(dec);
-			if (rate > 0)
-				seconds = (double)decoder_total_pcm_frames(dec) / rate;
+			if (valid) {
+				int rate = decoder_sample_rate(dec);
+				if (rate > 0)
+					seconds = (double)decoder_total_pcm_frames(dec) / rate;
+			}
 			decoder_close(dec);
 		}
 		pthread_mutex_lock(&lock);
@@ -546,14 +571,14 @@ static void *lengths_thread_func(void *arg) {
 			continue;
 		// The card check also happens under db_lock, beside the write, so a
 		// close/open between this check and the write cannot cross cards.
-		if (!job->single && !audiobookdb_set_part_duration_on_card(path, seconds, job->card))
+		if (!audiobookdb_set_part_duration_on_card(path, seconds, job->card))
 			continue;
 		pthread_mutex_lock(&lock);
 		if (lengths_current_locked(job)) {
-			if (job->single)
-				file_length = seconds;
-			else if (parts[i].duration <= 0)
-				parts[i].duration = seconds;
+			for (int k = 0; k < part_count; k++) {
+				if (!strcmp(parts[k].path, path) && parts[k].duration <= 0)
+					parts[k].duration = seconds;
+			}
 			changed = true;
 		}
 		pthread_mutex_unlock(&lock);
@@ -565,6 +590,7 @@ static void *lengths_thread_func(void *arg) {
 			serial++;
 	}
 	lengths_working = false;
+	pthread_cond_broadcast(&lengths_idle);
 	pthread_mutex_unlock(&lock);
 	free(job);
 	return NULL;
@@ -576,21 +602,25 @@ void audiobook_work_out_lengths(void) {
 		pthread_mutex_unlock(&lock);
 		return;
 	}
-	int count = part_count ? part_count : 1;
+	int count = part_count;
 	lengths_job_t *job = calloc(1, sizeof(*job) + (size_t)count * sizeof(*parts));
 	if (!job) {
 		pthread_mutex_unlock(&lock);
 		return;
 	}
 	snprintf(job->book, sizeof(job->book), "%s", current_book);
-	job->serial = serial;
 	job->card = audiobookdb_card_epoch();
 	job->count = count;
-	job->single = part_count == 0;
-	if (job->single)
-		snprintf(job->parts[0].path, sizeof(job->parts[0].path), "%s", current_path);
-	else
-		memcpy(job->parts, parts, (size_t)count * sizeof(*parts));
+	memcpy(job->parts, parts, (size_t)count * sizeof(*parts));
+	// Register while holding our lock: close's callback cannot miss a worker
+	// between admission and pthread_create. The callback runs without db_lock.
+	if (!audiobookdb_register_card_user(lengths_cancel_and_wait, job->card)) {
+		free(job);
+		pthread_mutex_unlock(&lock);
+		return;
+	}
+	snprintf(lengths_book, sizeof(lengths_book), "%s", job->book);
+	lengths_cancel = false;
 	lengths_done = false;
 	lengths_working = true;
 	pthread_t thread;
