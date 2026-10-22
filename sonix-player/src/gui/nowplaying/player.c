@@ -4739,9 +4739,9 @@ static bool chapter_load_part(int part, bool playing) {
 	bool loaded = filled == count;
 	if (loaded) {
 		if (playing) {
-			device_state_play_list_ordered((const char *const *)paths, count, part);
+			loaded = device_state_play_list_ordered((const char *const *)paths, count, part);
 		} else {
-			device_state_load_list_ordered_paused((const char *const *)paths, count, part);
+			loaded = device_state_load_list_ordered_paused((const char *const *)paths, count, part);
 		}
 	}
 	for (int i = 0; i < filled; i++) {

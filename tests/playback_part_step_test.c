@@ -4,6 +4,8 @@ static const char *const parts[] = {"a.mp3", "b.mp3"};
 static int queued = -1;
 static bool saved;
 static bool loaded;
+static bool fail_load;
+static bool playing;
 static char selected[512] = "a.mp3";
 bool audiobook_is_playing(void) { return true; }
 void audio_get_progress(double *current, double *total) {
@@ -22,12 +24,13 @@ void audiobook_track_changed(const char *path) {
 void playlist_load_paths_ordered(const char *const *list, int count,
                                  int start_index) {
   assert(list == parts && count == 2);
-  queued = start_index;
+  queued = fail_load ? -1 : start_index;
 }
 bool playlist_current_path(char *out, size_t out_size) {
-  assert(queued >= 0);
-  snprintf(out, out_size, "%s", parts[queued]);
-  return true;
+	if (queued < 0)
+		return false;
+	snprintf(out, out_size, "%s", parts[queued]);
+	return true;
 }
 int audio_play_paused(const char *path, double position) {
   assert(saved);
@@ -36,18 +39,31 @@ int audio_play_paused(const char *path, double position) {
   return 0;
 }
 int audio_play(const char *path) {
-  assert(!"a paused step started playback");
-  return 0;
+	assert(playing && saved && strcmp(path, "b.mp3") == 0);
+	loaded = true;
+	return 0;
 }
 int audio_play_at(const char *path, double position) {
   assert(!"a paused step started playback");
   return 0;
 }
 int main(void) {
-  device_state_load_list_ordered_paused(parts, 2, 1);
-  assert(queued == 1 && saved && loaded);
-  assert(strcmp(selected, "b.mp3") == 0);
-  return 0;
+	fail_load = true;
+	assert(!device_state_load_list_ordered_paused(parts, 2, 1));
+	assert(!saved && !loaded && strcmp(selected, "a.mp3") == 0);
+	assert(!device_state_play_list_ordered(parts, 2, 1));
+	assert(!saved && !loaded && strcmp(selected, "a.mp3") == 0);
+	fail_load = false;
+	assert(device_state_load_list_ordered_paused(parts, 2, 1));
+	assert(queued == 1 && saved && loaded);
+	assert(strcmp(selected, "b.mp3") == 0);
+	saved = loaded = false;
+	snprintf(selected, sizeof(selected), "%s", "a.mp3");
+	playing = true;
+	assert(device_state_play_list_ordered(parts, 2, 1));
+	assert(queued == 1 && saved && loaded);
+	assert(strcmp(selected, "b.mp3") == 0);
+	return 0;
 }
 void audio_set_speed(double speed) {}
 double audiobook_speed(void) { return 1.0; }
@@ -64,3 +80,6 @@ int playlist_count(void) { return 0; }
 int playlist_current_index(void) { return -1; }
 void radio_clear(void) {}
 void replaygain_load(const song_metadata_t *m) {}
+bool podcastcache_is_episode(const char *path) { return false; }
+bool growfile_is_growing(const char *path) { return false; }
+double podcaststate_resume_point(const char *path) { return -1.0; }

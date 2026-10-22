@@ -897,7 +897,14 @@ void device_state_play_list(const char *const *list, int count, int start_index)
 
 // The same for a queue that already carries its own order: a podcast's
 // episodes. See playlist_load_paths_ordered().
-void device_state_play_list_ordered(const char *const *list, int count, int start_index) { device_state_play_list_ordered_at(list, count, start_index, -1.0); }
+bool device_state_play_list_ordered(const char *const *list, int count, int start_index) {
+	if (!list || start_index < 0 || start_index >= count || !list[start_index]) {
+		return false;
+	}
+	device_state_play_list_ordered_at(list, count, start_index, -1.0);
+	char path[512];
+	return playlist_current_path(path, sizeof(path)) && strcmp(path, list[start_index]) == 0;
+}
 
 void device_state_play_list_ordered_at(const char *const *list, int count, int start_index, double position) {
 	if (!list || count <= 0) {
@@ -914,16 +921,18 @@ void device_state_play_list_ordered_at(const char *const *list, int count, int s
 	}
 }
 
-void device_state_load_list_ordered_paused(const char *const *list, int count, int start_index) {
-	if (!list || count <= 0) {
-		return;
+bool device_state_load_list_ordered_paused(const char *const *list, int count, int start_index) {
+	if (!list || start_index < 0 || start_index >= count || !list[start_index]) {
+		return false;
 	}
 	playlist_load_paths_ordered(list, count, start_index);
 
 	char path[512];
-	if (playlist_current_path(path, sizeof(path))) {
-		load_paused(path);
+	if (!playlist_current_path(path, sizeof(path)) || strcmp(path, list[start_index]) != 0) {
+		return false;
 	}
+	load_paused(path);
+	return true;
 }
 
 // Jumps to a specific entry of the current queue: the queue page's tap.
