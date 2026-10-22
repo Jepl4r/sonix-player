@@ -1663,9 +1663,10 @@ void device_state_seek(double seconds) {
 	scrub_cancel();
 
 	// Every book seek stays short of EOF, including slider and scrub commits.
-	if (audiobook_is_playing()) {
+	bool book = audiobook_is_playing();
+	double length = 0;
+	if (book) {
 		double current = 0;
-		double length = 0;
 		audio_get_progress(&current, &length);
 		seconds = audiobook_clamp_seek(seconds, length);
 	}
@@ -1678,6 +1679,9 @@ void device_state_seek(double seconds) {
 		load_and_play(current_metadata_file);
 	}
 	audio_seek(seconds);
+	if (book) {
+		audiobook_note_position(seconds, length, true);
+	}
 }
 
 void device_state_stop(void) { audio_stop(); }

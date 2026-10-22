@@ -675,9 +675,6 @@ static void audiobook_seek_by(double delta, const device_state_t *state) {
 	double target = audiobook_clamp_seek(state->progress_current_secs + delta, length);
 
 	device_state_seek(target);
-	// Written through immediately: a jump is a deliberate move, and the ten
-	// second throttle would lose it if the player were switched off next.
-	audiobook_note_position(target, length, true);
 }
 
 // Applies a playback status to the play/pause button and the progress timer.
@@ -4760,8 +4757,6 @@ void player_step_chapter(int direction) {
 	}
 	if (target.kind == AUDIOBOOK_STEP_SEEK) {
 		device_state_seek(target.seconds);
-		// Written through, like the second jumps: a step is a deliberate move.
-		audiobook_note_position(target.seconds, state.progress_total_secs, true);
 	} else if (target.kind == AUDIOBOOK_STEP_PART) {
 		if (!chapter_load_part(target.part, state.status == AUDIO_STATUS_PLAYING)) {
 			return; // the part still loaded keeps its place

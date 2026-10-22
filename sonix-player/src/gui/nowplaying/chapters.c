@@ -60,10 +60,6 @@ static void chapter_clicked_cb(lv_event_t *e) {
 	}
 
 	device_state_seek(start);
-	// The position is written straight away rather than at the next ten-second
-	// tick: jumping to a chapter and then switching the player off immediately
-	// is normal with a book.
-	audiobook_note_position(start, 0, true);
 
 	player_refresh_now_playing();
 	back_btn_cb(NULL); // back to the player, which is where the jump is heard
