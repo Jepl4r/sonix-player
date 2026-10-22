@@ -38,6 +38,8 @@ case $(uname -s) in
 esac
 ${CC:-cc} -O1 -g $sanitizer_flags -I"$repo/sonix-player" "$repo/tests/id3chap_test.c" -o "$build/id3chap-test"
 if "$build/id3chap-test" "$build/id3chap.mp3"; then printf "%s\n" "PASS id3chap"; else failed=$((failed + 1)); fi
+${CC:-cc} -O1 -g "$repo/tests/sleepfade_test.c" -o "$build/sleepfade-test"
+if "$build/sleepfade-test"; then :; else failed=$((failed + 1)); fi
 missing_pkg=""
 for pkg in opusfile wavpack; do
  if ! pkg-config --exists "$pkg"; then missing_pkg="$pkg"; break; fi

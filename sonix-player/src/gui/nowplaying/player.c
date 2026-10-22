@@ -720,6 +720,14 @@ static sleeptimer_kind_t sleeptimer_kind_playing(void) {
 	return SLEEPTIMER_MUSIC;
 }
 
+static void sync_sleep_fade(void) {
+	long long deadline = sleeptimer_deadline_ms(sleeptimer_kind_playing());
+	if (deadline)
+		audio_sleep_fade_arm((uint32_t)deadline);
+	else
+		audio_sleep_fade_disarm();
+}
+
 static void apply_playback_status(audio_status_t status) {
 	bool playing = (status == AUDIO_STATUS_PLAYING);
 
@@ -768,6 +776,7 @@ static void apply_playback_status(audio_status_t status) {
 	// told without being told twice. It is also the one place that knows what
 	// is playing well enough to say which of the three it belongs to.
 	sleeptimer_note_playing(playing ? sleeptimer_kind_playing() : SLEEPTIMER_COUNT);
+	sync_sleep_fade();
 	if (sleep_timer) {
 		if (sleeptimer_any_running()) {
 			lv_timer_resume(sleep_timer);
@@ -927,6 +936,7 @@ static void update_sleep_label(void) {
 
 static void sleep_pick(void *user) {
 	sleeptimer_quick_set(sleep_label_kind(), (int)(intptr_t)user);
+	sync_sleep_fade();
 	update_sleep_label();
 	// The tick runs only while a stretch counts, so a pick that arms one has to
 	// wake it, and one that disarms it can let it sleep.
@@ -5126,6 +5136,8 @@ static void sleep_timer_cb(lv_timer_t *timer) {
 		expired = sleeptimer_expired((sleeptimer_kind_t)i) || expired;
 	}
 	update_sleep_label();
+	if (!expired)
+		sync_sleep_fade();
 	if (!expired || audio_get_status() != AUDIO_STATUS_PLAYING) {
 		return;
 	}

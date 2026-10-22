@@ -32,6 +32,7 @@
 #include <alloca.h>
 #include <alsa/asoundlib.h>
 #include <time.h>
+#include "sleepfade.h"
 
 // Millisecond timestamps for the play/start/end log lines, so the ordering and
 // the gaps between them can be read back.
@@ -487,6 +488,70 @@ static int fade_gain_q10(double pos_secs, double total_secs) {
 		gain = 1024;
 	}
 	return gain;
+}
+
+// All sleep fade state is protected by audio_mutex. Sample scaling runs unlocked.
+typedef struct {
+	bool armed;
+	uint32_t deadline;
+	uint32_t disarmed_at;
+	int gain_at_disarm;
+} sleep_fade_t;
+
+static sleep_fade_t sleep_fade = {.gain_at_disarm = 1024};
+
+static uint32_t sleep_fade_now_ms(void) {
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	return (uint32_t)((uint64_t)ts.tv_sec * 1000 + ts.tv_nsec / 1000000);
+}
+
+static int sleep_fade_gain(sleep_fade_t state, uint32_t now) {
+	int returning = sleepfade_gain_q10(now, 0, false, state.disarmed_at, state.gain_at_disarm);
+	int timed = sleepfade_gain_q10(now, state.deadline, state.armed, state.disarmed_at, state.gain_at_disarm);
+	return timed < returning ? timed : returning;
+}
+
+void audio_sleep_fade_arm(uint32_t deadline_ms) {
+	pthread_mutex_lock(&audio_mutex);
+	if (!sleep_fade.armed || sleep_fade.deadline != deadline_ms) {
+		uint32_t now = sleep_fade_now_ms();
+		// Extending a fading stretch returns from its current level over 500 ms.
+		if (!sleep_fade.armed || (int32_t)(deadline_ms - sleep_fade.deadline) > 0) {
+			sleep_fade.gain_at_disarm = sleep_fade_gain(sleep_fade, now);
+			sleep_fade.disarmed_at = now;
+		}
+		sleep_fade.armed = true;
+		sleep_fade.deadline = deadline_ms;
+		printf("audio: sleep fade armed deadline=%u ms\n", deadline_ms);
+	}
+	pthread_mutex_unlock(&audio_mutex);
+}
+
+void audio_sleep_fade_disarm(void) {
+	pthread_mutex_lock(&audio_mutex);
+	if (sleep_fade.armed) {
+		uint32_t now = sleep_fade_now_ms();
+		sleep_fade.gain_at_disarm = sleep_fade_gain(sleep_fade, now);
+		sleep_fade.disarmed_at = now;
+		sleep_fade.armed = false;
+		printf("audio: sleep fade disarmed gain=%d\n", sleep_fade.gain_at_disarm);
+	}
+	pthread_mutex_unlock(&audio_mutex);
+}
+
+// The caller holds audio_mutex. A silent transport has no return ramp to play.
+static void sleep_fade_reset_locked(void) {
+	if (sleep_fade.armed || sleep_fade.gain_at_disarm != 1024)
+		printf("audio: sleep fade reset to unity\n");
+	sleep_fade = (sleep_fade_t){.gain_at_disarm = 1024};
+}
+
+static int sleep_fade_buffer_gain(void) {
+	pthread_mutex_lock(&audio_mutex);
+	sleep_fade_t state = sleep_fade;
+	pthread_mutex_unlock(&audio_mutex);
+	return sleep_fade_gain(state, sleep_fade_now_ms());
 }
 
 static void fade_apply_s16(short *samples, int count, int gain) {
@@ -3025,6 +3090,13 @@ static void play_wav_file(const char *filepath) {
 			}
 		}
 
+		// This WAV PCM path cannot carry DoP, matching the software volume below.
+		int sleep_gain = sleep_fade_buffer_gain();
+		if (info.out_bits == 32)
+			fade_apply_s32((int32_t *)buffer, (int)frames_to_write * info.channels, sleep_gain);
+		else
+			fade_apply_s16((short *)buffer, (int)frames_to_write * info.channels, sleep_gain);
+
 		// The volume, when it is this side of the cable and not in a register:
 		// a device on the USB-C port with no control of its own. A no-op, one
 		// comparison deep, on every other route.
@@ -3798,6 +3870,14 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			}
 		}
 
+		if (!passthrough) {
+			int sleep_gain = sleep_fade_buffer_gain();
+			if (out_bits == 32)
+				fade_apply_s32((int32_t *)buffer, (int)frames_read * channels, sleep_gain);
+			else
+				fade_apply_s16((short *)buffer, (int)frames_read * channels, sleep_gain);
+		}
+
 		// And the software volume, under the same rule and for the same reason:
 		// scaling a DoP stream would stop it being DSD and start being noise.
 		if (swvolume_active() && !passthrough) {
@@ -4172,6 +4252,7 @@ int audio_play_paused(const char *filepath, double start_secs) {
 	fprintf(stderr, "audio[%ld]: restore requested '%s' at %.1f s (paused)\n", log_ms(), filepath, start_secs);
 
 	pthread_mutex_lock(&audio_mutex);
+	sleep_fade_reset_locked();
 	restart_fresh_pending = false; // an explicit play beats the armed restart
 	strncpy(current_filepath, filepath, sizeof(current_filepath) - 1);
 	current_filepath[sizeof(current_filepath) - 1] = '\0';
@@ -4322,6 +4403,7 @@ bool audio_suspend_freeze(int timeout_ms) {
 void audio_pause(void) {
 	printf("pausing\n");
 	pthread_mutex_lock(&audio_mutex);
+	sleep_fade_reset_locked();
 	audio_command = AUDIO_CMD_PAUSE;
 
 	// Report the new state immediately instead of waiting for the playback
@@ -4368,6 +4450,7 @@ void audio_resume(void) {
 void audio_stop(void) {
 	printf("stopping\n");
 	pthread_mutex_lock(&audio_mutex);
+	sleep_fade_reset_locked();
 	audio_command = AUDIO_CMD_STOP;
 	playback_status = AUDIO_STATUS_STOPPED;
 	seek_request = false;

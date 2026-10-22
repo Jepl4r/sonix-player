@@ -4,6 +4,7 @@
 #include <alsa/asoundlib.h>
 #include <stdbool.h>
 #include <stddef.h>
+#include <stdint.h>
 
 typedef enum {
 	AUDIO_CMD_NONE,
@@ -22,6 +23,11 @@ typedef enum {
 	AUDIO_STATUS_PLAYING,
 	AUDIO_STATUS_PAUSED,
 } audio_status_t;
+
+// The sleep timer ramps to silence over its last 20 s on the monotonic clock.
+// Disarming returns to unity over 500 ms; pause, stop and paused load reset at once.
+void audio_sleep_fade_arm(uint32_t deadline_ms);
+void audio_sleep_fade_disarm(void);
 
 int audio_init();
 

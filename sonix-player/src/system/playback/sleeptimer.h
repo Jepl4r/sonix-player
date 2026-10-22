@@ -70,4 +70,7 @@ bool sleeptimer_expired(sleeptimer_kind_t kind);
 // What is left of that stretch, in seconds, or 0 when it is not counting.
 int sleeptimer_remaining(sleeptimer_kind_t kind);
 
+// Monotonic deadline in milliseconds, or zero while not counting.
+long long sleeptimer_deadline_ms(sleeptimer_kind_t kind);
+
 #endif /* SLEEPTIMER_H */

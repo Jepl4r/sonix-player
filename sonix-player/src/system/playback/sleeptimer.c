@@ -187,3 +187,10 @@ int sleeptimer_remaining(sleeptimer_kind_t kind) {
 	}
 	return (int)((timers[kind].remaining_ms + 999) / 1000);
 }
+
+long long sleeptimer_deadline_ms(sleeptimer_kind_t kind) {
+	if (!sleeptimer_running(kind))
+		return 0;
+	// remaining_ms was measured at last_ms; account for time between GUI ticks.
+	return timers[kind].last_ms + timers[kind].remaining_ms;
+}

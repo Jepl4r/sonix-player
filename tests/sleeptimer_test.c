@@ -1,5 +1,6 @@
 #include "../sonix-player/src/system/playback/sleeptimer.c"
 #include <assert.h>
+#include <stdlib.h>
 #include <string.h>
 
 // An in-memory config: enough for sleeptimer.c, which reads and writes
@@ -106,7 +107,23 @@ static void other_kind_stays_idle(void) {
   assert(!sleeptimer_running(SLEEPTIMER_MUSIC));
 }
 
+static void deadline_tracks_countdown(void) {
+	fresh();
+	assert(sleeptimer_deadline_ms(SLEEPTIMER_AUDIOBOOK) == 0);
+	sleeptimer_note_playing(SLEEPTIMER_AUDIOBOOK);
+	sleeptimer_quick_set(SLEEPTIMER_AUDIOBOOK, 15);
+	long long expected = now_ms() + 900000;
+	long long deadline = sleeptimer_deadline_ms(SLEEPTIMER_AUDIOBOOK);
+	assert(llabs(deadline - expected) <= 50);
+	timers[SLEEPTIMER_AUDIOBOOK].last_ms -= 5000;
+	assert(llabs(sleeptimer_deadline_ms(SLEEPTIMER_AUDIOBOOK) - (deadline - 5000)) <= 50);
+	sleeptimer_note_playing(SLEEPTIMER_COUNT);
+	assert(sleeptimer_deadline_ms(SLEEPTIMER_AUDIOBOOK) == 0);
+	assert(sleeptimer_deadline_ms(SLEEPTIMER_COUNT) == 0);
+}
+
 int main(void) {
+	deadline_tracks_countdown();
   quick_set_while_playing();
   quick_set_while_idle();
   quick_set_off();
