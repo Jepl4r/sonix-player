@@ -1,4 +1,5 @@
 #include "audiobookextras.h"
+#include "bookmarkguard.h"
 
 #include <stdint.h>
 #include <stdio.h>
@@ -18,6 +19,8 @@
 #include "src/system/library/audiobookdb.h"
 #include "src/system/playback/audiobook.h"
 #include "src/system/playback/device_state.h"
+
+static bookmark_guard_t bookmark_guard;
 
 static lv_obj_t *books_screen;	 // the books that have bookmarks
 static lv_obj_t *marks_screen;	 // one book's
@@ -412,13 +415,24 @@ void audiobookextras_add_bookmark(void) {
 	device_state_t state;
 	device_state_get(&state);
 	double seconds = state.progress_current_secs;
+	uint32_t tick = lv_tick_get();
+	if (bookmark_guard_duplicate(&bookmark_guard, book, file, seconds, tick))
+		return;
 
 	char label[192];
 	audiobook_place_label(seconds, label, sizeof(label));
 	switch (audiobookdb_bookmark_add(book, file, seconds, label)) {
-	case AUDIOBOOK_BOOKMARK_SAVED:
-		toast_glyph(&icon_bookmark_check, "ebookreader_bookmark_saved");
+	case AUDIOBOOK_BOOKMARK_SAVED: {
+		bookmark_guard_saved(&bookmark_guard, book, file, seconds, tick);
+		char clock[32], message[320];
+		format_clock(seconds, clock, sizeof(clock));
+		if (audiobook_unit_count() > 0)
+			snprintf(message, sizeof(message), tr("audiobook_bookmark_saved_at"), label, clock);
+		else
+			snprintf(message, sizeof(message), tr("audiobook_bookmark_saved_time"), clock);
+		toast_glyph(&icon_bookmark_check, message);
 		break;
+	}
 	case AUDIOBOOK_BOOKMARK_FULL:
 		toast_error("audiobook_bookmarks_full");
 		break;

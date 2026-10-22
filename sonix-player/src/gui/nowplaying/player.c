@@ -74,7 +74,9 @@ static lv_obj_t *book_line_label;
 static bool book_line_finished;
 static unsigned book_line_serial;
 static unsigned book_line_seek_serial;
-#define BOOK_LINE_HEIGHT 30
+#define BOOK_LINE_HEIGHT 48
+static lv_obj_t *book_bookmark_icon;
+static bool book_bookmark_held;
 static lv_obj_t *format_label; // "16/44.1 FLAC", right of the artist line
 static lv_obj_t *fav_btn_obj;  // the button it sits on, hidden on a book
 static lv_obj_t *controls_row; // transport row: where the ellipsis lives, and the star in Studio
@@ -1105,7 +1107,7 @@ static void set_over_cover(bool on) {
 
 	lv_obj_t *const text_objs[] = {song_title_label, elapsed_label, remaining_label};
 	lv_obj_t *const dim_objs[] = {song_artist_label, book_line_label, format_label, queue_position_label};
-	lv_obj_t *const icon_objs[] = {prev_icon, next_icon, chapter_prev_icon, chapter_next_icon};
+	lv_obj_t *const icon_objs[] = {prev_icon, next_icon, chapter_prev_icon, chapter_next_icon, book_bookmark_icon};
 
 	for (size_t i = 0; i < sizeof(text_objs) / sizeof(text_objs[0]); i++) {
 		if (!text_objs[i]) {
@@ -2738,7 +2740,8 @@ static int studio_cover_geometry(int *top_out) {
 	// allows the full width (the R1), a sleeve from edge to edge crowds the
 	// title above it and reads as the standard arrangement.
 	int size = studio_box_w * STUDIO_COVER_MAX_PCT / 100;
-	int room = studio_box_h - top - STUDIO_QUALITY_GAP - STUDIO_QUALITY_H - STUDIO_BOTTOM;
+	int quality_h = audiobook_mode ? BOOK_LINE_HEIGHT : STUDIO_QUALITY_H;
+	int room = studio_box_h - top - STUDIO_QUALITY_GAP - quality_h - STUDIO_BOTTOM;
 	if (size > room) {
 		size = room;
 	}
@@ -2802,7 +2805,7 @@ static void studio_place(void) {
 	lv_obj_set_size(studio_empty, size, size);
 	lv_obj_set_pos(studio_empty, cover_x, cover_y);
 
-	lv_obj_set_size(studio_quality, size, STUDIO_QUALITY_H);
+	lv_obj_set_size(studio_quality, size, audiobook_mode ? BOOK_LINE_HEIGHT : STUDIO_QUALITY_H);
 	lv_obj_set_pos(studio_quality, cover_x, cover_y + size + STUDIO_QUALITY_GAP);
 
 	lyrics_layout();
@@ -3075,9 +3078,9 @@ static void chapter_row_sync(void) {
 	if (!chapter_prev_btn || !chapter_next_btn || !song_text_obj || !song_side_obj) {
 		return;
 	}
-	// On the short panel the cover gives the book line's height to the controls.
+	// The cover gives enough height to the book controls on either panel.
 	// The alternative layout keeps the line on the cover, so needs no extra menu space.
-	int extra = audiobook_mode && !layout_alt_now && lv_obj_get_style_height(player_screen, 0) == 720 ? BOOK_LINE_HEIGHT : 0;
+	int extra = audiobook_mode && !layout_alt_now ? BOOK_LINE_HEIGHT : 0;
 	if (cover_base_h && cover_box_h != cover_base_h - extra) {
 		cover_box_h = cover_base_h - extra;
 		backdrop_h = menu_base_h + extra;
@@ -3122,10 +3125,13 @@ static void chapter_row_sync(void) {
 		lv_obj_set_hidden(format_label, on);
 	}
 	if (book_line_row) {
-		lv_obj_set_parent(book_line_row, studio ? studio_quality : layout_alt_now ? alt_text_col : song_text_obj);
+		lv_obj_set_parent(book_line_row, studio ? studio_quality : layout_alt_now ? alt_text_col : player_menu);
+		if (!studio && !layout_alt_now)
+			lv_obj_move_to_index(book_line_row, 1);
 		lv_obj_set_hidden(book_line_row, !audiobook_mode);
 		lv_obj_set_width(book_line_row, layout_alt_now ? cover_box_w - 2 * ALT_PAD : lv_pct(100));
 		if (studio) {
+			studio_place();
 			lv_obj_set_hidden(format_label, audiobook_mode);
 			lv_obj_set_hidden(studio_quality_icon, audiobook_mode);
 		}
@@ -4909,6 +4915,17 @@ static lv_obj_t *chapter_btn_create(lv_obj_t *parent, const lv_image_dsc_t *glyp
 	return btn;
 }
 
+static void book_bookmark_cb(lv_event_t *e) {
+	lv_event_code_t code = lv_event_get_code(e);
+	if (code == LV_EVENT_PRESSED)
+		book_bookmark_held = false;
+	else if (code == LV_EVENT_LONG_PRESSED) {
+		book_bookmark_held = true;
+		audiobookextras_open_current_bookmarks();
+	} else if (code == LV_EVENT_SHORT_CLICKED && !book_bookmark_held)
+		audiobookextras_add_bookmark();
+}
+
 static void book_add_bookmark_action(void *user) {
 	(void)user;
 	audiobookextras_add_bookmark();
@@ -5684,7 +5701,6 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_size(book_line_row, lv_pct(100), BOOK_LINE_HEIGHT);
 	lv_obj_set_flex_flow(book_line_row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(book_line_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
-	lv_obj_set_style_pad_right(book_line_row, 48, 0);
 	lv_obj_set_scrollable(book_line_row, false);
 	lv_obj_set_hidden(book_line_row, true);
 	book_line_label = lv_label_create(book_line_row);
@@ -5694,6 +5710,12 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(book_line_label, &font_ui_22, 0);
 	lv_label_set_text(book_line_label, tr("audiobook_book_unknown"));
 	scrolltext_apply(book_line_label);
+	lv_obj_t *bookmark_btn = chapter_btn_create(book_line_row, &icon_bookmark_check, book_bookmark_cb, &book_bookmark_icon);
+	lv_obj_remove_event_cb(bookmark_btn, book_bookmark_cb);
+	lv_obj_add_event_cb(bookmark_btn, book_bookmark_cb, LV_EVENT_ALL, NULL);
+	lv_obj_set_size(bookmark_btn, 48, 48);
+	lv_obj_set_ext_click_area(bookmark_btn, 0);
+	lv_obj_set_hidden(bookmark_btn, false);
 
 	// Right side: the favourite star over the stream format.
 	lv_obj_t *song_side = lv_obj_create(song_info);
