@@ -10,11 +10,11 @@ static inline uint32_t clock_boottime_ms(void) {
 	struct timespec ts;
 #ifdef CLOCK_BOOTTIME
 	if (clock_gettime(CLOCK_BOOTTIME, &ts) == 0) {
-		return (uint32_t)(ts.tv_sec * 1000) + (uint32_t)(ts.tv_nsec / 1000000);
+		return (uint32_t)(ts.tv_sec * 1000u) + (uint32_t)(ts.tv_nsec / 1000000);
 	}
 #endif
 	clock_gettime(CLOCK_MONOTONIC, &ts);
-	return (uint32_t)(ts.tv_sec * 1000) + (uint32_t)(ts.tv_nsec / 1000000);
+	return (uint32_t)(ts.tv_sec * 1000u) + (uint32_t)(ts.tv_nsec / 1000000);
 }
 
 // Wall clock handling.

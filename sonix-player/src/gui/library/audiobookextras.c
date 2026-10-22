@@ -429,7 +429,7 @@ void audiobookextras_add_bookmark(void) {
 		bookmark_guard_saved(&bookmark_guard, book, file, seconds, tick);
 		char clock[32], message[320];
 		format_clock(seconds, clock, sizeof(clock));
-		if (audiobook_unit_count() > 0)
+		if (audiobook_unit_count() > 0 && label[0])
 			snprintf(message, sizeof(message), tr("audiobook_bookmark_saved_at"), label, clock);
 		else
 			snprintf(message, sizeof(message), tr("audiobook_bookmark_saved_time"), clock);

@@ -4,6 +4,7 @@ static uint32_t tick;
 static int writes;
 static bool fail;
 static int units = 1;
+static bool empty_label;
 static char shown[320];
 uint32_t lv_tick_get(void) { return tick; }
 bool audiobook_current_book(char *book, size_t bn, char *file, size_t fn) {
@@ -15,7 +16,9 @@ void device_state_get(device_state_t *s) {
 	memset(s, 0, sizeof(*s));
 	s->progress_current_secs = 10;
 }
-void audiobook_place_label(double seconds, char *out, size_t n) { snprintf(out, n, "Chapter 1"); }
+void audiobook_place_label(double seconds, char *out, size_t n) {
+  snprintf(out, n, "%s", empty_label ? "" : "Chapter 1");
+}
 int audiobook_unit_count(void) { return units; }
 audiobook_bookmark_result_t audiobookdb_bookmark_add(const char *book, const char *file, double seconds, const char *label) {
 	writes++;
@@ -43,4 +46,10 @@ int main(void) {
 	audiobookextras_add_bookmark();
 	assert(!strcmp(shown, "Bookmark: 0:10"));
 	puts("PASS bookmark-save-retry");
+        units = 1;
+        empty_label = true;
+        tick = 6000;
+        audiobookextras_add_bookmark();
+        assert(!strcmp(shown, "Bookmark: 0:10"));
+        puts("PASS bookmark-empty-place-label-falls-back-to-time");
 }
