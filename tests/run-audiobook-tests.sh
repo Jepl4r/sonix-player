@@ -10,6 +10,8 @@ esac
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/sonix-player" -c "$repo/sonix-player/src/system/library/library.c" -o "$build/library.o"
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/sonix-player" "$repo/tests/audiobookdb_test.c" "$build/library.o" $gc_flags -lsqlite3 -lpthread -o "$build/test"
 failed=0
+${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/devcontrol_test.c" $gc_flags -o "$build/devcontrol-test"
+if (cd "$build" && ./devcontrol-test); then :; else failed=$((failed + 1)); fi
 if sh "$repo/tests/run-gui-book-test.sh"; then :; else failed=$((failed + 1)); fi
 if sh "$repo/tests/run-remote-keys-test.sh"; then :; else failed=$((failed + 1)); fi
 ${CC:-cc} -O1 -g -I"$repo/sonix-player" "$repo/tests/bookmark_guard_test.c" -o "$build/bookmark-guard-test"

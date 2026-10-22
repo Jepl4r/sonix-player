@@ -1,5 +1,8 @@
 # Audiobook and update regression tests
 
+The runner also checks local UI-control command parsing and gestures. For real
+metadata parser and GUI integration checks, see [Offline additions](../OFFLINE_ADDITIONS.md).
+
 Run from the repository root:
 
 ```sh

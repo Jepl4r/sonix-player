@@ -123,6 +123,8 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 ## Audiobooks
 
+- **Metadata beside the audio** - add a `.tags` file for the series and book number, or a `.description` file for a summary, without rewriting the audio. Rescan after editing; see [Offline additions](OFFLINE_ADDITIONS.md) for filenames and examples.
+
 > Audiobooks go in the `Audiobooks` folder, in any subfolder. `Audiobooks/Author/Series/...` is used for the author and the series when the tags don't say.
 
 - **Library, Series, Authors and Continue**, each sortable. Continue shows the books you started, with the finished ones one tap away.

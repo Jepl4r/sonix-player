@@ -2371,9 +2371,36 @@ static void read_sidecar_tags(const char *filepath, song_metadata_t *out) {
 			out->disc_number = atoi(value);
 		} else if (strcmp(key, "year") == 0) {
 			out->year = atoi(value);
+		} else if (strcmp(key, "series") == 0) {
+			snprintf(out->series, sizeof(out->series), "%s", value);
+		} else if (strcmp(key, "series_part") == 0) {
+			snprintf(out->series_part, sizeof(out->series_part), "%s", value);
 		}
 	}
 	fclose(f);
+}
+
+// Sidecar descriptions may contain paragraphs, unlike one-line .tags values.
+// Use the embedded-description cleaner, including HTML removal and size cap.
+static void read_sidecar_description(const char *filepath) {
+	if (!description_wanted)
+		return;
+	char path[600];
+	if ((size_t)snprintf(path, sizeof(path), "%s.description", filepath) >= sizeof(path))
+		return;
+	FILE *f = fopen(path, "rb");
+	if (!f)
+		return;
+	char *text = malloc(DESCRIPTION_MAX_BYTES + 1);
+	if (!text) {
+		fclose(f);
+		return;
+	}
+	size_t len = fread(text, 1, DESCRIPTION_MAX_BYTES, f);
+	fclose(f);
+	text[len] = '\0';
+	description_offer(text, len, 4);
+	free(text);
 }
 
 // One track of a CUE sheet: the tags are in the sheet, not in the audio file.
@@ -2545,6 +2572,7 @@ void metadata_read(const char *filepath, song_metadata_t *out) {
 	}
 
 	read_sidecar_tags(filepath, out);
+	read_sidecar_description(filepath);
 	clean_fields(out);
 }
 

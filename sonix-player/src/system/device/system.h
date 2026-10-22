@@ -69,6 +69,11 @@ const char *storage_sd_root(void);
 // this rather than discovering it as a silent failure.
 bool storage_sd_writable(void);
 
+// Tests a concrete card root by creating and removing a small probe file.
+// The host simulator uses this for SONIX_SD_ROOT, which is intentionally not
+// the device mount point tracked by storage_sd_writable().
+bool storage_path_writable(const char *path);
+
 // The SD block device the storage layer settled on (e.g. /dev/mmcblk0p1),
 // or NULL when no card was found. Used by the USB mass-storage export.
 const char *storage_sd_device(void);

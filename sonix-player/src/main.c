@@ -33,6 +33,7 @@
 #include "src/system/bluetooth/btlog.h"
 #include "src/system/bluetooth/btplayer.h"
 #include "src/system/device/clock.h"
+#include "src/system/device/devcontrol.h"
 #include "src/system/device/chargescreen.h"
 #include "src/system/device/factoryreset.h"
 #include "src/system/core/config.h"
@@ -2132,7 +2133,12 @@ int main(int argc, char **argv) {
 		// database and with no message. The thumbnail cache falls back the
 		// same way.
 		const char *db_root = gui_cfg.sd_root_path;
-		if (!storage_sd_writable()) {
+#ifdef HOST_BUILD
+		bool card_writable = storage_path_writable(gui_cfg.sd_root_path);
+#else
+		bool card_writable = storage_sd_writable();
+#endif
+		if (!card_writable) {
 			db_root = "/tmp";
 			mkdir("/tmp/.local", 0755);
 			fprintf(stderr, "main: the card is read-only, so the databases live in /tmp for this session\n");
@@ -2346,6 +2352,7 @@ int main(int argc, char **argv) {
 	// screen timeout is the Screen page's setting and comes from there.
 	powersettings_apply();
 	settings_apply_screen_off();
+	devcontrol_init(disp, panel_w, panel_h);
 
 #ifndef HOST_BUILD
 	// Bluetooth off. A firmware whose /etc/init.d/S80_bt_init has not been
@@ -2395,11 +2402,17 @@ int main(int argc, char **argv) {
 			time_till_next = MAIN_LOOP_MAX_SLEEP_MS; // also catches LV_NO_TIMER_READY
 		}
 
-		struct pollfd wake = {.fd = gui_post_wake_fd(), .events = POLLIN};
-		if (poll(&wake, 1, (int)time_till_next) > 0) {
-			// Something was posted: drain the queue now instead of waiting
-			// for the bridge's own timer to come round.
-			gui_post_service();
+		struct pollfd wake[2] = {
+			{.fd = gui_post_wake_fd(), .events = POLLIN},
+			{.fd = devcontrol_fd(), .events = POLLIN},
+		};
+		if (poll(wake, 2, (int)time_till_next) > 0) {
+			if (wake[0].revents & POLLIN) {
+				gui_post_service();
+			}
+			if (wake[1].revents & POLLIN) {
+				devcontrol_service();
+			}
 		}
 	}
 

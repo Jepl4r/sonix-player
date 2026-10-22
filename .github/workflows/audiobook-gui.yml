@@ -1,0 +1,44 @@
+name: Audiobook GUI smoke
+on:
+  push:
+    paths:
+      - 'sonix-player/**'
+      - 'sonix-packer/assets/**'
+      - 'tests/**'
+      - 'tools/audiobook-host-smoke.sh'
+      - '.github/workflows/audiobook-gui.yml'
+  pull_request:
+    paths:
+      - 'sonix-player/**'
+      - 'sonix-packer/assets/**'
+      - 'tests/**'
+      - 'tools/audiobook-host-smoke.sh'
+      - '.github/workflows/audiobook-gui.yml'
+permissions:
+  contents: read
+concurrency:
+  group: audiobook-gui-${{ github.ref }}
+  cancel-in-progress: true
+jobs:
+  simulator:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - name: Install simulator dependencies
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y build-essential pkg-config libsdl2-dev libfreetype-dev libopusfile-dev libwavpack-dev libasound2-dev libsqlite3-dev ffmpeg sqlite3 xvfb xdotool imagemagick
+      - run: make -C sonix-player host -j2
+      - run: bash tests/run-metadata-sidecar-test.sh
+      - run: tools/audiobook-host-smoke.sh
+        env:
+          SONIX_SMOKE_SKIP_BUILD: '1'
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: audiobook-gui-evidence
+          path: |
+            build/audiobook-host-smoke/*.png
+            build/audiobook-host-smoke/*.log
+            build/audiobook-host-smoke/*.stdout

@@ -39,3 +39,6 @@ sonix-packer/sonix_player
 sonix-packer/r3proii_original.upt
 sonix-packer/r1_original.upt
 sonix-packer/sonix_launch
+
+# Generated simulator smoke fixtures, logs and screenshots.
+/build/audiobook-host-smoke/

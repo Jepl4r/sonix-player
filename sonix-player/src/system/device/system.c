@@ -542,7 +542,10 @@ static void list_block_devices(void) {
 // the kernel will only read. The browser and the storage page do not care --
 // they only read -- and everything else does, which is why "only the browser
 // works" is the shape that gets reported.
-static bool mount_is_writable(const char *mount_point) {
+bool storage_path_writable(const char *mount_point) {
+	if (!mount_point || !mount_point[0]) {
+		return false;
+	}
 	struct statvfs st;
 	if (statvfs(mount_point, &st) == 0 && (st.f_flag & ST_RDONLY)) {
 		return false;
@@ -653,7 +656,7 @@ static bool sd_writable = true;
 // Records the writability of a mount that has just been established, and says
 // so in the log. Returns 0 so it can stand in for the `return 0` it replaces.
 static int mount_settled(const char *mount_point) {
-	sd_writable = mount_is_writable(mount_point);
+	sd_writable = storage_path_writable(mount_point);
 	if (!sd_writable) {
 		fprintf(stderr,
 				"storage: %s is READ-ONLY. Browsing works; the log, the databases, the thumbnail cache and the "
