@@ -115,6 +115,16 @@ double audiobook_part_duration(int index);
 // Corrects the current part once per load when its measured length is known.
 void audiobook_note_length(double total);
 
+typedef struct {
+	bool known_total;    // every part's duration is known
+	bool known_left;     // every part from the current one on is known
+	double fraction;     // 0..1 of the whole book, valid with known_total
+	double left_seconds; // at speed, valid with known_left
+} audiobook_progress_t;
+// Progress through the loaded book at seconds of the loaded file, at speed.
+// False when no book is loaded.
+bool audiobook_book_progress(double seconds, double speed, audiobook_progress_t *out);
+
 // Which part is loaded, or -1 for a book in one file.
 int audiobook_part_current(void);
 // Whether the book goes on into another file when this one ends.

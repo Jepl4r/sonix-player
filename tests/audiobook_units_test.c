@@ -518,7 +518,39 @@ static void measured_lengths(void) {
 	assert(length_writes == 2);
 	puts("PASS audiobook-length");
 }
+static void book_progress(void) {
+	reset();
+	set_parts(3, 1);
+	parts[0].duration = parts[2].duration = 600;
+	audiobook_progress_t p;
+	assert(audiobook_book_progress(300, 1, &p));
+	assert(!p.known_total && !p.known_left);
+	parts[1].duration = 600;
+	assert(audiobook_book_progress(300, 1.5, &p));
+	assert(p.known_total && p.known_left);
+	assert(fabs(p.fraction - 0.5) < 1e-9 && p.left_seconds == 600);
+	parts[0].duration = 0;
+	assert(audiobook_book_progress(300, 1, &p));
+	assert(!p.known_total && p.known_left && p.left_seconds == 900);
+	puts("PASS audiobook-progress-parts");
+
+	reset();
+	assert(audiobook_book_progress(30, 1, &p));
+	assert(!p.known_total && !p.known_left);
+	audiobook_note_length(120);
+	assert(audiobook_book_progress(30, 2, &p));
+	assert(p.known_total && p.known_left && p.fraction == 0.25 && p.left_seconds == 45);
+	assert(audiobook_book_progress(-10, 0, &p) && p.fraction == 0 && p.left_seconds == 120);
+	assert(audiobook_book_progress(200, 1, &p) && p.fraction == 1 && p.left_seconds == 0);
+	audiobook_track_changed(NULL);
+	assert(!audiobook_book_progress(0, 1, &p));
+	reset();
+	assert(audiobook_book_progress(0, 1, &p) && !p.known_total && !p.known_left);
+	puts("PASS audiobook-progress-single");
+}
+
 int main(void) {
+	book_progress();
 	measured_lengths();
   chapters_next_prev();
   parts_next_prev();

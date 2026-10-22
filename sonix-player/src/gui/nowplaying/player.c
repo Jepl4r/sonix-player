@@ -3,6 +3,7 @@
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
+#include <math.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
@@ -67,6 +68,10 @@ static lv_obj_t *play_btn;
 static lv_obj_t *play_btn_icon;
 static lv_obj_t *song_title_label;
 static lv_obj_t *song_artist_label;
+static lv_obj_t *book_line_row;
+static lv_obj_t *book_line_label;
+static bool book_line_finished;
+static unsigned book_line_serial;
 static lv_obj_t *format_label; // "16/44.1 FLAC", right of the artist line
 static lv_obj_t *fav_btn_obj;  // the button it sits on, hidden on a book
 static lv_obj_t *controls_row; // transport row: where the ellipsis lives, and the star in Studio
@@ -259,6 +264,7 @@ static void chapter_row_sync(void);
 
 static cover_image_t current_cover;	   // pixels currently referenced by cover_img
 static cover_image_t current_backdrop; // upside-down blurred copy behind the controls
+static int cover_base_h, menu_base_h;
 static int cover_box_w, cover_box_h;   // the artwork spans the full screen width
 
 // ---------------------------------------------------------------------------
@@ -1096,7 +1102,7 @@ static void set_over_cover(bool on) {
 	chrome_over_cover = on;
 
 	lv_obj_t *const text_objs[] = {song_title_label, elapsed_label, remaining_label};
-	lv_obj_t *const dim_objs[] = {song_artist_label, format_label, queue_position_label};
+	lv_obj_t *const dim_objs[] = {song_artist_label, book_line_label, format_label, queue_position_label};
 	lv_obj_t *const icon_objs[] = {prev_icon, next_icon, chapter_prev_icon, chapter_next_icon};
 
 	for (size_t i = 0; i < sizeof(text_objs) / sizeof(text_objs[0]); i++) {
@@ -3023,6 +3029,40 @@ static void studio_put(void) {
 	studio_refresh_cover();
 }
 
+static void update_book_line(const device_state_t *state) {
+	if (!book_line_label || !audiobook_mode)
+		return;
+	unsigned serial = audiobook_serial();
+	if (serial != book_line_serial || state->status == AUDIO_STATUS_PLAYING)
+		book_line_finished = false;
+	book_line_serial = serial;
+	audiobook_progress_t progress;
+	if (!audiobook_book_progress(state->progress_current_secs, audio_get_speed(), &progress) || !progress.known_left) {
+		lv_label_set_text(book_line_label, tr("audiobook_book_unknown"));
+		return;
+	}
+	if (book_line_finished)
+		progress.left_seconds = 0;
+	int minutes = (int)ceil(progress.left_seconds / 60.0);
+	if (minutes < 1)
+		minutes = 1;
+	char left[192];
+	if (minutes >= 60)
+		snprintf(left, sizeof(left), tr("audiobook_left_hours_minutes"), minutes / 60, minutes % 60);
+	else
+		snprintf(left, sizeof(left), tr("audiobook_left_minutes"), minutes);
+	if (progress.known_total) {
+		int percent = (int)floor(progress.fraction * 100);
+		if (book_line_finished)
+			percent = 100;
+		else if (percent > 99)
+			percent = 99;
+		lv_label_set_text_fmt(book_line_label, tr("audiobook_book_progress"), percent, left);
+	} else {
+		lv_label_set_text_fmt(book_line_label, tr("audiobook_book_left"), left);
+	}
+}
+
 // Puts the chapter row's two buttons beside the title and author, wherever the
 // arrangement keeps those two lines, and shows them only on a book with units.
 // In the standard arrangement they sit in the title's own row, the next one
@@ -3032,6 +3072,13 @@ static void studio_put(void) {
 static void chapter_row_sync(void) {
 	if (!chapter_prev_btn || !chapter_next_btn || !song_text_obj || !song_side_obj) {
 		return;
+	}
+	int extra = audiobook_mode && lv_obj_get_style_height(player_screen, 0) == 720 ? 30 : 0;
+	if (cover_base_h && cover_box_h != cover_base_h - extra) {
+		cover_box_h = cover_base_h - extra;
+		lv_obj_set_height(player_menu, menu_base_h + extra);
+		if (!studio_up)
+			lv_obj_set_height(cover_panel, cover_box_h);
 	}
 	bool on = audiobook_mode && audiobook_has_chapters;
 	bool studio = layout_studio_now && studio_head;
@@ -3066,6 +3113,15 @@ static void chapter_row_sync(void) {
 	// the pills never show it.
 	if (format_label && !layout_studio_now && !layout_alt_now) {
 		lv_obj_set_hidden(format_label, on);
+	}
+	if (book_line_row) {
+		lv_obj_set_parent(book_line_row, studio ? studio_quality : layout_alt_now ? alt_text_col : song_text_obj);
+		lv_obj_set_hidden(book_line_row, !audiobook_mode);
+		lv_obj_set_width(book_line_row, layout_alt_now ? cover_box_w - 2 * ALT_PAD : lv_pct(100));
+		if (studio) {
+			lv_obj_set_hidden(format_label, audiobook_mode);
+			lv_obj_set_hidden(studio_quality_icon, audiobook_mode);
+		}
 	}
 	lyrics_find_sync(lyrics_progress == LYRICS_FULL);
 }
@@ -4124,10 +4180,11 @@ static void update_format_label(const device_state_t *state) {
 	// stream rather than of the library. Here because this is where the format
 	// line is worked out, and the two say one thing between them.
 	if (layout_studio_now && studio_quality_icon) {
+		lv_obj_set_hidden(format_label, audiobook_mode);
 		const lv_image_dsc_t *mark = studio_quality_mark(state);
 		if (mark) {
 			lv_image_set_src(studio_quality_icon, mark);
-			lv_obj_set_hidden(studio_quality_icon, false);
+			lv_obj_set_hidden(studio_quality_icon, audiobook_mode);
 		} else {
 			lv_obj_set_hidden(studio_quality_icon, true);
 		}
@@ -4364,6 +4421,8 @@ static void handle_track_finished(void) {
 			// reports the end of the file until its position is moved.
 			audio_seek(0);
 			audiobook_note_finished();
+			book_line_finished = true;
+			book_line_serial = audiobook_serial();
 		}
 		// The queue ran out: the track it ended on went into the history.
 		trackmenu_notify_now_playing();
@@ -4486,6 +4545,7 @@ static void update_progress(void) {
 	if (!state.live && audiobook_mode) {
 		if (state.progress_total_secs > 0)
 			audiobook_note_length(state.progress_total_secs);
+		update_book_line(&state);
 		bool stopped_itself = audiobook_auto_stop(&state);
 
 		static audio_status_t book_last_status = AUDIO_STATUS_STOPPED;
@@ -5504,6 +5564,8 @@ void player_init(gui_config_t *cfg) {
 
 	cover_box_w = cover_size;
 	cover_box_h = cover_size;
+	cover_base_h = cover_size;
+	menu_base_h = menu_height;
 	backdrop_w = (int)cfg->screen_width;
 	backdrop_h = menu_height;
 	backdrop_studio_h = (int)cfg->screen_height;
@@ -5578,6 +5640,22 @@ void player_init(gui_config_t *cfg) {
 	lv_obj_add_style(song_artist_label, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(song_artist_label, &font_ui_24, 0);
 	scrolltext_apply(song_artist_label);
+
+	book_line_row = lv_obj_create(song_text);
+	lv_obj_remove_style_all(book_line_row);
+	lv_obj_set_size(book_line_row, lv_pct(100), 30);
+	lv_obj_set_flex_flow(book_line_row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(book_line_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_style_pad_right(book_line_row, 48, 0);
+	lv_obj_set_scrollable(book_line_row, false);
+	lv_obj_set_hidden(book_line_row, true);
+	book_line_label = lv_label_create(book_line_row);
+	lv_obj_set_flex_grow(book_line_label, 1);
+	lv_obj_set_width(book_line_label, 0);
+	lv_obj_add_style(book_line_label, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(book_line_label, &font_ui_22, 0);
+	lv_label_set_text(book_line_label, tr("audiobook_book_unknown"));
+	scrolltext_apply(book_line_label);
 
 	// Right side: the favourite star over the stream format.
 	lv_obj_t *song_side = lv_obj_create(song_info);

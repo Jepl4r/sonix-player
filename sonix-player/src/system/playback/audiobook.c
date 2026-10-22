@@ -46,6 +46,7 @@ static int part_count;
 static int part_capacity;
 static int part_index;
 static bool length_noted;
+static double file_length;
 
 static time_t last_save;
 static double last_saved_position;
@@ -61,6 +62,7 @@ double audiobook_clamp_seek(double target, double length) {
 
 static void clear_locked(void) {
 	length_noted = false;
+	file_length = 0;
 	free(chapters);
 	chapters = NULL;
 	chapter_count = 0;
@@ -488,11 +490,67 @@ void audiobook_note_length(double total) {
 				snprintf(path, sizeof(path), "%s", current_path);
 				seconds = total;
 			}
+		} else if (part_index == -1) {
+			file_length = total;
 		}
 	}
 	pthread_mutex_unlock(&lock);
 	if (path[0])
 		audiobookdb_set_part_duration(path, seconds);
+}
+
+bool audiobook_book_progress(double seconds, double speed, audiobook_progress_t *out) {
+	if (!out)
+		return false;
+	*out = (audiobook_progress_t){0};
+	pthread_mutex_lock(&lock);
+	if (!current_is_book) {
+		pthread_mutex_unlock(&lock);
+		return false;
+	}
+	int index = part_index;
+	int count = index >= 0 && index < part_count ? part_count : 1;
+	double *durations = malloc((size_t)count * sizeof(*durations));
+	if (!durations) {
+		pthread_mutex_unlock(&lock);
+		return true;
+	}
+	for (int i = 0; i < count; i++)
+		durations[i] = index >= 0 ? parts[i].duration : file_length;
+	if (index < 0)
+		index = 0;
+	pthread_mutex_unlock(&lock);
+
+	out->known_total = out->known_left = true;
+	double total = 0, before = 0, left = 0;
+	if (!isfinite(seconds) || seconds < 0)
+		seconds = 0;
+	if (!isfinite(speed) || speed <= 0)
+		speed = 1;
+	for (int i = 0; i < count; i++) {
+		double duration = durations[i];
+		if (!isfinite(duration) || duration <= 0) {
+			out->known_total = false;
+			if (i >= index)
+				out->known_left = false;
+			continue;
+		}
+		total += duration;
+		if (i < index)
+			before += duration;
+		else if (i == index)
+			left += duration > seconds ? duration - seconds : 0;
+		else
+			left += duration;
+	}
+	if (out->known_total) {
+		double current = seconds < durations[index] ? seconds : durations[index];
+		out->fraction = (before + current) / total;
+	}
+	if (out->known_left)
+		out->left_seconds = left / speed;
+	free(durations);
+	return true;
 }
 
 int audiobook_part_count(void) {
