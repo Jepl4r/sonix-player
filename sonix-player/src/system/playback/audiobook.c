@@ -1,13 +1,14 @@
 #include "audiobook.h"
 
-#include "src/system/library/audiobookdb.h"
 #include "src/system/audio/eq.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/mp4.h"
+#include "src/system/library/audiobookdb.h"
 #include "src/system/library/id3chap.h"
 #include "src/system/library/vorbischap.h"
 
+#include <math.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -37,12 +38,14 @@ static unsigned serial;
 typedef struct {
 	char path[512];
 	char title[192];
+	double duration;
 } part_t;
 
 static part_t *parts;
 static int part_count;
 static int part_capacity;
 static int part_index;
+static bool length_noted;
 
 static time_t last_save;
 static double last_saved_position;
@@ -57,6 +60,7 @@ double audiobook_clamp_seek(double target, double length) {
 }
 
 static void clear_locked(void) {
+	length_noted = false;
 	free(chapters);
 	chapters = NULL;
 	chapter_count = 0;
@@ -71,7 +75,7 @@ static void clear_locked(void) {
 }
 
 // Called with `lock` held, from audiobook_track_changed().
-static bool add_part(const char *path, const char *title, void *user) {
+static bool add_part(const char *path, const char *title, double duration, void *user) {
 	(void)user;
 	if (part_count == part_capacity) {
 		int grown = part_capacity ? part_capacity * 2 : 16;
@@ -84,6 +88,7 @@ static bool add_part(const char *path, const char *title, void *user) {
 	}
 	snprintf(parts[part_count].path, sizeof(parts[0].path), "%s", path);
 	snprintf(parts[part_count].title, sizeof(parts[0].title), "%s", title);
+	parts[part_count].duration = duration;
 	part_count++;
 	return true;
 }
@@ -195,9 +200,7 @@ static int clamp_skip(long value) {
 
 int audiobook_skip_back(void) { return clamp_skip(config_get_int("audiobook", "skip_back", AUDIOBOOK_SKIP_SHORT)); }
 
-int audiobook_skip_forward(void) {
-	return clamp_skip(config_get_int("audiobook", "skip_forward", AUDIOBOOK_SKIP_SHORT));
-}
+int audiobook_skip_forward(void) { return clamp_skip(config_get_int("audiobook", "skip_forward", AUDIOBOOK_SKIP_SHORT)); }
 
 void audiobook_set_skip_back(int seconds) { config_set_int("audiobook", "skip_back", clamp_skip(seconds)); }
 
@@ -368,6 +371,7 @@ void audiobook_set_rewind_seconds(int seconds) { config_set_int("audiobook", "re
 
 void audiobook_track_changed(const char *filepath) {
 	pthread_mutex_lock(&lock);
+	length_noted = false;
 
 	if (filepath && filepath[0] && strcmp(filepath, current_path) == 0) {
 		pthread_mutex_unlock(&lock); // same file, nothing to redo
@@ -444,7 +448,8 @@ struct resume_find {
 	bool found;
 };
 
-static bool resume_part_cb(const char *path, const char *title, void *user) {
+static bool resume_part_cb(const char *path, const char *title, double duration, void *user) {
+	(void)duration;
 	(void)title;
 	struct resume_find *find = user;
 	if (!find->first[0]) {
@@ -455,6 +460,30 @@ static bool resume_part_cb(const char *path, const char *title, void *user) {
 		return false;
 	}
 	return true;
+}
+
+double audiobook_part_duration(int index) {
+	pthread_mutex_lock(&lock);
+	double duration = index >= 0 && index < part_count ? parts[index].duration : 0;
+	pthread_mutex_unlock(&lock);
+	return duration;
+}
+
+void audiobook_note_length(double total) {
+	if (!isfinite(total) || total <= 0)
+		return;
+	pthread_mutex_lock(&lock);
+	if (current_is_book && !length_noted) {
+		length_noted = true;
+		if (part_index >= 0 && part_index < part_count) {
+			double known = parts[part_index].duration;
+			if (known <= 0 || fabs(known - total) > 1) {
+				parts[part_index].duration = total;
+				audiobookdb_set_part_duration(current_path, total);
+			}
+		}
+	}
+	pthread_mutex_unlock(&lock);
 }
 
 int audiobook_part_count(void) {

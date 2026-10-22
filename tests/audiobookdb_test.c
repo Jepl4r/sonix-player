@@ -1,6 +1,19 @@
 #include "../sonix-player/src/system/library/audiobookdb.c"
 #include <assert.h>
 #include <sys/wait.h>
+// The duration probe is isolated from the database publication tests.
+bool has_extension(const char *, const char *);
+double durationprobe_seconds(const char *path) {
+  return has_extension(path, ".mp3") ? 60 : 0;
+}
+static double durations[2];
+static int duration_count;
+static bool collect_duration(const char *path, const char *title,
+                             double duration, void *user) {
+  assert(duration_count < 2);
+  durations[duration_count++] = duration;
+  return true;
+}
 static bool cancel_on_thread_start;
 static bool split_cyrillic_album;
 static bool save_during_metadata;
@@ -117,8 +130,22 @@ int main(int argc, char **argv) {
                NULL, NULL, NULL) == SQLITE_OK);
     sqlite3_close(old);
   }
+  if (!strcmp(argv[1], "duration-column")) {
+    sqlite3 *old;
+    assert(sqlite3_open(dbpath, &old) == SQLITE_OK);
+    assert(
+        sqlite3_exec(old,
+                     "CREATE TABLE AUDIOBOOK_PARTS(path TEXT PRIMARY KEY,book "
+                     "TEXT,idx INT,title TEXT); INSERT INTO AUDIOBOOK_PARTS "
+                     "VALUES('p','b',0,'t'); PRAGMA user_version=4",
+                     NULL, NULL, NULL) == SQLITE_OK);
+    sqlite3_close(old);
+  }
   assert(audiobookdb_open(dbpath));
-  if (!strcmp(argv[1], "cancel")) {
+  if (!strcmp(argv[1], "duration-column")) {
+    assert(scalar("SELECT COALESCE(duration,0) FROM AUDIOBOOK_PARTS") == 0);
+    assert(scalar("PRAGMA user_version") == 4);
+  } else if (!strcmp(argv[1], "cancel")) {
     seed();
     cancel_on_thread_start = true;
     scan_now(argv[2]);
@@ -207,7 +234,17 @@ int main(int argc, char **argv) {
     snprintf(b, sizeof(b), "%s/02.mp3", book);
     make_file(a);
     make_file(b);
-    if (!strcmp(argv[1], "cyrillic")) {
+    if (!strcmp(argv[1], "duration-kept") ||
+        !strcmp(argv[1], "duration-scan")) {
+      scan_now(argv[2]);
+      if (!strcmp(argv[1], "duration-kept")) {
+        audiobookdb_set_part_duration(b, 123.5);
+        scan_now(argv[2]);
+      }
+      assert(audiobookdb_parts_for_each(book, collect_duration, NULL) == 2);
+      assert(durations[0] == 60);
+      assert(durations[1] == (!strcmp(argv[1], "duration-kept") ? 123.5 : 60));
+    } else if (!strcmp(argv[1], "cyrillic")) {
       split_cyrillic_album = true;
       scan_now(argv[2]);
       assert(audiobookdb_count() == 1);
@@ -249,7 +286,8 @@ int main(int argc, char **argv) {
     } else if (!strcmp(argv[1], "publish-failure")) {
       seed();
       audiobookdb_set_speed("A", 1250);
-      exec("INSERT INTO AUDIOBOOK_PARTS VALUES('A.mp3','A',0,'A')");
+      exec("INSERT INTO AUDIOBOOK_PARTS(path,book,idx,title) "
+           "VALUES('A.mp3','A',0,'A')");
       sqlite3_set_authorizer(db, deny_publish, NULL);
       scan_now(argv[2]);
       sqlite3_set_authorizer(db, NULL, NULL);

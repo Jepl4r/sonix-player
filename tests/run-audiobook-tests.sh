@@ -10,7 +10,7 @@ esac
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/sonix-player" -c "$repo/sonix-player/src/system/library/library.c" -o "$build/library.o"
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/sonix-player" "$repo/tests/audiobookdb_test.c" "$build/library.o" $gc_flags -lsqlite3 -lpthread -o "$build/test"
 failed=0
-for test in cancel partial-cancel stat-error stale scan-error cyrillic live-save crash prune disc authors natural write-retry late-other-book publish-failure speed-column speed-kept; do
+for test in cancel partial-cancel stat-error stale scan-error cyrillic live-save crash prune disc authors natural write-retry late-other-book publish-failure speed-column speed-kept duration-column duration-kept duration-scan; do
  mkdir "$build/$test"
  if ! "$build/test" "$test" "$build/$test"; then failed=$((failed + 1)); fi
 done
@@ -38,4 +38,11 @@ case $(uname -s) in
 esac
 ${CC:-cc} -O1 -g $sanitizer_flags -I"$repo/sonix-player" "$repo/tests/id3chap_test.c" -o "$build/id3chap-test"
 if "$build/id3chap-test" "$build/id3chap.mp3"; then printf "%s\n" "PASS id3chap"; else failed=$((failed + 1)); fi
+# Build the real decoders for the duration fixtures; section GC drops unused playback paths.
+${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -DHOST_BUILD=1 -I"$repo/sonix-player" $(pkg-config --cflags opusfile wavpack) \
+ "$repo/tests/durationprobe_test.c" "$repo"/sonix-player/src/system/decode/*.c \
+ "$repo/sonix-player/src/system/decode/alac/alac.c" "$repo/sonix-player/src/system/decode/ape/apecore.c" \
+ "$repo/sonix-player/src/system/library/cue.c" $gc_flags $(pkg-config --libs opusfile wavpack) -lm -ldl -lpthread -o "$build/durationprobe-test"
+mkdir "$build/probe"
+if "$build/durationprobe-test" "$build/probe"; then :; else failed=$((failed + 1)); fi
 exit "$failed"

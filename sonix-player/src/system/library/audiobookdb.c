@@ -1,5 +1,7 @@
 #define _GNU_SOURCE 1 // strcasestr
 #include "audiobookdb.h"
+#include "durationprobe.h"
+#include <math.h>
 
 #include "src/system/decode/mp4.h"
 #include "src/system/library/id3chap.h"
@@ -157,7 +159,8 @@ bool audiobookdb_open(const char *db_path) {
 	exec_quiet("ALTER TABLE AUDIOBOOK_TABLE ADD COLUMN speed INT DEFAULT 0");
 
 	// The files of the folder books, a row each, in the book's order.
-	exec("CREATE TABLE IF NOT EXISTS AUDIOBOOK_PARTS(path TEXT PRIMARY KEY, book TEXT, idx INT, title TEXT)");
+	exec("CREATE TABLE IF NOT EXISTS AUDIOBOOK_PARTS(path TEXT PRIMARY KEY, book TEXT, idx INT, title TEXT, duration REAL)");
+	exec_quiet("ALTER TABLE AUDIOBOOK_PARTS ADD COLUMN duration REAL");
 	exec("CREATE INDEX IF NOT EXISTS AUDIOBOOK_PARTS_BOOK ON AUDIOBOOK_PARTS(book, idx)");
 
 	// The books heard to the end. Deliberately not a column: a rescan wipes
@@ -502,12 +505,12 @@ int audiobookdb_parts_for_each(const char *book, audiobook_part_cb cb, void *use
 	pthread_mutex_lock(&db_lock);
 	int delivered = 0;
 	sqlite3_stmt *stmt = NULL;
-	if (db && sqlite3_prepare_v2(db, "SELECT path, title FROM AUDIOBOOK_PARTS WHERE book=? ORDER BY idx", -1, &stmt, NULL) == SQLITE_OK) {
+	if (db && sqlite3_prepare_v2(db, "SELECT path, title, duration FROM AUDIOBOOK_PARTS WHERE book=? ORDER BY idx", -1, &stmt, NULL) == SQLITE_OK) {
 		sqlite3_bind_text(stmt, 1, book, -1, SQLITE_TRANSIENT);
 		while (sqlite3_step(stmt) == SQLITE_ROW) {
 			const char *path = (const char *)sqlite3_column_text(stmt, 0);
 			const char *title = (const char *)sqlite3_column_text(stmt, 1);
-			if (!cb(path ? path : "", title ? title : "", user)) {
+			if (!cb(path ? path : "", title ? title : "", sqlite3_column_double(stmt, 2), user)) {
 				break;
 			}
 			delivered++;
@@ -765,6 +768,20 @@ int audiobookdb_get_speed(const char *book_path) {
 	}
 	pthread_mutex_unlock(&db_lock);
 	return permille;
+}
+
+void audiobookdb_set_part_duration(const char *path, double seconds) {
+	if (!path || !path[0] || !isfinite(seconds) || seconds <= 0)
+		return;
+	pthread_mutex_lock(&db_lock);
+	sqlite3_stmt *stmt = NULL;
+	if (db && !sqlite3_db_readonly(db, "main") && sqlite3_prepare_v2(db, "UPDATE AUDIOBOOK_PARTS SET duration=? WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
+		sqlite3_bind_double(stmt, 1, seconds);
+		sqlite3_bind_text(stmt, 2, path, -1, SQLITE_TRANSIENT);
+		sqlite3_step(stmt);
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
 }
 
 void audiobookdb_set_speed(const char *book_path, int permille) {
@@ -1479,9 +1496,9 @@ static void insert_book(const char *path, const book_t *b) {
 	scan_found++;
 }
 
-static void insert_part(const char *path, const char *book, int index, const char *title) {
+static void insert_part(const char *path, const char *book, int index, const char *title, double duration) {
 	sqlite3_stmt *stmt = NULL;
-	if (sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO scan_parts(path,book,idx,title) VALUES(?,?,?,?)", -1, &stmt, NULL) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO scan_parts(path,book,idx,title,duration) VALUES(?,?,?,?,?)", -1, &stmt, NULL) != SQLITE_OK) {
 		scan_failed = true;
 		return;
 	}
@@ -1489,6 +1506,10 @@ static void insert_part(const char *path, const char *book, int index, const cha
 	sqlite3_bind_text(stmt, 2, book, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 3, index);
 	sqlite3_bind_text(stmt, 4, title, -1, SQLITE_TRANSIENT);
+	if (duration > 0)
+		sqlite3_bind_double(stmt, 5, duration);
+	else
+		sqlite3_bind_null(stmt, 5);
 	if (sqlite3_step(stmt) != SQLITE_DONE) {
 		scan_failed = true;
 	}
@@ -1639,9 +1660,10 @@ static void index_folder(const char *dir, const char *key, const namelist_t *par
 			snprintf(title, sizeof(title), "%s", base ? base + 1 : path);
 			strip_extension(title);
 		}
+		double duration = durationprobe_seconds(path);
 		pthread_mutex_lock(&db_lock);
 		if (db) {
-			insert_part(path, key, i, title);
+			insert_part(path, key, i, title, duration);
 		}
 		pthread_mutex_unlock(&db_lock);
 	}
@@ -1766,8 +1788,7 @@ static void scan_directory(const char *path, int depth) {
 			metadata_read(parts.items[i], tags);
 			int found = -1;
 			for (int g = 0; g < albums.count; g++) {
-				if (library_collate_casefold(NULL, (int)strlen(albums.items[g]), albums.items[g],
-										(int)strlen(tags->album), tags->album) == 0) {
+				if (library_collate_casefold(NULL, (int)strlen(albums.items[g]), albums.items[g], (int)strlen(tags->album), tags->album) == 0) {
 					found = g;
 					break;
 				}
@@ -1848,10 +1869,7 @@ static bool publish_scan(void) {
 				   " resume_file=(SELECT resume_file FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path),"
 				   " resume_pos=(SELECT resume_pos FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path),"
 				   " speed=(SELECT speed FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path)") &&
-			  exec("DELETE FROM AUDIOBOOK_TABLE")
-		&& exec("INSERT INTO AUDIOBOOK_TABLE SELECT * FROM scan_books")
-		&& exec("DELETE FROM AUDIOBOOK_PARTS")
-		&& exec("INSERT INTO AUDIOBOOK_PARTS SELECT * FROM scan_parts");
+			  exec("DELETE FROM AUDIOBOOK_TABLE") && exec("INSERT INTO AUDIOBOOK_TABLE SELECT * FROM scan_books") && exec("UPDATE scan_parts SET duration=COALESCE((SELECT duration FROM AUDIOBOOK_PARTS p WHERE p.path=scan_parts.path AND p.duration IS NOT NULL), scan_parts.duration)") && exec("DELETE FROM AUDIOBOOK_PARTS") && exec("INSERT INTO AUDIOBOOK_PARTS(path,book,idx,title,duration) SELECT path,book,idx,title,duration FROM scan_parts");
 	if (ok) {
 		char sql[48];
 		snprintf(sql, sizeof(sql), "PRAGMA user_version=%d", SCHEMA_VERSION);
@@ -1872,12 +1890,7 @@ static void *scan_thread_func(void *arg) {
 	scan_failed = !db;
 	if (db) {
 		// TEMP tables disappear on crash; the persistent index remains intact.
-		scan_failed = !(exec("DROP TABLE IF EXISTS temp.scan_books")
-			&& exec("DROP TABLE IF EXISTS temp.scan_parts")
-			&& exec("CREATE TEMP TABLE scan_books AS SELECT * FROM AUDIOBOOK_TABLE WHERE 0")
-			&& exec("CREATE UNIQUE INDEX temp.scan_books_path ON scan_books(path)")
-			&& exec("CREATE TEMP TABLE scan_parts AS SELECT * FROM AUDIOBOOK_PARTS WHERE 0")
-			&& exec("CREATE UNIQUE INDEX temp.scan_parts_path ON scan_parts(path)"));
+		scan_failed = !(exec("DROP TABLE IF EXISTS temp.scan_books") && exec("DROP TABLE IF EXISTS temp.scan_parts") && exec("CREATE TEMP TABLE scan_books AS SELECT * FROM AUDIOBOOK_TABLE WHERE 0") && exec("CREATE UNIQUE INDEX temp.scan_books_path ON scan_books(path)") && exec("CREATE TEMP TABLE scan_parts AS SELECT * FROM AUDIOBOOK_PARTS WHERE 0") && exec("CREATE UNIQUE INDEX temp.scan_parts_path ON scan_parts(path)"));
 	}
 	pthread_mutex_unlock(&db_lock);
 
