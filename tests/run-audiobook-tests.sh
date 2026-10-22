@@ -25,7 +25,7 @@ ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$r
 if "$build/part-step-test"; then printf "%s\n" "PASS playback-part-step"; else failed=$((failed + 1)); fi
 ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/audiobook_units_test.c" $gc_flags -lpthread -o "$build/units-test"
 if "$build/units-test"; then printf "%s\n" "PASS audiobook-units"; else failed=$((failed + 1)); fi
-for test in playback_floor sleep_checkpoint; do
+for test in playback_floor sleep_checkpoint sleep_checkpoint_race; do
  ${CC:-cc} -O1 -g -ffunction-sections -fdata-sections -I"$repo/tests/stubs" -I"$repo/sonix-player" "$repo/tests/${test}_test.c" $gc_flags -lpthread -o "$build/$test-test"
  if "$build/$test-test"; then :; else failed=$((failed + 1)); fi
 done

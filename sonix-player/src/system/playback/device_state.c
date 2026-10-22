@@ -220,22 +220,52 @@ static void capture_book_break(const char *filepath) {
 }
 
 static bool explicit_book_load;
+// Serialize input-thread seeks with GUI sampling/restoration. Internal load
+// helpers take only the short state lock, never this transaction lock.
+static pthread_mutex_t book_transition_lock = PTHREAD_MUTEX_INITIALIZER;
+static pthread_mutex_t book_checkpoint_lock = PTHREAD_MUTEX_INITIALIZER;
 static long long sleep_checkpoint_deadline;
 static char sleep_checkpoint_file[512];
 static double sleep_checkpoint_seconds;
 
 static void seed_sleep_checkpoint(double seconds) {
-	if (sleep_checkpoint_deadline && !sleep_checkpoint_file[0] && audiobook_is_playing()) {
-		snprintf(sleep_checkpoint_file, sizeof(sleep_checkpoint_file), "%s", current_metadata_file);
+	if (!audiobook_is_playing())
+		return;
+	char file[512];
+	audio_get_current_file(file, sizeof(file));
+	pthread_mutex_lock(&book_checkpoint_lock);
+	if (sleep_checkpoint_deadline && !sleep_checkpoint_file[0]) {
+		snprintf(sleep_checkpoint_file, sizeof(sleep_checkpoint_file), "%s", file);
 		sleep_checkpoint_seconds = seconds > 0 ? seconds : 0;
 	}
+	pthread_mutex_unlock(&book_checkpoint_lock);
+}
+
+static void invalidate_sleep_checkpoint(bool disarm) {
+	pthread_mutex_lock(&book_checkpoint_lock);
+	sleep_checkpoint_file[0] = '\0';
+	if (disarm)
+		sleep_checkpoint_deadline = 0;
+	pthread_mutex_unlock(&book_checkpoint_lock);
+}
+
+static void cancel_explicit_book_load(void) {
+	pthread_mutex_lock(&book_checkpoint_lock);
+	explicit_book_load = false;
+	pthread_mutex_unlock(&book_checkpoint_lock);
+}
+
+static void abandon_book_restore(void) {
+	audiobook_take_boot_break();
+	audiobook_take_rewind_suppression();
 }
 
 // An explicit selection supersedes the pending saved-position restore.
 static void supersede_book_restore(void) {
+	pthread_mutex_lock(&book_checkpoint_lock);
 	explicit_book_load = true;
-	audiobook_take_boot_break();
-	audiobook_take_rewind_suppression();
+	pthread_mutex_unlock(&book_checkpoint_lock);
+	abandon_book_restore();
 }
 
 static bool automatic_rewind_load;
@@ -251,11 +281,15 @@ static void change_book_track(const char *filepath) {
 			audiobook_note_position(current, total, true);
 		}
 	}
-	if (explicit_book_load) {
-		audiobook_clear_rewind_floor();
+	pthread_mutex_lock(&book_checkpoint_lock);
+	bool explicit = explicit_book_load;
+	if (explicit) {
 		sleep_checkpoint_file[0] = '\0';
 		explicit_book_load = false;
 	}
+	pthread_mutex_unlock(&book_checkpoint_lock);
+	if (explicit)
+		audiobook_clear_rewind_floor();
 	audiobook_track_changed(filepath);
 }
 
@@ -1279,7 +1313,7 @@ bool device_state_play_random_album(library_filter_t filter, const char *value) 
 
 	char album[256];
 	if (!random_albums_pick(playlist_album(), album, sizeof(album)) || !start_album(album, true)) {
-		explicit_book_load = false;
+		cancel_explicit_book_load();
 		return false;
 	}
 	random_albums_push(album);
@@ -1572,7 +1606,7 @@ bool device_state_next(char *out_path, size_t out_size) {
 	}
 
 	if (!playlist_next(path, sizeof(path))) {
-		explicit_book_load = false;
+		cancel_explicit_book_load();
 		return false;
 	}
 
@@ -1601,7 +1635,7 @@ bool device_state_prev(char *out_path, size_t out_size) {
 	}
 
 	if (!playlist_prev(path, sizeof(path))) {
-		explicit_book_load = false;
+		cancel_explicit_book_load();
 		return false;
 	}
 
@@ -1804,11 +1838,10 @@ static unsigned seek_serial;
 
 unsigned device_state_seek_serial(void) { return __atomic_load_n(&seek_serial, __ATOMIC_RELAXED); }
 
-void device_state_seek(double seconds) {
-	supersede_book_restore();
+static void seek_book_position(double seconds) {
+	abandon_book_restore();
 	audiobook_clear_rewind_floor();
-	sleep_checkpoint_file[0] = '\0';
-	explicit_book_load = false;
+	invalidate_sleep_checkpoint(false);
 	if (audio_get_status() == AUDIO_STATUS_PAUSED)
 		audiobook_suppress_rewind_once();
 	__atomic_fetch_add(&seek_serial, 1, __ATOMIC_RELAXED);
@@ -1843,33 +1876,53 @@ void device_state_seek(double seconds) {
 	}
 }
 
-void device_state_sleep_checkpoint(long long deadline_ms) {
+void device_state_seek(double seconds) {
+	pthread_mutex_lock(&book_transition_lock);
+	seek_book_position(seconds);
+	pthread_mutex_unlock(&book_transition_lock);
+}
+
+static void sample_sleep_checkpoint(long long deadline_ms) {
 	if (!deadline_ms || !audiobook_is_playing() || audio_get_status() != AUDIO_STATUS_PLAYING) {
-		sleep_checkpoint_deadline = 0;
-		sleep_checkpoint_file[0] = '\0';
+		invalidate_sleep_checkpoint(true);
 		return;
 	}
 	struct timespec ts;
 	clock_gettime(CLOCK_MONOTONIC, &ts);
 	long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+	double seconds = 0, total = 0;
+	char file[512];
+	audio_get_progress(&seconds, &total);
+	audio_get_current_file(file, sizeof(file));
 	// Keep the last sample before attenuation starts, including a late GUI tick.
 	// Automatic part changes retain this file throughout the fade.
+	pthread_mutex_lock(&book_checkpoint_lock);
 	if (deadline_ms != sleep_checkpoint_deadline || !sleep_checkpoint_file[0] ||
 		now <= deadline_ms - SLEEPFADE_SPAN_MS) {
-		double total = 0;
-		audio_get_progress(&sleep_checkpoint_seconds, &total);
-		snprintf(sleep_checkpoint_file, sizeof(sleep_checkpoint_file), "%s", current_metadata_file);
+		sleep_checkpoint_seconds = seconds;
+		snprintf(sleep_checkpoint_file, sizeof(sleep_checkpoint_file), "%s", file);
 	}
 	sleep_checkpoint_deadline = deadline_ms;
+	pthread_mutex_unlock(&book_checkpoint_lock);
 }
 
-bool device_state_sleep_restore(long long deadline_ms) {
-	if (!deadline_ms || deadline_ms != sleep_checkpoint_deadline || !sleep_checkpoint_file[0] ||
-		!audiobook_is_playing())
+void device_state_sleep_checkpoint(long long deadline_ms) {
+	pthread_mutex_lock(&book_transition_lock);
+	sample_sleep_checkpoint(deadline_ms);
+	pthread_mutex_unlock(&book_transition_lock);
+}
+
+static bool restore_sleep_checkpoint(long long deadline_ms) {
+	if (!audiobook_is_playing())
 		return false;
+	pthread_mutex_lock(&book_checkpoint_lock);
+	bool valid = deadline_ms && deadline_ms == sleep_checkpoint_deadline && sleep_checkpoint_file[0];
 	char file[sizeof(sleep_checkpoint_file)];
 	snprintf(file, sizeof(file), "%s", sleep_checkpoint_file);
 	double seconds = sleep_checkpoint_seconds;
+	pthread_mutex_unlock(&book_checkpoint_lock);
+	if (!valid)
+		return false;
 	if (strcmp(file, current_metadata_file) != 0 && access(file, R_OK) != 0)
 		return false;
 	printf("device_state: sleep checkpoint %s at %.3f s\n", file, seconds);
@@ -1882,12 +1935,18 @@ bool device_state_sleep_restore(long long deadline_ms) {
 	audio_seek(seconds);
 	audiobook_suppress_rewind_once();
 	audiobook_note_position(seconds, 0, true);
-	sleep_checkpoint_deadline = 0;
-	sleep_checkpoint_file[0] = '\0';
+	invalidate_sleep_checkpoint(true);
 	return true;
 }
 
-bool device_state_seek_book_part(const char *file, double seconds) {
+bool device_state_sleep_restore(long long deadline_ms) {
+	pthread_mutex_lock(&book_transition_lock);
+	bool restored = restore_sleep_checkpoint(deadline_ms);
+	pthread_mutex_unlock(&book_transition_lock);
+	return restored;
+}
+
+static bool seek_book_part(const char *file, double seconds) {
 	char book[512], current[512];
 	if (!file || !audiobook_current_book(book, sizeof(book), current, sizeof(current)))
 		return false;
@@ -1920,10 +1979,9 @@ bool device_state_seek_book_part(const char *file, double seconds) {
 			return false;
 	}
 	// The caller marks before a cross-file load; this seek must not replace it.
-	supersede_book_restore();
+	abandon_book_restore();
 	audiobook_clear_rewind_floor();
-	sleep_checkpoint_file[0] = '\0';
-	explicit_book_load = false;
+	invalidate_sleep_checkpoint(false);
 	if (audio_get_status() == AUDIO_STATUS_PAUSED)
 		audiobook_suppress_rewind_once();
 	__atomic_fetch_add(&seek_serial, 1, __ATOMIC_RELAXED);
@@ -1935,6 +1993,13 @@ bool device_state_seek_book_part(const char *file, double seconds) {
 	seed_sleep_checkpoint(seconds);
 	audiobook_note_position(seconds, total, true);
 	return true;
+}
+
+bool device_state_seek_book_part(const char *file, double seconds) {
+	pthread_mutex_lock(&book_transition_lock);
+	bool sought = seek_book_part(file, seconds);
+	pthread_mutex_unlock(&book_transition_lock);
+	return sought;
 }
 
 bool device_state_back_before_jump(void) {

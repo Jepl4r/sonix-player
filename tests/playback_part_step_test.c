@@ -197,7 +197,12 @@ double podcaststate_resume_point(const char *path) { return -1.0; }
 
 // The engine and host UI boundary; the production getter observes these states.
 audio_status_t audio_get_status(void) { return test_status; }
-void audio_pause(void) { test_status = AUDIO_STATUS_PAUSED; }
+void audio_pause(void) {
+	test_status = AUDIO_STATUS_PAUSED;
+#ifdef AUDIO_PAUSE_HOOK
+	AUDIO_PAUSE_HOOK();
+#endif
+}
 void audio_resume(void) { test_status = AUDIO_STATUS_PLAYING; }
 void audio_seek(double seconds) { sought = seconds; }
 void audio_get_current_file(char *out, size_t size) {
