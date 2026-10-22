@@ -10,6 +10,13 @@
 #undef books_list
 #undef books_loaded_cb
 #undef books_screen
+#undef ROW_HEIGHT
+#undef ROW_RADIUS
+#define empty_label chapters_empty_label
+#define format_clock chapters_format_clock
+#include "../sonix-player/src/gui/nowplaying/chapters.c"
+#undef format_clock
+#undef empty_label
 
 static mark_t picked_mark = {.file = "b.mp3", .seconds = 50};
 bool player_sheet_drag_active(void) { return false; }
@@ -17,7 +24,10 @@ bool switcher_back_drag_active(void) { return false; }
 void player_refresh_now_playing(void) {}
 void player_sheet_open(bool animated) {}
 void back_btn_cb(lv_event_t *event) {}
-void *lv_event_get_user_data(lv_event_t *event) { return NULL; }
+static intptr_t event_user_index;
+void *lv_event_get_user_data(lv_event_t *event) {
+  return (void *)event_user_index;
+}
 void playlist_load_folder(const char *folder, const char *filename) {}
 bool audiobookdb_is_folder_book(const char *book) { return false; }
 int audiobookdb_parts_for_each(const char *book, audiobook_part_cb cb,
@@ -40,14 +50,10 @@ bool audiobook_resume_point(const char *book, char *file, size_t size,
   return true;
 }
 
-bool audiobook_stop_at_chapter_end(void) { return true; }
 int audiobook_chapter_at(double seconds) { return 0; }
 bool audiobook_chapter(int index, char *title, size_t size, double *seconds) {
   *seconds = 200;
   return index == 1;
-}
-bool audiobook_rewind_floor_beyond(double seconds) {
-  return floor_armed && seconds < 250;
 }
 static bool audiobook_mode = true;
 static bool podcast_mode;
@@ -56,7 +62,6 @@ static void book_chapters_action(void *user) {}
 static void book_add_bookmark_action(void *user) {}
 static void book_bookmarks_action(void *user) {}
 static void book_summary_action(void *user) {}
-static void book_back_before_jump_action(void *user) {}
 static void book_work_out_length_action(void *user) {}
 bool audiobook_lengths_missing(void) { return false; }
 bool audiobook_working_out(void) { return false; }
@@ -90,6 +95,49 @@ int main(int argc, char **argv) {
   mark_count = 1;
   audiobook_mark_jump("a.mp3", current_position);
   int before = jump_marks;
+  if (!strcmp(argv[1], "failed-part") || !strcmp(argv[1], "picked-part")) {
+    event_user_index = 1;
+    fail_load = !strcmp(argv[1], "failed-part");
+    part_clicked_cb(NULL);
+    if (fail_load) {
+      assert(floor_armed && jump_marks == before);
+      assert(!strcmp(selected, "a.mp3") && !strcmp(origin_file, "a.mp3") &&
+             origin_seconds == 123 && !loaded);
+      puts("PASS part-failed-load-keeps-floor-and-origin");
+    } else {
+      assert(!floor_armed && jump_marks == before + 1);
+      assert(!strcmp(selected, "b.mp3") && !strcmp(origin_file, "a.mp3") &&
+             origin_seconds == 123 && sought == 0 &&
+             test_status == AUDIO_STATUS_PAUSED);
+      puts("PASS part-picked-load-marks-outgoing-origin");
+    }
+    return 0;
+  }
+  if (!strcmp(argv[1], "stopped-back") || !strcmp(argv[1], "paused-back") ||
+      !strcmp(argv[1], "playing-back")) {
+    test_status = AUDIO_STATUS_PLAYING;
+    more_btn_event_cb(NULL);
+    assert(menu_has_back);
+    audio_status_t status =
+        !strcmp(argv[1], "stopped-back")  ? AUDIO_STATUS_STOPPED
+        : !strcmp(argv[1], "paused-back") ? AUDIO_STATUS_PAUSED
+                                          : AUDIO_STATUS_PLAYING;
+    test_status = status;
+    sought = -1;
+    book_back_before_jump_action(NULL);
+    assert(test_status == status && jump_marks == before);
+    if (status == AUDIO_STATUS_STOPPED) {
+      assert(!strcmp(origin_file, "a.mp3") && origin_seconds == 123 &&
+             floor_armed && sought == -1 && !loaded);
+      puts("PASS back-action-stopped-keeps-origin");
+    } else {
+      assert(!origin_file[0] && !floor_armed && sought == 123);
+      puts(status == AUDIO_STATUS_PAUSED
+               ? "PASS back-action-paused-returns-to-origin"
+               : "PASS back-action-playing-returns-to-origin");
+    }
+    return 0;
+  }
   if (!strcmp(argv[1], "failed-bookmark")) {
     navigation_readable = false;
     mark_pick_cb(NULL);
@@ -154,6 +202,10 @@ int main(int argc, char **argv) {
     return 0;
   }
 
+  if (strcmp(argv[1], "library-resume")) {
+    fprintf(stderr, "Unknown GUI book scenario: %s\n", argv[1]);
+    return 1;
+  }
   navigation_readable = true;
   suppress_rewind = false;
   book_loaded = rewind_on = true;

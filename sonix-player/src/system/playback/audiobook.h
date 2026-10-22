@@ -225,6 +225,7 @@ bool audiobook_current_book(char *book_out, size_t book_size, char *file_out, si
 void audiobook_place_label(double seconds, char *out, size_t size);
 
 // One return point for manual navigation in the loaded book.
+// Accepts the current file or a part of the loaded book; another book is rejected.
 void audiobook_mark_jump(const char *file, double seconds);
 bool audiobook_jump_origin(char *file_out, size_t size, double *seconds_out);
 void audiobook_clear_jump(void);

@@ -4937,7 +4937,7 @@ static void book_bookmarks_action(void *user) {
 
 static void book_back_before_jump_action(void *user) {
 	(void)user;
-	if (device_state_back_before_jump()) {
+	if (audio_get_status() != AUDIO_STATUS_STOPPED && device_state_back_before_jump()) {
 		player_refresh_now_playing();
 		update_progress();
 	}

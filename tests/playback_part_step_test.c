@@ -40,7 +40,7 @@ static double origin_seconds;
 
 static double current_position = 123;
 void audiobook_mark_jump(const char *file, double seconds) {
-	assert(seconds == current_position);
+	assert(seconds >= 0);
 	jump_marks++;
 	snprintf(origin_file, sizeof(origin_file), "%s", file);
 	origin_seconds = seconds;
@@ -202,6 +202,19 @@ int main(void) {
 	assert(device_state_back_before_jump());
 	assert(test_status == AUDIO_STATUS_PLAYING && sought == 55 && !origin_file[0]);
 	puts("PASS playback-jump-playing-and-same-file-return");
+	// In this fixture an armed floor stands in b.mp3, beyond a.mp3's end.
+	for (int with_floor = 1; with_floor >= 0; with_floor--) {
+		floor_armed = with_floor;
+		snprintf(selected, sizeof(selected), "a.mp3");
+		test_status = AUDIO_STATUS_PLAYING;
+		loaded = false;
+		char next[512] = "";
+		assert(device_state_advance_auto(next, sizeof(next)));
+		assert(loaded && !strcmp(next, "b.mp3") && !strcmp(selected, "b.mp3"));
+		assert(test_status == (with_floor ? AUDIO_STATUS_PLAYING : AUDIO_STATUS_PAUSED));
+		assert(floor_armed == with_floor);
+		puts(with_floor ? "PASS playback-folder-next-floor-continues" : "PASS playback-folder-no-floor-stops-at-part-end");
+	}
 	return 0;
 }
 void audio_set_speed(double speed) {}
@@ -422,4 +435,83 @@ int audiobook_part_count(void) { return 2; }
 bool audiobook_part(int index, char *title, size_t ts, char *path, size_t ps) {
 	snprintf(path, ps, "%s", parts[index]); return true;
 }
+bool audiobook_has_next_part(void) { return !strcmp(selected, "a.mp3"); }
+bool audiobook_stop_at_chapter_end(void) { return true; }
+bool audiobook_rewind_floor_beyond(double seconds) {
+	// DBL_MAX asks about the next part; GUI chapter checks use local seconds.
+	return floor_armed && (seconds == DBL_MAX || seconds < 250);
+}
+bool playlist_advance_auto(char *path, size_t size) {
+	queued = 1;
+	snprintf(path, size, "b.mp3");
+	return true;
+}
+// Non-book auto-advance dependencies: these fixtures must never enter them.
+// Other harnesses rename main and supply their own boundary stubs.
+#ifndef main
+long config_get_int(const char *section, const char *key, long fallback) {
+	assert(0);
+	return fallback;
+}
+bool playlist_is_custom(void) {
+	assert(0);
+	return false;
+}
+bool playlist_at_end(void) {
+	assert(0);
+	return false;
+}
+bool playlist_locate(const char *path) {
+	assert(0);
+	return false;
+}
+playback_mode_t playlist_get_mode(void) {
+	assert(0);
+	return PLAYBACK_MODE_NORMAL;
+}
+const char *playlist_album(void) {
+	assert(0);
+	return NULL;
+}
+const char *playlist_card_root(void) {
+	assert(0);
+	return NULL;
+}
+void playlist_set_album(const char *album) { assert(0); }
+void playlist_load_folder(const char *folder, const char *filename) { assert(0); }
+bool playlist_next_folder(const char *root, const char *folder, char *out, size_t size) {
+	assert(0);
+	return false;
+}
+bool playlist_prev_folder(const char *root, const char *folder, char *out, size_t size) {
+	assert(0);
+	return false;
+}
+bool library_album_same(const char *a, const char *b) {
+	assert(0);
+	return false;
+}
+void library_album_title(const char *value, char *out, size_t size) { assert(0); }
+int library_for_each(library_list_t kind, library_filter_t filter, const char *value, library_row_cb cb, void *user) {
+	assert(0);
+	return 0;
+}
+int library_for_each_ordered(library_list_t kind, library_filter_t filter, const char *value, library_order_t order, library_row_cb cb, void *user) {
+	assert(0);
+	return 0;
+}
+library_index_t *library_index_open(library_list_t kind, library_filter_t filter, const char *value, library_order_t order, bool desc) {
+	assert(0);
+	return NULL;
+}
+void library_index_close(library_index_t *ix) { assert(0); }
+int library_index_count(const library_index_t *ix) {
+	assert(0);
+	return 0;
+}
+int library_index_window(const library_index_t *ix, int offset, int count, library_row_cb cb, void *user) {
+	assert(0);
+	return 0;
+}
+#endif
 double audiobook_clamp_seek(double seconds, double total) { return seconds; }

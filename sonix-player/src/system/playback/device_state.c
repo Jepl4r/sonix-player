@@ -1990,7 +1990,7 @@ static bool seek_book_part(const char *file, double seconds) {
 		if (!loaded)
 			return false;
 	}
-	// The caller marks before a cross-file load; this seek must not replace it.
+	// Callers mark after a successful cross-file load; this seek never marks.
 	abandon_book_restore();
 	audiobook_clear_rewind_floor();
 	invalidate_sleep_checkpoint(false);

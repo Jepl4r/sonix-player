@@ -85,9 +85,9 @@ static void part_clicked_cb(lv_event_t *e) {
 	if (strcmp(path, state.current_file) == 0) {
 		device_state_seek(0);
 	} else {
-		audiobook_mark_jump(state.current_file, state.progress_current_secs);
 		if (!device_state_seek_book_part(path, 0))
 			return;
+		audiobook_mark_jump(state.current_file, state.progress_current_secs);
 	}
 
 	player_refresh_now_playing();
