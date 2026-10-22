@@ -671,14 +671,8 @@ static bool audiobook_auto_stop(const device_state_t *state) {
 // ends: asking for -10 s in the first second means the beginning, and running
 // off the end of the file would stop the book instead of moving in it.
 static void audiobook_seek_by(double delta, const device_state_t *state) {
-	double target = state->progress_current_secs + delta;
-	if (target < 0) {
-		target = 0;
-	}
 	double length = state->progress_total_secs > 0 ? state->progress_total_secs : current_total_length;
-	if (length > 1.0 && target > length - 1.0) {
-		target = length - 1.0;
-	}
+	double target = audiobook_clamp_seek(state->progress_current_secs + delta, length);
 
 	device_state_seek(target);
 	// Written through immediately: a jump is a deliberate move, and the ten

@@ -37,6 +37,15 @@ void audiobookdb_mark_finished(const char *book) {
 	snprintf(finished_book, sizeof(finished_book), "%s", book);
 }
 
+static void seeks_stay_short_of_eof(void) {
+	assert(audiobook_clamp_seek(60, 60) == 59);
+	assert(audiobook_clamp_seek(59.8, 60) == 59);
+	assert(audiobook_clamp_seek(55, 60) == 55);
+	assert(audiobook_clamp_seek(-5, 60) == 0);
+	assert(audiobook_clamp_seek(0.5, 0.5) == 0);
+	assert(audiobook_clamp_seek(5, 0) == 5);
+}
+
 static void late_position_is_kept(void) {
 	audiobook_track_changed(NULL);
 	audiobook_track_changed("/other.m4b");
@@ -477,6 +486,7 @@ int main(void) {
   eq_setting();
   eq_apply();
   speed_per_book();
+	seeks_stay_short_of_eof();
 	late_position_is_kept();
 	natural_finish_starts_over();
 	folder_finish_starts_at_first_part();

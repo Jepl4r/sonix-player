@@ -165,6 +165,9 @@ unsigned audiobook_serial(void);
 // is a part of a folder book other than the one it was left in.
 double audiobook_saved_position(const char *filepath);
 
+// Keeps seeks one second short of a known file end, and never below zero.
+double audiobook_clamp_seek(double target, double length);
+
 // Notes how far into the book playback has got. Throttled: a write every ten
 // seconds while playing is enough to lose no more than that, and an SD card
 // does not want a database write every half second. Those checkpoints go to a

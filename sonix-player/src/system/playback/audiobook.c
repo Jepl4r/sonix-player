@@ -49,6 +49,13 @@ static double last_saved_position;
 static bool finished_marked; // this book has already been put on the shelf
 static int book_speed;		 // the loaded book's own speed in permille, 0 for none
 
+double audiobook_clamp_seek(double target, double length) {
+	if (length > 0 && target > length - 1.0) {
+		target = length - 1.0;
+	}
+	return target < 0 ? 0 : target;
+}
+
 static void clear_locked(void) {
 	free(chapters);
 	chapters = NULL;

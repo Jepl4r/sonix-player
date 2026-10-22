@@ -1624,18 +1624,9 @@ void device_state_scrub_by(double delta) {
 		scrub_target = current; // from where the music actually is
 		snprintf(scrub_file, sizeof(scrub_file), "%s", current_metadata_file);
 	}
-	scrub_target += delta;
-	if (scrub_target < 0) {
-		scrub_target = 0;
-	}
 	// A whisker short of the end, so running off the edge does not finish the
 	// track and start the next one.
-	if (scrub_target > total - 1) {
-		scrub_target = total - 1;
-		if (scrub_target < 0) {
-			scrub_target = 0;
-		}
-	}
+	scrub_target = audiobook_clamp_seek(scrub_target + delta, total);
 	pthread_mutex_unlock(&scrub_lock);
 }
 
@@ -1661,6 +1652,14 @@ void device_state_seek(double seconds) {
 	// was still open, or the interface would go on drawing a thumb that no
 	// longer means anything.
 	scrub_cancel();
+
+	// Every book seek stays short of EOF, including slider and scrub commits.
+	if (audiobook_is_playing()) {
+		double current = 0;
+		double length = 0;
+		audio_get_progress(&current, &length);
+		seconds = audiobook_clamp_seek(seconds, length);
+	}
 
 	// If playback already ended, restart the current track first so seeking
 	// (e.g. dragging the slider or hitting prev) resumes playback intuitively
