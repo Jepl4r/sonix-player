@@ -55,7 +55,16 @@ static bool lengths_working;
 static bool lengths_done;
 static char lengths_book[512];
 static bool lengths_cancel;
-static pthread_cond_t lengths_idle = PTHREAD_COND_INITIALIZER;
+static pthread_cond_t lengths_idle;
+static pthread_once_t lengths_idle_once = PTHREAD_ONCE_INIT;
+
+static void lengths_idle_init(void) {
+	pthread_condattr_t attr;
+	pthread_condattr_init(&attr);
+	pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+	pthread_cond_init(&lengths_idle, &attr);
+	pthread_condattr_destroy(&attr);
+}
 
 static time_t last_save;
 static double last_saved_position;
@@ -518,8 +527,9 @@ typedef struct {
 static bool lengths_current_locked(const lengths_job_t *job) { return !lengths_cancel && current_is_book && !strcmp(current_book, job->book) && audiobookdb_card_epoch() == job->card; }
 
 static void lengths_cancel_and_wait(unsigned ms) {
+	pthread_once(&lengths_idle_once, lengths_idle_init);
 	struct timespec until;
-	clock_gettime(CLOCK_REALTIME, &until);
+	clock_gettime(CLOCK_MONOTONIC, &until);
 	until.tv_sec += ms / 1000;
 	until.tv_nsec += (long)(ms % 1000) * 1000000;
 	if (until.tv_nsec >= 1000000000) {
@@ -597,7 +607,9 @@ static void *lengths_thread_func(void *arg) {
 }
 
 void audiobook_work_out_lengths(void) {
+	pthread_once(&lengths_idle_once, lengths_idle_init);
 	pthread_mutex_lock(&lock);
+	// A tap during an old book's decoder open is dropped; the entry stays for the next tap.
 	if (lengths_working || !lengths_missing_locked()) {
 		pthread_mutex_unlock(&lock);
 		return;
