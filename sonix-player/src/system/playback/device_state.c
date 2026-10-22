@@ -1656,7 +1656,12 @@ void device_state_scrub_commit(void) {
 	}
 }
 
+static unsigned seek_serial;
+
+unsigned device_state_seek_serial(void) { return seek_serial; }
+
 void device_state_seek(double seconds) {
+	seek_serial++;
 	// A seek from anywhere else -- the slider, the queue -- ends a scrub that
 	// was still open, or the interface would go on drawing a thumb that no
 	// longer means anything.

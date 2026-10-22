@@ -72,6 +72,8 @@ static lv_obj_t *book_line_row;
 static lv_obj_t *book_line_label;
 static bool book_line_finished;
 static unsigned book_line_serial;
+static unsigned book_line_seek_serial;
+#define BOOK_LINE_HEIGHT 30
 static lv_obj_t *format_label; // "16/44.1 FLAC", right of the artist line
 static lv_obj_t *fav_btn_obj;  // the button it sits on, hidden on a book
 static lv_obj_t *controls_row; // transport row: where the ellipsis lives, and the star in Studio
@@ -3033,18 +3035,18 @@ static void update_book_line(const device_state_t *state) {
 	if (!book_line_label || !audiobook_mode)
 		return;
 	unsigned serial = audiobook_serial();
-	if (serial != book_line_serial || state->status == AUDIO_STATUS_PLAYING)
+	unsigned seek_serial = device_state_seek_serial();
+	if (serial != book_line_serial || seek_serial != book_line_seek_serial || state->status == AUDIO_STATUS_PLAYING)
 		book_line_finished = false;
 	book_line_serial = serial;
-	audiobook_progress_t progress;
-	if (!audiobook_book_progress(state->progress_current_secs, audio_get_speed(), &progress) || !progress.known_left) {
+	book_line_seek_serial = seek_serial;
+	audiobook_progress_t progress = {.known_total = true, .known_left = true};
+	if (!book_line_finished && (!audiobook_book_progress(state->progress_current_secs, audio_get_speed(), &progress) || !progress.known_left)) {
 		lv_label_set_text(book_line_label, tr("audiobook_book_unknown"));
 		return;
 	}
-	if (book_line_finished)
-		progress.left_seconds = 0;
 	int minutes = (int)ceil(progress.left_seconds / 60.0);
-	if (minutes < 1)
+	if (minutes < 1 && !book_line_finished)
 		minutes = 1;
 	char left[192];
 	if (minutes >= 60)
@@ -3073,12 +3075,17 @@ static void chapter_row_sync(void) {
 	if (!chapter_prev_btn || !chapter_next_btn || !song_text_obj || !song_side_obj) {
 		return;
 	}
-	int extra = audiobook_mode && lv_obj_get_style_height(player_screen, 0) == 720 ? 30 : 0;
+	// On the short panel the cover gives the book line's height to the controls.
+	// The alternative layout keeps the line on the cover, so needs no extra menu space.
+	int extra = audiobook_mode && !layout_alt_now && lv_obj_get_style_height(player_screen, 0) == 720 ? BOOK_LINE_HEIGHT : 0;
 	if (cover_base_h && cover_box_h != cover_base_h - extra) {
 		cover_box_h = cover_base_h - extra;
-		lv_obj_set_height(player_menu, menu_base_h + extra);
+		backdrop_h = menu_base_h + extra;
+		lv_obj_set_height(player_menu, backdrop_h);
 		if (!studio_up)
 			lv_obj_set_height(cover_panel, cover_box_h);
+		if (cover_shown_path[0])
+			reload_cover(cover_shown_path);
 	}
 	bool on = audiobook_mode && audiobook_has_chapters;
 	bool studio = layout_studio_now && studio_head;
@@ -3881,6 +3888,11 @@ static void refresh_now_playing(void) {
 	show_track_texts(&state);
 	chapter_line_unit = -1;
 	update_chapter_line(&state); // a book with chapters says which one instead
+	if (audiobook_serial() != book_line_serial) {
+		if (state.progress_total_secs > 0)
+			audiobook_note_length(state.progress_total_secs);
+		update_book_line(&state);
+	}
 	lyrics_head_sync();
 	alt_pills_sync();
 
@@ -4423,6 +4435,7 @@ static void handle_track_finished(void) {
 			audiobook_note_finished();
 			book_line_finished = true;
 			book_line_serial = audiobook_serial();
+			book_line_seek_serial = device_state_seek_serial();
 		}
 		// The queue ran out: the track it ended on went into the history.
 		trackmenu_notify_now_playing();
@@ -4957,6 +4970,7 @@ static void progress_slider_event_cb(lv_event_t *e) {
 
 		device_state_seek(seconds);
 
+		update_progress();
 		lv_timer_resume(progress_slider_timer);
 	}
 
@@ -5643,7 +5657,7 @@ void player_init(gui_config_t *cfg) {
 
 	book_line_row = lv_obj_create(song_text);
 	lv_obj_remove_style_all(book_line_row);
-	lv_obj_set_size(book_line_row, lv_pct(100), 30);
+	lv_obj_set_size(book_line_row, lv_pct(100), BOOK_LINE_HEIGHT);
 	lv_obj_set_flex_flow(book_line_row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(book_line_row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_right(book_line_row, 48, 0);

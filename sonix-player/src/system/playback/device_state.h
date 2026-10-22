@@ -178,6 +178,8 @@ bool device_state_take_completion(void);
 audio_status_t device_state_toggle_play_pause(void);
 
 void device_state_seek(double seconds);
+// GUI-thread generation of explicit seeks, including slider and scrub commits.
+unsigned device_state_seek_serial(void);
 
 // Called with the playing track's position and length, from the progress
 // poll. In the last seconds of a track, with gapless on, reads the next one

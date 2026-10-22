@@ -490,7 +490,7 @@ void audiobook_note_length(double total) {
 				snprintf(path, sizeof(path), "%s", current_path);
 				seconds = total;
 			}
-		} else if (part_index == -1) {
+		} else if (part_count == 0) {
 			file_length = total;
 		}
 	}
@@ -509,6 +509,10 @@ bool audiobook_book_progress(double seconds, double speed, audiobook_progress_t 
 		return false;
 	}
 	int index = part_index;
+	if (part_count > 0 && (index < 0 || index >= part_count)) {
+		pthread_mutex_unlock(&lock);
+		return true;
+	}
 	int count = index >= 0 && index < part_count ? part_count : 1;
 	double *durations = malloc((size_t)count * sizeof(*durations));
 	if (!durations) {

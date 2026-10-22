@@ -535,6 +535,17 @@ static void book_progress(void) {
 	puts("PASS audiobook-progress-parts");
 
 	reset();
+	set_parts(3, -1);
+	parts[0].duration = parts[1].duration = parts[2].duration = 600;
+	assert(audiobook_book_progress(30, 1, &p));
+	assert(!p.known_total && !p.known_left);
+	audiobook_note_length(120);
+	assert(audiobook_book_progress(30, 1, &p));
+	assert(!p.known_total && !p.known_left);
+	assert(file_length == 0);
+	puts("PASS audiobook-progress-unlisted-part");
+
+	reset();
 	assert(audiobook_book_progress(30, 1, &p));
 	assert(!p.known_total && !p.known_left);
 	audiobook_note_length(120);
