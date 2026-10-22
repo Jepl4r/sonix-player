@@ -7,6 +7,18 @@ tests/run-audiobook-tests.sh
 ```
 
 Requirements: a C compiler, POSIX shell, pthreads and SQLite development headers/library.
+GUI-related checks also need the player's LVGL headers. On a clean checkout,
+fetch the same version as the player Makefile before running the suite:
+
+```sh
+lvgl_version=$(sed -n 's/^LVGL_VER = //p' sonix-player/Makefile)
+git clone --depth 1 --branch "v$lvgl_version" https://github.com/lvgl/lvgl.git sonix-player/lvgl
+```
+
+An existing `make host` checkout already has this directory. Install `pkg-config`,
+`libopusfile-dev` and `libwavpack-dev` to run the optional decoder-duration checks;
+GitHub Actions installs these so those checks are not skipped.
+
 On Debian/Ubuntu: `apt-get install build-essential libsqlite3-dev`.
 On macOS the system compiler and SQLite library suffice.
 

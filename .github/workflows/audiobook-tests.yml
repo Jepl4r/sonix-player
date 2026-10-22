@@ -3,11 +3,17 @@ on:
   pull_request:
     paths:
       - 'sonix-player/src/system/**'
+      - 'sonix-player/src/gui/**'
+      - 'sonix-player/Makefile'
+      - 'sonix-player/lv_conf.h'
       - 'tests/**'
       - '.github/workflows/audiobook-tests.yml'
   push:
     paths:
       - 'sonix-player/src/system/**'
+      - 'sonix-player/src/gui/**'
+      - 'sonix-player/Makefile'
+      - 'sonix-player/lv_conf.h'
       - 'tests/**'
       - '.github/workflows/audiobook-tests.yml'
 permissions:
@@ -17,5 +23,10 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - run: sudo apt-get update -qq && sudo apt-get install -y libsqlite3-dev
+      - run: sudo apt-get update -qq && sudo apt-get install -y libsqlite3-dev pkg-config libopusfile-dev libwavpack-dev
+      - name: Fetch the LVGL version used by the player
+        run: |
+          lvgl_version=$(sed -n 's/^LVGL_VER = //p' sonix-player/Makefile)
+          test -n "$lvgl_version"
+          git clone --depth 1 --branch "v$lvgl_version" https://github.com/lvgl/lvgl.git sonix-player/lvgl
       - run: tests/run-audiobook-tests.sh
