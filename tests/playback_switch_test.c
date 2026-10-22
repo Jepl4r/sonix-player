@@ -111,3 +111,6 @@ double podcaststate_resume_point(const char *path) { return -1.0; }
 bool dlna_owns_path(const char *path) { return false; }
 
 void audiobook_clear_rewind_floor(void) {}
+
+double audiobook_take_boot_break(void) { return 0; }
+bool audiobook_take_rewind_suppression(void) { return false; }

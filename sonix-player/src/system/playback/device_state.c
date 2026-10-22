@@ -217,6 +217,13 @@ static void capture_book_break(const char *filepath) {
 	audiobook_note_boot_break(last_played);
 }
 
+// An explicit selection supersedes the pending saved-position restore.
+static void supersede_book_restore(void) {
+	audiobook_clear_rewind_floor();
+	audiobook_take_boot_break();
+	audiobook_take_rewind_suppression();
+}
+
 static bool automatic_rewind_load;
 
 // Sample the outgoing decoder before any load resets its progress or the
@@ -864,8 +871,7 @@ void device_state_restore_list(const char *const *list, int count, int start_ind
 // difference should be visible at the call site.
 void device_state_play_file_at(const char *filepath, double position) {
 	if (!automatic_rewind_load) {
-		audiobook_clear_rewind_floor();
-		audiobook_take_rewind_suppression();
+		supersede_book_restore();
 	}
 	// Same reason as load_and_play: this changes the track too.
 	scrub_cancel();
@@ -903,8 +909,7 @@ void device_state_play_file_at(const char *filepath, double position) {
 
 void device_state_play_file(const char *filepath) {
 	if (!automatic_rewind_load) {
-		audiobook_clear_rewind_floor();
-		audiobook_take_rewind_suppression();
+		supersede_book_restore();
 	}
 	// The queue is built from the selected file's directory, so playback can
 	// continue past this track.
@@ -927,6 +932,7 @@ void device_state_play_file(const char *filepath) {
 // Starts playback from an explicit list of paths: the queue becomes exactly
 // that list, so next/prev walk it. What the library index pages call.
 bool device_state_play_index(library_index_t *ix, int start_index) {
+	supersede_book_restore();
 	if (!playlist_load_index(ix, start_index)) {
 		return false;
 	}
@@ -940,6 +946,7 @@ bool device_state_play_index(library_index_t *ix, int start_index) {
 }
 
 void device_state_play_list(const char *const *list, int count, int start_index) {
+	supersede_book_restore();
 	if (!list || count <= 0) {
 		return;
 	}
@@ -964,8 +971,7 @@ bool device_state_play_list_ordered(const char *const *list, int count, int star
 
 void device_state_play_list_ordered_at(const char *const *list, int count, int start_index, double position) {
 	if (!automatic_rewind_load) {
-		audiobook_clear_rewind_floor();
-		audiobook_take_rewind_suppression();
+		supersede_book_restore();
 	}
 	if (!list || count <= 0) {
 		return;
@@ -983,7 +989,7 @@ void device_state_play_list_ordered_at(const char *const *list, int count, int s
 
 bool device_state_load_list_ordered_paused(const char *const *list, int count, int start_index) {
 	if (!automatic_rewind_load) {
-		audiobook_clear_rewind_floor();
+		supersede_book_restore();
 		if (audio_get_status() == AUDIO_STATUS_PAUSED)
 			audiobook_suppress_rewind_once();
 	}
@@ -1003,8 +1009,7 @@ bool device_state_load_list_ordered_paused(const char *const *list, int count, i
 // Jumps to a specific entry of the current queue: the queue page's tap.
 bool device_state_play_queue_index(int index) {
 	if (!automatic_rewind_load) {
-		audiobook_clear_rewind_floor();
-		audiobook_take_rewind_suppression();
+		supersede_book_restore();
 	}
 	if (!playlist_set_current(index)) {
 		return false;
@@ -1247,6 +1252,7 @@ static bool random_albums_pick(const char *avoid, char *out, size_t size) {
 }
 
 bool device_state_play_random_album(library_filter_t filter, const char *value) {
+	supersede_book_restore();
 	random_albums.on = false;
 	random_albums.depth = 0;
 	random_albums.filter = filter;
@@ -1529,8 +1535,7 @@ static void playlist_resync_to_current(void) {
 }
 
 bool device_state_next(char *out_path, size_t out_size) {
-	audiobook_clear_rewind_floor();
-	audiobook_take_rewind_suppression();
+	supersede_book_restore();
 	char path[512];
 	playlist_resync_to_current();
 
@@ -1559,8 +1564,7 @@ bool device_state_next(char *out_path, size_t out_size) {
 }
 
 bool device_state_prev(char *out_path, size_t out_size) {
-	audiobook_clear_rewind_floor();
-	audiobook_take_rewind_suppression();
+	supersede_book_restore();
 	char path[512];
 	playlist_resync_to_current();
 
@@ -1777,7 +1781,7 @@ static unsigned seek_serial;
 unsigned device_state_seek_serial(void) { return __atomic_load_n(&seek_serial, __ATOMIC_RELAXED); }
 
 void device_state_seek(double seconds) {
-	audiobook_clear_rewind_floor();
+	supersede_book_restore();
 	if (audio_get_status() == AUDIO_STATUS_PAUSED)
 		audiobook_suppress_rewind_once();
 	__atomic_fetch_add(&seek_serial, 1, __ATOMIC_RELAXED);
@@ -1807,6 +1811,18 @@ void device_state_seek(double seconds) {
 		audiobook_note_position(seconds, length, true);
 	}
 }
+
+void device_state_pause_book_at(double seconds) {
+	// This automatic boundary is not user navigation.
+	scrub_cancel();
+	audio_seek(seconds);
+	if (audio_get_status() == AUDIO_STATUS_PLAYING) {
+		audiobook_suppress_rewind_once();
+		device_state_toggle_play_pause();
+	}
+	audiobook_note_position(seconds, 0, true);
+}
+
 
 void device_state_stop(void) { audio_stop(); }
 

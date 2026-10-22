@@ -16,6 +16,7 @@ static double current_position = 123;
 static bool crossing;
 static bool floor_armed;
 static bool ordered_restore;
+static bool automatic_stop_test;
 static double boot_gap;
 static double observed_gap;
 static double previous_duration = 600;
@@ -37,6 +38,10 @@ void audio_get_progress(double *current, double *total) {
   *total = 1000;
 }
 void audiobook_note_position(double current, double total, bool force) {
+  if (automatic_stop_test) {
+    assert(current == 100 && total == 0 && force && floor_armed);
+    return;
+  }
   assert(current == current_position && total == 1000 && force);
   assert(!crossing || !floor_armed);
   assert(strcmp(selected, "a.mp3") == 0 || crossing);
@@ -95,9 +100,11 @@ int main(void) {
 	saved = loaded = false;
 	snprintf(selected, sizeof(selected), "%s", "a.mp3");
 	playing = true;
+	boot_gap = 7200;
 	assert(device_state_play_list_ordered(parts, 2, 1));
 	assert(queued == 1 && saved && loaded);
 	assert(strcmp(selected, "b.mp3") == 0);
+	assert(boot_gap == 0);
 	suppress_rewind = false;
 	rewind_after_break();
 	return 0;
@@ -281,6 +288,15 @@ static void rewind_after_break(void) {
 	assert(device_state_toggle_play_pause() == AUDIO_STATUS_PLAYING);
 	assert(sought == 0 && strcmp(selected, "b.mp3") == 0);
 	puts("PASS playback-rewind-unknown-previous");
+	crossing = false;
+	automatic_stop_test = true;
+	floor_armed = true;
+	test_status = AUDIO_STATUS_PLAYING;
+	unsigned serial = device_state_seek_serial();
+	device_state_pause_book_at(100);
+	assert(sought == 100 && floor_armed && test_status == AUDIO_STATUS_PAUSED);
+	assert(device_state_seek_serial() == serial);
+	puts("PASS playback-automatic-chapter-stop-preserves-floor");
 }
 
 void audiobook_clear_rewind_floor(void) { floor_armed = false; }

@@ -649,17 +649,6 @@ static double current_chapter_end(double position) {
 	return start;
 }
 
-static void pause_book_at(double seconds) {
-	device_state_seek(seconds);
-	if (audio_get_status() == AUDIO_STATUS_PLAYING) {
-		audiobook_suppress_rewind_once();
-		device_state_toggle_play_pause();
-	}
-	// Written through: stopping on purpose is exactly the moment somebody puts
-	// the player down.
-	audiobook_note_position(seconds, 0, true);
-}
-
 // Runs on every poll while a book is loaded.
 //
 // Only the chapter boundary: the sleep timers live in sleeptimer.c, where all
@@ -670,7 +659,7 @@ static bool audiobook_auto_stop(const device_state_t *state) {
 	}
 	double end = current_chapter_end(state->progress_current_secs);
 	if (end > 0 && state->progress_current_secs >= end - 0.5) {
-		pause_book_at(end);
+		device_state_pause_book_at(end);
 		return true;
 	}
 	return false;

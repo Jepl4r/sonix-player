@@ -180,6 +180,8 @@ bool device_state_take_completion(void);
 audio_status_t device_state_toggle_play_pause(void);
 
 void device_state_seek(double seconds);
+// Automatic chapter boundary stop preserves rewind protection and manual seek serial.
+void device_state_pause_book_at(double seconds);
 // Generation of explicit seeks across input and GUI threads, including slider and scrub commits.
 unsigned device_state_seek_serial(void);
 
