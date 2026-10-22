@@ -869,6 +869,21 @@ static void jump_origin_lifecycle(void) {
 	puts("PASS audiobook-jump-origin-lifecycle");
 }
 
+static void jump_origin_after_part_load(void) {
+  audiobook_track_changed(NULL);
+  audiobook_track_changed("/book/1.mp3");
+  set_parts(3, 1);
+  audiobook_mark_jump("/book/0.mp3", 123);
+  char file[512];
+  double seconds;
+  assert(audiobook_jump_origin(file, sizeof(file), &seconds));
+  assert(strcmp(file, "/book/0.mp3") == 0 && seconds == 123);
+  audiobook_mark_jump("/other.m4b", 99);
+  assert(audiobook_jump_origin(file, sizeof(file), &seconds));
+  assert(strcmp(file, "/book/0.mp3") == 0 && seconds == 123);
+  puts("PASS audiobook-jump-origin-after-successful-part-load");
+}
+
 static void rewind_floor_boundaries(void) {
   audiobook_track_changed(NULL);
   audiobook_track_changed("/other.m4b");
@@ -922,5 +937,6 @@ int main(void) {
 	rewind_floor_and_boot();
 	jump_origin_lifecycle();
         rewind_floor_boundaries();
+        jump_origin_after_part_load();
         return 0;
 }

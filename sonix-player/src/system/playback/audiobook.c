@@ -1131,7 +1131,12 @@ void audiobook_place_label(double seconds, char *out, size_t size) {
 
 void audiobook_mark_jump(const char *file, double seconds) {
 	pthread_mutex_lock(&lock);
-	if (current_is_book && file && strcmp(file, current_path) == 0 && isfinite(seconds) && seconds >= 0) {
+	// Cross-part callers commit the captured origin only after loading succeeds.
+	// The old file must still belong to the loaded book.
+	bool same_book = file && strcmp(file, current_path) == 0;
+	for (int i = 0; file && !same_book && i < part_count; i++)
+		same_book = strcmp(file, parts[i].path) == 0;
+	if (current_is_book && same_book && isfinite(seconds) && seconds >= 0) {
 		snprintf(jump_file, sizeof(jump_file), "%s", file);
 		snprintf(jump_book, sizeof(jump_book), "%s", current_book);
 		jump_seconds = seconds;
