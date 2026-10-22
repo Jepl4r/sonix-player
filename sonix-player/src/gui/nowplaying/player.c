@@ -890,7 +890,7 @@ static void set_sleep_icon(const lv_image_dsc_t *src) {
 
 // The centre slot under the bar. While the timer of what is playing counts, a
 // lit moon and the time left, for music and podcasts too; on a book otherwise
-// the moon alone, dimmed, as the way in; and everywhere else the queue position
+// a dim moon and the armed length (or no text when off); elsewhere the queue position
 // exactly as it was. Asked on every poll and on every tick of the sleep timer,
 // so the time left is never more than a second stale with the screen on.
 static void update_sleep_label(void) {
@@ -910,8 +910,13 @@ static void update_sleep_label(void) {
 		lv_obj_set_style_image_recolor(sleep_icon, chrome_accent(), 0);
 		set_sleep_icon(sleep_icon_for(kind));
 	} else if (book_idle) {
-		if (lv_label_get_text(queue_position_label)[0] != '\0') {
-			lv_label_set_text(queue_position_label, "");
+		char text[32] = "";
+		int minutes = sleeptimer_minutes(SLEEPTIMER_AUDIOBOOK);
+		if (sleeptimer_enabled(SLEEPTIMER_AUDIOBOOK) && minutes > 0) {
+			snprintf(text, sizeof(text), tr("sleep_quick_minutes"), minutes);
+		}
+		if (strcmp(lv_label_get_text(queue_position_label), text) != 0) {
+			lv_label_set_text(queue_position_label, text);
 		}
 		lv_obj_set_style_image_recolor(sleep_icon, lv_color_make(100, 100, 100), 0);
 		set_sleep_icon(&icon_sleep_audiobook_quick);
@@ -3741,6 +3746,13 @@ static void update_chapter_line(const device_state_t *state) {
 			unit = 0;
 		}
 	}
+	if (chapter_next_btn) {
+		if (unit >= 0 && unit == audiobook_unit_count() - 1) {
+			lv_obj_add_state(chapter_next_btn, LV_STATE_DISABLED);
+		} else {
+			lv_obj_remove_state(chapter_next_btn, LV_STATE_DISABLED);
+		}
+	}
 	if (unit == chapter_line_unit) {
 		return;
 	}
@@ -4812,6 +4824,7 @@ static void song_text_clicked_cb(lv_event_t *e) {
 // which already means "the one before/after", with no chrome, hidden.
 static lv_obj_t *chapter_btn_create(lv_obj_t *parent, const lv_image_dsc_t *glyph, lv_event_cb_t cb, lv_obj_t **icon_out) {
 	lv_obj_t *btn = lv_btn_create(parent);
+	lv_obj_set_style_opa(btn, LV_OPA_40, LV_STATE_DISABLED);
 	lv_obj_set_size(btn, CHAPTER_BTN_SIZE, CHAPTER_BTN_SIZE);
 	lv_obj_set_style_bg_opa(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);

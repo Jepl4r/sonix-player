@@ -104,20 +104,27 @@ static void checkpoints_do_not_finish(void) {
 }
 
 // The database side of the per-book speed: "/book" has 1500 stored, the rest
-// none. Each write is recorded.
+// none. Each write is recorded and read back on the next load.
 static int get_speed_calls;
 static int set_speed_calls;
 static char set_speed_book[512];
 static int set_speed_value;
+static int other_speed;
+static int folder_speed = 1500;
 
 int audiobookdb_get_speed(const char *book_path) {
-  get_speed_calls++;
-  return strcmp(book_path, "/book") == 0 ? 1500 : 0;
+	get_speed_calls++;
+	return strcmp(book_path, "/book") == 0 ? folder_speed : other_speed;
 }
 void audiobookdb_set_speed(const char *book_path, int permille) {
-  set_speed_calls++;
-  snprintf(set_speed_book, sizeof(set_speed_book), "%s", book_path);
-  set_speed_value = permille;
+	set_speed_calls++;
+	snprintf(set_speed_book, sizeof(set_speed_book), "%s", book_path);
+	set_speed_value = permille;
+	if (strcmp(book_path, "/book") == 0) {
+		folder_speed = permille;
+	} else {
+		other_speed = permille;
+	}
 }
 
 // Two parts of the folder book "/book", a single-file book, and nothing else.
@@ -415,43 +422,50 @@ static void eq_apply(void) {
 }
 
 static void speed_per_book(void) {
-  stub_count = 0;
-  audiobook_track_changed(NULL);
-  assert(audiobook_speed_permille() == AUDIOBOOK_SPEED_NORMAL);
+	stub_count = 0;
+	audiobook_track_changed(NULL);
+	assert(audiobook_speed_permille() == AUDIOBOOK_SPEED_NORMAL);
 
-  // Nothing loaded: the default alone.
-  audiobook_set_speed_permille(1250);
-  assert(set_speed_calls == 0);
-  assert(config_get_int("audiobook", "speed", 0) == 1250);
-  assert(audiobook_speed_permille() == 1250);
+	// Nothing loaded: the default alone.
+	audiobook_set_speed_permille(1250);
+	assert(set_speed_calls == 0);
+	assert(config_get_int("audiobook", "speed", 0) == 1250);
+	assert(audiobook_speed_permille() == 1250);
 
-  // A book with a speed of its own plays at it, and another part of the same
-  // book does not ask again.
-  audiobook_track_changed("/book/0.mp3");
-  assert(get_speed_calls == 1);
-  assert(audiobook_speed_permille() == 1500);
-  audiobook_track_changed("/book/1.mp3");
-  assert(get_speed_calls == 1);
-  assert(audiobook_speed_permille() == 1500);
+	// A book with a speed of its own plays at it, and another part of the same
+	// book does not ask again.
+	audiobook_track_changed("/book/0.mp3");
+	assert(get_speed_calls == 1);
+	assert(audiobook_speed_permille() == 1500);
+	audiobook_track_changed("/book/1.mp3");
+	assert(get_speed_calls == 1);
+	assert(audiobook_speed_permille() == 1500);
 
-  // A pick is the book's and the new default.
-  audiobook_set_speed_permille(750);
-  assert(set_speed_calls == 1 && set_speed_value == 750);
-  assert(strcmp(set_speed_book, "/book") == 0);
-  assert(config_get_int("audiobook", "speed", 0) == 750);
-  assert(audiobook_speed_permille() == 750);
+	// A pick is the book's and the new default.
+	audiobook_set_speed_permille(750);
+	assert(set_speed_calls == 1 && set_speed_value == 750);
+	assert(strcmp(set_speed_book, "/book") == 0);
+	assert(config_get_int("audiobook", "speed", 0) == 750);
+	assert(audiobook_speed_permille() == 750);
 
-  // A book with none plays at the default.
-  audiobook_track_changed("/other.m4b");
-  assert(get_speed_calls == 2);
-  assert(audiobook_speed_permille() == 750);
+	// First listen pins the default, even after another book changes it.
+	audiobook_track_changed("/other.m4b");
+	assert(get_speed_calls == 2);
+	assert(audiobook_speed_permille() == 750);
+	assert(set_speed_calls == 2 && set_speed_value == 750);
+	assert(strcmp(set_speed_book, "/other.m4b") == 0);
+	audiobook_track_changed("/book/0.mp3");
+	audiobook_set_speed_permille(1500);
+	audiobook_track_changed("/other.m4b");
+	assert(audiobook_speed_permille() == 750);
+	assert(set_speed_calls == 3);
 
-  // A song is no book: the default, and a pick goes nowhere else.
-  audiobook_track_changed("/song.mp3");
-  assert(audiobook_speed_permille() == 750);
-  audiobook_set_speed_permille(1000);
-  assert(set_speed_calls == 1);
-  assert(audiobook_speed_permille() == 1000);
+	// A song is no book: the default, and a pick goes nowhere else.
+	audiobook_track_changed("/song.mp3");
+	assert(audiobook_speed_permille() == 1500);
+	audiobook_set_speed_permille(1000);
+	assert(set_speed_calls == 3);
+	assert(audiobook_speed_permille() == 1000);
 }
 
 int main(void) {

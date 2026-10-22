@@ -1459,7 +1459,8 @@ static bool sleep_timer_armed(sleeptimer_kind_t kind);
 // Repaints every round control from the state it switches, so the panel shows
 // the truth even when the setting was changed somewhere else.
 static void refresh_audio_buttons(void) {
-	circle_button_set_on(eq_btn, eq_get_enabled());
+	bool book_eq = audiobook_is_playing() && audiobook_eq_mode() != AUDIOBOOK_EQ_MUSIC;
+	circle_button_set_on(eq_btn, book_eq ? audiobook_eq_mode() == AUDIOBOOK_EQ_PRESET : eq_get_enabled());
 	circle_button_set_on(mseb_btn, mseb_get_enabled());
 	circle_button_set_on(wifi_btn, wifi_get_enabled());
 	circle_button_set_on(bt_btn, bluetooth_get_enabled());
@@ -1645,7 +1646,22 @@ static void eq_clicked_cb(lv_event_t *e) {
 		long_press_consumed = false;
 		return;
 	}
-	musicsettings_set_eq_enabled(!eq_get_enabled());
+	audiobook_eq_mode_t mode = audiobook_eq_mode();
+	if (audiobook_is_playing() && mode != AUDIOBOOK_EQ_MUSIC) {
+		char preset[128];
+		audiobook_eq_preset(preset, sizeof(preset));
+		audiobook_set_eq(mode == AUDIOBOOK_EQ_PRESET ? AUDIOBOOK_EQ_OFF : preset[0] ? AUDIOBOOK_EQ_PRESET : AUDIOBOOK_EQ_MUSIC, preset);
+		audiobook_apply_eq(true);
+		lv_obj_t *eq_page = musicsettings_eq_screen();
+		if (eq_page) {
+			lv_obj_send_event(eq_page, LV_EVENT_REFRESH, NULL);
+		}
+		if (audiobooksettings_screen) {
+			lv_obj_send_event(audiobooksettings_screen, LV_EVENT_REFRESH, NULL);
+		}
+	} else {
+		musicsettings_set_eq_enabled(!eq_get_enabled());
+	}
 	toggled();
 }
 

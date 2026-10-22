@@ -1073,6 +1073,7 @@ static void build_eq_page(gui_config_t *cfg) {
 	lv_obj_set_style_text_font(eq_audiobook_note, &font_ui_22, 0);
 	refresh_eq_audiobook_note();
 	lv_obj_add_event_cb(eq_screen, eq_screen_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
+	lv_obj_add_event_cb(eq_screen, eq_screen_loaded_cb, LV_EVENT_REFRESH, NULL);
 
 	// The band card: ten vertical sliders side by side, frequency underneath.
 	lv_obj_t *card = lv_obj_create(container);

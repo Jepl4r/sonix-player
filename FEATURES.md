@@ -75,7 +75,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 ## Sound
 
 - **Graphic EQ** - 10 bands, ±12 dB, with 10 presets (Flat, Rock, Pop, Jazz, Classical, Dance, Bass, Treble, Vocal, Acoustic) and as many of your own as you like.
-- **Audiobook EQ** - while a book uses its own graphic-EQ setting, the EQ page shows your audiobook choice; its sliders and the control-centre EQ toggle still change your music settings.
+- **Audiobook EQ** - while a book uses its own graphic-EQ setting, the EQ page shows your audiobook choice and the control-centre EQ button switches that choice on and off; the sliders still change your music settings.
 - **Parametric EQ (PEQ)** - 10 bands, each with its own frequency, gain, Q and shape (peak, low shelf, high shelf, low pass, high pass), plus a preamp. The graph shows the real curve. Tap a number to type it on a keypad.
   > PEQ presets are `.txt` files in the `PEQ` folder of the card, in the Equalizer APO format.
 - **AutoEq** - type the name of your headphones and the player downloads their correction over Wi-Fi.

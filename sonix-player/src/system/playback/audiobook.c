@@ -201,8 +201,8 @@ void audiobook_set_skip_forward(int seconds) { config_set_int("audiobook", "skip
 // them, which on this device means a few times a second at worst.
 
 // Except the speed, which a book can have of its own, read once when the book
-// loads. Without one the setting applies. A pick is both: the book's from now
-// on, and the setting for every book that has never been given one.
+// loads. First listen pins the default. A pick is both: the book's from now
+// on, and the setting for every book that has never been heard.
 static bool speed_valid(long permille) { return permille >= 250 && permille <= 4000; }
 
 int audiobook_speed_permille(void) {
@@ -392,9 +392,15 @@ void audiobook_track_changed(const char *filepath) {
 
 	// Asked once per book, not per part: a folder book is the same book from
 	// one file to the next, and a pick while it plays updates both copies.
+	int pin_speed = 0;
 	if (strcmp(book, previous_book) != 0) {
 		int stored = audiobookdb_get_speed(book);
-		book_speed = speed_valid(stored) ? stored : 0;
+		if (!speed_valid(stored)) {
+			long value = config_get_int("audiobook", "speed", AUDIOBOOK_SPEED_NORMAL);
+			stored = speed_valid(value) ? (int)value : AUDIOBOOK_SPEED_NORMAL;
+			pin_speed = stored;
+		}
+		book_speed = stored;
 	}
 
 	if (strcmp(book, filepath) != 0) {
@@ -411,6 +417,9 @@ void audiobook_track_changed(const char *filepath) {
 	printf("audiobook: %s (%d chapters, part %d of %d)\n", filepath, chapter_count, part_index + 1, part_count);
 
 	pthread_mutex_unlock(&lock);
+	if (pin_speed) {
+		audiobookdb_set_speed(book, pin_speed);
+	}
 }
 
 bool audiobook_is_playing(void) {
