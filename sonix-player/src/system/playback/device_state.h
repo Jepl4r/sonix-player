@@ -188,6 +188,10 @@ void device_state_pause_book_at(double seconds);
 // Generation of explicit seeks across input and GUI threads, including slider and scrub commits.
 unsigned device_state_seek_serial(void);
 
+// Retain the last audible book position for the active sleep deadline.
+void device_state_sleep_checkpoint(long long deadline_ms);
+bool device_state_sleep_restore(long long deadline_ms);
+
 // Called with the playing track's position and length, from the progress
 // poll. In the last seconds of a track, with gapless on, reads the next one
 // off the card ahead of time (readahead.h), so it opens in time to follow on

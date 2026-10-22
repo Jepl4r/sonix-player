@@ -714,6 +714,7 @@ static sleeptimer_kind_t sleeptimer_kind_playing(void) {
 
 static void sync_sleep_fade(void) {
 	long long deadline = sleeptimer_deadline_ms(sleeptimer_kind_playing());
+	device_state_sleep_checkpoint(deadline);
 	if (deadline)
 		audio_sleep_fade_arm((uint32_t)deadline);
 	else
@@ -5153,6 +5154,9 @@ void player_output_unplugged(const char *what) {
 // of falling asleep to something is finding it where it was in the morning.
 static void sleep_timer_cb(lv_timer_t *timer) {
 	(void)timer;
+	// Read the matching deadline before expired() consumes it.
+	long long book_deadline = sleeptimer_deadline_ms(SLEEPTIMER_AUDIOBOOK);
+	device_state_sleep_checkpoint(sleeptimer_deadline_ms(sleeptimer_kind_playing()));
 	bool expired = false;
 	for (int i = 0; i < SLEEPTIMER_COUNT; i++) {
 		expired = sleeptimer_expired((sleeptimer_kind_t)i) || expired;
@@ -5170,15 +5174,9 @@ static void sleep_timer_cb(lv_timer_t *timer) {
 	// the position, written through rather than left to the ten second throttle.
 	if (audiobook_is_playing()) {
 		audiobook_suppress_rewind_once();
-		audio_pause();
-		double current = 0, total = 0;
-		audio_get_progress(&current, &total);
-		double back = current - SLEEPFADE_SPAN_MS / 1000;
-		audio_seek(back > 0 ? back : 0);
-		device_state_t state;
-		device_state_get(&state);
+		if (!device_state_sleep_restore(book_deadline))
+			audio_pause();
 		apply_playback_status(AUDIO_STATUS_PAUSED);
-		audiobook_note_position(state.progress_current_secs, 0, true);
 		return;
 	}
 

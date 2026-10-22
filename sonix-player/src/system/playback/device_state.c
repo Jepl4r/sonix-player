@@ -4,6 +4,7 @@
 #include "src/system/audio/audio.h"
 #include "src/system/audio/readahead.h"
 #include "src/system/audio/replaygain.h"
+#include "src/system/audio/sleepfade.h"
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/decode/growfile.h"
@@ -218,9 +219,21 @@ static void capture_book_break(const char *filepath) {
 	audiobook_note_boot_break(last_played);
 }
 
+static bool explicit_book_load;
+static long long sleep_checkpoint_deadline;
+static char sleep_checkpoint_file[512];
+static double sleep_checkpoint_seconds;
+
+static void seed_sleep_checkpoint(double seconds) {
+	if (sleep_checkpoint_deadline && !sleep_checkpoint_file[0] && audiobook_is_playing()) {
+		snprintf(sleep_checkpoint_file, sizeof(sleep_checkpoint_file), "%s", current_metadata_file);
+		sleep_checkpoint_seconds = seconds > 0 ? seconds : 0;
+	}
+}
+
 // An explicit selection supersedes the pending saved-position restore.
 static void supersede_book_restore(void) {
-	audiobook_clear_rewind_floor();
+	explicit_book_load = true;
 	audiobook_take_boot_break();
 	audiobook_take_rewind_suppression();
 }
@@ -237,6 +250,11 @@ static void change_book_track(const char *filepath) {
 		if (current > 1.0) {
 			audiobook_note_position(current, total, true);
 		}
+	}
+	if (explicit_book_load) {
+		audiobook_clear_rewind_floor();
+		sleep_checkpoint_file[0] = '\0';
+		explicit_book_load = false;
 	}
 	audiobook_track_changed(filepath);
 }
@@ -647,6 +665,7 @@ static void load_and_play_at(const char *filepath, double position) {
 	} else {
 		audio_play(current_metadata_file);
 	}
+	seed_sleep_checkpoint(position);
 	note_started(false);
 
 	// Any track load supersedes the note: it belongs to the one press that
@@ -903,6 +922,7 @@ void device_state_play_file_at(const char *filepath, double position) {
 	apply_track_speed();
 
 	audio_play_at(current_metadata_file, position);
+	seed_sleep_checkpoint(position);
 	note_started(false);
 
 	queue_persist();
@@ -933,7 +953,6 @@ void device_state_play_file(const char *filepath) {
 // Starts playback from an explicit list of paths: the queue becomes exactly
 // that list, so next/prev walk it. What the library index pages call.
 bool device_state_play_index(library_index_t *ix, int start_index) {
-	supersede_book_restore();
 	if (!playlist_load_index(ix, start_index)) {
 		return false;
 	}
@@ -942,12 +961,12 @@ bool device_state_play_index(library_index_t *ix, int start_index) {
 	if (!playlist_current_path(path, sizeof(path))) {
 		return false;
 	}
+	supersede_book_restore();
 	load_and_play(path);
 	return true;
 }
 
 void device_state_play_list(const char *const *list, int count, int start_index) {
-	supersede_book_restore();
 	if (!list || count <= 0) {
 		return;
 	}
@@ -955,6 +974,7 @@ void device_state_play_list(const char *const *list, int count, int start_index)
 
 	char path[512];
 	if (playlist_current_path(path, sizeof(path))) {
+		supersede_book_restore();
 		load_and_play(path);
 	}
 }
@@ -971,9 +991,6 @@ bool device_state_play_list_ordered(const char *const *list, int count, int star
 }
 
 void device_state_play_list_ordered_at(const char *const *list, int count, int start_index, double position) {
-	if (!automatic_rewind_load) {
-		supersede_book_restore();
-	}
 	if (!list || count <= 0) {
 		return;
 	}
@@ -984,16 +1001,13 @@ void device_state_play_list_ordered_at(const char *const *list, int count, int s
 	started_file[0] = '\0';
 	char path[512];
 	if (playlist_current_path(path, sizeof(path))) {
+		if (!automatic_rewind_load)
+			supersede_book_restore();
 		load_and_play_at(path, position);
 	}
 }
 
 bool device_state_load_list_ordered_paused(const char *const *list, int count, int start_index) {
-	if (!automatic_rewind_load) {
-		supersede_book_restore();
-		if (audio_get_status() == AUDIO_STATUS_PAUSED)
-			audiobook_suppress_rewind_once();
-	}
 	if (!list || start_index < 0 || start_index >= count || !list[start_index]) {
 		return false;
 	}
@@ -1003,15 +1017,17 @@ bool device_state_load_list_ordered_paused(const char *const *list, int count, i
 	if (!playlist_current_path(path, sizeof(path)) || strcmp(path, list[start_index]) != 0) {
 		return false;
 	}
+	if (!automatic_rewind_load) {
+		supersede_book_restore();
+		if (audio_get_status() == AUDIO_STATUS_PAUSED)
+			audiobook_suppress_rewind_once();
+	}
 	load_paused(path);
 	return true;
 }
 
 // Jumps to a specific entry of the current queue: the queue page's tap.
 bool device_state_play_queue_index(int index) {
-	if (!automatic_rewind_load) {
-		supersede_book_restore();
-	}
 	if (!playlist_set_current(index)) {
 		return false;
 	}
@@ -1020,6 +1036,8 @@ bool device_state_play_queue_index(int index) {
 	if (!playlist_current_path(path, sizeof(path))) {
 		return false;
 	}
+	if (!automatic_rewind_load)
+		supersede_book_restore();
 	load_and_play(path);
 	return true;
 }
@@ -1261,6 +1279,7 @@ bool device_state_play_random_album(library_filter_t filter, const char *value) 
 
 	char album[256];
 	if (!random_albums_pick(playlist_album(), album, sizeof(album)) || !start_album(album, true)) {
+		explicit_book_load = false;
 		return false;
 	}
 	random_albums_push(album);
@@ -1552,8 +1571,10 @@ bool device_state_next(char *out_path, size_t out_size) {
 		return true;
 	}
 
-	if (!playlist_next(path, sizeof(path)))
+	if (!playlist_next(path, sizeof(path))) {
+		explicit_book_load = false;
 		return false;
+	}
 
 	load_and_play(path);
 
@@ -1579,8 +1600,10 @@ bool device_state_prev(char *out_path, size_t out_size) {
 		return true;
 	}
 
-	if (!playlist_prev(path, sizeof(path)))
+	if (!playlist_prev(path, sizeof(path))) {
+		explicit_book_load = false;
 		return false;
+	}
 
 	load_and_play(path);
 
@@ -1783,6 +1806,9 @@ unsigned device_state_seek_serial(void) { return __atomic_load_n(&seek_serial, _
 
 void device_state_seek(double seconds) {
 	supersede_book_restore();
+	audiobook_clear_rewind_floor();
+	sleep_checkpoint_file[0] = '\0';
+	explicit_book_load = false;
 	if (audio_get_status() == AUDIO_STATUS_PAUSED)
 		audiobook_suppress_rewind_once();
 	__atomic_fetch_add(&seek_serial, 1, __ATOMIC_RELAXED);
@@ -1811,9 +1837,54 @@ void device_state_seek(double seconds) {
 		load_and_play(current_metadata_file);
 	}
 	audio_seek(seconds);
+	seed_sleep_checkpoint(seconds);
 	if (book) {
 		audiobook_note_position(seconds, length, true);
 	}
+}
+
+void device_state_sleep_checkpoint(long long deadline_ms) {
+	if (!deadline_ms || !audiobook_is_playing() || audio_get_status() != AUDIO_STATUS_PLAYING) {
+		sleep_checkpoint_deadline = 0;
+		sleep_checkpoint_file[0] = '\0';
+		return;
+	}
+	struct timespec ts;
+	clock_gettime(CLOCK_MONOTONIC, &ts);
+	long long now = (long long)ts.tv_sec * 1000 + ts.tv_nsec / 1000000;
+	// Keep the last sample before attenuation starts, including a late GUI tick.
+	// Automatic part changes retain this file throughout the fade.
+	if (deadline_ms != sleep_checkpoint_deadline || !sleep_checkpoint_file[0] ||
+		now <= deadline_ms - SLEEPFADE_SPAN_MS) {
+		double total = 0;
+		audio_get_progress(&sleep_checkpoint_seconds, &total);
+		snprintf(sleep_checkpoint_file, sizeof(sleep_checkpoint_file), "%s", current_metadata_file);
+	}
+	sleep_checkpoint_deadline = deadline_ms;
+}
+
+bool device_state_sleep_restore(long long deadline_ms) {
+	if (!deadline_ms || deadline_ms != sleep_checkpoint_deadline || !sleep_checkpoint_file[0] ||
+		!audiobook_is_playing())
+		return false;
+	char file[sizeof(sleep_checkpoint_file)];
+	snprintf(file, sizeof(file), "%s", sleep_checkpoint_file);
+	double seconds = sleep_checkpoint_seconds;
+	if (strcmp(file, current_metadata_file) != 0 && access(file, R_OK) != 0)
+		return false;
+	printf("device_state: sleep checkpoint %s at %.3f s\n", file, seconds);
+	audio_pause();
+	if (strcmp(file, current_metadata_file) != 0) {
+		// This is an automatic restore, so neither a manual jump nor a floor reset.
+		playlist_locate(file);
+		load_paused(file);
+	}
+	audio_seek(seconds);
+	audiobook_suppress_rewind_once();
+	audiobook_note_position(seconds, 0, true);
+	sleep_checkpoint_deadline = 0;
+	sleep_checkpoint_file[0] = '\0';
+	return true;
 }
 
 bool device_state_seek_book_part(const char *file, double seconds) {
@@ -1850,6 +1921,9 @@ bool device_state_seek_book_part(const char *file, double seconds) {
 	}
 	// The caller marks before a cross-file load; this seek must not replace it.
 	supersede_book_restore();
+	audiobook_clear_rewind_floor();
+	sleep_checkpoint_file[0] = '\0';
+	explicit_book_load = false;
 	if (audio_get_status() == AUDIO_STATUS_PAUSED)
 		audiobook_suppress_rewind_once();
 	__atomic_fetch_add(&seek_serial, 1, __ATOMIC_RELAXED);
@@ -1858,6 +1932,7 @@ bool device_state_seek_book_part(const char *file, double seconds) {
 	audio_get_progress(&current_seconds, &total);
 	seconds = audiobook_clamp_seek(seconds, total);
 	audio_seek(seconds);
+	seed_sleep_checkpoint(seconds);
 	audiobook_note_position(seconds, total, true);
 	return true;
 }
