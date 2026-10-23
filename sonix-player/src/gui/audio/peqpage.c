@@ -360,7 +360,7 @@ static void q_cb(lv_event_t *e) {
 //
 // Tapping a frequency, gain or Q value opens a keypad. Typed values bypass
 // the sliders' steps and are clamped to the band's limits. Frequency is
-// entered in whole Hz; gain and Q keep their decimal precision.
+// entered in Hz or kHz, with whole-Hz precision in the engine.
 // ---------------------------------------------------------------------------
 
 typedef enum { ENTRY_GAIN, ENTRY_Q, ENTRY_FREQ } entry_kind_t;
@@ -376,13 +376,40 @@ static lv_obj_t *entry_ok_btn;
 static entry_kind_t entry_kind;
 static char entry_text[16]; // digits, one comma, a leading minus
 static bool entry_fresh;	// the shown value is the old one: the first key replaces it
+static bool entry_khz;
+
+// Keep all three decimal places needed for whole-Hz precision, but omit
+// trailing zeros: 1250 Hz is shown as "1,25" in kHz.
+static void entry_format_freq(int hz) {
+	if (!entry_khz) {
+		snprintf(entry_text, sizeof(entry_text), "%d", hz);
+		return;
+	}
+	snprintf(entry_text, sizeof(entry_text), "%d,%03d", hz / 1000, hz % 1000);
+	size_t len = strlen(entry_text);
+	while (len && entry_text[len - 1] == '0') {
+		entry_text[--len] = '\0';
+	}
+	if (len && entry_text[len - 1] == ',') {
+		entry_text[len - 1] = '\0';
+	}
+}
 
 static void entry_paint(void) {
 	char shown[32];
-	const char *unit = entry_kind == ENTRY_GAIN ? " dB" : (entry_kind == ENTRY_FREQ ? " Hz" : "");
+	const char *unit = entry_kind == ENTRY_GAIN ? " dB" : (entry_kind == ENTRY_FREQ ? (entry_khz ? " kHz" : " Hz") : "");
 	snprintf(shown, sizeof(shown), "%s%s", entry_text[0] ? entry_text : "0", unit);
 	lv_label_set_text(entry_display, shown);
 	lv_obj_set_style_text_color(entry_display, entry_fresh ? theme()->text_secondary : theme()->text_primary, 0);
+	// For frequency the sign key switches units; Q needs neither function.
+	lv_obj_set_hidden(entry_sign_btn, entry_kind == ENTRY_Q);
+	lv_label_set_text(lv_obj_get_child(entry_sign_btn, 0), entry_kind == ENTRY_FREQ ? (entry_khz ? "Hz" : "kHz") : "+/-");
+	if (entry_kind == ENTRY_FREQ && !entry_khz) {
+		lv_obj_add_state(entry_decimal_btn, LV_STATE_DISABLED);
+	} else {
+		lv_obj_remove_state(entry_decimal_btn, LV_STATE_DISABLED);
+	}
+	lv_obj_set_width(entry_ok_btn, entry_kind == ENTRY_Q ? lv_pct(100) : lv_pct(66));
 }
 
 // Tenths or hundredths out of "12,5" or "-3": the number times 10^decimals,
@@ -390,7 +417,7 @@ static void entry_paint(void) {
 static int entry_parse_scaled(const char *text, int decimals) {
 	bool negative = text[0] == '-';
 	const char *p = negative ? text + 1 : text;
-	long whole = 0, frac = 0;
+	long long whole = 0, frac = 0;
 	int frac_digits = 0;
 	bool after_comma = false;
 	int round_digit = 0;
@@ -414,7 +441,7 @@ static int entry_parse_scaled(const char *text, int decimals) {
 	for (int i = 0; i < decimals; i++) {
 		scale *= 10;
 	}
-	long value = whole * scale + frac + (round_digit >= 5 ? 1 : 0);
+	long long value = whole * scale + frac + (round_digit >= 5 ? 1 : 0);
 	if (value > 1000000) {
 		value = 1000000;
 	}
@@ -455,7 +482,7 @@ static void entry_accept_cb(lv_event_t *e) {
 		band_commit(entry_set_q, value);
 		break;
 	case ENTRY_FREQ:
-		value = entry_parse_scaled(entry_text, 0);
+		value = entry_parse_scaled(entry_text, entry_khz ? 3 : 0);
 		value = value < PEQ_FREQ_MIN ? PEQ_FREQ_MIN : (value > PEQ_FREQ_MAX ? PEQ_FREQ_MAX : value);
 		band_commit(entry_set_freq, value);
 		break;
@@ -466,6 +493,20 @@ static void entry_accept_cb(lv_event_t *e) {
 // One key: a digit, ',' or '-' (which flips the sign rather than typing one).
 static void entry_key_cb(lv_event_t *e) {
 	char key = (char)(intptr_t)lv_event_get_user_data(e);
+	if (entry_kind == ENTRY_FREQ && key == '-') {
+		int hz = entry_parse_scaled(entry_text, entry_khz ? 3 : 0);
+		entry_khz = !entry_khz;
+		if (entry_text[0]) {
+			entry_format_freq(hz);
+		}
+		// Preserve freshness so switching units before typing still lets the
+		// first digit replace the old band value.
+		entry_paint();
+		return;
+	}
+	if (entry_kind == ENTRY_FREQ && key == ',' && !entry_khz) {
+		return;
+	}
 	if (entry_fresh) {
 		// The old value is there to be read, not edited: the first digit starts
 		// a new number, keeping only its sign for the gain. The sign key flips
@@ -553,21 +594,11 @@ static void entry_open(entry_kind_t kind) {
 		break;
 	case ENTRY_FREQ:
 		lv_label_set_text(entry_heading, tr("peq_frequency"));
-		snprintf(entry_text, sizeof(entry_text), "%d", b.freq);
+		entry_khz = b.freq >= 1000;
+		entry_format_freq(b.freq);
 		break;
 	}
 	entry_fresh = true;
-
-	// Only the gain has a sign.
-	lv_obj_set_hidden(entry_sign_btn, kind != ENTRY_GAIN);
-	// Keep the grid in place, but frequency only accepts whole Hz.
-	if (kind == ENTRY_FREQ) {
-		lv_obj_add_state(entry_decimal_btn, LV_STATE_DISABLED);
-	} else {
-		lv_obj_remove_state(entry_decimal_btn, LV_STATE_DISABLED);
-	}
-	// OK takes the whole last row, or what the sign key leaves of it.
-	lv_obj_set_width(entry_ok_btn, kind == ENTRY_GAIN ? lv_pct(66) : lv_pct(100));
 
 	entry_paint();
 	lv_obj_set_hidden(entry_layer, false);
