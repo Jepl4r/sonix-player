@@ -4,11 +4,11 @@
 #include <stdio.h>
 #include <string.h>
 
-#include "src/gui/shell/confirm.h"
-#include "src/gui/fonts/fonts.h"
-#include "src/gui/shell/icons.h"
-#include "src/gui/audio/peqsettings.h"
 #include "src/gui/audio/peqautoeq.h"
+#include "src/gui/audio/peqsettings.h"
+#include "src/gui/fonts/fonts.h"
+#include "src/gui/shell/confirm.h"
+#include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/shell/theme.h"
@@ -82,9 +82,9 @@ static const char *type_label(int type) {
 // first two percent of travel, unreachable with a finger.
 // ---------------------------------------------------------------------------
 
-#define FREQ_STEPS 121 // 120 steps from 20 Hz to 20 kHz: three decades, 40 per decade
-#define GAIN_STEPS 61  // -15.0 to +15.0 dB in half-decibel steps
-#define Q_STEPS 61	   // 0.10 to 10.00: two decades
+#define FREQ_STEPS 121	// 120 steps from 20 Hz to 20 kHz: three decades, 40 per decade
+#define GAIN_STEPS 61	// -15.0 to +15.0 dB in half-decibel steps
+#define Q_STEPS 61		// 0.10 to 10.00: two decades
 #define PREAMP_STEPS 43 // -15.0 to +6.0 dB in half-decibel steps
 
 static int freq_from_index(int index) {
@@ -252,9 +252,7 @@ static void refresh_preamp(void);
 
 // Gain is meaningless on a low-pass or high-pass, so its card is hidden
 // instead of sitting there accepting changes that do nothing.
-static bool type_has_gain(int type) {
-	return type == PEQ_TYPE_PEAK || type == PEQ_TYPE_LOWSHELF || type == PEQ_TYPE_HIGHSHELF;
-}
+static bool type_has_gain(int type) { return type == PEQ_TYPE_PEAK || type == PEQ_TYPE_LOWSHELF || type == PEQ_TYPE_HIGHSHELF; }
 
 static void paint_pill(lv_obj_t *btn, bool on) {
 	if (!btn) {
@@ -742,8 +740,7 @@ static lv_obj_t *make_pill(lv_obj_t *parent, const char *text, int value) {
 
 // The round top-right buttons shared with the Music, graphic EQ and MSEB
 // screens. Slot 0 is the corner itself, slot 1 sits to its left.
-static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph,
-							   lv_event_cb_t cb) {
+static lv_obj_t *corner_button(lv_obj_t *screen, gui_config_t *cfg, int slot, const lv_image_dsc_t *glyph, lv_event_cb_t cb) {
 	lv_obj_t *button = lv_btn_create(screen);
 	lv_obj_set_size(button, 56, 56);
 	lv_obj_set_style_bg_opa(button, LV_OPA_TRANSP, 0);
@@ -782,8 +779,7 @@ static void reset_band_cb(lv_event_t *e) {
 	}
 	char title[64];
 	snprintf(title, sizeof(title), tr("peq_band_reset_confirm"), editing + 1);
-	confirm_show(title, "peq_band_reset_confirm_note", "reset", do_reset_band,
-				 NULL);
+	confirm_show(title, "peq_band_reset_confirm_note", "reset", do_reset_band, NULL);
 }
 
 static void build_band_page(gui_config_t *cfg) {
