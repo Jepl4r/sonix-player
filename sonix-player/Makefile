@@ -517,3 +517,18 @@ $(WAVPACK_LIB): $(CROSS_CC)
 # substituted -- otherwise make reads an object file as a makefile.
 -include $(patsubst %.opp,%.d,$(patsubst %.o,%.d,$(HOST_OBJS)))
 -include $(patsubst %.opp,%.d,$(patsubst %.o,%.d,$(TARGET_OBJS)))
+
+# The pinned span renderer does not identify its label draw tasks. Generate a
+# compatible copy so the reader can highlight text without extra span objects.
+LVGL_READER_SPAN = build_gen/lvgl-reader-span.c
+$(LVGL_READER_SPAN): $(LVGL_DIR)/src/widgets/span/lv_span.c tools/patch_lvgl_span.py
+	@mkdir -p $(dir $@)
+	python3 tools/patch_lvgl_span.py $< $@
+
+build_host/lvgl/src/widgets/span/lv_span.o: $(LVGL_READER_SPAN)
+	@mkdir -p $(dir $@)
+	$(CC) $(HOST_CFLAGS) -I$(LVGL_DIR)/src/widgets/span -c $(LVGL_READER_SPAN) -o $@
+
+build_target/lvgl/src/widgets/span/lv_span.o: $(LVGL_READER_SPAN) $(TARGET_FLAGS_STAMP)
+	@mkdir -p $(dir $@)
+	$(CROSS_CC) $(TARGET_CFLAGS) $(TARGET_OPT) -I$(LVGL_DIR)/src/widgets/span -c $(LVGL_READER_SPAN) -o $@

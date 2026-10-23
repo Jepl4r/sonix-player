@@ -30,6 +30,40 @@
 
 typedef struct ebook ebook_t;
 
+// Embedded audio in the current chapter, in document/SMIL order. Times are
+// seconds into the resource, not into the chapter; end < 0 means its EOF.
+// Strings and entries belong to the chapter and expire at chapter close.
+typedef struct {
+	const char *path;
+	const char *extension;
+	double begin;
+	double end;
+} ebook_audio_clip_t;
+
+uint32_t ebook_audio_count(const ebook_t *book);
+const ebook_audio_clip_t *ebook_audio_clip(const ebook_t *book, uint32_t index);
+bool ebook_audio_unavailable(const ebook_t *book);
+
+// One authored SMIL text/audio pair. Text offsets are UTF-8 bytes in the
+// normalized chapter pool, including styled runs. UINT32_MAX means the book
+// supplied no resolvable text target. Cues do not reopen the decoder.
+typedef struct {
+	double begin, end;
+	uint32_t clip;
+	uint32_t text_begin, text_end;
+} ebook_audio_cue_t;
+uint32_t ebook_audio_cue_count(const ebook_t *book);
+const ebook_audio_cue_t *ebook_audio_cue(const ebook_t *book, uint32_t index);
+uint32_t ebook_audio_cue_at(const ebook_t *book, uint32_t clip, double seconds);
+uint32_t ebook_audio_cue_for_text(const ebook_t *book, uint32_t offset);
+uint32_t ebook_text_offset(const ebook_t *book, uint32_t block, uint32_t offset);
+bool ebook_text_position(const ebook_t *book, uint32_t text, uint32_t *block, uint32_t *offset);
+
+// A private ZIP handle and bounded buffers: safe on a worker while the UI
+// closes/turns the book. Writes to a caller-selected file, never a ZIP name.
+// Deletes partial output on error/cancellation. Maximum resource: 1 GiB.
+bool ebook_extract_audio(const char *book_path, const char *zip_path, const char *destination, bool (*cancelled)(void *), void *user);
+
 // How a block of text is meant to look. One byte, because a chapter has
 // thousands of them.
 typedef enum {

@@ -273,6 +273,7 @@ bool ebook_open_chapter(ebook_t *book, uint32_t spine_index) {
 		book->chapter_dir[dir_len] = '\0';
 	}
 
+	epub_read_audio(book, spine_index, doc);
 	if (!epub_parse_chapter(book, doc)) {
 		goto fail;
 	}
@@ -297,6 +298,13 @@ void ebook_close_chapter(ebook_t *book) {
 	book->span_count = 0;
 	book->text = NULL;
 	book->text_len = 0;
+	book->audio = NULL;
+	book->audio_count = 0;
+	book->audio_unavailable = false;
+	book->audio_cues = NULL;
+	book->audio_cue_count = 0;
+	free(book->audio_targets);
+	book->audio_targets = NULL;
 	arena_destroy(&book->chapter_arena);
 }
 

@@ -39,6 +39,10 @@ typedef struct {
 // Fills out with a fresh snapshot of the current device state.
 void device_state_get(device_state_t *out);
 
+// Give the ebook reader the output without replacing/persisting the music
+// queue with temporary extracted files. Called before its first play.
+void device_state_begin_ebook_audio(void);
+
 // The tags of the loaded track, and in *file_out the file they were read from,
 // which can differ from audio.c's for a moment while a track changes. No copy
 // and no sysfs: cheap enough to call every second. GUI thread only.

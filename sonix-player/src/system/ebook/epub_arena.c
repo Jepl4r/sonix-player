@@ -42,8 +42,9 @@ void arena_init(epub_arena_t *a, const char *name, size_t first_block) {
 // Takes another mapping, big enough for `need` bytes on top of its own header.
 static arena_block_t *block_new(epub_arena_t *a, size_t need) {
 	size_t want = a->block_size;
-	if (want < need + sizeof(arena_block_t)) {
-		want = need + sizeof(arena_block_t);
+	size_t header = round_up(sizeof(arena_block_t), ARENA_ALIGN);
+	if (want < need + header) {
+		want = need + header;
 	}
 	want = round_up(want, page_size());
 
@@ -59,7 +60,7 @@ static arena_block_t *block_new(epub_arena_t *a, size_t need) {
 
 	arena_block_t *block = mem;
 	block->size = want;
-	block->used = sizeof(arena_block_t);
+	block->used = header;
 	block->next = a->first;
 	a->first = block;
 	a->mapped += want;

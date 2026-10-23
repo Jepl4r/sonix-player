@@ -1,9 +1,10 @@
 #include "qobuzpage.h"
 
+#include <malloc.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <string.h>
-#include <malloc.h>
+#include <unistd.h>
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"

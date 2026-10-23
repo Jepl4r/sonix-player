@@ -4,12 +4,10 @@
 #include <stdlib.h>
 #include <string.h>
 
-#include "src/system/ebook/bookmarks.h"
-#include "src/system/ebook/ebook.h"
-#include "src/gui/nowplaying/cover.h"
 #include "src/gui/ebook/ebookbar.h"
 #include "src/gui/ebook/ebookfonts.h"
 #include "src/gui/fonts/fonts.h"
+#include "src/gui/nowplaying/cover.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
@@ -19,6 +17,9 @@
 #include "src/system/core/config.h"
 #include "src/system/core/lang.h"
 #include "src/system/device/power.h"
+#include "src/system/ebook/bookmarks.h"
+#include "src/system/ebook/ebook.h"
+#include "src/system/ebook/ebookaudio.h"
 
 lv_obj_t *ebookreader_screen;
 
@@ -138,7 +139,16 @@ static turn_mode_t opt_turn = TURN_INSTANT;
 // How much of the page the strip along the bottom takes, plus the gap that
 // keeps the last line off it. Not a constant: the reader chooses what is on the
 // strip, and a strip with nothing on it reserves no room.
-static int32_t bar_space(void) { return ebookbar_height() + 6; }
+static bool chapter_has_audio(void) { return ebook_audio_count(book) || ebook_audio_unavailable(book); }
+static int32_t bar_space(void) { return ebookbar_height() + 6 + (chapter_has_audio() ? 62 : 0); }
+
+static void audio_chapter_loaded(void);
+static void audio_refresh(void);
+static void audio_page_changed(void);
+static bool audio_follow_turn;
+static bool audio_page_dirty = true;
+static uint32_t audio_generation;
+static uint32_t highlight_begin = UINT32_MAX, highlight_end = UINT32_MAX;
 
 static void show_page(void);
 static void menu_open(void);
@@ -183,6 +193,7 @@ static void apply_colours(void) {
 	}
 	lv_obj_set_style_bg_color(ebookreader_screen, paper_colour(), 0);
 	lv_obj_set_style_bg_opa(ebookreader_screen, LV_OPA_COVER, 0);
+	audio_refresh();
 	update_status();
 }
 
@@ -398,6 +409,72 @@ static char *widen_spaces(const char *src, size_t len) {
 	return out;
 }
 
+// Highlight existing text draw tasks. No sentence-specific LVGL objects,
+// layout changes, text copies or per-tick allocation are needed. Only page
+// objects carry this small mapping, and the chapter generation protects the
+// outgoing slide while a different chapter's arena has already been released.
+typedef struct {
+	uint32_t block, from, generation;
+	int word;
+} audio_draw_block_t;
+
+static uint32_t rendered_characters(const char *text, uint32_t length, int word) {
+	uint32_t count = 0;
+	for (uint32_t i = 0; i < length; i++) {
+		if (((unsigned char)text[i] & 0xc0) != 0x80)
+			count++;
+		if (text[i] == ' ')
+			count += word;
+	}
+	return count;
+}
+
+static void audio_text_draw_cb(lv_event_t *e) {
+	audio_draw_block_t *map = lv_event_get_user_data(e);
+	if (lv_event_get_code(e) == LV_EVENT_DELETE) {
+		free(map);
+		return;
+	}
+	if (!book || map->generation != audio_generation || highlight_begin == UINT32_MAX)
+		return;
+	lv_draw_label_dsc_t *draw = lv_draw_task_get_label_dsc(lv_event_get_draw_task(e));
+	if (!draw)
+		return;
+	lv_obj_t *group = lv_event_get_current_target(e);
+	const ebook_block_t *b = ebook_block(book, map->block);
+	const char *pool = ebook_chapter_text(book);
+	uint32_t seen = 0, rendered = 0;
+	for (uint32_t i = 0; b && i < b->span_count; i++) {
+		const ebook_span_t *sp = ebook_span(book, b->first_span + i);
+		uint32_t from = seen < map->from ? map->from - seen : 0;
+		seen += sp->length;
+		if (from >= sp->length)
+			continue;
+		lv_span_t *span = lv_spangroup_get_child(group, (int32_t)rendered++);
+		if (!span)
+			break;
+		const char *text = lv_span_get_text(span);
+		if (draw->base.user_data != span)
+			continue;
+		uint32_t start = sp->offset + from;
+		uint32_t end = sp->offset + sp->length;
+		if (highlight_end <= start || highlight_begin >= end)
+			return;
+		uint32_t a = highlight_begin > start ? highlight_begin - start : 0;
+		uint32_t z = highlight_end < end ? highlight_end - start : end - start;
+		uint32_t prefix = rendered_characters(text, draw->base.id1, 0);
+		uint32_t select_a = rendered_characters(pool + start, a, map->word);
+		uint32_t select_z = rendered_characters(pool + start, z, map->word);
+		if (select_z <= prefix)
+			return;
+		draw->sel_start = select_a > prefix ? select_a - prefix : 0;
+		draw->sel_end = select_z - prefix;
+		draw->sel_color = lv_color_hex(0x171B12);
+		draw->sel_bg_color = lv_color_hex(opt_theme == THEME_DARK ? 0xB6CB7A : 0xD7E7A3);
+		return;
+	}
+}
+
 // Builds one block as a spangroup inside `parent`, with `chars` characters of
 // its text starting at `from` (UINT32_MAX for all of it). Returns the object,
 // or NULL when there was nothing to draw.
@@ -491,6 +568,15 @@ static lv_obj_t *build_block(lv_obj_t *parent, const ebook_block_t *b, uint32_t 
 	if (!any) {
 		lv_obj_delete(group);
 		return NULL;
+	}
+	if (ebook_audio_cue_count(book) && (parent == page_box || parent == page_spare)) {
+		audio_draw_block_t *map = malloc(sizeof(*map));
+		if (map) {
+			*map = (audio_draw_block_t){(uint32_t)(b - ebook_block(book, 0)), from, audio_generation, opt_word};
+			lv_obj_set_send_draw_task_events(group, true);
+			lv_obj_add_event_cb(group, audio_text_draw_cb, LV_EVENT_DRAW_TASK_ADDED, map);
+			lv_obj_add_event_cb(group, audio_text_draw_cb, LV_EVENT_DELETE, map);
+		}
 	}
 	lv_spangroup_refresh(group);
 	return group;
@@ -1497,6 +1583,8 @@ static void vertical_scrolled_cb(lv_event_t *e) {
 	}
 	update_status();
 	position_save();
+	if (!audio_follow_turn)
+		audio_page_changed();
 }
 
 // ---------------------------------------------------------------------------
@@ -1522,9 +1610,12 @@ static bool load_chapter_dir(uint32_t spine, uint32_t block, uint32_t offset, in
 	int carried = pages_before + page_number;
 
 	walk_reset(); // it was counting the chapter being left
+	ebookaudio_leave_chapter();
 	if (!ebook_open_chapter(book, spine)) {
+		audio_chapter_loaded();
 		return false;
 	}
+	audio_chapter_loaded();
 	page_block = block;
 	page_offset = offset;
 	page_stack_depth = 0;
@@ -1557,9 +1648,12 @@ static bool load_chapter(uint32_t spine, uint32_t block, uint32_t offset) {
 // a chapter boundary backwards.
 static bool load_chapter_at_end(uint32_t spine) {
 	walk_reset();
+	ebookaudio_leave_chapter();
 	if (!ebook_open_chapter(book, spine)) {
+		audio_chapter_loaded();
 		return false;
 	}
+	audio_chapter_loaded();
 	page_stack_depth = 0;
 
 	uint32_t block = 0, offset = 0;
@@ -1676,6 +1770,8 @@ static void turn_to(uint32_t block, uint32_t offset, int direction) {
 	page_offset = offset;
 	present(direction);
 	position_save();
+	if (!audio_follow_turn)
+		audio_page_changed();
 }
 
 static void page_next(void) {
@@ -1938,6 +2034,7 @@ typedef enum {
 	SECTION_CHAPTERS = 0,
 	SECTION_FONT,
 	SECTION_THEME,
+	SECTION_AUDIO,
 } section_t;
 
 static lv_obj_t *menu_veil;
@@ -1960,7 +2057,7 @@ static bool chapters_from_toc;	 // its own index, or the spine standing in for o
 // the recolour is a style set when the object is built -- a snapshot of the
 // theme at that moment. The menu is built once, at startup, so these have to be
 // recoloured by hand when the theme changes.
-#define MENU_GLYPH_MAX 4
+#define MENU_GLYPH_MAX 6
 static lv_obj_t *menu_glyphs[MENU_GLYPH_MAX];
 static int menu_glyph_count;
 
@@ -1981,12 +2078,15 @@ static void menu_theme_refresh(void) {
 static void build_chapters(void);
 static void build_font(void);
 static void build_theme(void);
+static void build_audio(void);
+static void audio_forget_widgets(void);
 
 static void menu_close(void) {
 	if (menu_veil) {
 		lv_obj_set_hidden(menu_veil, true);
 	}
 	if (menu_body) {
+		audio_forget_widgets();
 		// The rows of a long chapter list are the one thing in here worth not
 		// keeping around while a book is being read.
 		lv_obj_clean(menu_body);
@@ -2011,8 +2111,9 @@ static void menu_veil_cb(lv_event_t *e) {
 
 static void section_open(lv_event_t *e) {
 	section_t which = (section_t)(intptr_t)lv_event_get_user_data(e);
-	static const char *const SECTION_TITLES[] = {"chapters", "ebookreader_font_settings", "ebookreader_book_theme"};
+	static const char *const SECTION_TITLES[] = {"chapters", "ebookreader_font_settings", "ebookreader_book_theme", "ebookaudio_title"};
 
+	audio_forget_widgets();
 	lv_obj_clean(menu_body);
 	chapters_built = 0;
 	menu_section = which;
@@ -2027,6 +2128,9 @@ static void section_open(lv_event_t *e) {
 	case SECTION_THEME:
 		build_theme();
 		break;
+	case SECTION_AUDIO:
+		build_audio();
+		break;
 	}
 	lv_obj_scroll_to_y(menu_body, 0, LV_ANIM_OFF);
 	lv_obj_set_hidden(menu_bar, true);
@@ -2035,6 +2139,7 @@ static void section_open(lv_event_t *e) {
 
 static void section_back_cb(lv_event_t *e) {
 	(void)e;
+	audio_forget_widgets();
 	lv_obj_clean(menu_body);
 	chapters_built = 0;
 	lv_obj_set_hidden(menu_card, true);
@@ -2458,7 +2563,7 @@ static void build_theme(void) {
 // One of the three things on the bar: the icon above, its name under it.
 static void bar_button(lv_obj_t *parent, const lv_image_dsc_t *icon, const char *tag, section_t which) {
 	lv_obj_t *btn = lv_btn_create(parent);
-	lv_obj_set_size(btn, LV_SIZE_CONTENT, LV_SIZE_CONTENT);
+	lv_obj_set_size(btn, 0, LV_SIZE_CONTENT);
 	lv_obj_set_flex_grow(btn, 1);
 	lv_obj_set_style_bg_opa(btn, LV_OPA_TRANSP, 0);
 	lv_obj_add_style(btn, &theme_style_card_pressed, LV_STATE_PRESSED);
@@ -2466,6 +2571,7 @@ static void bar_button(lv_obj_t *parent, const lv_image_dsc_t *icon, const char 
 	lv_obj_set_style_border_width(btn, 0, 0);
 	lv_obj_set_style_shadow_width(btn, 0, 0);
 	lv_obj_set_style_pad_ver(btn, 14, 0);
+	lv_obj_set_style_pad_hor(btn, 4, 0);
 	lv_obj_set_flex_flow(btn, LV_FLEX_FLOW_COLUMN);
 	lv_obj_set_flex_align(btn, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_row(btn, 8, 0);
@@ -2478,6 +2584,10 @@ static void bar_button(lv_obj_t *parent, const lv_image_dsc_t *icon, const char 
 	remember_glyph(glyph);
 
 	lv_obj_t *name = lv_label_create(btn);
+	lv_obj_set_width(name, lv_pct(100));
+	lv_obj_set_height(name, 24);
+	lv_label_set_long_mode(name, LV_LABEL_LONG_DOT);
+	lv_obj_set_style_text_align(name, LV_TEXT_ALIGN_CENTER, 0);
 	lv_label_set_text(name, tr(tag));
 	lv_obj_add_style(name, &theme_style_text, 0);
 	lv_obj_set_style_text_font(name, &font_ui_18, 0);
@@ -2517,6 +2627,7 @@ static void build_menu(gui_config_t *cfg) {
 	bar_button(icons, &icon_ebook_chapter, "chapters", SECTION_CHAPTERS);
 	bar_button(icons, &icon_ebook_font, "ebookreader_font_settings", SECTION_FONT);
 	bar_button(icons, &icon_ebook_theme, "ebookreader_book_theme", SECTION_THEME);
+	bar_button(icons, &icon_ebook_audio, "ebookaudio_title", SECTION_AUDIO);
 
 	// Under the three, separated: leaving is not a fourth thing to look at
 	// while reading, but it has to be somewhere and this is the only panel the
@@ -2604,6 +2715,324 @@ static void build_menu(gui_config_t *cfg) {
 	lv_obj_add_event_cb(menu_body, chapters_scrolled_cb, LV_EVENT_SCROLL, NULL);
 }
 
+// ---------------------------------------------------------------------------
+// Embedded audio: a compact transport while reading and a panel for seeking.
+// The chapter text stays on screen while its resource is prepared/played.
+// ---------------------------------------------------------------------------
+
+static lv_obj_t *audio_strip, *audio_strip_time, *audio_strip_play;
+static lv_obj_t *audio_panel_time, *audio_panel_play, *audio_panel_slider, *audio_panel_speed;
+static lv_obj_t *audio_panel_previous, *audio_panel_next;
+
+static void audio_forget_widgets(void) {
+	audio_panel_time = audio_panel_play = audio_panel_slider = audio_panel_speed = NULL;
+	audio_panel_previous = audio_panel_next = NULL;
+}
+
+static void audio_refresh(void) {
+	if (!audio_strip)
+		return;
+	bool available = book && chapter_has_audio();
+	lv_obj_set_hidden(audio_strip, !available);
+	if (!available)
+		return;
+	lv_obj_align(audio_strip, LV_ALIGN_BOTTOM_MID, 0, -(ebookbar_height() + 10));
+	lv_obj_set_style_bg_color(audio_strip, ink_colour(), 0);
+	lv_obj_set_style_text_color(audio_strip_time, ink_colour(), 0);
+	lv_image_set_src(audio_strip_play, ebookaudio_playing() ? &icon_pause_small : &icon_play_small);
+	lv_obj_set_style_image_recolor(audio_strip_play, ink_colour(), 0);
+	lv_obj_set_style_image_recolor_opa(audio_strip_play, LV_OPA_COVER, 0);
+	double at = 0, duration = 0;
+	ebookaudio_progress(&at, &duration);
+	char text[128];
+	const char *error = ebookaudio_error();
+	if (error)
+		snprintf(text, sizeof(text), "%s", tr(error));
+	else if (ebookaudio_loading())
+		snprintf(text, sizeof(text), "%s", tr("ebookaudio_preparing"));
+	else if (!ebook_audio_count(book))
+		snprintf(text, sizeof(text), "%s", tr("ebookaudio_unavailable"));
+	else
+		snprintf(text, sizeof(text), "%u/%u  %02u:%02u / %02u:%02u", ebook_audio_cue_count(book) ? ebookaudio_cue_index() + 1 : ebookaudio_index() + 1, ebook_audio_cue_count(book) ? ebook_audio_cue_count(book) : ebook_audio_count(book), (unsigned)at / 60, (unsigned)at % 60, (unsigned)duration / 60, (unsigned)duration % 60);
+	if (strcmp(lv_label_get_text(audio_strip_time), text))
+		lv_label_set_text(audio_strip_time, text);
+	if (audio_panel_time && strcmp(lv_label_get_text(audio_panel_time), text))
+		lv_label_set_text(audio_panel_time, text);
+	if (audio_panel_play) {
+		const char *label = tr(ebookaudio_playing() ? "ebookaudio_pause" : "ebookaudio_play");
+		if (strcmp(lv_label_get_text(audio_panel_play), label))
+			lv_label_set_text(audio_panel_play, label);
+	}
+	uint32_t index = ebook_audio_cue_count(book) ? ebookaudio_cue_index() : ebookaudio_index();
+	uint32_t count = ebook_audio_cue_count(book) ? ebook_audio_cue_count(book) : ebook_audio_count(book);
+	if (audio_panel_previous) {
+		if (!index || index == UINT32_MAX)
+			lv_obj_add_state(audio_panel_previous, LV_STATE_DISABLED);
+		else
+			lv_obj_remove_state(audio_panel_previous, LV_STATE_DISABLED);
+	}
+	if (audio_panel_next) {
+		if (index == UINT32_MAX || index + 1 >= count)
+			lv_obj_add_state(audio_panel_next, LV_STATE_DISABLED);
+		else
+			lv_obj_remove_state(audio_panel_next, LV_STATE_DISABLED);
+	}
+	if (audio_panel_speed) {
+		snprintf(text, sizeof(text), "%s: %d.%d×", tr("ebookaudio_speed"), ebookaudio_speed() / 10, ebookaudio_speed() % 10);
+		if (strcmp(lv_label_get_text(audio_panel_speed), text))
+			lv_label_set_text(audio_panel_speed, text);
+	}
+	if (audio_panel_slider && !lv_slider_is_dragged(audio_panel_slider)) {
+		lv_slider_set_value(audio_panel_slider, duration > 0 ? (int)(1000 * at / duration) : 0, LV_ANIM_OFF);
+	}
+}
+
+static void audio_chapter_loaded(void) {
+	audio_generation++;
+	highlight_begin = highlight_end = UINT32_MAX;
+	audio_page_dirty = true;
+	ebookaudio_attach(book, g_cfg->sd_root_path);
+	int height = (int)g_cfg->screen_height - bar_space();
+	lv_obj_set_height(page_box, height);
+	lv_obj_set_height(page_spare, height);
+	lv_obj_set_height(count_box, height);
+	audio_refresh();
+}
+
+static void audio_page_changed(void) {
+	audio_page_dirty = true;
+	if (book && ebookaudio_active()) {
+		ebookaudio_seek_text(ebook_text_offset(book, page_block, page_offset));
+		audio_page_dirty = false;
+	}
+}
+
+static void audio_follow(bool force) {
+	uint32_t begin = UINT32_MAX, end = UINT32_MAX, reading = 0;
+	bool valid = ebookaudio_highlight(&begin, &end, &reading);
+	if (begin != highlight_begin || end != highlight_end) {
+		highlight_begin = begin;
+		highlight_end = end;
+		lv_obj_invalidate(page_box);
+	}
+	if (!valid || turning || ebookaudio_loading() || (!ebookaudio_playing() && !force))
+		return;
+	uint32_t start = ebook_text_offset(book, page_block, page_offset);
+	uint32_t next = ebook_text_offset(book, next_block, next_offset);
+	audio_follow_turn = true;
+	if (turn_mode() == TURN_VERTICAL) {
+		uint32_t block_index, offset;
+		if (ebook_text_position(book, reading, &block_index, &offset)) {
+			for (uint32_t i = 0; i < lv_obj_get_child_count(page_box); i++) {
+				lv_obj_t *child = lv_obj_get_child(page_box, i);
+				if ((uint32_t)(uintptr_t)lv_obj_get_user_data(child) == block_index) {
+					lv_obj_scroll_to_view(child, LV_ANIM_OFF);
+					break;
+				}
+			}
+		}
+	} else if (reading < start || (force && !at_chapter_end && reading >= next)) {
+		// Backward clip/slider seek: put the target block on screen. Reusing
+		// the ordinary layout keeps only a page of objects alive.
+		uint32_t block_index, offset;
+		if (ebook_text_position(book, reading, &block_index, &offset)) {
+			page_stack_depth = 0;
+			page_number = 0;
+			turn_to(block_index, 0, 0);
+		}
+	} else if (!at_chapter_end && next > start && reading >= next) {
+		page_next();
+	}
+	audio_follow_turn = false;
+}
+
+static void audio_timer_cb(lv_timer_t *timer) {
+	(void)timer;
+	if (!book) {
+		if (audio_strip)
+			lv_obj_set_hidden(audio_strip, true);
+		return;
+	}
+	ebookaudio_tick(lv_tick_get());
+	if (ebookaudio_take_chapter_completion()) {
+		uint32_t next = ebook_chapter_index(book) + 1u;
+		if (next < ebook_spine_count(book) && load_chapter(next, 0, 0) && ebook_audio_count(book)) {
+			ebookaudio_seek_text(ebook_text_offset(book, page_block, page_offset));
+			audio_page_dirty = false;
+			ebookaudio_toggle();
+		}
+	}
+	audio_follow(false);
+	audio_refresh();
+}
+
+static void audio_toggle_cb(lv_event_t *e) {
+	(void)e;
+	if (book && audio_page_dirty) {
+		ebookaudio_seek_text(ebook_text_offset(book, page_block, page_offset));
+		audio_page_dirty = false;
+	}
+	ebookaudio_toggle();
+	audio_refresh();
+}
+
+static void audio_step_cb(lv_event_t *e) {
+	ebookaudio_step((int)(intptr_t)lv_event_get_user_data(e));
+	audio_page_dirty = false;
+	audio_follow(true);
+	audio_refresh();
+}
+
+static void audio_skip_cb(lv_event_t *e) {
+	double at = 0;
+	ebookaudio_progress(&at, NULL);
+	ebookaudio_seek(at + (int)(intptr_t)lv_event_get_user_data(e));
+	audio_page_dirty = false;
+	audio_follow(true);
+	audio_refresh();
+}
+
+static void audio_slider_cb(lv_event_t *e) {
+	double duration = 0;
+	ebookaudio_progress(NULL, &duration);
+	if (duration > 0)
+		ebookaudio_seek(duration * lv_slider_get_value(lv_event_get_target_obj(e)) / 1000.0);
+	audio_page_dirty = false;
+	audio_follow(true);
+	audio_refresh();
+}
+
+static void audio_speed_cb(lv_event_t *e) {
+	ebookaudio_set_speed(ebookaudio_speed() + (int)(intptr_t)lv_event_get_user_data(e));
+	audio_refresh();
+}
+
+static lv_obj_t *audio_text_button(lv_obj_t *parent, const char *text, lv_event_cb_t cb, intptr_t value) {
+	lv_obj_t *btn = lv_btn_create(parent);
+	lv_obj_add_style(btn, &theme_style_card, 0);
+	lv_obj_add_style(btn, &theme_style_card_pressed, LV_STATE_PRESSED);
+	lv_obj_set_size(btn, LV_SIZE_CONTENT, 54);
+	lv_obj_set_flex_grow(btn, 1);
+	lv_obj_set_style_pad_hor(btn, 10, 0);
+	lv_obj_set_style_radius(btn, 10, 0);
+	lv_obj_set_style_border_width(btn, 0, 0);
+	lv_obj_set_style_shadow_width(btn, 0, 0);
+	lv_obj_add_event_cb(btn, cb, LV_EVENT_CLICKED, (void *)value);
+	lv_obj_t *label = lv_label_create(btn);
+	lv_label_set_text(label, tr(text));
+	lv_obj_add_style(label, &theme_style_text, 0);
+	lv_obj_set_style_text_font(label, &font_ui_18, 0);
+	lv_obj_center(label);
+	return label;
+}
+
+static lv_obj_t *audio_button_row(lv_obj_t *parent) {
+	lv_obj_t *row = lv_obj_create(parent);
+	lv_obj_remove_style_all(row);
+	lv_obj_set_size(row, lv_pct(100), LV_SIZE_CONTENT);
+	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
+	lv_obj_set_style_pad_column(row, 8, 0);
+	lv_obj_set_scrollable(row, false);
+	return row;
+}
+
+static void build_audio(void) {
+	audio_panel_time = lv_label_create(menu_body);
+	lv_obj_set_width(audio_panel_time, lv_pct(100));
+	lv_obj_add_style(audio_panel_time, &theme_style_text, 0);
+	lv_obj_set_style_text_font(audio_panel_time, &font_ui_20, 0);
+	lv_label_set_long_mode(audio_panel_time, LV_LABEL_LONG_WRAP);
+	if (ebook_audio_count(book)) {
+		audio_panel_slider = lv_slider_create(menu_body);
+		lv_obj_set_size(audio_panel_slider, lv_pct(94), 10);
+		lv_obj_set_style_margin_ver(audio_panel_slider, 16, 0);
+		lv_slider_set_range(audio_panel_slider, 0, 1000);
+		lv_obj_add_event_cb(audio_panel_slider, audio_slider_cb, LV_EVENT_RELEASED, NULL);
+		lv_obj_t *row = audio_button_row(menu_body);
+		audio_text_button(row, "-10s", audio_skip_cb, -10);
+		audio_panel_play = audio_text_button(row, "ebookaudio_play", audio_toggle_cb, 0);
+		audio_text_button(row, "+10s", audio_skip_cb, 10);
+		row = audio_button_row(menu_body);
+		const char *previous = ebook_audio_cue_count(book) ? "ebookaudio_previous_sentence" : "ebookaudio_previous";
+		const char *next = ebook_audio_cue_count(book) ? "ebookaudio_next_sentence" : "ebookaudio_next";
+		audio_panel_previous = lv_obj_get_parent(audio_text_button(row, previous, audio_step_cb, -1));
+		audio_panel_next = lv_obj_get_parent(audio_text_button(row, next, audio_step_cb, 1));
+		row = audio_button_row(menu_body);
+		audio_text_button(row, "−", audio_speed_cb, -1);
+		audio_panel_speed = lv_label_create(row);
+		lv_obj_set_flex_grow(audio_panel_speed, 1);
+		lv_obj_add_style(audio_panel_speed, &theme_style_text, 0);
+		lv_obj_set_style_text_font(audio_panel_speed, &font_ui_20, 0);
+		lv_obj_set_style_text_align(audio_panel_speed, LV_TEXT_ALIGN_CENTER, 0);
+		lv_obj_set_style_pad_ver(audio_panel_speed, 14, 0);
+		audio_text_button(row, "+", audio_speed_cb, 1);
+	}
+	lv_obj_t *note = lv_label_create(menu_body);
+	lv_obj_set_width(note, lv_pct(100));
+	lv_obj_add_style(note, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(note, &font_ui_18, 0);
+	lv_label_set_long_mode(note, LV_LABEL_LONG_WRAP);
+	lv_label_set_text(note, tr(ebook_audio_unavailable(book) ? "ebookaudio_unavailable" : "ebookaudio_note"));
+	audio_refresh();
+}
+
+static void audio_panel_open_cb(lv_event_t *e);
+
+static void audio_open_cb(lv_event_t *e) {
+	(void)e;
+	menu_open();
+	audio_panel_open_cb(NULL);
+}
+
+static void audio_panel_open_cb(lv_event_t *e) {
+	(void)e;
+	audio_forget_widgets();
+	lv_obj_clean(menu_body);
+	chapters_built = 0;
+	menu_section = SECTION_AUDIO;
+	lv_label_set_text(menu_heading, tr("ebookaudio_title"));
+	build_audio();
+	lv_obj_set_hidden(menu_bar, true);
+	lv_obj_set_hidden(menu_card, false);
+}
+
+static void build_audio_strip(gui_config_t *cfg) {
+	audio_strip = lv_obj_create(ebookreader_screen);
+	lv_obj_remove_style_all(audio_strip);
+	lv_obj_set_size(audio_strip, cfg->screen_width - 16, 56);
+	lv_obj_set_style_bg_opa(audio_strip, LV_OPA_10, 0);
+	lv_obj_set_style_radius(audio_strip, 12, 0);
+	lv_obj_set_style_pad_all(audio_strip, 4, 0);
+	lv_obj_set_style_pad_column(audio_strip, 8, 0);
+	lv_obj_set_flex_flow(audio_strip, LV_FLEX_FLOW_ROW);
+	lv_obj_set_flex_align(audio_strip, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_scrollable(audio_strip, false);
+	lv_obj_set_hidden(audio_strip, true);
+	lv_obj_t *open = lv_btn_create(audio_strip);
+	lv_obj_set_size(open, 80, 48);
+	lv_obj_set_style_bg_opa(open, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_shadow_width(open, 0, 0);
+	lv_obj_add_event_cb(open, audio_open_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *label = lv_label_create(open);
+	lv_label_set_text(label, tr("ebookaudio_title"));
+	lv_obj_set_style_text_font(label, &font_ui_18, 0);
+	lv_obj_center(label);
+	audio_strip_time = lv_label_create(audio_strip);
+	lv_obj_set_flex_grow(audio_strip_time, 1);
+	lv_obj_set_width(audio_strip_time, 200);
+	lv_obj_set_style_text_font(audio_strip_time, &font_ui_18, 0);
+	lv_label_set_long_mode(audio_strip_time, LV_LABEL_LONG_DOT);
+	lv_obj_t *play = lv_btn_create(audio_strip);
+	lv_obj_set_size(play, 56, 48);
+	lv_obj_set_style_bg_opa(play, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_shadow_width(play, 0, 0);
+	lv_obj_add_event_cb(play, audio_toggle_cb, LV_EVENT_CLICKED, NULL);
+	audio_strip_play = lv_image_create(play);
+	lv_image_set_src(audio_strip_play, &icon_play_small);
+	lv_obj_center(audio_strip_play);
+	lv_timer_create(audio_timer_cb, 100, NULL);
+}
+
 // The page of a book wants the whole panel: the clock and the battery are
 // forty-four rows of something else to look at, and the chevron sits exactly
 // where the first line of text begins. Both come back when the book is put
@@ -2640,6 +3069,7 @@ static void reader_unloaded_cb(lv_event_t *e) {
 	turn_rows[0] = turn_rows[1] = turn_rows[2] = NULL;
 	turn_ticks[0] = turn_ticks[1] = turn_ticks[2] = NULL;
 	ebookfonts_close();
+	ebookaudio_detach();
 	if (book) {
 		position_save();
 		ebook_log_memory(book, "before closing");
@@ -2669,6 +3099,7 @@ void ebookreader_open(const char *path) {
 		return;
 	}
 	if (book) {
+		ebookaudio_detach();
 		ebook_close(book);
 		book = NULL;
 	}
@@ -2789,6 +3220,8 @@ void ebookreader_init(gui_config_t *cfg) {
 	lv_obj_align(status_bar.root, LV_ALIGN_BOTTOM_MID, 0, -6);
 
 	build_menu(cfg);
+	build_audio_strip(cfg);
+	lv_obj_move_foreground(menu_veil);
 
 	// No switcher_attach_back_gesture() here, deliberately: the swipe-back and
 	// the page turn are the same gesture, and the page turn is the one a reader

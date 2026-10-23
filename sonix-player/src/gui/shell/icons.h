@@ -209,6 +209,7 @@ extern const lv_image_dsc_t icon_airpods_anc;
 extern const lv_image_dsc_t icon_airpods_transparency;
 extern const lv_image_dsc_t icon_airpods_adaptive;
 extern const lv_image_dsc_t icon_ebook_chapter;
+extern const lv_image_dsc_t icon_ebook_audio;
 extern const lv_image_dsc_t icon_ebook_font;
 extern const lv_image_dsc_t icon_ebook_theme;
 extern const lv_image_dsc_t icon_ebook_turn_fast;

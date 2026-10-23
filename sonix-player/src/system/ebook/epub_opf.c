@@ -33,6 +33,9 @@ typedef struct {
 	bool is_nav;	 // properties="nav": the EPUB 3 table of contents
 	bool is_cover;	 // properties="cover-image"
 	bool is_ncx;	 // media-type says it is the EPUB 2 table of contents
+	const char *overlay;
+	size_t overlay_len;
+	const char *audio_extension;
 } manifest_item_t;
 
 #define MANIFEST_MAX 8192
@@ -476,6 +479,10 @@ bool epub_read_structure(ebook_t *book) {
 			static const char NCX_TYPE[] = "application/x-dtbncx+xml";
 			it->is_ncx = epub_xml_attr(&x, "media-type", &value, &len) && len == sizeof(NCX_TYPE) - 1 &&
 						 strncmp(value, NCX_TYPE, len) == 0;
+			if (epub_xml_attr(&x, "media-type", &value, &len) && len > 6 && strncmp(value, "audio/", 6) == 0) {
+				it->audio_extension = epub_audio_extension(NULL, value, len);
+			}
+			epub_xml_attr(&x, "media-overlay", &it->overlay, &it->overlay_len);
 			item_count++;
 			continue;
 		}
@@ -504,6 +511,23 @@ bool epub_read_structure(ebook_t *book) {
 
 	// Spine ids to ZIP paths.
 	char resolved[1024];
+	uint32_t audio_resources = 0;
+	for (int k = 0; k < item_count; k++) {
+		if (items[k].audio_extension)
+			audio_resources++;
+	}
+	if (audio_resources) {
+		book->audio_resources = arena_calloc(&book->book_arena, audio_resources, sizeof(epub_audio_resource_t));
+		for (int k = 0; book->audio_resources && k < item_count; k++) {
+			if (!items[k].audio_extension || !epub_audio_path(resolved, sizeof(resolved), book->opf_dir, items[k].href, items[k].href_len))
+				continue;
+			epub_audio_resource_t *resource = &book->audio_resources[book->audio_resource_count];
+			resource->path = arena_strdup(&book->book_arena, resolved);
+			resource->extension = items[k].audio_extension;
+			if (resource->path)
+				book->audio_resource_count++;
+		}
+	}
 	for (uint32_t i = 0; i < order_count; i++) {
 		for (int k = 0; k < item_count; k++) {
 			if (items[k].id_len != order_len[i] || strncmp(items[k].id, order[i], order_len[i]) != 0) {
@@ -519,6 +543,12 @@ bool epub_read_structure(ebook_t *book) {
 			}
 			book->spine[book->spine_count].path = arena_strdup(&book->book_arena, resolved);
 			if (book->spine[book->spine_count].path) {
+				for (int m = 0; items[k].overlay && m < item_count; m++) {
+					if (items[m].id_len == items[k].overlay_len && strncmp(items[m].id, items[k].overlay, items[m].id_len) == 0 && epub_audio_path(resolved, sizeof(resolved), book->opf_dir, items[m].href, items[m].href_len)) {
+						book->spine[book->spine_count].overlay = arena_strdup(&book->book_arena, resolved);
+						break;
+					}
+				}
 				book->spine_count++;
 			}
 			break;

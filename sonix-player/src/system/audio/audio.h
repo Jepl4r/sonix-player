@@ -1,7 +1,6 @@
 #ifndef AUDIO_H
 #define AUDIO_H
 
-#include <alsa/asoundlib.h>
 #include <stdbool.h>
 #include <stddef.h>
 
@@ -142,6 +141,10 @@ void audio_set_completion_hook(void (*hook)(void));
 void audio_get_current_file(char *out, size_t out_size);
 
 void audio_get_progress(double *current_secs, double *total_secs);
+// Ebook synchronization follows samples heard, rather than the deep ALSA
+// output queue. No additional PCM buffers; delay is sampled by the audio thread.
+void audio_set_sync_clock(bool enabled);
+double audio_get_audible_position(void);
 
 // Get the sample rate and channel count of the currently playing stream.
 // Both are 0 if nothing has started playing yet.

@@ -368,6 +368,7 @@ ICONS = [
     # three after are the page-turn styles in the theme settings, beside a name
     # at the size of a line of text.
     ("chapter.svg", "ebook_chapter", 44),
+    ("headphones.svg", "ebook_audio", 44),
     ("font-settings.svg", "ebook_font", 44),
     ("book-theme.svg", "ebook_theme", 44),
     ("fast-turn.svg", "ebook_turn_fast", 34),

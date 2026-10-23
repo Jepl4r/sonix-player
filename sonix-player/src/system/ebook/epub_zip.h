@@ -33,6 +33,7 @@ typedef struct {
 	uint32_t local_offset; // where the local header sits in the file
 	uint32_t comp_size;
 	uint32_t uncomp_size;
+	uint32_t crc32;
 	uint16_t method; // 0 stored, 8 deflate; nothing else is accepted
 } epub_zip_entry_t;
 
@@ -67,5 +68,7 @@ uint32_t epub_zip_size(const epub_zip_t *zip, int index);
 // including a member larger than `limit` -- which is how a book with a
 // hundred-megabyte chapter is refused rather than fatal.
 void *epub_zip_extract(const epub_zip_t *zip, int index, epub_arena_t *arena, uint32_t limit, uint32_t *size_out);
+
+bool epub_zip_extract_file(const epub_zip_t *zip, int index, const char *destination, uint32_t limit, bool (*cancelled)(void *), void *user);
 
 #endif /* EPUB_ZIP_H */

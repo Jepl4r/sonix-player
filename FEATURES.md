@@ -137,6 +137,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 > `.epub` files go in the `Ebook` folder.
 
 - EPUB 2 and 3, with covers, pictures, headings, lists, quotes and the table of contents.
+- **EPUB narration** - embedded audio and EPUB 3 media overlays, with sentence highlighting, automatic page/chapter turns, playback from the visible page, sentence navigation, seeking, ten-second skips and saved listening position. Pitch-preserving speed from 0.5x to 3.0x in 0.1x steps. [Details and limits](EPUB_AUDIO.md).
 - Japanese books that are written vertically are shown vertically.
 - Text size, line spacing, word spacing and margins.
 - Three reading themes (Paper, Sepia, Night) and three page-turn animations.

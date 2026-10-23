@@ -1,12 +1,13 @@
 #include "tidalpage.h"
 
 #include <errno.h>
+#include <malloc.h>
 #include <pthread.h>
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/time.h>
-#include <malloc.h>
+#include <unistd.h>
 
 #include "src/gui/shell/confirm.h"
 #include "src/gui/fonts/fonts.h"

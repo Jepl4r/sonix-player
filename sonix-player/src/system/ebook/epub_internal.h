@@ -28,7 +28,20 @@
 
 typedef struct {
 	const char *path; // inside the ZIP, already resolved against the OPF folder
+	const char *overlay; // optional EPUB 3 media-overlay SMIL document
 } epub_spine_entry_t;
+
+typedef struct {
+	const char *path;
+	const char *extension;
+} epub_audio_resource_t;
+
+// Temporary hash index while resolving SMIL fragments during the XHTML pass.
+// Freed immediately after parsing, never retained by the running reader.
+typedef struct {
+	uint64_t id;
+	uint32_t cue;
+} epub_audio_target_t;
 
 struct ebook {
 	// Everything in here that is a pointer points into one of the two arenas,
@@ -51,6 +64,8 @@ struct ebook {
 
 	epub_spine_entry_t *spine;
 	uint32_t spine_count;
+	epub_audio_resource_t *audio_resources;
+	uint32_t audio_resource_count;
 
 	// How big each chapter's file is unpacked, and the sum. Built on the first
 	// question and then kept: it is one linear search of the ZIP directory per
@@ -76,6 +91,12 @@ struct ebook {
 	uint32_t span_count;
 	char *text;
 	uint32_t text_len;
+	ebook_audio_clip_t *audio;
+	uint32_t audio_count;
+	bool audio_unavailable;
+	ebook_audio_cue_t *audio_cues;
+	uint32_t audio_cue_count;
+	epub_audio_target_t *audio_targets; // temporary malloc, not an arena mapping
 };
 
 // epub_opf.c: fills in title, author, opf_dir, spine, toc and cover_path.
@@ -87,6 +108,13 @@ bool epub_read_structure(ebook_t *book);
 // `book->chapter_arena`. The document is NUL-terminated and belongs to the
 // chapter arena too, so it does not have to be kept after this returns.
 bool epub_parse_chapter(ebook_t *book, const char *xhtml);
+
+void epub_read_audio(ebook_t *book, uint32_t spine, const char *xhtml);
+const char *epub_audio_extension(const char *path, const char *mime, size_t mime_len);
+bool epub_audio_path(char *out, size_t size, const char *base, const char *href, size_t len);
+uint64_t epub_audio_id(const char *text, size_t length);
+uint32_t epub_audio_target(const ebook_t *book, uint64_t id);
+void epub_audio_resolve(ebook_t *book, uint32_t target, uint32_t begin, uint32_t end);
 
 // Resolves `href` against `base` (a folder ending in '/' or ""), collapsing
 // "../" and "./", and strips any "#fragment". Into `out`, which is `out_size`

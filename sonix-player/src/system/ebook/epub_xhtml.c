@@ -3,6 +3,7 @@
 #include "src/system/ebook/epub_xml.h"
 
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 // ---------------------------------------------------------------------------
@@ -49,6 +50,7 @@ typedef struct {
 	bool block;		 // this element closes a block when it ends
 	bool skip;		 // this element and everything in it is not read
 	char name[16];	 // so the matching CLOSE can be recognised
+	uint32_t audio_target, audio_start;
 } tag_state_t;
 
 typedef struct {
@@ -351,10 +353,27 @@ static void push(parse_t *p, const epub_xml_t *x, uint8_t add_style, bool is_blo
 	top->quote = (uint8_t)((below ? below->quote : 0) + (is_quote ? 1 : 0));
 	top->block = is_block;
 	top->skip = skip;
+	top->audio_target = UINT32_MAX;
+	top->audio_start = p->text_len;
+	const char *id;
+	size_t id_len;
+	if (!skip && !top->hidden && !p->skip_depth && epub_xml_attr(x, "id", &id, &id_len))
+		top->audio_target = epub_audio_target(p->book, epub_audio_id(id, id_len));
 	size_t len = x->name_len < sizeof(top->name) - 1 ? x->name_len : sizeof(top->name) - 1;
 	memcpy(top->name, x->name, len);
 	top->name[len] = '\0';
 	p->depth++;
+}
+
+static void resolve_audio(parse_t *p, const tag_state_t *tag) {
+	uint32_t begin = tag->audio_start, end = p->text_len;
+	if (tag->audio_target == UINT32_MAX)
+		return;
+	while (begin < end && (p->text[begin] == ' ' || p->text[begin] == '\n'))
+		begin++;
+	while (end > begin && (p->text[end - 1] == ' ' || p->text[end - 1] == '\n'))
+		end--;
+	epub_audio_resolve(p->book, tag->audio_target, begin, end);
 }
 
 // Reads a stylesheet the document links to.
@@ -484,8 +503,7 @@ bool epub_parse_chapter(ebook_t *book, const char *xhtml) {
 
 			// Ruby text too: the reading of a word, printed small beside it, would
 			// otherwise land in the line as a second copy of the word.
-			bool skip = tag_is(&x, "script") || tag_is(&x, "head") || tag_is(&x, "title") || tag_is(&x, "rt") ||
-						tag_is(&x, "rp") || tag_is(&x, "rtc");
+			bool skip = tag_is(&x, "script") || tag_is(&x, "head") || tag_is(&x, "title") || tag_is(&x, "rt") || tag_is(&x, "rp") || tag_is(&x, "rtc") || tag_is(&x, "audio") || tag_is(&x, "video");
 			if (skip && !x.self_closing) {
 				p.skip_depth++;
 				push(&p, &x, 0, false, false, false, true, EBOOK_ALIGN_DEFAULT, false);
@@ -615,6 +633,7 @@ bool epub_parse_chapter(ebook_t *book, const char *xhtml) {
 			continue; // a close with no open: ignore it
 		}
 		for (int i = p.depth - 1; i >= found; i--) {
+			resolve_audio(&p, &p.stack[i]);
 			if (p.stack[i].skip && p.skip_depth > 0) {
 				p.skip_depth--;
 			}
@@ -629,6 +648,11 @@ bool epub_parse_chapter(ebook_t *book, const char *xhtml) {
 	}
 
 	close_block(&p);
+	for (int i = p.depth - 1; i >= 0; i--)
+		resolve_audio(&p, &p.stack[i]);
+	epub_audio_resolve(book, epub_audio_target(book, UINT64_MAX), 0, p.text_len);
+	free(book->audio_targets);
+	book->audio_targets = NULL;
 
 	book->blocks = p.blocks;
 	book->block_count = p.block_count;

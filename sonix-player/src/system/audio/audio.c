@@ -534,6 +534,8 @@ static void mark_stopped_unless_replaced(void) {
 }
 
 static double progress_current_secs = 0.0;
+static bool sync_clock_enabled;
+static double audible_position_secs, audible_floor_secs;
 
 // Where the bar was when the track was paused.
 //
@@ -562,9 +564,16 @@ static double opening_position(void) {
 // meanwhile: audio_seek() already reports its target, and the block that was
 // being written when it arrived belongs to the old position. Caller holds
 // audio_mutex.
-static void report_position(double seconds) {
+static void report_position(double seconds, snd_pcm_t *pcm, int rate, double factor) {
 	if (!seek_request) {
 		progress_current_secs = seconds;
+		if (sync_clock_enabled) {
+			snd_pcm_sframes_t queued = 0;
+			if (!pcm || rate <= 0 || snd_pcm_delay(pcm, &queued) < 0 || queued < 0)
+				queued = 0;
+			double heard = seconds - (rate > 0 ? (double)queued / rate * factor : 0);
+			audible_position_secs = heard > audible_floor_secs ? heard : audible_floor_secs;
+		}
 	}
 }
 
@@ -3064,7 +3073,7 @@ static void play_wav_file(const char *filepath) {
 		health_tick(&health, info.sample_rate, info.sample_rate, info.bits_per_sample);
 		host_pace(written, info.sample_rate);
 		pthread_mutex_lock(&audio_mutex);
-		report_position((double)bytes_played / bytes_per_sec);
+		report_position((double)bytes_played / bytes_per_sec, pcm_handle, info.sample_rate, 1.0);
 		pthread_mutex_unlock(&audio_mutex);
 	}
 
@@ -3475,7 +3484,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 			pthread_mutex_unlock(&audio_mutex);
 
 			if (entering) {
-				int64_t rewind_bytes = pause_stop_stream(pcm_handle, frame_bytes) * decim_factor;
+				int64_t rewind_bytes = (int64_t)(pause_stop_stream(pcm_handle, frame_bytes) * decim_factor * (stretch ? speed_factor(stretch) : 1.0));
 				if (rewind_bytes > 0) {
 					// The frames still queued were never heard: put the decoder
 					// back over them so resuming carries on from where the
@@ -3484,6 +3493,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 					uint64_t rewind_frames = (uint64_t)(rewind_bytes / frame_bytes);
 					uint64_t resume_frame = played_frames > rewind_frames ? played_frames - rewind_frames : 0;
 					if (decoder_seek_to_frame(dec, resume_frame)) {
+						speed_reset(stretch);
 						if (decim_factor > 1) {
 							decimate_reset(&decim);
 						}
@@ -3845,7 +3855,7 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 		health_tick(&health, sample_rate, out_rate, source_bits);
 		host_pace(written, out_rate);
 		pthread_mutex_lock(&audio_mutex);
-		report_position((double)bytes_played / bytes_per_sec);
+		report_position((double)bytes_played / bytes_per_sec, pcm_handle, out_rate, stretch ? speed_factor(stretch) : 1.0);
 		pthread_mutex_unlock(&audio_mutex);
 	}
 
@@ -4160,6 +4170,7 @@ int audio_play_at(const char *filepath, double start_secs) {
 		seek_target_secs = start_secs;
 	}
 	progress_current_secs = start_secs > 0 ? start_secs : 0;
+	audible_position_secs = audible_floor_secs = progress_current_secs;
 	progress_floor_secs = -1.0;
 	progress_total_secs = 0;
 	pthread_mutex_unlock(&audio_mutex);
@@ -4185,6 +4196,7 @@ int audio_play_paused(const char *filepath, double start_secs) {
 		seek_target_secs = start_secs;
 	}
 	progress_current_secs = start_secs > 0 ? start_secs : 0;
+	audible_position_secs = audible_floor_secs = progress_current_secs;
 	progress_floor_secs = -1.0;
 	progress_total_secs = 0;
 	pthread_mutex_unlock(&audio_mutex);
@@ -4418,6 +4430,20 @@ void audio_get_progress(double *current_secs, double *total_secs) {
 	pthread_mutex_unlock(&audio_mutex);
 }
 
+void audio_set_sync_clock(bool enabled) {
+	pthread_mutex_lock(&audio_mutex);
+	sync_clock_enabled = enabled;
+	audible_position_secs = audible_floor_secs = progress_current_secs;
+	pthread_mutex_unlock(&audio_mutex);
+}
+
+double audio_get_audible_position(void) {
+	pthread_mutex_lock(&audio_mutex);
+	double value = sync_clock_enabled ? audible_position_secs : progress_current_secs;
+	pthread_mutex_unlock(&audio_mutex);
+	return value;
+}
+
 void audio_get_stream_info(int *sample_rate, int *channels) {
 	pthread_mutex_lock(&audio_mutex);
 	if (sample_rate)
@@ -4484,6 +4510,7 @@ void audio_seek(double seconds) {
 
 	pthread_mutex_lock(&audio_mutex);
 	progress_current_secs = seconds; // the bar follows the finger, not the decoder
+	audible_position_secs = audible_floor_secs = seconds;
 	progress_floor_secs = -1.0;		// and a deliberate jump outranks the pause floor
 	if (restart_fresh_pending) {
 		// Paused through a suspend: there is no track context to take the

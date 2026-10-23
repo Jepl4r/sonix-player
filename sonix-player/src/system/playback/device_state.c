@@ -8,6 +8,7 @@
 #include "src/system/core/lang.h"
 #include "src/system/decode/growfile.h"
 #include "src/system/device/system.h"
+#include "src/system/ebook/ebookaudio.h"
 #include "src/system/library/library.h"
 #include "src/system/library/metadata.h"
 #include "src/system/playback/audiobook.h"
@@ -141,10 +142,7 @@ static bool remember_enabled(void) { return config_get_int("player", "remember_t
 
 // A track this player must not offer to come back to: a live stream has no
 // position, and a streaming cache file will not exist at the next boot.
-static bool remember_worth_saving(const device_state_t *state) {
-	return !state->live && state->current_file[0] && !qobuzcache_owns(state->current_file) &&
-		   !tidalcache_owns(state->current_file);
-}
+static bool remember_worth_saving(const device_state_t *state) { return !ebookaudio_active() && !ebookaudio_owns_path(state->current_file) && !state->live && state->current_file[0] && !qobuzcache_owns(state->current_file) && !tidalcache_owns(state->current_file); }
 
 void device_state_remember_restored(const char *path, double position) {
 	snprintf(remember.file, sizeof(remember.file), "%s", path ? path : "");
@@ -257,6 +255,8 @@ void device_state_get(device_state_t *out) {
 	} else {
 		out->status = audio_get_status();
 		audio_get_current_file(out->current_file, sizeof(out->current_file));
+		if (ebookaudio_owns_path(out->current_file) && !ebookaudio_active())
+			out->current_file[0] = '\0';
 		audio_get_progress(&out->progress_current_secs, &out->progress_total_secs);
 
 		// While a skip button is held the position shown is the one the thumb
@@ -536,6 +536,7 @@ static double podcast_resume(const char *filepath) {
 // `position` is where to start; below zero means the beginning, which is what
 // every caller but the resume below wants.
 static void load_and_play_at(const char *filepath, double position) {
+	ebookaudio_stop();
 	// A position picked on the outgoing track means nothing on this one, and
 	// the track can change under a held button -- the queue advances on its
 	// own when the outgoing one ends.
@@ -598,6 +599,7 @@ static void load_and_play(const char *filepath) { load_and_play_at(filepath, -1.
 // The same without starting: the track comes up paused at its beginning, and
 // play starts it. The queue is left as it is.
 static void load_paused(const char *filepath) {
+	ebookaudio_stop();
 	scrub_cancel();
 	history_leave_for(filepath, -1.0);
 	radio_clear();
@@ -624,6 +626,7 @@ static void load_paused(const char *filepath) {
 // tap on the file would build, but the track comes up paused at `position`
 // instead of playing.
 void device_state_restore_file(const char *filepath, double position) {
+	ebookaudio_stop();
 	// Same reason as load_and_play: this changes the track too.
 	scrub_cancel();
 
@@ -1279,6 +1282,8 @@ static bool chain_beside(bool forward) {
 }
 
 bool device_state_advance_auto(char *out_path, size_t out_size) {
+	if (ebookaudio_active())
+		return false;
 	if (radio_is_active()) {
 		return false; // a stream never finishes, so there is nothing to advance to
 	}
@@ -1352,6 +1357,8 @@ bool device_state_advance_auto(char *out_path, size_t out_size) {
 #define READAHEAD_SETTLE_SECS 3.0
 
 void device_state_read_ahead(double position, double total) {
+	if (ebookaudio_active())
+		return;
 	// Only where gapless can use it: what it buys is the next track opening
 	// before the queue held at the end of this one runs out.
 	if (!audio_get_gapless() || radio_is_active() || total <= 0.0 || position < READAHEAD_SETTLE_SECS ||
@@ -1420,6 +1427,12 @@ static void playlist_resync_to_current(void) {
 }
 
 bool device_state_next(char *out_path, size_t out_size) {
+	if (ebookaudio_active()) {
+		ebookaudio_step(1);
+		if (out_path && out_size)
+			out_path[0] = '\0';
+		return false;
+	}
 	char path[512];
 	playlist_resync_to_current();
 
@@ -1448,6 +1461,12 @@ bool device_state_next(char *out_path, size_t out_size) {
 }
 
 bool device_state_prev(char *out_path, size_t out_size) {
+	if (ebookaudio_active()) {
+		ebookaudio_step(-1);
+		if (out_path && out_size)
+			out_path[0] = '\0';
+		return false;
+	}
 	char path[512];
 	playlist_resync_to_current();
 
@@ -1473,9 +1492,26 @@ bool device_state_prev(char *out_path, size_t out_size) {
 	return true;
 }
 
-bool device_state_take_completion(void) { return audio_take_completion(); }
+bool device_state_take_completion(void) { return !ebookaudio_active() && audio_take_completion(); }
+
+void device_state_begin_ebook_audio(void) {
+	device_state_remember_flush();
+	scrub_cancel();
+	playhistory_left();
+	radio_clear();
+	audio_stop();
+	current_metadata_file[0] = started_file[0] = interrupted_file[0] = '\0';
+	interrupted_pos = -1;
+	memset(&current_metadata, 0, sizeof(current_metadata));
+	audiobook_track_changed(NULL);
+	replaygain_load(&current_metadata);
+}
 
 audio_status_t device_state_toggle_play_pause(void) {
+	if (ebookaudio_active()) {
+		ebookaudio_toggle();
+		return ebookaudio_playing() ? AUDIO_STATUS_PLAYING : AUDIO_STATUS_PAUSED;
+	}
 	// A live stream cannot be paused: there is no position to come back to,
 	// and starting again means reconnecting. Whoever pressed play/pause --
 	// the player's button, the control centre, the physical key -- means
@@ -1626,6 +1662,11 @@ void device_state_scrub_commit(void) {
 }
 
 void device_state_seek(double seconds) {
+	if (ebookaudio_active()) {
+		scrub_cancel();
+		ebookaudio_seek_source(seconds);
+		return;
+	}
 	// A seek from anywhere else -- the slider, the queue -- ends a scrub that
 	// was still open, or the interface would go on drawing a thumb that no
 	// longer means anything.
@@ -1641,7 +1682,12 @@ void device_state_seek(double seconds) {
 	audio_seek(seconds);
 }
 
-void device_state_stop(void) { audio_stop(); }
+void device_state_stop(void) {
+	if (ebookaudio_active())
+		ebookaudio_stop();
+	else
+		audio_stop();
+}
 
 void device_state_set_volume(long volume) { set_volume(volume); }
 

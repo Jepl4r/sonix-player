@@ -157,6 +157,7 @@ bool epub_zip_open(epub_zip_t *zip, const char *path, epub_arena_t *arena) {
 			e->local_offset = local;
 			e->comp_size = comp;
 			e->uncomp_size = uncomp;
+			e->crc32 = read32(h + 16);
 			e->method = method;
 
 			memcpy(zip->names + name_used, h + CDH_MIN, name_len);
@@ -279,4 +280,107 @@ void *epub_zip_extract(const epub_zip_t *zip, int index, epub_arena_t *arena, ui
 		*size_out = e->uncomp_size;
 	}
 	return out;
+}
+
+// Audio can be hundreds of megabytes. Inflate it into a 32 KiB ring and write
+// to disk, with a separate 32 KiB input buffer. No arena allocation grows with
+// the member's length. The CRC also detects truncated/corrupt stored members.
+#include <fcntl.h>
+#include <sys/statvfs.h>
+#include <unistd.h>
+
+bool epub_zip_extract_file(const epub_zip_t *zip, int index, const char *destination, uint32_t limit, bool (*cancelled)(void *), void *user) {
+	if (!zip || !zip->file || index < 0 || (uint32_t)index >= zip->count || !destination)
+		return false;
+	const epub_zip_entry_t *e = &zip->entries[index];
+	if (!e->uncomp_size || e->uncomp_size > limit || e->comp_size > (uint64_t)limit + 1024u * 1024u || (cancelled && cancelled(user)))
+		return false;
+	uint8_t header[LFH_MIN];
+	if (!read_at(zip->file, e->local_offset, header, sizeof(header)) || read32(header) != LFH_SIGNATURE || (read16(header + 6) & 1u))
+		return false; // encrypted resources are unsupported
+	long data_at = (long)e->local_offset + LFH_MIN + read16(header + 26) + read16(header + 28);
+	if (fseek(zip->file, data_at, SEEK_SET) != 0)
+		return false;
+	int fd = open(destination, O_WRONLY | O_CREAT | O_EXCL, 0600);
+	if (fd < 0)
+		return false;
+	FILE *out = fdopen(fd, "wb");
+	if (!out) {
+		close(fd);
+		unlink(destination);
+		return false;
+	}
+	struct statvfs space;
+	bool ok = fstatvfs(fd, &space) == 0 && (uint64_t)space.f_bavail * space.f_frsize >= (uint64_t)e->uncomp_size + 1024u * 1024u;
+	uint8_t *input = malloc(32768), *dict = malloc(TINFL_LZ_DICT_SIZE);
+	tinfl_decompressor *inflate = malloc(sizeof(*inflate));
+	if (!input || !dict || !inflate)
+		ok = false;
+	if (inflate)
+		tinfl_init(inflate);
+	uint32_t table[256];
+	for (unsigned i = 0; i < 256; i++) {
+		uint32_t c = i;
+		for (unsigned bit = 0; bit < 8; bit++)
+			c = (c >> 1) ^ ((c & 1) ? 0xedb88320u : 0);
+		table[i] = c;
+	}
+	uint32_t crc = 0xffffffffu, packed_left = e->comp_size;
+	uint64_t total = 0;
+	size_t in_at = 0, in_size = 0, dict_at = 0;
+	bool done = false;
+	while (ok && !done) {
+		if (cancelled && cancelled(user)) {
+			ok = false;
+			break;
+		}
+		if (in_at == in_size && packed_left) {
+			in_size = packed_left < 32768u ? packed_left : 32768u;
+			if (fread(input, 1, in_size, zip->file) != in_size) {
+				ok = false;
+				break;
+			}
+			packed_left -= (uint32_t)in_size;
+			in_at = 0;
+		}
+		size_t consumed = in_size - in_at, produced = TINFL_LZ_DICT_SIZE - dict_at;
+		const uint8_t *bytes = dict + dict_at;
+		if (e->method == 0) {
+			if (e->comp_size != e->uncomp_size) {
+				ok = false;
+				break;
+			}
+			produced = consumed;
+			bytes = input + in_at;
+			done = !packed_left;
+		} else if (e->method == 8) {
+			tinfl_status status = tinfl_decompress(inflate, input + in_at, &consumed, dict, dict + dict_at, &produced, packed_left ? TINFL_FLAG_HAS_MORE_INPUT : 0);
+			if (status < 0 || (!consumed && !produced && status != TINFL_STATUS_DONE)) {
+				ok = false;
+				break;
+			}
+			done = status == TINFL_STATUS_DONE;
+		} else {
+			ok = false;
+			break;
+		}
+		in_at += consumed;
+		total += produced;
+		if (total > e->uncomp_size || (produced && fwrite(bytes, 1, produced, out) != produced)) {
+			ok = false;
+			break;
+		}
+		for (size_t i = 0; i < produced; i++)
+			crc = table[(crc ^ bytes[i]) & 255] ^ (crc >> 8);
+		dict_at = (dict_at + produced) & (TINFL_LZ_DICT_SIZE - 1);
+	}
+	ok = ok && done && total == e->uncomp_size && !packed_left && in_at == in_size && (crc ^ 0xffffffffu) == e->crc32 && !(cancelled && cancelled(user));
+	free(input);
+	free(dict);
+	free(inflate);
+	if (fclose(out) != 0)
+		ok = false;
+	if (!ok)
+		unlink(destination);
+	return ok;
 }
