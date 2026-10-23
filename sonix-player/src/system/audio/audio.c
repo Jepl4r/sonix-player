@@ -1251,14 +1251,20 @@ static void log_pcm_chain(snd_pcm_t *pcm) {
 // ---------------------------------------------------------------------------
 
 // Opens `device` (a bluealsa name) behind a plug whose slave runs at `rate`,
-// under BT_CONVERTED_PCM. The plug is added to a copy of the global
+// under BT_CONVERTED_PCM. `channels`, when not 0, fixes the slave's channels
+// too: a mono track is sent as two, the one channel in both, because A2DP
+// headphones play a one-channel stream as silence (AirPods, at least), or in
+// one ear. The plug is added to a copy of the global
 // configuration, where bluealsa's own definitions are, and the copy is dropped
 // once the PCM is open -- which is what snd_pcm_open() does with the
 // configuration it opens from, too.
-static int open_bluetooth_at_rate(snd_pcm_t **pcm, const char *device, unsigned rate, int mode) {
-	char text[sizeof(output_pcm) + 128];
-	int len = snprintf(text, sizeof(text), "pcm." BT_CONVERTED_PCM " { type plug slave { pcm \"%s\" rate %u } }",
-					   device, rate);
+static int open_bluetooth_at_rate(snd_pcm_t **pcm, const char *device, unsigned rate, unsigned channels, int mode) {
+	char text[sizeof(output_pcm) + 160];
+	char fixed_channels[24] = "";
+	if (channels) {
+		snprintf(fixed_channels, sizeof(fixed_channels), " channels %u", channels);
+	}
+	int len = snprintf(text, sizeof(text), "pcm." BT_CONVERTED_PCM " { type plug slave { pcm \"%s\" rate %u%s } }", device, rate, fixed_channels);
 	if (len < 0 || (size_t)len >= sizeof(text)) {
 		return -EINVAL;
 	}
@@ -1396,12 +1402,22 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 		}
 	}
 
+	// A mono track goes through the same plug, at its own rate if nothing else
+	// needs converting, so it reaches the headphones as two channels.
+	unsigned upmix_to = 0;
+	if (bluetooth && channels == 1) {
+		upmix_to = 2;
+		if (!convert_to) {
+			convert_to = (unsigned)sample_rate;
+		}
+		fprintf(stderr, "audio: the mono track is sent to both ears\n");
+	}
+
 	int err = -EBUSY;
 	int attempts = 0;
 	int budget = (bluetooth && bluetooth_audio_active()) ? 160 : 40; // eight seconds, or two
 	for (; attempts < budget; attempts++) {
-		err = convert_to ? open_bluetooth_at_rate(&pcm_handle, device, convert_to, mode)
-						 : snd_pcm_open(&pcm_handle, device, SND_PCM_STREAM_PLAYBACK, mode);
+		err = convert_to ? open_bluetooth_at_rate(&pcm_handle, device, convert_to, upmix_to, mode) : snd_pcm_open(&pcm_handle, device, SND_PCM_STREAM_PLAYBACK, mode);
 		if (err >= 0) {
 			break;
 		}
