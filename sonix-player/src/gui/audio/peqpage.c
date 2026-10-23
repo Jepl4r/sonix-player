@@ -358,13 +358,12 @@ static void q_cb(lv_event_t *e) {
 // ---------------------------------------------------------------------------
 // Typing a value
 //
-// Tapping the gain or the Q over its slider opens a keypad, the way the stock
-// player does it, and what is typed goes into the band as it is, clamped to
-// the band's limits: the sliders move in steps of 0,5 dB and of a few
-// hundredths of Q.
+// Tapping a frequency, gain or Q value opens a keypad. Typed values bypass
+// the sliders' steps and are clamped to the band's limits. Frequency is
+// entered in whole Hz; gain and Q keep their decimal precision.
 // ---------------------------------------------------------------------------
 
-typedef enum { ENTRY_GAIN, ENTRY_Q } entry_kind_t;
+typedef enum { ENTRY_GAIN, ENTRY_Q, ENTRY_FREQ } entry_kind_t;
 
 #define ENTRY_MAX_CHARS 7
 
@@ -372,6 +371,7 @@ static lv_obj_t *entry_layer;
 static lv_obj_t *entry_heading;
 static lv_obj_t *entry_display;
 static lv_obj_t *entry_sign_btn;
+static lv_obj_t *entry_decimal_btn;
 static lv_obj_t *entry_ok_btn;
 static entry_kind_t entry_kind;
 static char entry_text[16]; // digits, one comma, a leading minus
@@ -379,7 +379,7 @@ static bool entry_fresh;	// the shown value is the old one: the first key replac
 
 static void entry_paint(void) {
 	char shown[32];
-	const char *unit = entry_kind == ENTRY_GAIN ? " dB" : "";
+	const char *unit = entry_kind == ENTRY_GAIN ? " dB" : (entry_kind == ENTRY_FREQ ? " Hz" : "");
 	snprintf(shown, sizeof(shown), "%s%s", entry_text[0] ? entry_text : "0", unit);
 	lv_label_set_text(entry_display, shown);
 	lv_obj_set_style_text_color(entry_display, entry_fresh ? theme()->text_secondary : theme()->text_primary, 0);
@@ -434,6 +434,7 @@ static void entry_cancel_cb(lv_event_t *e) {
 
 static void entry_set_gain(peq_band_t *b, int value) { b->gain_tenths = value; }
 static void entry_set_q(peq_band_t *b, int value) { b->q_cent = value; }
+static void entry_set_freq(peq_band_t *b, int value) { b->freq = value; }
 
 static void entry_accept_cb(lv_event_t *e) {
 	(void)e;
@@ -452,6 +453,11 @@ static void entry_accept_cb(lv_event_t *e) {
 		value = entry_parse_scaled(entry_text, 2);
 		value = value < PEQ_Q_MIN ? PEQ_Q_MIN : (value > PEQ_Q_MAX ? PEQ_Q_MAX : value);
 		band_commit(entry_set_q, value);
+		break;
+	case ENTRY_FREQ:
+		value = entry_parse_scaled(entry_text, 0);
+		value = value < PEQ_FREQ_MIN ? PEQ_FREQ_MIN : (value > PEQ_FREQ_MAX ? PEQ_FREQ_MAX : value);
+		band_commit(entry_set_freq, value);
 		break;
 	}
 	entry_hide();
@@ -545,11 +551,21 @@ static void entry_open(entry_kind_t kind) {
 		lv_label_set_text(entry_heading, "Q");
 		snprintf(entry_text, sizeof(entry_text), "%d,%02d", b.q_cent / 100, b.q_cent % 100);
 		break;
+	case ENTRY_FREQ:
+		lv_label_set_text(entry_heading, tr("peq_frequency"));
+		snprintf(entry_text, sizeof(entry_text), "%d", b.freq);
+		break;
 	}
 	entry_fresh = true;
 
 	// Only the gain has a sign.
 	lv_obj_set_hidden(entry_sign_btn, kind != ENTRY_GAIN);
+	// Keep the grid in place, but frequency only accepts whole Hz.
+	if (kind == ENTRY_FREQ) {
+		lv_obj_add_state(entry_decimal_btn, LV_STATE_DISABLED);
+	} else {
+		lv_obj_remove_state(entry_decimal_btn, LV_STATE_DISABLED);
+	}
 	// OK takes the whole last row, or what the sign key leaves of it.
 	lv_obj_set_width(entry_ok_btn, kind == ENTRY_GAIN ? lv_pct(66) : lv_pct(100));
 
@@ -654,7 +670,7 @@ static void build_entry_layer(gui_config_t *cfg) {
 	for (int i = 0; i < 9; i++) {
 		entry_key(pad, DIGITS[i], NULL, entry_key_cb, '1' + i, 31);
 	}
-	entry_key(pad, ",", NULL, entry_key_cb, ',', 31);
+	entry_decimal_btn = entry_key(pad, ",", NULL, entry_key_cb, ',', 31);
 	entry_key(pad, "0", NULL, entry_key_cb, '0', 31);
 	lv_obj_t *del = entry_key(pad, NULL, &icon_delete, entry_delete_cb, 0, 31);
 	lv_obj_add_event_cb(del, entry_delete_cb, LV_EVENT_LONG_PRESSED_REPEAT, NULL);
@@ -787,6 +803,7 @@ static void build_band_page(gui_config_t *cfg) {
 	settingsrow_slider(container, "Q", Q_STEPS, &q_value, &q_slider, q_cb);
 
 	build_entry_layer(cfg);
+	entry_attach(freq_value, ENTRY_FREQ);
 	entry_attach(gain_value, ENTRY_GAIN);
 	entry_attach(q_value, ENTRY_Q);
 
