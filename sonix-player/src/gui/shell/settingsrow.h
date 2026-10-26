@@ -131,6 +131,8 @@ typedef struct {
 	lv_obj_t *card;
 	lv_obj_t *toggle;
 	lv_obj_t *wheels; // hidden when the switch is off; the card shrinks with it
+	// The larger unit and the smaller: hours and minutes, or, on the card
+	// below that counts in seconds, minutes and seconds.
 	lv_obj_t *hours;
 	lv_obj_t *minutes;
 } settingsrow_duration_t;
@@ -150,5 +152,13 @@ void settingsrow_duration_set_minutes(settingsrow_duration_t *d, int minutes);
 // Called again after a theme or accent change: the wheels' colours are
 // hand-set, so nothing else moves them.
 void settingsrow_duration_repaint(settingsrow_duration_t *d);
+
+// The same wheels a size down, minutes and seconds, and with no switch: the
+// wheels always show. For a length measured in seconds rather than in hours --
+// the workout timer's rest, where a minute and a half is the ordinary answer.
+// `toggle` stays NULL; repaint as above.
+void settingsrow_duration_short(lv_obj_t *parent, const char *title, lv_event_cb_t change_cb, settingsrow_duration_t *out);
+int settingsrow_duration_seconds(const settingsrow_duration_t *d);
+void settingsrow_duration_set_seconds(settingsrow_duration_t *d, int seconds);
 
 #endif /* SETTINGSROW_H */

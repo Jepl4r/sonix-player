@@ -1,5 +1,6 @@
 #include "audio.h"
 #include "src/system/audio/alsa-controls.h"
+#include "src/system/audio/cue.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/decode/decode.h"
 #include "src/system/decode/growfile.h"
@@ -3025,6 +3026,15 @@ static void play_wav_file(const char *filepath) {
 			}
 		}
 
+		// A cue over the music, when one is sounding (cue.h): after the fade, so
+		// a track fading out does not take the beep down with it, and before the
+		// volume, so the beep follows the knob like the music does.
+		if (info.out_bits == 32) {
+			cue_mix_s32((int32_t *)buffer, (int)frames_to_write, info.channels, info.sample_rate);
+		} else {
+			cue_mix_s16((short *)buffer, (int)frames_to_write, info.channels, info.sample_rate);
+		}
+
 		// The volume, when it is this side of the cable and not in a register:
 		// a device on the USB-C port with no control of its own. A no-op, one
 		// comparison deep, on every other route.
@@ -3795,6 +3805,17 @@ static void play_decoded_file(const char *filepath, decode_format_t format) {
 				fade_apply_s32((int32_t *)buffer, samples, gain);
 			} else {
 				fade_apply_s16((short *)buffer, samples, gain);
+			}
+		}
+
+		// A cue over the music, as in the loop above. Not into a DoP stream,
+		// where adding anything to the samples is the same as noise; it never
+		// calls in then, and cue_play() takes that as "nothing to mix into".
+		if (!passthrough) {
+			if (out_bits == 32) {
+				cue_mix_s32((int32_t *)buffer, (int)frames_read, channels, out_rate);
+			} else {
+				cue_mix_s16((short *)buffer, (int)frames_read, channels, out_rate);
 			}
 		}
 

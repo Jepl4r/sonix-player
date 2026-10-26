@@ -27,6 +27,7 @@
 #include "src/system/device/sysinfo.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/playback/sleeptimer.h"
+#include "src/system/playback/workouttimer.h"
 #include "src/system/audio/audio.h"
 #include "src/system/bluetooth/bluetooth.h"
 #include "src/system/audio/eq.h"
@@ -1797,6 +1798,72 @@ static void sleep_wheel_cb(lv_event_t *e) {
 	sleeptimer_set_minutes(SLEEPTIMER_MUSIC, settingsrow_duration_minutes(&sleep_row));
 }
 
+// The workout timer: how long a rest is, and what marks its end. A page of its
+// own, like the fade, reached from a row on the playback options and from a
+// long press on the control centre button. Started from there or from a side
+// button, never from here, so the page has only the two choices and no switch
+// (workouttimer.h).
+static lv_obj_t *workout_screen;
+static settingsrow_duration_t workout_row;
+
+static const cue_sound_t WORKOUT_SOUNDS[] = {CUE_BEEP, CUE_TRIPLE, CUE_COUNTDOWN};
+#define WORKOUT_SOUND_COUNT ((int)(sizeof(WORKOUT_SOUNDS) / sizeof(WORKOUT_SOUNDS[0])))
+static const char *const WORKOUT_SOUND_NAMES[WORKOUT_SOUND_COUNT] = {
+	"workout_sound_beep",
+	"workout_sound_triple",
+	"workout_sound_countdown",
+};
+static lv_obj_t *workout_sound_pill[WORKOUT_SOUND_COUNT];
+
+static void workout_refresh(void) {
+	settingsrow_duration_repaint(&workout_row);
+	for (int i = 0; i < WORKOUT_SOUND_COUNT; i++) {
+		settingsrow_pill_active(workout_sound_pill[i], WORKOUT_SOUNDS[i] == workouttimer_sound());
+	}
+}
+
+// 0:00 is not a length: wheels that land on it move on to the shortest one.
+static void workout_wheel_cb(lv_event_t *e) {
+	(void)e;
+	int seconds = settingsrow_duration_seconds(&workout_row);
+	if (seconds < WORKOUTTIMER_MIN_SECONDS) {
+		seconds = WORKOUTTIMER_MIN_SECONDS;
+		settingsrow_duration_set_seconds(&workout_row, seconds);
+	}
+	workouttimer_set_seconds(seconds);
+}
+
+static void workout_sound_cb(lv_event_t *e) {
+	int i = (int)(intptr_t)lv_event_get_user_data(e);
+	if (i < 0 || i >= WORKOUT_SOUND_COUNT) {
+		return;
+	}
+	workouttimer_set_sound(WORKOUT_SOUNDS[i]);
+	workout_refresh();
+	// Heard, not just read: what the end of a rest will sound like.
+	cue_play(WORKOUT_SOUNDS[i]);
+}
+
+static void build_workout_page(gui_config_t *cfg) {
+	workout_screen = lv_obj_create(NULL);
+	lv_obj_t *container = settingsrow_page(workout_screen, cfg, "workout_timer");
+
+	// The rest between sets on two wheels, then the sound that ends it.
+	settingsrow_duration_short(container, "workout_timer", workout_wheel_cb, &workout_row);
+	settingsrow_duration_set_seconds(&workout_row, workouttimer_seconds());
+	lv_obj_t *pills;
+	settingsrow_pills(container, "workout_sound", &pills);
+	for (int i = 0; i < WORKOUT_SOUND_COUNT; i++) {
+		workout_sound_pill[i] = settingsrow_pill(pills, WORKOUT_SOUND_NAMES[i], i, workout_sound_cb);
+	}
+	option_note(container, "workout_note");
+	workout_refresh();
+	theme_register_refresh(workout_refresh);
+	switcher_attach_back_gesture(workout_screen);
+}
+
+lv_obj_t *musicsettings_workout_screen(void) { return workout_screen; }
+
 // The control centre switches the same timer from outside this page, so the
 // switch and the wheels are read again every time the page comes up.
 static void playback_loaded_cb(lv_event_t *e) {
@@ -1892,6 +1959,11 @@ static void build_playback_page(gui_config_t *cfg) {
 	// And again whenever the control centre switches something while the page
 	// is the one under it.
 	lv_obj_add_event_cb(playback_screen, playback_loaded_cb, LV_EVENT_REFRESH, NULL);
+
+	// The workout timer under its cousin, as a row to a page of its own: a
+	// length and a sound, which is more than a card in this list should carry.
+	build_workout_page(cfg);
+	settingsrow_add(container, "workout_timer", NULL, switch_screen_cb, workout_screen);
 
 	// One record into the next, instead of the queue simply running out.
 	settingsrow_toggle(container, "musicsettings_play_albums_back_to_back", &album_chain_switch, album_chain_cb);

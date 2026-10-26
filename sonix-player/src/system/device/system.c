@@ -35,6 +35,7 @@
 #include "src/system/gearboy/gbdb.h"
 #include "src/system/input/hookclicks.h"
 #include "src/system/input/keymap.h"
+#include "src/system/playback/workouttimer.h"
 #include "src/system/core/panel.h"
 #include "src/system/streaming/qobuzcache.h"
 #include "src/system/streaming/podcastcache.h"
@@ -1559,6 +1560,11 @@ static void run_mapped_action(keymap_button_t button) {
 		break;
 	case KEYMAP_ACTION_VOLUME_DOWN:
 		apply_volume_step(KEY_VOLUMEDOWN);
+		break;
+	case KEYMAP_ACTION_WORKOUT_TIMER:
+		// Straight from this thread: the timer takes any thread, answers with a
+		// blip, and tells the interface itself (workouttimer.h).
+		workouttimer_start();
 		break;
 	case KEYMAP_ACTION_NONE:
 	default:

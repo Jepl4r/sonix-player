@@ -54,6 +54,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **ReplayGain** - off, by track or by album, read from the tags.
 - **Remember track** - the queue and the position are still there after a restart. You can also open Now Playing straight away at startup.
 - **Sleep timer** - set a time and the playback pauses by itself when it runs out. There is one for music, one for audiobooks and one for podcasts.
+- **Workout timer** - a rest timer for the gym. Start it and it beeps over the music when the time is up: the music goes quieter for the beep and then comes back. Choose the length in minutes and seconds, and a beep, three beeps or a countdown. Start it from the control centre, or from a side button set to it.
 
 ## Now Playing
 
@@ -165,13 +166,13 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 ## Control centre and status bar
 
-- Pull down from the status bar (or tap it) to open the **Control centre**: what is playing, brightness, and buttons for Wi-Fi, Bluetooth, AirPlay, DLNA, SonixLink, Wi-Fi transfer, EQ, PEQ, MSEB, Fade, Gapless, Gain, Line out and the three sleep timers.
+- Pull down from the status bar (or tap it) to open the **Control centre**: what is playing, brightness, and buttons for Wi-Fi, Bluetooth, AirPlay, DLNA, SonixLink, Wi-Fi transfer, EQ, PEQ, MSEB, Fade, Gapless, Gain, Line out, the three sleep timers and the workout timer.
 - Choose which buttons are shown and in what order.
 - The status bar shows the clock and the battery, and can stay on in Now Playing too.
 
 ## Buttons and remotes
 
-- **Remap buttons** - give each media and volume button another action.
+- **Remap buttons** - give each media and volume button another action, starting the workout timer among them.
 - **Double click** - two quick presses of a button do the action you choose.
 - **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous. USB-C headphones with buttons work too.
 - **Lock the buttons** with the screen off: volume down + power. The power button and the remote always work.

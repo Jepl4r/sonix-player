@@ -990,6 +990,33 @@ void settingsrow_toggle_duration(lv_obj_t *parent, const char *title, lv_event_c
 	wheel_unit(out->wheels, "min");
 }
 
+void settingsrow_duration_short(lv_obj_t *parent, const char *title, lv_event_cb_t change_cb, settingsrow_duration_t *out) {
+	memset(out, 0, sizeof(*out));
+	out->card = settingsrow_pills(parent, title, &out->wheels);
+
+	lv_obj_set_flex_align(out->wheels, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
+	lv_obj_set_style_pad_gap(out->wheels, 10, 0);
+
+	// Static for the same reason as the two above. Both wheels go to 59; the
+	// minutes need no leading zero, the seconds do.
+	static char minutes_options[60 * 4];
+	static char seconds_options[60 * 4];
+	if (!minutes_options[0]) {
+		fill_wheel_numbers(minutes_options, sizeof(minutes_options), 59, "%d");
+		fill_wheel_numbers(seconds_options, sizeof(seconds_options), 59, "%02d");
+	}
+
+	out->hours = make_duration_roller(out->wheels, minutes_options, 76, change_cb);
+	wheel_unit(out->wheels, "min");
+	out->minutes = make_duration_roller(out->wheels, seconds_options, 86, change_cb);
+	wheel_unit(out->wheels, "s");
+}
+
+// The arithmetic is the same as for hours and minutes, one unit down.
+int settingsrow_duration_seconds(const settingsrow_duration_t *d) { return settingsrow_duration_minutes(d); }
+
+void settingsrow_duration_set_seconds(settingsrow_duration_t *d, int seconds) { settingsrow_duration_set_minutes(d, seconds); }
+
 void settingsrow_duration_expanded(settingsrow_duration_t *d, bool on) {
 	if (!d || !d->toggle) {
 		return;

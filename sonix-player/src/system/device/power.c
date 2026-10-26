@@ -22,6 +22,7 @@
 #include "src/system/library/audiobookdb.h"
 #include "src/system/device/clock.h"
 #include "src/system/playback/device_state.h"
+#include "src/system/playback/workouttimer.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/remote/sonixlink.h"
 #include "src/system/streaming/qobuzcache.h"
@@ -1280,6 +1281,12 @@ static void suspend_if_idle(uint32_t now, bool playing) {
 	}
 	if (playing) {
 		mem_skip("music is playing");
+		return;
+	}
+	// Asleep, nothing counts and nothing sounds: the rest between two sets
+	// would end in silence, with the player in a gym bag.
+	if (workouttimer_running()) {
+		mem_skip("the workout timer is counting");
 		return;
 	}
 	// Pause counts as a stopped state: the PCM is already released after five
