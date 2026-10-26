@@ -1293,6 +1293,20 @@ static bool key_lock_gesture_armed(void) { return key_lock_when_off && !power_sc
 static bool keys_locked(void) { return key_lock_when_off && key_lock_engaged && !power_screen_is_on(); }
 
 // ---------------------------------------------------------------------------
+// Long press power to wake (input_set_power_long_press_wake())
+//
+// With the screen off a press of the power key does nothing, and only a long
+// press wakes the screen, so a player in a pocket is not woken by a key pressed
+// by accident. The double tap's wake is not a press of this key, and still
+// wakes. The key still counts towards volume + power, so the key lock above
+// can be undone with the screen off as before.
+// ---------------------------------------------------------------------------
+
+static volatile bool power_long_press_wake;
+
+void input_set_power_long_press_wake(bool on) { power_long_press_wake = on; }
+
+// ---------------------------------------------------------------------------
 // Key combinations: volume up + power (screenshot), volume down + power (key
 // lock, see above)
 //
@@ -1668,6 +1682,9 @@ typedef struct {
 static void *input_thread_func(void *arg) {
 	const input_node_t *info = arg;
 	const char *node = info->node;
+	// The touch panel's double tap arrives as a power press: not this key.
+	const char *touch = panel_touch_device();
+	bool touch_node = touch && strcmp(node, touch) == 0;
 
 	int fd = info->preopened_fd;
 	if (fd < 0) {
@@ -1697,6 +1714,9 @@ static void *input_thread_func(void *arg) {
 	uint32_t dbl_until = 0;
 	// The held key has already repeated its action: its release is not a click.
 	bool held_repeated = false;
+	// The power key went down with the screen off and long press to wake on: it
+	// does nothing on release, and its long press wakes the screen.
+	bool power_locked_press = false;
 
 	for (;;) {
 		// The deadline is whatever the held key is waiting for; with nothing
@@ -1776,7 +1796,10 @@ static void *input_thread_func(void *arg) {
 			} else if (held == KEY_POWER && !long_press_done &&
 					   (int32_t)(now - (held_since + POWER_LONG_PRESS_MS)) >= 0) {
 				long_press_done = true;
-				if (!suppressed) {
+				if (power_locked_press && !suppressed) {
+					printf("input: power held with the screen off -> waking\n");
+					power_notify_power_button();
+				} else if (!suppressed) {
 					printf("input: power held, opening the power menu\n");
 					power_notify_activity();
 					gui_notify_power_menu();
@@ -1824,6 +1847,10 @@ static void *input_thread_func(void *arg) {
 
 		if (ev.value == 1) {
 			power_notify_activity(); // any physical button counts as use
+
+			if (ev.code == KEY_POWER) {
+				power_locked_press = power_long_press_wake && !info->headset && !touch_node && !power_screen_is_on();
+			}
 
 			// Volume + power: if a combination has fired -- now, or because the
 			// other key was already down -- this key belongs to it. The volume
@@ -1906,9 +1933,12 @@ static void *input_thread_func(void *arg) {
 		if (ev.value == 0) {
 			bool combo = !info->headset && combo_release(ev.code);
 
-			if (ev.code == KEY_POWER && !long_press_done && !combo) {
+			if (ev.code == KEY_POWER && !long_press_done && !combo && !power_locked_press) {
 				// Short press: the screen toggle.
 				power_notify_power_button();
+			}
+			if (ev.code == KEY_POWER) {
+				power_locked_press = false;
 			}
 
 			if (ev.code == held) {

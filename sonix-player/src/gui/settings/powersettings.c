@@ -47,6 +47,7 @@ static lv_obj_t *charge_value, *charge_slider;
 static lv_obj_t *auto_off_switch, *auto_off_value, *auto_off_slider, *auto_off_card;
 static lv_obj_t *led_on_switch, *led_off_switch, *led_off_card;
 static lv_obj_t *key_lock_switch;
+static lv_obj_t *long_press_wake_switch;
 static lv_obj_t *standby_switch, *standby_value, *standby_slider, *standby_card;
 static lv_obj_t *charge_note;
 static lv_obj_t *axp_limit_switch, *axp_current_switch; // the R1's two, instead of the slider
@@ -127,6 +128,7 @@ void powersettings_apply(void) {
 	led_set_idle_off(config_get_bool("power", "led_off_standby", true));
 
 	input_set_key_lock(config_get_bool("power", "lock_keys_screen_off", false));
+	input_set_power_long_press_wake(config_get_bool("power", "lock_power_screen_off", false));
 }
 
 static void refresh_labels(void) {
@@ -164,6 +166,7 @@ static void refresh_labels(void) {
 	}
 
 	set_checked(key_lock_switch, config_get_bool("power", "lock_keys_screen_off", false));
+	set_checked(long_press_wake_switch, config_get_bool("power", "lock_power_screen_off", false));
 
 	// Standby and its wait, on one card like the automatic power-off below.
 	bool standby = config_get_bool("power", "standby_mem", true);
@@ -249,6 +252,14 @@ static void key_lock_toggled_cb(lv_event_t *e) {
 	refresh_labels();
 }
 
+static void long_press_wake_toggled_cb(lv_event_t *e) {
+	(void)e;
+	config_set_bool("power", "lock_power_screen_off", lv_obj_has_state(long_press_wake_switch, LV_STATE_CHECKED));
+	config_save();
+	powersettings_apply();
+	refresh_labels();
+}
+
 static void auto_off_toggled_cb(lv_event_t *e) {
 	(void)e;
 	config_set_bool("power", "auto_off", lv_obj_has_state(auto_off_switch, LV_STATE_CHECKED));
@@ -327,6 +338,8 @@ void powersettings_init(gui_config_t *cfg) {
 	lv_obj_add_style(key_lock_note, &theme_style_text_dim, 0);
 	lv_obj_set_style_text_font(key_lock_note, &font_ui_22, 0);
 	lv_label_set_text(key_lock_note, tr("power_lock_keys_screen_off_note"));
+
+	settingsrow_toggle(container, "power_lock_power_screen_off", &long_press_wake_switch, long_press_wake_toggled_cb);
 
 	// Toggle and "after how long" on one card: the slider is only there while
 	// the option is on.

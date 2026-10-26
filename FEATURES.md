@@ -175,6 +175,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Double click** - two quick presses of a button do the action you choose.
 - **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous. USB-C headphones with buttons work too.
 - **Lock the buttons** with the screen off: volume down + power. The power button and the remote always work.
+- **Long press power to wake** - with the screen off, a short press of the power button does nothing and a long press wakes the screen, so it isn't woken in a pocket by accident. Double tap to wake still works.
 - **Keyboard** - ten layouts (English, Italian, German, Spanish, French, Dutch, Polish, Brazilian Portuguese, Czech, Russian), as a full keyboard or as a phone keypad (T9).
 - **Screenshots** - turn them on in Settings > More, then press volume up + power to save the screen to the card.
 
