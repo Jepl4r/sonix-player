@@ -17,6 +17,7 @@
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/remap.h"
 #include "src/gui/settings/screensaver.h"
+#include "src/gui/shell/quickpanel.h"
 #include "src/gui/shell/settingsrow.h"
 #include "src/gui/shell/switcher.h"
 #include "src/gui/settings/systempage.h"
@@ -432,6 +433,13 @@ static void screenshot_toggled_cb(lv_event_t *e) {
 	screenshot_set_enabled(lv_obj_has_state(screenshot_switch, LV_STATE_CHECKED));
 }
 
+static lv_obj_t *cc_volume_switch;
+
+static void cc_volume_toggled_cb(lv_event_t *e) {
+	(void)e;
+	quickpanel_set_volume_slider(lv_obj_has_state(cc_volume_switch, LV_STATE_CHECKED));
+}
+
 static void build_other_page(gui_config_t *cfg) {
 	othersettings_screen = lv_obj_create(NULL);
 	lv_obj_t *container = settingsrow_page(othersettings_screen, cfg, "more");
@@ -450,6 +458,12 @@ static void build_other_page(gui_config_t *cfg) {
 	lv_label_set_text_fmt(volume_step_value, "%d", step);
 	input_set_volume_step(step);
 	settingsrow_add(container, "control_centre", NULL, switch_screen_cb, ccsettings_screen);
+
+	// A volume slider in the control centre, under the brightness one.
+	settingsrow_toggle(container, "settings_cc_volume", &cc_volume_switch, cc_volume_toggled_cb);
+	if (quickpanel_volume_slider_enabled()) {
+		lv_obj_add_state(cc_volume_switch, LV_STATE_CHECKED);
+	}
 
 	// Which alphabets the keyboard can be laid out in, above the shape of the
 	// keys: the letters matter more than whether they come ten to a row or
