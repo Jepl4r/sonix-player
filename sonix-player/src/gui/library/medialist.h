@@ -43,6 +43,35 @@ void medialist_set_album_view(bool on);
 bool medialist_album_head(void);
 void medialist_set_album_head(bool on);
 
+// "Album grid": the lists of albums -- Albums, and an artist's, a genre's or a
+// year's records -- and of artists are laid out two, three or four to a line
+// (below), each a cover with the name (and an album's artist) under it,
+// instead of one row each. An artist's cover is one of their records'. The
+// Playlists page reads the same switch (playlistpage.c). Off by default;
+// Music > Library.
+bool medialist_album_grid(void);
+void medialist_set_album_grid(bool on);
+
+// How many tiles to a line when "Album grid" is on: 2, 3 or 4, chosen under
+// the switch. 2 by default.
+int medialist_grid_columns(void);
+void medialist_set_grid_columns(int columns);
+
+// The shape of a tile for a page `width` px wide at the chosen number of
+// columns. The library lists and the Playlists page both lay their grids out
+// from it, so the two match.
+typedef struct {
+	int columns;
+	int gap; // between two tiles, either way
+	int tile_w;
+	int pad;	  // inside a tile, round the cover
+	int cover;	  // the cover's side, and the size it is decoded at
+	int text_gap; // between the cover and the name
+	const lv_font_t *name_font;
+	const lv_font_t *detail_font; // the line under the name
+} medialist_grid_t;
+void medialist_grid_layout(int width, medialist_grid_t *out);
+
 // "Go to the current track": All tracks, Albums, Artists, Album artists and
 // Genres open scrolled to the row of what is playing -- the track itself in
 // All tracks, its album, artist, album artist or genre in the others. Off by
