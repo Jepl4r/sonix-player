@@ -2097,6 +2097,38 @@ bool library_track_album_value(const char *path, char *out, size_t out_size) {
 	return track_album(path, true, out, out_size);
 }
 
+int library_track_artists(const char *path, char names[][LIBRARY_ARTIST_NAME_MAX], int max) {
+	if (!path || !path[0] || !names || max <= 0) {
+		return 0;
+	}
+
+	// The link rows first: they exist only for a tag that split, and then the
+	// tag itself is in no list. In rowid order, which is the tag's.
+	static const char *const SQL[] = {
+		"SELECT artist FROM ARTIST_LINK WHERE path=? ORDER BY rowid",
+		"SELECT artist FROM MEDIA_TABLE WHERE path=? LIMIT 1",
+	};
+
+	pthread_mutex_lock(&db_lock);
+	int count = 0;
+	for (int i = artist_links ? 0 : 1; i < 2 && count == 0; i++) {
+		sqlite3_stmt *stmt = NULL;
+		if (!db || sqlite3_prepare_v2(db, SQL[i], -1, &stmt, NULL) != SQLITE_OK) {
+			continue;
+		}
+		sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
+		while (count < max && sqlite3_step(stmt) == SQLITE_ROW) {
+			const unsigned char *artist = sqlite3_column_text(stmt, 0);
+			if (artist && artist[0]) {
+				snprintf(names[count++], LIBRARY_ARTIST_NAME_MAX, "%s", (const char *)artist);
+			}
+		}
+		sqlite3_finalize(stmt);
+	}
+	pthread_mutex_unlock(&db_lock);
+	return count;
+}
+
 void library_album_title(const char *value, char *out, size_t size) {
 	if (!out || size == 0) {
 		return;

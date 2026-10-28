@@ -113,7 +113,7 @@ void popover_show(lv_obj_t *anchor, const popover_item_t *items, int count) {
 		lv_obj_add_event_cb(row, item_clicked_cb, LV_EVENT_CLICKED, (void *)(intptr_t)i);
 
 		lv_obj_t *label = lv_label_create(row);
-		lv_label_set_text(label, tr(items[i].label));
+		lv_label_set_text(label, items[i].verbatim ? items[i].label : tr(items[i].label));
 		lv_obj_add_style(label, &theme_style_text, 0);
 		lv_obj_set_style_text_font(label, &font_ui_24, 0);
 		// Given a width, a label wraps instead of running past its parent. Left

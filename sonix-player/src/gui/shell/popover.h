@@ -18,6 +18,9 @@ typedef struct {
 	// actions but a choice between alternatives (Qobuz audio quality): there
 	// the current entry has to be visible.
 	bool checked;
+	// The label is shown as it stands -- a name, such as an artist's -- and not
+	// looked up as a translation tag.
+	bool verbatim;
 } popover_item_t;
 
 // Builds the (hidden) veil and card once. Call from gui_init.

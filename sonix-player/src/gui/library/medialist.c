@@ -3098,6 +3098,8 @@ void medialist_open_artist(const char *name) {
 	medialist_open(name, artist_records ? LIBRARY_LIST_ALBUMS : LIBRARY_LIST_TRACKS, LIBRARY_FILTER_ARTIST, name);
 }
 
+lv_obj_t *medialist_artist_screen(void) { return artist_records ? medialist_albums_screen : medialist_tracks_screen; }
+
 // Copies the path of the one row a window was asked for.
 static bool take_one_path_cb(const char *name, const char *path, const char *artist, void *user) {
 	(void)name;
