@@ -34,6 +34,9 @@ lv_obj_t *musicsettings_playback_screen(void);
 bool musicsettings_fade_enabled(void);
 void musicsettings_set_fade_enabled(bool enabled);
 
+// Whether the playlists are the files in the card's Playlists folder.
+bool musicsettings_card_playlists(void);
+
 // Which of the two shuffles "Play in random order" starts: with this on it is
 // the one that comes round again instead of stopping at the end of the deal.
 // Only that action reads it; the player's mode button still reaches both.
