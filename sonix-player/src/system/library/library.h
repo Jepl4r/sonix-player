@@ -469,6 +469,10 @@ int library_forget_under(const char *prefix);
 // the audiobook database can register the identical collation.
 int library_collate_listorder(void *unused, int len_a, const void *a, int len_b, const void *b);
 
+// Case/accent folded equality/order, without skipping leading articles.
+// For grouping tags: "The Book" and "Book" must remain distinct.
+int library_collate_casefold(void *unused, int len_a, const void *a, int len_b, const void *b);
+
 // Whether that leading article is skipped at all. On by default. Switched off,
 // "The Beatles" files under T.
 //

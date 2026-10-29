@@ -1,0 +1,21 @@
+name: Audiobook regression tests
+on:
+  pull_request:
+    paths:
+      - 'sonix-player/src/system/**'
+      - 'tests/**'
+      - '.github/workflows/audiobook-tests.yml'
+  push:
+    paths:
+      - 'sonix-player/src/system/**'
+      - 'tests/**'
+      - '.github/workflows/audiobook-tests.yml'
+permissions:
+  contents: read
+jobs:
+  audiobook-tests:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: sudo apt-get update -qq && sudo apt-get install -y libsqlite3-dev
+      - run: tests/run-audiobook-tests.sh

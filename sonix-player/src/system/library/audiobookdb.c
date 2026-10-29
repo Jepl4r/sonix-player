@@ -3,12 +3,13 @@
 
 #include "src/system/decode/mp4.h"
 #include "src/system/library/id3chap.h"
-#include "src/system/library/vorbischap.h"
 #include "src/system/library/metadata.h"
+#include "src/system/library/vorbischap.h"
 #include "src/system/playback/playlist.h"
 
 #include <ctype.h>
 #include <dirent.h>
+#include <errno.h>
 #include <pthread.h>
 #include <stdint.h>
 #include <stdio.h>
@@ -24,7 +25,6 @@
 #include "src/system/library/library.h" // library_collate_listorder: the shared ordering
 
 #define SCAN_MAX_DEPTH 12
-#define SCAN_COMMIT_EVERY 50
 
 // Entries read from one folder at most, files and subfolders together.
 #define SCAN_MAX_ENTRIES 4096
@@ -60,6 +60,7 @@ static bool outdated;
 static unsigned card_epoch;
 
 static void position_queue_drain(void);
+static void position_writes_clear(void);
 
 // Call with db_lock held.
 static void bump_generation(void) { generation++; }
@@ -75,6 +76,7 @@ static pthread_t scan_thread;
 static volatile bool scan_running;
 static volatile bool scan_cancel;
 static volatile int scan_found;
+static bool scan_failed;
 static char scan_root[512];
 
 // For statements that are expected to fail once the schema is already right:
@@ -125,6 +127,7 @@ bool audiobookdb_open(const char *db_path) {
 	}
 
 	sqlite3_create_collation(db, "listorder", SQLITE_UTF8, NULL, library_collate_listorder);
+	sqlite3_create_collation(db, "casefold", SQLITE_UTF8, NULL, library_collate_casefold);
 
 	// Same journal choices as the music library: a slow card that may be
 	// pulled at any moment.
@@ -233,6 +236,7 @@ void audiobookdb_close(void) {
 		db = NULL;
 	}
 	outdated = false;
+	position_writes_clear();
 	pthread_mutex_unlock(&db_lock);
 }
 
@@ -319,11 +323,11 @@ audiobookdb_index_t *audiobookdb_index_open(audiobook_list_t kind, const char *v
 		break;
 	case AUDIOBOOK_LIST_AUTHOR:
 		order_clause(orderby, sizeof(orderby), order, desc, "t.added");
-		snprintf(sql, sizeof(sql), "SELECT t.rowid FROM AUDIOBOOK_TABLE t WHERE t.author = ?1 COLLATE NOCASE ORDER BY %s", orderby);
+		snprintf(sql, sizeof(sql), "SELECT t.rowid FROM AUDIOBOOK_TABLE t WHERE t.author = ?1 COLLATE casefold ORDER BY %s", orderby);
 		break;
 	case AUDIOBOOK_LIST_SERIES:
 		order_clause(orderby, sizeof(orderby), order, desc, "t.added");
-		snprintf(sql, sizeof(sql), "SELECT t.rowid FROM AUDIOBOOK_TABLE t WHERE t.series = ?1 COLLATE NOCASE ORDER BY %s", orderby);
+		snprintf(sql, sizeof(sql), "SELECT t.rowid FROM AUDIOBOOK_TABLE t WHERE t.series = ?1 COLLATE casefold ORDER BY %s", orderby);
 		break;
 	default:
 		order_clause(orderby, sizeof(orderby), order, desc, "t.added");
@@ -449,7 +453,7 @@ int audiobookdb_names_for_each(audiobook_names_t kind, bool by_added, bool desc,
 	}
 	// The books with no author are one group, and it goes last.
 	char sql[400];
-	snprintf(sql, sizeof(sql), "SELECT %s, COUNT(*) FROM AUDIOBOOK_TABLE %s GROUP BY %s COLLATE NOCASE ORDER BY %s = '', %s", column, where, column, column, orderby);
+	snprintf(sql, sizeof(sql), "SELECT %s, COUNT(*) FROM AUDIOBOOK_TABLE %s GROUP BY %s COLLATE casefold ORDER BY %s = '', %s", column, where, column, column, orderby);
 
 	pthread_mutex_lock(&db_lock);
 	int delivered = 0;
@@ -524,8 +528,23 @@ static pthread_t queue_thread;
 static bool queue_started;
 static bool queue_busy; // the writer has taken an entry and not finished it
 static unsigned long long position_seq;
-static unsigned long long position_written; // under db_lock, with the book it was for
-static char position_written_book[512];
+// Each book needs its own high-water mark: a write to B must not make a
+// delayed older write to A eligible again. Cleared when this card closes.
+typedef struct position_write {
+	char *book;
+	unsigned long long seq;
+	struct position_write *next;
+} position_write_t;
+static position_write_t *position_writes;
+
+static void position_writes_clear(void) {
+	while (position_writes) {
+		position_write_t *next = position_writes->next;
+		free(position_writes->book);
+		free(position_writes);
+		position_writes = next;
+	}
+}
 
 typedef struct {
 	bool pending;
@@ -540,20 +559,48 @@ static queued_position_t queued;
 
 // Under db_lock.
 static void write_position_locked(const char *book_path, const char *file, double seconds, unsigned long long seq) {
-	if (!db || (seq <= position_written && strcmp(book_path, position_written_book) == 0)) {
+	if (!db) {
 		return;
 	}
+	position_write_t *written = position_writes;
+	while (written && strcmp(written->book, book_path) != 0) {
+		written = written->next;
+	}
+	if (written && seq <= written->seq) {
+		return;
+	}
+	position_write_t *fresh = NULL;
+	if (!written) {
+		fresh = calloc(1, sizeof(*fresh));
+		if (!fresh || !(fresh->book = strdup(book_path))) {
+			free(fresh);
+			return;
+		}
+	}
+
+	bool saved = false;
 	sqlite3_stmt *stmt = NULL;
 	if (sqlite3_prepare_v2(db, "UPDATE AUDIOBOOK_TABLE SET resume_file=?, resume_pos=?, last_played=? WHERE path=?", -1, &stmt, NULL) == SQLITE_OK) {
 		sqlite3_bind_text(stmt, 1, file, -1, SQLITE_TRANSIENT);
 		sqlite3_bind_double(stmt, 2, seconds);
 		sqlite3_bind_int64(stmt, 3, (sqlite3_int64)time(NULL));
 		sqlite3_bind_text(stmt, 4, book_path, -1, SQLITE_TRANSIENT);
-		sqlite3_step(stmt);
+		saved = sqlite3_step(stmt) == SQLITE_DONE && sqlite3_changes(db) == 1;
 		sqlite3_finalize(stmt);
 	}
-	position_written = seq;
-	snprintf(position_written_book, sizeof(position_written_book), "%s", book_path);
+	if (saved) {
+		if (!written) {
+			written = fresh;
+			written->next = position_writes;
+			position_writes = written;
+			fresh = NULL;
+		}
+		written->seq = seq;
+	}
+	if (fresh) {
+		free(fresh->book);
+		free(fresh);
+	}
 }
 
 // Writes the entry that `queued` held, unless the card has changed since it
@@ -1056,12 +1103,14 @@ typedef struct {
 
 static bool namelist_add(namelist_t *l, const char *name) {
 	if (l->count >= SCAN_MAX_ENTRIES) {
+		scan_failed = true;
 		return false;
 	}
 	if (l->count == l->capacity) {
 		int grown = l->capacity ? l->capacity * 2 : 32;
 		char **bigger = realloc(l->items, (size_t)grown * sizeof(*bigger));
 		if (!bigger) {
+			scan_failed = true;
 			return false;
 		}
 		l->items = bigger;
@@ -1069,6 +1118,7 @@ static bool namelist_add(namelist_t *l, const char *name) {
 	}
 	char *copy = strdup(name);
 	if (!copy) {
+		scan_failed = true;
 		return false;
 	}
 	l->items[l->count++] = copy;
@@ -1115,13 +1165,19 @@ static int natural_compare(const char *a, const char *b) {
 			b += lb;
 			continue;
 		}
-		int ca = tolower((unsigned char)*a);
-		int cb = tolower((unsigned char)*b);
-		if (ca != cb) {
-			return ca < cb ? -1 : 1;
+		const char *next_a = a + 1, *next_b = b + 1;
+		while (((unsigned char)*next_a & 0xc0) == 0x80) {
+			next_a++;
 		}
-		a++;
-		b++;
+		while (((unsigned char)*next_b & 0xc0) == 0x80) {
+			next_b++;
+		}
+		int c = library_collate_casefold(NULL, (int)(next_a - a), a, (int)(next_b - b), b);
+		if (c) {
+			return c;
+		}
+		a = next_a;
+		b = next_b;
 	}
 	return *a ? 1 : (*b ? -1 : 0);
 }
@@ -1135,10 +1191,19 @@ static int natural_qsort(const void *a, const void *b) { return natural_compare(
 static bool read_folder(const char *path, namelist_t *files, namelist_t *dirs) {
 	DIR *dir = opendir(path);
 	if (!dir) {
+		scan_failed = true;
 		return false;
 	}
 	struct dirent *de;
-	while (!scan_cancel && (de = readdir(dir)) != NULL) {
+	while (!scan_cancel && !scan_failed) {
+		errno = 0;
+		de = readdir(dir);
+		if (!de) {
+			if (errno) {
+				scan_failed = true;
+			}
+			break;
+		}
 		if (de->d_name[0] == '.' || playlist_is_junk_name(de->d_name)) {
 			continue;
 		}
@@ -1148,6 +1213,7 @@ static bool read_folder(const char *path, namelist_t *files, namelist_t *dirs) {
 		}
 		struct stat st;
 		if (lstat(child, &st) != 0) {
+			scan_failed = true;
 			continue;
 		}
 		if (S_ISDIR(st.st_mode)) {
@@ -1212,6 +1278,8 @@ static bool is_disc_folder(const char *name) {
 		rest = name + 2;
 	} else if (strncasecmp(name, "disc", 4) == 0 || strncasecmp(name, "disk", 4) == 0) {
 		rest = name + 4;
+	} else if (strlen(name) >= strlen("диск") && library_collate_casefold(NULL, (int)strlen("диск"), name, (int)strlen("диск"), "диск") == 0) {
+		rest = name + strlen("диск");
 	} else {
 		return false;
 	}
@@ -1336,22 +1404,18 @@ static void book_from_tags(book_t *b, const song_metadata_t *tags) {
 	b->series_part = series_number(tags->series_part, false, NULL);
 }
 
-// Under db_lock, inside the scan's transaction.
+// Under db_lock. Only the staging index is touched until the scan succeeds.
 static void insert_book(const char *path, const book_t *b) {
 	sqlite3_stmt *stmt = NULL;
-	// Where the listener was survives a rescan: the scan stashes it in a temp
-	// table before wiping, and each insert copies its own back.
 	if (sqlite3_prepare_v2(db,
-						   "INSERT OR REPLACE INTO AUDIOBOOK_TABLE"
-						   "(path,name,size,mtime,author,series,series_part,added,folder,summary,"
-						   "last_played,resume_file,resume_pos)"
-						   " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,"
-						   "COALESCE((SELECT last_played FROM old_state WHERE path=?1),0),"
-						   "(SELECT resume_file FROM old_state WHERE path=?1),"
-						   "(SELECT resume_pos FROM old_state WHERE path=?1))",
+						   "INSERT OR REPLACE INTO scan_books"
+						   "(path,name,size,mtime,author,series,series_part,added,folder,summary)"
+						   " VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10)",
 						   -1, &stmt, NULL) != SQLITE_OK) {
+		scan_failed = true;
 		return;
 	}
+
 	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, b->title, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int64(stmt, 3, b->size);
@@ -1370,27 +1434,26 @@ static void insert_book(const char *path, const book_t *b) {
 	} else {
 		sqlite3_bind_null(stmt, 10);
 	}
-	sqlite3_step(stmt);
-	sqlite3_finalize(stmt);
-
-	scan_found++;
-	if (scan_found % SCAN_COMMIT_EVERY == 0) {
-		exec("COMMIT");
-		sqlite3_db_release_memory(db);
-		exec("BEGIN");
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		scan_failed = true;
 	}
+	sqlite3_finalize(stmt);
+	scan_found++;
 }
 
 static void insert_part(const char *path, const char *book, int index, const char *title) {
 	sqlite3_stmt *stmt = NULL;
-	if (sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO AUDIOBOOK_PARTS(path,book,idx,title) VALUES(?,?,?,?)", -1, &stmt, NULL) != SQLITE_OK) {
+	if (sqlite3_prepare_v2(db, "INSERT OR REPLACE INTO scan_parts(path,book,idx,title) VALUES(?,?,?,?)", -1, &stmt, NULL) != SQLITE_OK) {
+		scan_failed = true;
 		return;
 	}
 	sqlite3_bind_text(stmt, 1, path, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_text(stmt, 2, book, -1, SQLITE_TRANSIENT);
 	sqlite3_bind_int(stmt, 3, index);
 	sqlite3_bind_text(stmt, 4, title, -1, SQLITE_TRANSIENT);
-	sqlite3_step(stmt);
+	if (sqlite3_step(stmt) != SQLITE_DONE) {
+		scan_failed = true;
+	}
 	sqlite3_finalize(stmt);
 }
 
@@ -1432,11 +1495,13 @@ static bool named_like(const char *rel, const char *stem, const char *title) {
 static void index_single(const char *path, const char *name, const char *rel, bool alone) {
 	struct stat st;
 	if (stat(path, &st) != 0) {
+		scan_failed = true;
 		return;
 	}
 	song_metadata_t *tags = calloc(1, sizeof(*tags));
 	book_t *b = calloc(1, sizeof(*b));
 	if (!tags || !b) {
+		scan_failed = true;
 		free(tags);
 		free(b);
 		return;
@@ -1493,6 +1558,7 @@ static void index_folder(const char *dir, const char *key, const namelist_t *par
 	song_metadata_t *tags = calloc(1, sizeof(*tags));
 	book_t *b = calloc(1, sizeof(*b));
 	if (!tags || !b) {
+		scan_failed = true;
 		free(tags);
 		free(b);
 		return;
@@ -1507,6 +1573,7 @@ static void index_folder(const char *dir, const char *key, const namelist_t *par
 		const char *path = parts->items[i];
 		struct stat st;
 		if (stat(path, &st) != 0) {
+			scan_failed = true;
 			continue;
 		}
 		// The summary is the first part's, or the first one any part carries:
@@ -1598,7 +1665,7 @@ static int collect(const char *dir, const namelist_t *files, namelist_t *parts, 
 }
 
 static void scan_directory(const char *path, int depth) {
-	if (scan_cancel || depth > SCAN_MAX_DEPTH) {
+	if (scan_cancel || scan_failed || depth > SCAN_MAX_DEPTH) {
 		return;
 	}
 
@@ -1644,8 +1711,14 @@ static void scan_directory(const char *path, int depth) {
 	namelist_t albums = {0};
 	int *group_of = calloc((size_t)(parts.count ? parts.count : 1), sizeof(int));
 	int groups = 0;
+	if (!group_of) {
+		scan_failed = true;
+	}
 	if (group_of) {
 		song_metadata_t *tags = root ? NULL : calloc(1, sizeof(*tags));
+		if (!root && !tags) {
+			scan_failed = true;
+		}
 		for (int i = 0; i < parts.count && !scan_cancel; i++) {
 			if (!tags) {
 				group_of[i] = groups++;
@@ -1655,7 +1728,8 @@ static void scan_directory(const char *path, int depth) {
 			metadata_read(parts.items[i], tags);
 			int found = -1;
 			for (int g = 0; g < albums.count; g++) {
-				if (strcasecmp(albums.items[g], tags->album) == 0) {
+				if (library_collate_casefold(NULL, (int)strlen(albums.items[g]), albums.items[g],
+										(int)strlen(tags->album), tags->album) == 0) {
 					found = g;
 					break;
 				}
@@ -1725,47 +1799,70 @@ static void scan_directory(const char *path, int depth) {
 	namelist_free(&walk);
 }
 
+// Publish as one transaction, copying the latest live resume state at the
+// last moment. Playback can keep saving positions while metadata is read.
+static bool publish_scan(void) {
+	if (!exec("BEGIN IMMEDIATE")) {
+		return false;
+	}
+	bool ok = exec("UPDATE scan_books SET"
+				   " last_played=COALESCE((SELECT last_played FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path),0),"
+				   " resume_file=(SELECT resume_file FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path),"
+				   " resume_pos=(SELECT resume_pos FROM AUDIOBOOK_TABLE t WHERE t.path=scan_books.path)") &&
+			  exec("DELETE FROM AUDIOBOOK_TABLE")
+		&& exec("INSERT INTO AUDIOBOOK_TABLE SELECT * FROM scan_books")
+		&& exec("DELETE FROM AUDIOBOOK_PARTS")
+		&& exec("INSERT INTO AUDIOBOOK_PARTS SELECT * FROM scan_parts");
+	if (ok) {
+		char sql[48];
+		snprintf(sql, sizeof(sql), "PRAGMA user_version=%d", SCHEMA_VERSION);
+		ok = exec(sql) && exec("COMMIT");
+	}
+	if (!ok) {
+		exec("ROLLBACK");
+	}
+	return ok;
+}
+
 static void *scan_thread_func(void *arg) {
 	(void)arg;
 	thread_be_background("audiobook scan");
-
 	printf("audiobooks: scanning %s\n", scan_root);
 
 	pthread_mutex_lock(&db_lock);
-	// The rescan is wipe-and-refill, like the music library's, so books whose
-	// files are gone simply never come back. What must survive the wipe is
-	// where each book was left and when, so it is stashed in a temp table
-	// first and each insert copies its own back.
-	exec("CREATE TEMP TABLE IF NOT EXISTS old_state(path TEXT PRIMARY KEY, last_played INT, resume_file TEXT,"
-		 " resume_pos REAL)");
-	exec("DELETE FROM old_state");
-	exec("INSERT INTO old_state SELECT path, last_played, resume_file, resume_pos FROM AUDIOBOOK_TABLE"
-		 " WHERE last_played > 0 OR resume_file IS NOT NULL");
-	exec("DELETE FROM AUDIOBOOK_TABLE");
-	exec("DELETE FROM AUDIOBOOK_PARTS");
-	// The row ids restart at one, so anything holding them is pointing at
-	// other people's books.
-	bump_generation();
-	exec("BEGIN");
+	scan_failed = !db;
+	if (db) {
+		// TEMP tables disappear on crash; the persistent index remains intact.
+		scan_failed = !(exec("DROP TABLE IF EXISTS temp.scan_books")
+			&& exec("DROP TABLE IF EXISTS temp.scan_parts")
+			&& exec("CREATE TEMP TABLE scan_books AS SELECT * FROM AUDIOBOOK_TABLE WHERE 0")
+			&& exec("CREATE UNIQUE INDEX temp.scan_books_path ON scan_books(path)")
+			&& exec("CREATE TEMP TABLE scan_parts AS SELECT * FROM AUDIOBOOK_PARTS WHERE 0")
+			&& exec("CREATE UNIQUE INDEX temp.scan_parts_path ON scan_parts(path)"));
+	}
 	pthread_mutex_unlock(&db_lock);
 
-	scan_directory(scan_root, 0);
+	if (!scan_failed) {
+		scan_directory(scan_root, 0);
+	}
 
 	pthread_mutex_lock(&db_lock);
-	exec("COMMIT");
 	if (db) {
-		if (!scan_cancel) {
-			char sql[48];
-			snprintf(sql, sizeof(sql), "PRAGMA user_version=%d", SCHEMA_VERSION);
-			exec(sql);
-			outdated = false;
+		if (!scan_cancel && !scan_failed) {
+			if (publish_scan()) {
+				outdated = false;
+				bump_generation();
+			} else {
+				scan_failed = true;
+			}
 		}
+		exec("DROP TABLE IF EXISTS temp.scan_books");
+		exec("DROP TABLE IF EXISTS temp.scan_parts");
 		sqlite3_db_release_memory(db);
 	}
-	bump_generation();
 	pthread_mutex_unlock(&db_lock);
 
-	printf("audiobooks: scan finished, %d books%s\n", scan_found, scan_cancel ? " (stopped early)" : "");
+	printf("audiobooks: scan finished, %d books%s\n", scan_found, scan_cancel || scan_failed ? " (previous index kept)" : "");
 	scan_running = false;
 	return NULL;
 }

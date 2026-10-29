@@ -652,6 +652,21 @@ static uint32_t fold_case(uint32_t code) {
 	return code;
 }
 
+int library_collate_casefold(void *unused, int len_a, const void *a, int len_b, const void *b) {
+	(void)unused;
+	int pos_a = 0, pos_b = 0;
+	for (;;) {
+		uint32_t ca = fold_case(utf8_next(a, len_a, &pos_a));
+		uint32_t cb = fold_case(utf8_next(b, len_b, &pos_b));
+		if (ca != cb) {
+			return ca < cb ? -1 : 1;
+		}
+		if (ca == 0) {
+			return 0;
+		}
+	}
+}
+
 // Whether a leading article is skipped when a name is filed and compared. On by
 // default, which is what puts "The Beatles" under B.
 //

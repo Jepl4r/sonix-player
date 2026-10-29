@@ -16,6 +16,7 @@
 #include "src/system/device/firmware.h"
 #include "src/system/device/sysinfo.h"
 #include "src/system/device/system.h"
+#include "src/system/device/usb.h"
 #include "src/system/net/http.h"
 #include "src/system/net/wifi.h"
 
@@ -390,8 +391,12 @@ static void remove_old_files(const char *root) {
 
 static ota_result_t do_download(void) {
 	const char *root = storage_sd_root();
-	if (!root || !*root) {
+	if (!root || !*root || !storage_card_attached() || usb_storage_active()) {
 		return OTA_NO_CARD;
+	}
+
+	if (!storage_sd_writable()) {
+		return OTA_DOWNLOAD_FAILED;
 	}
 
 	struct statvfs vfs;
