@@ -931,6 +931,7 @@ static result_t send_batch(int max, const char *sk, char *why, size_t why_size, 
 
 typedef struct {
 	int batch;
+	int bad_request_lines; // original batch size while isolating a refused play
 	double backoff;
 	double retry_at; // boot seconds
 	bool was_online;
@@ -946,6 +947,12 @@ static void send_queue(sender_t *s, const char *sk) {
 	switch (result) {
 	case RESULT_OK:
 		drop = true;
+		// A smaller retry batch can succeed after a larger batch was refused.
+		// Remove only the lines this successful request actually covered.
+		if (s->bad_request_lines > 0) {
+			lines = lines < s->bad_request_lines ? lines : s->bad_request_lines;
+			s->bad_request_lines = 0;
+		}
 		session_accepted();
 		s->backoff = RETRY_FIRST_SECS;
 		pthread_mutex_lock(&lock);
@@ -957,10 +964,15 @@ static void send_queue(sender_t *s, const char *sk) {
 		// One play of the batch is the problem: they go one at a time until
 		// it is the one being sent, and then it is let go.
 		if (s->batch > 1) {
+			s->bad_request_lines = s->bad_request_lines > 0 ? s->bad_request_lines : lines;
 			s->batch = 1;
 		} else {
 			fprintf(stderr, "lastfm: a queued play was refused (%s); dropping it\n", why);
 			drop = true;
+			if (s->bad_request_lines > 0) {
+				lines = s->bad_request_lines;
+				s->bad_request_lines = 0;
+			}
 		}
 		break;
 	case RESULT_SESSION:
