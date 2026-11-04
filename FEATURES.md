@@ -140,6 +140,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - Japanese books that are written vertically are shown vertically.
 - Text size, line spacing, word spacing and margins.
 - Three reading themes (Paper, Sepia, Night) and three page-turn animations.
+- **One word at a time** (RSVP) or one line at a time, chosen on the Look card: every word is shown at one fixed point with its pivot letter in the accent colour, at 100 to 800 words per minute, with a rest after commas, full stops and paragraphs. A tap in the middle starts and stops it, the edges and the skip keys move by a sentence, an up-and-down swipe changes the speed, and the position, bookmarks and resume follow the word on screen.
 - **Bookmarks** - double tap the top of a page. Up to 64 per book.
 - **Reading bar** at the bottom with chapter, page, progress, battery and clock, each one optional.
 

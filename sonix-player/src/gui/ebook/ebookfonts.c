@@ -40,14 +40,19 @@ static const char *const JAPANESE_FILES[FACE_COUNT] = {
 static const char *const *face_files = FACE_FILES;
 
 static char font_dir[512];
+// The page's set, at the page's size.
 static lv_font_t *faces[FACE_COUNT];
 // Which faces have already been looked for and not found, so a book full of
 // italics does not try to open a missing file on every paragraph. It must be
 // cleared whenever the faces are -- hence a file static rather than a static
-// local inside ebookfonts_face(), which close_faces() could not reach.
+// local inside face_or_load(), which close_set() could not reach.
 static bool tried[FACE_COUNT];
 static int current_size = 20;
 static bool have_regular;
+// The one-word view's set, at its own size, with the same bookkeeping.
+static lv_font_t *large[FACE_COUNT];
+static bool large_tried[FACE_COUNT];
+static int large_size;
 
 static lv_font_t *open_face(face_t which, int size) {
 	if (!face_files[which]) {
@@ -76,14 +81,20 @@ static lv_font_t *open_face(face_t which, int size) {
 	return font;
 }
 
-static void close_faces(void) {
+static void close_set(lv_font_t *set[], bool tried_set[]) {
 	for (int i = 0; i < FACE_COUNT; i++) {
-		if (faces[i]) {
-			lv_freetype_font_delete(faces[i]);
-			faces[i] = NULL;
+		if (set[i]) {
+			lv_freetype_font_delete(set[i]);
+			set[i] = NULL;
 		}
-		tried[i] = false;
+		tried_set[i] = false;
 	}
+}
+
+static void close_faces(void) {
+	close_set(faces, tried);
+	close_set(large, large_tried);
+	large_size = 0;
 	have_regular = false;
 }
 
@@ -139,18 +150,54 @@ bool ebookfonts_set_size(int size) {
 int ebookfonts_size(void) { return current_size; }
 bool ebookfonts_present(void) { return have_regular; }
 
-// Loads a face the first time the book asks for it. `tried` is what stops a
-// missing file being opened again on every paragraph; close_faces() clears it.
-static lv_font_t *face_or_load(face_t which) {
-	if (faces[which]) {
-		return faces[which];
+// Loads a face of `set` the first time the book asks for it. `tried_set` is
+// what stops a missing file being opened again on every paragraph;
+// close_set() clears it.
+static lv_font_t *face_or_load(lv_font_t *set[], bool tried_set[], face_t which, int size) {
+	if (set[which]) {
+		return set[which];
 	}
-	if (tried[which]) {
+	if (tried_set[which]) {
 		return NULL;
 	}
-	tried[which] = true;
-	faces[which] = open_face(which, current_size);
-	return faces[which];
+	tried_set[which] = true;
+	set[which] = open_face(which, size);
+	return set[which];
+}
+
+// The face of `set` for a style, falling back through the others in the order
+// the markdown asks for: italic before bold, because losing the slant of a
+// title is more noticeable than losing its weight. NULL only when not even the
+// regular face can be opened.
+static lv_font_t *pick(lv_font_t *set[], bool tried_set[], int size, bool bold, bool italic) {
+	if (bold && italic) {
+		lv_font_t *f = face_or_load(set, tried_set, FACE_BOLD_ITALIC, size);
+		if (f) {
+			return f;
+		}
+		f = face_or_load(set, tried_set, FACE_ITALIC, size);
+		if (f) {
+			return f;
+		}
+		f = face_or_load(set, tried_set, FACE_BOLD, size);
+		if (f) {
+			return f;
+		}
+		return face_or_load(set, tried_set, FACE_REGULAR, size);
+	}
+	if (italic) {
+		lv_font_t *f = face_or_load(set, tried_set, FACE_ITALIC, size);
+		if (f) {
+			return f;
+		}
+	}
+	if (bold) {
+		lv_font_t *f = face_or_load(set, tried_set, FACE_BOLD, size);
+		if (f) {
+			return f;
+		}
+	}
+	return face_or_load(set, tried_set, FACE_REGULAR, size);
 }
 
 const lv_font_t *ebookfonts_face(bool bold, bool italic) {
@@ -160,31 +207,18 @@ const lv_font_t *ebookfonts_face(bool bold, bool italic) {
 		// its publisher set it.
 		return &font_ui_20;
 	}
+	lv_font_t *f = pick(faces, tried, current_size, bold, italic);
+	return f ? f : &font_ui_20;
+}
 
-	if (bold && italic) {
-		lv_font_t *f = face_or_load(FACE_BOLD_ITALIC);
-		if (f) {
-			return f;
-		}
-		// The order the markdown asks for: italic before bold, because losing
-		// the slant of a title is more noticeable than losing its weight.
-		f = face_or_load(FACE_ITALIC);
-		if (f) {
-			return f;
-		}
-		f = face_or_load(FACE_BOLD);
-		if (f) {
-			return f;
-		}
-		return faces[FACE_REGULAR];
+const lv_font_t *ebookfonts_large_face(bool bold, bool italic, int size) {
+	if (!have_regular || size <= 0) {
+		return &font_ui_32;
 	}
-	if (italic) {
-		lv_font_t *f = face_or_load(FACE_ITALIC);
-		return f ? f : faces[FACE_REGULAR];
+	if (size != large_size) {
+		close_set(large, large_tried);
+		large_size = size;
 	}
-	if (bold) {
-		lv_font_t *f = face_or_load(FACE_BOLD);
-		return f ? f : faces[FACE_REGULAR];
-	}
-	return faces[FACE_REGULAR];
+	lv_font_t *f = pick(large, large_tried, size, bold, italic);
+	return f ? f : &font_ui_32;
 }
