@@ -515,6 +515,11 @@ static void key_async_cb(void *user_data) {
 	if (metronomepage_key(key)) {
 		return;
 	}
+	// And while a book is being read one word at a time, the keys drive the
+	// ticker: play stops and starts it, the skip keys move by a sentence.
+	if (ebookreader_key(key)) {
+		return;
+	}
 
 	// Receiver mode is the exception, and the only one: the press still means
 	// what it says, it just has somewhere else to go. The music is on the phone

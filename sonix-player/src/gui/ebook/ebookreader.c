@@ -6,9 +6,11 @@
 
 #include "src/system/ebook/bookmarks.h"
 #include "src/system/ebook/ebook.h"
+#include "src/system/ebook/ebook_utf8.h"
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/ebook/ebookbar.h"
 #include "src/gui/ebook/ebookfonts.h"
+#include "src/gui/ebook/ebookrsvp.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/icons.h"
 #include "src/gui/shell/settingsrow.h"
@@ -134,6 +136,16 @@ static int opt_margin = 20;
 static int opt_word = 0;
 static reader_theme_t opt_theme = THEME_LIGHT;
 static turn_mode_t opt_turn = TURN_INSTANT;
+// The one-word and one-line views (ebookrsvp.h), and how fast they go.
+static rsvp_mode_t opt_mode = RSVP_MODE_PAGES;
+static int opt_wpm = RSVP_WPM_DEFAULT;
+
+// The ticker was running when the menu came up, and starts again when the
+// menu goes.
+static bool rsvp_resume_after_menu;
+
+// The reading is one word or one line at a time rather than pages.
+static bool rsvp_on(void) { return opt_mode != RSVP_MODE_PAGES; }
 
 // How much of the page the strip along the bottom takes, plus the gap that
 // keeps the last line off it. Not a constant: the reader chooses what is on the
@@ -775,27 +787,6 @@ static void vpage_deleted_cb(lv_event_t *e) {
 	}
 }
 
-// One UTF-8 character of `text` (`len` bytes) at `*at`, which is moved past it.
-// A broken sequence reads as one byte, so the walk always moves forward.
-static uint32_t utf8_take(const char *text, uint32_t len, uint32_t *at) {
-	const unsigned char *s = (const unsigned char *)text + *at;
-	uint32_t left = len - *at;
-	uint32_t cp = s[0];
-	uint32_t n = 1;
-	if (cp >= 0xF0 && left >= 4) {
-		cp = ((cp & 0x07u) << 18) | ((s[1] & 0x3Fu) << 12) | ((s[2] & 0x3Fu) << 6) | (s[3] & 0x3Fu);
-		n = 4;
-	} else if (cp >= 0xE0 && left >= 3) {
-		cp = ((cp & 0x0Fu) << 12) | ((s[1] & 0x3Fu) << 6) | (s[2] & 0x3Fu);
-		n = 3;
-	} else if (cp >= 0xC0 && left >= 2) {
-		cp = ((cp & 0x1Fu) << 6) | (s[1] & 0x3Fu);
-		n = 2;
-	}
-	*at += n;
-	return cp;
-}
-
 // The presentation form a bracket takes in a column, or 0.
 static uint32_t vertical_form(uint32_t cp) {
 	switch (cp) {
@@ -1047,7 +1038,7 @@ static void lay_out_columns(lv_obj_t *box, uint32_t block, uint32_t offset, uint
 
 			while (at < sp->length) {
 				uint32_t here = seen + at; // where this letter starts in the block
-				uint32_t cp = utf8_take(text, sp->length, &at);
+				uint32_t cp = ebook_utf8_take(text, sp->length, &at);
 
 				if (cp == '\n') {
 					col++;
@@ -1364,7 +1355,7 @@ static void page_number_recount(void) {
 	page_number = 0;
 	pages_before = 0;
 	walk_reset();
-	if (!book || !ebookbar_option(EBOOKBAR_PAGE) || turn_mode() == TURN_VERTICAL) {
+	if (!book || !ebookbar_option(EBOOKBAR_PAGE) || turn_mode() == TURN_VERTICAL || rsvp_on()) {
 		return;
 	}
 	walk_wanted = true;
@@ -1478,7 +1469,7 @@ static void render_vertical(void) {
 // when the chapter is one long list.
 static void vertical_scrolled_cb(lv_event_t *e) {
 	(void)e;
-	if (!book || turn_mode() != TURN_VERTICAL) {
+	if (!book || rsvp_on() || turn_mode() != TURN_VERTICAL) {
 		return;
 	}
 	int32_t top = lv_obj_get_scroll_y(page_box);
@@ -1503,8 +1494,37 @@ static void vertical_scrolled_cb(lv_event_t *e) {
 // turning the pages
 // ---------------------------------------------------------------------------
 
+// The one-word and one-line views, in the page box. ebookrsvp.c owns them;
+// the reader hands over the position and the look of the page.
+static void rsvp_show(void) {
+	if (!book || !page_box) {
+		return;
+	}
+	ebookrsvp_look_t look = {
+		.ink = ink_colour(),
+		.accent = theme()->accent,
+		.text_size = opt_size,
+		.line_space = opt_line,
+		.no_pivot = tategaki,
+	};
+	ebookrsvp_show(page_box, book, page_block, page_offset, &look);
+	update_status();
+	apply_colours();
+}
+
+// The page box scrolls only when the chapter is one long list.
+static void apply_box_scroll(void) {
+	bool list = !rsvp_on() && turn_mode() == TURN_VERTICAL;
+	lv_obj_set_scrollable(page_box, list);
+	if (!list) {
+		lv_obj_scroll_to_y(page_box, 0, LV_ANIM_OFF);
+	}
+}
+
 static void show_page(void) {
-	if (turn_mode() == TURN_VERTICAL) {
+	if (rsvp_on()) {
+		rsvp_show();
+	} else if (turn_mode() == TURN_VERTICAL) {
 		render_vertical();
 	} else {
 		render_page();
@@ -1660,7 +1680,7 @@ static void slide_in(int direction) {
 // bookmark, the book being opened. Only the slide cares, and only a move has a
 // direction to slide in.
 static void present(int direction) {
-	if (turn_mode() != TURN_SLIDE || direction == 0) {
+	if (rsvp_on() || turn_mode() != TURN_SLIDE || direction == 0) {
 		show_page();
 		return;
 	}
@@ -1814,6 +1834,45 @@ static bool in_the_centre(const lv_point_t *p) {
 	return LV_ABS(p->x - w / 2) < w / CENTRE_FRACTION_W && LV_ABS(p->y - h / 2) < h / CENTRE_FRACTION_H;
 }
 
+// Moves the speed of the one-word view by one step, keeps it, and tells the
+// view. `flash` puts the new value on the page for a moment.
+static void wpm_step(int direction, bool flash) {
+	int want = opt_wpm + direction * RSVP_WPM_STEP;
+	if (want < RSVP_WPM_MIN || want > RSVP_WPM_MAX) {
+		return;
+	}
+	opt_wpm = want;
+	config_store_set_int(config_ebook_store(), "ebook", "rsvp_wpm", opt_wpm);
+	config_store_save(config_ebook_store());
+	ebookrsvp_set_wpm(opt_wpm, flash);
+}
+
+// What a finger does in the one-word and one-line views: a tap in the middle
+// starts and stops the ticker, one at the left goes back a sentence and one
+// at the right forward, a sideways swipe does the same, and an up-and-down
+// swipe changes the speed -- up for faster, the way a volume goes.
+static void rsvp_gesture(const lv_point_t *end, int dx, int dy, bool moved) {
+	if (LV_ABS(dy) > 40 && LV_ABS(dy) > LV_ABS(dx)) {
+		wpm_step(dy < 0 ? 1 : -1, true);
+		return;
+	}
+	if (LV_ABS(dx) > 40 && LV_ABS(dx) > LV_ABS(dy)) {
+		ebookrsvp_skip_sentence(dx < 0 ? 1 : -1);
+		return;
+	}
+	if (moved) {
+		return;
+	}
+	int32_t w = (int32_t)g_cfg->screen_width;
+	if (end->x < w * TAP_BACK_UNTIL_PCT / 100) {
+		ebookrsvp_skip_sentence(-1);
+	} else if (end->x > w * TAP_NEXT_FROM_PCT / 100) {
+		ebookrsvp_skip_sentence(1);
+	} else {
+		ebookrsvp_toggle();
+	}
+}
+
 static void page_pressed_cb(lv_event_t *e) {
 	static lv_point_t start;
 	static uint32_t pressed_at;
@@ -1875,6 +1934,13 @@ static void page_pressed_cb(lv_event_t *e) {
 		if (in_the_centre(&end)) {
 			menu_open();
 		}
+		return;
+	}
+
+	// One word or one line at a time: there are no pages to turn, and the
+	// gestures drive the ticker instead.
+	if (rsvp_on()) {
+		rsvp_gesture(&end, dx, dy, moved);
 		return;
 	}
 
@@ -1982,15 +2048,22 @@ static void build_chapters(void);
 static void build_font(void);
 static void build_theme(void);
 
+static void menu_body_clear(void);
+
 static void menu_close(void) {
 	if (menu_veil) {
 		lv_obj_set_hidden(menu_veil, true);
 	}
-	if (menu_body) {
-		// The rows of a long chapter list are the one thing in here worth not
-		// keeping around while a book is being read.
-		lv_obj_clean(menu_body);
-		chapters_built = 0;
+	// The rows of a long chapter list are the one thing in here worth not
+	// keeping around while a book is being read.
+	menu_body_clear();
+	// The ticker goes on where the menu interrupted it, unless the menu was
+	// used to leave the view.
+	if (rsvp_resume_after_menu) {
+		rsvp_resume_after_menu = false;
+		if (rsvp_on() && book) {
+			ebookrsvp_play();
+		}
 	}
 }
 
@@ -1998,6 +2071,9 @@ static void menu_open(void) {
 	if (!menu_veil || !book) {
 		return;
 	}
+	// The ticker waits while the menu is up.
+	rsvp_resume_after_menu = ebookrsvp_playing();
+	ebookrsvp_pause();
 	lv_obj_set_hidden(menu_card, true);
 	lv_obj_set_hidden(menu_bar, false);
 	lv_obj_set_hidden(menu_veil, false);
@@ -2013,8 +2089,7 @@ static void section_open(lv_event_t *e) {
 	section_t which = (section_t)(intptr_t)lv_event_get_user_data(e);
 	static const char *const SECTION_TITLES[] = {"chapters", "ebookreader_font_settings", "ebookreader_book_theme"};
 
-	lv_obj_clean(menu_body);
-	chapters_built = 0;
+	menu_body_clear();
 	menu_section = which;
 	lv_label_set_text(menu_heading, tr(SECTION_TITLES[which]));
 	switch (which) {
@@ -2035,8 +2110,7 @@ static void section_open(lv_event_t *e) {
 
 static void section_back_cb(lv_event_t *e) {
 	(void)e;
-	lv_obj_clean(menu_body);
-	chapters_built = 0;
+	menu_body_clear();
 	lv_obj_set_hidden(menu_card, true);
 	lv_obj_set_hidden(menu_bar, false);
 }
@@ -2046,6 +2120,7 @@ static void section_back_cb(lv_event_t *e) {
 // player is the one gesture the reader cannot have.
 static void close_book_cb(lv_event_t *e) {
 	(void)e;
+	rsvp_resume_after_menu = false; // the book is going, not the menu
 	menu_close();
 	back_btn_cb(NULL); // what the chevron would do, which is not drawn here
 }
@@ -2058,6 +2133,9 @@ static void chapter_pick_cb(lv_event_t *e) {
 	uint32_t spine = (uint32_t)(uintptr_t)lv_event_get_user_data(e);
 	menu_close();
 	load_chapter(spine, 0, 0);
+	if (rsvp_on()) {
+		ebookrsvp_settle(); // a chapter of pictures alone has no word to show
+	}
 }
 
 // One entry of the chapter list.
@@ -2176,14 +2254,16 @@ static void build_chapters(void) {
 // how the text is set
 // ---------------------------------------------------------------------------
 
-// The four things about how the text is set. One table rather than four copies
-// of the same function: they differ only in their limits and in what has to be
-// redone when they change.
+// The four things about how the text is set, and the speed of the one-word
+// view, which is set by the same kind of row on the Look card. One table
+// rather than five copies of the same function: they differ only in their
+// limits and in what has to be redone when they change.
 typedef enum {
 	OPT_SIZE = 0,
 	OPT_LINE,
 	OPT_MARGIN,
 	OPT_WORD,
+	OPT_WPM, // the first row that is not on the Text card
 	OPT_COUNT,
 } text_option_t;
 
@@ -2198,19 +2278,33 @@ typedef struct {
 // only by being told the array's name (its TABLES list), and it can read an
 // array of strings but not a field of an array of structs, so these cannot be
 // folded in there.
-static const char *const stepper_tags[OPT_COUNT] = {"ebookreader_text_size", "ebookreader_line_spacing", "ebookreader_page_margins", "ebookreader_word_spacing"};
+static const char *const stepper_tags[OPT_COUNT] = {"ebookreader_text_size", "ebookreader_line_spacing", "ebookreader_page_margins", "ebookreader_word_spacing", "ebookreader_rsvp_wpm"};
 
 static const text_option_def_t TEXT_OPTIONS[OPT_COUNT] = {
 	{"font_size", &opt_size, READER_SIZE_MIN, READER_SIZE_MAX},
 	{"line_space", &opt_line, READER_LINE_MIN, READER_LINE_MAX},
 	{"margin", &opt_margin, READER_MARGIN_MIN, READER_MARGIN_MAX},
 	{"word_space", &opt_word, READER_WORD_MIN, READER_WORD_MAX},
+	{"rsvp_wpm", &opt_wpm, RSVP_WPM_MIN, RSVP_WPM_MAX},
 };
 
 // The label between the two buttons: a value at the end of the row's name reads
 // as part of the name, and the thing the buttons change should be the thing
 // between them.
 static lv_obj_t *stepper_values[OPT_COUNT];
+
+// Empties the card's body, and forgets the stepper labels that were in it:
+// steppers_refresh() writes to every one it still knows, and a label the
+// clean deleted would be written through a dangling pointer.
+static void menu_body_clear(void) {
+	if (menu_body) {
+		lv_obj_clean(menu_body);
+	}
+	chapters_built = 0;
+	for (int i = 0; i < OPT_COUNT; i++) {
+		stepper_values[i] = NULL;
+	}
+}
 
 static void steppers_refresh(void) {
 	for (int i = 0; i < OPT_COUNT; i++) {
@@ -2227,6 +2321,12 @@ static void option_cb(lv_event_t *e) {
 	int which = packed >> 1;
 	int step = (packed & 1) ? 1 : -1;
 	if (which < 0 || which >= OPT_COUNT) {
+		return;
+	}
+	if (which == OPT_WPM) {
+		// Steps of its own, and nothing on the page to lay out again.
+		wpm_step(step, false);
+		steppers_refresh();
 		return;
 	}
 
@@ -2296,7 +2396,8 @@ static void stepper_row(lv_obj_t *parent, int which) {
 }
 
 static void build_font(void) {
-	for (int i = 0; i < OPT_COUNT; i++) {
+	// The four about the text; the speed row is on the Look card.
+	for (int i = 0; i < OPT_WPM; i++) {
 		stepper_values[i] = NULL;
 		stepper_row(menu_body, i);
 	}
@@ -2321,6 +2422,18 @@ static void build_font(void) {
 static lv_obj_t *theme_pills[3];
 static lv_obj_t *turn_rows[3];
 static lv_obj_t *turn_ticks[3];
+static lv_obj_t *mode_rows[3];
+static lv_obj_t *mode_ticks[3];
+
+// Whatever the slide was doing, it is not doing it any more.
+static void stop_slide(void) {
+	lv_anim_delete(page_box, NULL);
+	lv_anim_delete(page_spare, NULL);
+	turning = false;
+	lv_obj_clean(page_spare);
+	lv_obj_set_x(page_box, 0);
+	lv_obj_set_x(page_spare, (int32_t)g_cfg->screen_width);
+}
 
 static void theme_refresh(void) {
 	for (int i = 0; i < 3; i++) {
@@ -2361,14 +2474,11 @@ static void turn_cb(lv_event_t *e) {
 	config_store_set_int(config_ebook_store(), "ebook", "turn", (int)opt_turn);
 	config_store_save(config_ebook_store());
 	turn_refresh();
-
-	// Whatever the slide was doing, it is not doing it any more.
-	lv_anim_delete(page_box, NULL);
-	lv_anim_delete(page_spare, NULL);
-	turning = false;
-	lv_obj_clean(page_spare);
-	lv_obj_set_x(page_box, 0);
-	lv_obj_set_x(page_spare, (int32_t)g_cfg->screen_width);
+	if (rsvp_on()) {
+		// Not what is on screen: it is applied when the pages come back.
+		return;
+	}
+	stop_slide();
 
 	if (was_list == now_list) {
 		// Instant and Slide paginate identically -- they differ only in how the
@@ -2383,20 +2493,62 @@ static void turn_cb(lv_event_t *e) {
 	// character into one, so the block stays and the offset goes.
 	page_stack_depth = 0;
 	page_offset = 0;
-	if (now_list) {
-		lv_obj_set_scrollable(page_box, true);
-	} else {
-		lv_obj_set_scrollable(page_box, false);
-		lv_obj_scroll_to_y(page_box, 0, LV_ANIM_OFF);
-	}
+	apply_box_scroll();
 	// One long list has no pages; going back to pages means counting again.
 	page_number_recount();
 	show_page();
 }
 
-// One way of turning a page: the icon, its name beside it, and a tick on the
-// right for the one in use.
-static void turn_row(lv_obj_t *parent, int index, const lv_image_dsc_t *icon, const char *tag) {
+static void mode_refresh(void) {
+	for (int i = 0; i < 3; i++) {
+		if (mode_ticks[i]) {
+			lv_obj_set_style_image_opa(mode_ticks[i], i == (int)opt_mode ? LV_OPA_COVER : LV_OPA_TRANSP, 0);
+		}
+		if (mode_rows[i]) {
+			lv_obj_set_style_bg_opa(mode_rows[i], i == (int)opt_mode ? LV_OPA_20 : LV_OPA_TRANSP, 0);
+		}
+	}
+}
+
+// Pages, one word or one line. The position carries across: every view starts
+// from the word the reading is at, and the pages start from the page it is
+// on. The trail of page starts and the page number do not, so they go.
+static void mode_cb(lv_event_t *e) {
+	rsvp_mode_t want = (rsvp_mode_t)(intptr_t)lv_event_get_user_data(e);
+	if (want == opt_mode) {
+		return;
+	}
+	bool was_pages = !rsvp_on();
+	opt_mode = want;
+	config_store_set_int(config_ebook_store(), "ebook", "reader_mode", (int)opt_mode);
+	config_store_save(config_ebook_store());
+	mode_refresh();
+	ebookrsvp_set_mode(opt_mode);
+	// A view picked from the menu starts still, whatever the ticker was doing.
+	rsvp_resume_after_menu = false;
+
+	if (was_pages) {
+		stop_slide();
+	}
+	if (!rsvp_on()) {
+		ebookrsvp_hide();
+		if (turn_mode() == TURN_VERTICAL) {
+			page_offset = 0; // a scroll position is a block
+		}
+	}
+	apply_box_scroll();
+	page_stack_depth = 0;
+	page_number_recount();
+	show_page();
+	if (rsvp_on()) {
+		ebookrsvp_settle(); // the page may have been a picture alone
+	}
+}
+
+// One way of turning a page, or one way of reading: the icon when there is
+// one, its name beside it, and a tick on the right for the one in use. The
+// row and its tick are handed back so the chooser can paint them.
+static void choice_row(lv_obj_t *parent, int index, const lv_image_dsc_t *icon, const char *tag, lv_event_cb_t cb, lv_obj_t **row_out, lv_obj_t **tick_out) {
 	lv_obj_t *row = lv_btn_create(parent);
 	lv_obj_set_width(row, lv_pct(100));
 	lv_obj_set_height(row, 76);
@@ -2409,12 +2561,14 @@ static void turn_row(lv_obj_t *parent, int index, const lv_image_dsc_t *icon, co
 	lv_obj_set_flex_flow(row, LV_FLEX_FLOW_ROW);
 	lv_obj_set_flex_align(row, LV_FLEX_ALIGN_START, LV_FLEX_ALIGN_CENTER, LV_FLEX_ALIGN_CENTER);
 	lv_obj_set_style_pad_column(row, 14, 0);
-	lv_obj_add_event_cb(row, turn_cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
+	lv_obj_add_event_cb(row, cb, LV_EVENT_CLICKED, (void *)(intptr_t)index);
 
-	lv_obj_t *glyph = lv_image_create(row);
-	lv_image_set_src(glyph, icon);
-	lv_obj_set_style_image_recolor(glyph, theme()->text_primary, 0);
-	lv_obj_set_style_image_recolor_opa(glyph, LV_OPA_COVER, 0);
+	if (icon) {
+		lv_obj_t *glyph = lv_image_create(row);
+		lv_image_set_src(glyph, icon);
+		lv_obj_set_style_image_recolor(glyph, theme()->text_primary, 0);
+		lv_obj_set_style_image_recolor_opa(glyph, LV_OPA_COVER, 0);
+	}
 
 	lv_obj_t *name = lv_label_create(row);
 	lv_label_set_text(name, tr(tag));
@@ -2427,8 +2581,17 @@ static void turn_row(lv_obj_t *parent, int index, const lv_image_dsc_t *icon, co
 	lv_obj_set_style_image_recolor(tick, theme()->accent, 0);
 	lv_obj_set_style_image_recolor_opa(tick, LV_OPA_COVER, 0);
 
-	turn_rows[index] = row;
-	turn_ticks[index] = tick;
+	*row_out = row;
+	*tick_out = tick;
+}
+
+// A heading between the groups of rows on the Look card.
+static void card_heading(const char *tag) {
+	lv_obj_t *heading = lv_label_create(menu_body);
+	lv_label_set_text(heading, tr(tag));
+	lv_obj_add_style(heading, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(heading, &font_ui_20, 0);
+	lv_obj_set_style_margin_top(heading, 10, 0);
 }
 
 static void build_theme(void) {
@@ -2439,16 +2602,22 @@ static void build_theme(void) {
 	theme_pills[2] = settingsrow_pill(pills, "ebookreader_theme_night", THEME_DARK, theme_cb);
 	theme_refresh();
 
-	lv_obj_t *heading = lv_label_create(menu_body);
-	lv_label_set_text(heading, tr("ebookreader_page_turn"));
-	lv_obj_add_style(heading, &theme_style_text_dim, 0);
-	lv_obj_set_style_text_font(heading, &font_ui_20, 0);
-	lv_obj_set_style_margin_top(heading, 10, 0);
-
-	turn_row(menu_body, TURN_INSTANT, &icon_ebook_turn_fast, "ebookreader_turn_instant");
-	turn_row(menu_body, TURN_SLIDE, &icon_ebook_turn_slide, "ebookreader_turn_slide");
-	turn_row(menu_body, TURN_VERTICAL, &icon_ebook_turn_vertical, "ebookreader_turn_vertical");
+	card_heading("ebookreader_page_turn");
+	choice_row(menu_body, TURN_INSTANT, &icon_ebook_turn_fast, "ebookreader_turn_instant", turn_cb, &turn_rows[0], &turn_ticks[0]);
+	choice_row(menu_body, TURN_SLIDE, &icon_ebook_turn_slide, "ebookreader_turn_slide", turn_cb, &turn_rows[1], &turn_ticks[1]);
+	choice_row(menu_body, TURN_VERTICAL, &icon_ebook_turn_vertical, "ebookreader_turn_vertical", turn_cb, &turn_rows[2], &turn_ticks[2]);
 	turn_refresh();
+
+	// Pages, or one word or one line at a time, and how fast the latter two
+	// go. No glyphs: the icon set has none for these yet.
+	card_heading("ebookreader_mode_title");
+	choice_row(menu_body, RSVP_MODE_PAGES, NULL, "ebookreader_mode_pages", mode_cb, &mode_rows[0], &mode_ticks[0]);
+	choice_row(menu_body, RSVP_MODE_WORD, NULL, "ebookreader_mode_word", mode_cb, &mode_rows[1], &mode_ticks[1]);
+	choice_row(menu_body, RSVP_MODE_LINE, NULL, "ebookreader_mode_line", mode_cb, &mode_rows[2], &mode_ticks[2]);
+	mode_refresh();
+	stepper_values[OPT_WPM] = NULL;
+	stepper_row(menu_body, OPT_WPM);
+	steppers_refresh();
 }
 
 // ---------------------------------------------------------------------------
@@ -2626,6 +2795,8 @@ static void reader_unloaded_cb(lv_event_t *e) {
 	lv_anim_delete(page_spare, NULL);
 	turning = false;
 	walk_reset();
+	rsvp_resume_after_menu = false;
+	ebookrsvp_hide(); // the ticker stops before its objects go
 	if (page_box) {
 		lv_obj_clean(page_box);
 	}
@@ -2639,6 +2810,8 @@ static void reader_unloaded_cb(lv_event_t *e) {
 	theme_pills[0] = theme_pills[1] = theme_pills[2] = NULL;
 	turn_rows[0] = turn_rows[1] = turn_rows[2] = NULL;
 	turn_ticks[0] = turn_ticks[1] = turn_ticks[2] = NULL;
+	mode_rows[0] = mode_rows[1] = mode_rows[2] = NULL;
+	mode_ticks[0] = mode_ticks[1] = mode_ticks[2] = NULL;
 	ebookfonts_close();
 	if (book) {
 		position_save();
@@ -2695,6 +2868,16 @@ void ebookreader_open(const char *path) {
 	if (opt_turn > TURN_VERTICAL) {
 		opt_turn = TURN_INSTANT;
 	}
+	opt_mode = (rsvp_mode_t)config_store_get_int(config_ebook_store(), "ebook", "reader_mode", RSVP_MODE_PAGES);
+	if (opt_mode > RSVP_MODE_LINE) {
+		opt_mode = RSVP_MODE_PAGES;
+	}
+	opt_wpm = (int)config_store_get_int(config_ebook_store(), "ebook", "rsvp_wpm", RSVP_WPM_DEFAULT);
+	if (opt_wpm < RSVP_WPM_MIN || opt_wpm > RSVP_WPM_MAX) {
+		opt_wpm = RSVP_WPM_DEFAULT;
+	}
+	ebookrsvp_set_mode(opt_mode);
+	ebookrsvp_set_wpm(opt_wpm, false);
 
 	tategaki = ebook_is_vertical(book);
 	ebookfonts_open(g_cfg->sd_root_path, opt_size, ebook_is_japanese(book));
@@ -2711,11 +2894,7 @@ void ebookreader_open(const char *path) {
 	lv_obj_set_x(page_box, 0);
 	lv_obj_set_x(page_spare, (int32_t)g_cfg->screen_width);
 	turning = false;
-	if (turn_mode() == TURN_VERTICAL) {
-		lv_obj_set_scrollable(page_box, true);
-	} else {
-		lv_obj_set_scrollable(page_box, false);
-	}
+	apply_box_scroll();
 
 	uint32_t spine, block, offset;
 	if (want_position) {
@@ -2732,6 +2911,9 @@ void ebookreader_open(const char *path) {
 	}
 	if (!load_chapter(spine, block, offset)) {
 		load_chapter(0, 0, 0);
+	}
+	if (rsvp_on()) {
+		ebookrsvp_settle(); // a book that opens on its cover page opens on its first word
 	}
 
 	// A page of a book is looked at for minutes without a finger touching the
@@ -2761,6 +2943,24 @@ static lv_obj_t *make_page_box(gui_config_t *cfg) {
 	return box;
 }
 
+// The word on screen moved: it is the reading position from now on, so what
+// is saved and what a bookmark takes is the word being shown. The strip is
+// redrawn when the paragraph changes, which is when its figures change.
+static void rsvp_moved_cb(uint32_t block, uint32_t offset) {
+	bool other_block = block != page_block;
+	page_block = block;
+	page_offset = offset;
+	if (other_block) {
+		update_status();
+	}
+}
+
+static const ebookrsvp_hooks_t rsvp_hooks = {
+	.moved = rsvp_moved_cb,
+	.load_chapter = load_chapter_dir,
+	.save = position_save,
+};
+
 void ebookreader_init(gui_config_t *cfg) {
 	g_cfg = cfg;
 
@@ -2784,6 +2984,8 @@ void ebookreader_init(gui_config_t *cfg) {
 	lv_obj_set_flex_flow(count_box, LV_FLEX_FLOW_COLUMN);
 	count_timer = lv_timer_create(count_timer_cb, 1, NULL);
 	lv_timer_pause(count_timer);
+	// The one-word view's ticker, likewise paused until there is a word.
+	ebookrsvp_init(cfg, &rsvp_hooks);
 
 	ebookbar_create(&status_bar, ebookreader_screen, cfg->screen_width);
 	lv_obj_align(status_bar.root, LV_ALIGN_BOTTOM_MID, 0, -6);
@@ -2797,4 +2999,27 @@ void ebookreader_init(gui_config_t *cfg) {
 
 	lv_obj_add_event_cb(ebookreader_screen, reader_loaded_cb, LV_EVENT_SCREEN_LOADED, NULL);
 	lv_obj_add_event_cb(ebookreader_screen, reader_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
+}
+
+bool ebookreader_key(gui_key_t key) {
+	if (lv_screen_active() != ebookreader_screen || !book || !rsvp_on()) {
+		return false;
+	}
+	// Not under the menu: the ticker is waiting for it to close, and a key
+	// that started it there would run the words behind the veil.
+	if (menu_veil && !lv_obj_is_hidden(menu_veil)) {
+		return false;
+	}
+	switch (key) {
+	case GUI_KEY_PLAY_PAUSE:
+		ebookrsvp_toggle();
+		break;
+	case GUI_KEY_NEXT:
+		ebookrsvp_skip_sentence(1);
+		break;
+	case GUI_KEY_PREV:
+		ebookrsvp_skip_sentence(-1);
+		break;
+	}
+	return true;
 }
