@@ -110,7 +110,7 @@ struct mp4_file {
 	char *lyrics;		  // the ©lyr atom, malloc'd; NULL when absent
 	char *description;	  // ldes, desc or ©cmt, malloc'd; NULL when absent
 	int description_rank; // which of the three it came from: 3, 2, 1
-	int title_rank;       // 2 = @nam, 1 = @alb
+	int title_rank;       // 2 = name tag, 1 = album tag
 
 	uint64_t cover_off;
 	uint32_t cover_size;
