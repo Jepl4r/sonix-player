@@ -110,6 +110,7 @@ struct mp4_file {
 	char *lyrics;		  // the ©lyr atom, malloc'd; NULL when absent
 	char *description;	  // ldes, desc or ©cmt, malloc'd; NULL when absent
 	int description_rank; // which of the three it came from: 3, 2, 1
+	int title_rank;       // 2 = @nam, 1 = @alb
 
 	uint64_t cover_off;
 	uint32_t cover_size;
@@ -540,6 +541,15 @@ static void set_description(mp4_file_t *m, const unsigned char *value, size_t le
 	m->description_rank = rank;
 }
 
+// Keeps the text when it outranks what is already held.
+static void set_title(mp4_file_t *m, const unsigned char *value, size_t len, int rank) {
+	if (len == 0 || rank <= m->title_rank) {
+		return;
+	}
+	copy_text(m->title, sizeof(m->title), value, len);
+	m->title_rank = rank;
+}
+
 static const char *const GENRES[] = {
 	"Blues", "Classic Rock", "Country", "Dance", "Disco", "Funk", "Grunge", "Hip-Hop", "Jazz", "Metal",
 	"New Age", "Oldies", "Other", "Pop", "R&B", "Rap", "Reggae", "Rock", "Techno", "Industrial",
@@ -649,7 +659,7 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 
 		switch (item.type) {
 		case FOURCC(0xA9, 'n', 'a', 'm'):
-			copy_text(m->title, sizeof(m->title), value, value_len);
+		    set_title(m, value, value_len, 2);
 			break;
 		case FOURCC(0xA9, 'A', 'R', 'T'):
 			copy_text(m->artist, sizeof(m->artist), value, value_len);
@@ -663,6 +673,7 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 			break;
 		case FOURCC(0xA9, 'a', 'l', 'b'):
 			copy_text(m->album, sizeof(m->album), value, value_len);
+			set_title(m, value, value_len, 1);
 			break;
 		case FOURCC(0xA9, 'g', 'e', 'n'):
 			copy_text(m->genre, sizeof(m->genre), value, value_len);
