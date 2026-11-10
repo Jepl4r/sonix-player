@@ -566,7 +566,6 @@ static const char *const GENRES[] = {
 static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 	uint64_t pos = ilst->content;
 	uint64_t end = ilst->content + ilst->body_size;
-	bool encountered_name_tag = false;
 
 	while (pos < end) {
 		box_t item;
