@@ -110,7 +110,7 @@ struct mp4_file {
 	char *lyrics;		  // the ©lyr atom, malloc'd; NULL when absent
 	char *description;	  // ldes, desc or ©cmt, malloc'd; NULL when absent
 	int description_rank; // which of the three it came from: 3, 2, 1
-	int title_rank;       // 2 = name tag, 1 = album tag
+	int title_rank;       // 2 = album tag, 1 = name tag
 
 	uint64_t cover_off;
 	uint32_t cover_size;
@@ -566,6 +566,7 @@ static const char *const GENRES[] = {
 static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 	uint64_t pos = ilst->content;
 	uint64_t end = ilst->content + ilst->body_size;
+	bool encountered_name_tag = false;
 
 	while (pos < end) {
 		box_t item;
@@ -659,7 +660,14 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 
 		switch (item.type) {
 		case FOURCC(0xA9, 'n', 'a', 'm'):
-		    set_title(m, value, value_len, 2);
+		    if (m->title_rank != 1) {
+		        set_title(m, value, value_len, 1);
+			} else {
+			    // We've already encountered this tag. This may happen when multiple tags
+				// have been added with the chapter titles rather than the book title.
+				// Just clear the title since we don't know what should be in it.
+			    m->title[0] = '\0';
+			}
 			break;
 		case FOURCC(0xA9, 'A', 'R', 'T'):
 			copy_text(m->artist, sizeof(m->artist), value, value_len);
@@ -673,7 +681,7 @@ static void parse_ilst(mp4_file_t *m, const box_t *ilst) {
 			break;
 		case FOURCC(0xA9, 'a', 'l', 'b'):
 			copy_text(m->album, sizeof(m->album), value, value_len);
-			set_title(m, value, value_len, 1);
+			set_title(m, value, value_len, 2);
 			break;
 		case FOURCC(0xA9, 'g', 'e', 'n'):
 			copy_text(m->genre, sizeof(m->genre), value, value_len);
