@@ -56,6 +56,7 @@
 #include "src/gui/audio/msebsettings.h"
 #include "src/gui/settings/musicsettings.h"
 #include "src/gui/nowplaying/player.h"
+#include "src/gui/nowplaying/speedpage.h"
 #include "src/gui/library/playlistpage.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/shell/powermenu.h"
@@ -697,6 +698,7 @@ void gui_init(gui_config_t *cfg) {
 	streaming_init(cfg);
 
 	player_init(cfg);
+	speedpage_init(cfg);
 
 	browser_init(cfg);
 

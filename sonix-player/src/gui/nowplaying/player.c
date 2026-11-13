@@ -13,6 +13,7 @@
 #include "src/gui/nowplaying/cover.h"
 #include "src/gui/nowplaying/coverloader.h"
 #include "src/gui/nowplaying/lyricsearch.h"
+#include "src/gui/nowplaying/speedpage.h"
 #include "src/gui/library/medialist.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/confirm.h"
@@ -3990,10 +3991,10 @@ static void update_format_label(const device_state_t *state) {
 
 // The speed setting of what is playing: an episode has its own, apart from the
 // books'.
-static bool speed_is_podcast(void) { return podcast_mode && !audiobook_mode; }
+bool player_speed_is_podcast(void) { return podcast_mode && !audiobook_mode; }
 
-static int speed_current_permille(void) {
-	return speed_is_podcast() ? podcast_speed_permille() : audiobook_speed_permille();
+int player_speed_permille(void) {
+	return player_speed_is_podcast() ? podcast_speed_permille() : audiobook_speed_permille();
 }
 
 // The gauge wears the accent colour whenever the book or episode is not at
@@ -4003,48 +4004,37 @@ static void update_speed_button(void) {
 	if (!speed_btn_icon) {
 		return;
 	}
-	bool normal = speed_current_permille() == AUDIOBOOK_SPEED_NORMAL;
+	bool normal = player_speed_permille() == AUDIOBOOK_SPEED_NORMAL;
 	lv_obj_set_style_image_recolor(speed_btn_icon, normal ? lv_color_make(100, 100, 100) : chrome_accent(), 0);
 	lv_obj_set_style_image_recolor_opa(speed_btn_icon, LV_OPA_COVER, 0);
 }
 
-static void speed_pick(void *user) {
-	int permille = (int)(intptr_t)user;
-	if (speed_is_podcast()) {
+void player_speed_set_permille(int permille) {
+	// Defensive: the setters validate too, but the slider and the page must
+	// never hand the engine a factor outside what it can resample.
+	if (permille < 250) {
+		permille = 250;
+	}
+	if (permille > 4000) {
+		permille = 4000;
+	}
+	if (player_speed_is_podcast()) {
 		podcast_set_speed_permille(permille);
-		permille = podcast_speed_permille();
 	} else {
 		audiobook_set_speed_permille(permille);
-		permille = audiobook_speed_permille();
 	}
+	// Read back what was stored: a setter may have rejected the value.
+	int applied = player_speed_permille();
 	// Straight through to the playback thread: it picks the factor up on the
 	// next block, so the change is heard within a period rather than at the
 	// next track.
-	audio_set_speed((double)permille / 1000.0);
+	audio_set_speed((double)applied / 1000.0);
 	update_speed_button();
 }
 
 static void speed_btn_event_cb(lv_event_t *e) {
-	static const int CHOICES[] = {500, 750, 1000, 1250, 1500, 1750, 2000};
-	static const char *const LABELS[] = {"0.5x", "0.75x", "1.0x", "1.25x", "1.5x", "1.75x", "2.0x"};
-	enum { CHOICE_COUNT = sizeof(CHOICES) / sizeof(CHOICES[0]) };
-
-	// Zeroed, not just filled field by field: popover_item_t also has
-	// `checked`, and stack garbage in it puts a tick on a random entry -- along
-	// with the different row layout a tick brings.
-	//
-	// The tick belongs here for the same reason it does in the Qobuz quality
-	// menu: this is a choice between alternatives, not a list of actions, so
-	// the current one has to be visible.
-	popover_item_t items[CHOICE_COUNT] = {0};
-	int current = speed_current_permille();
-	for (int i = 0; i < CHOICE_COUNT; i++) {
-		items[i].label = LABELS[i];
-		items[i].action = speed_pick;
-		items[i].user = (void *)(intptr_t)CHOICES[i];
-		items[i].checked = CHOICES[i] == current;
-	}
-	popover_show(lv_event_get_current_target(e), items, CHOICE_COUNT);
+	(void)e;
+	speedpage_open();
 }
 
 // Updates the repeat-mode button's icon and colour to reflect the active mode.
