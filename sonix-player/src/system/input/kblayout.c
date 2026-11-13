@@ -113,7 +113,9 @@ static const layout_info_t layouts[KB_LAYOUT_COUNT] = {
 						   "PQRS\xc5\x9a", "TUV", "WXYZ\xc5\xb9\xc5\xbb"},
 						  "Polski"},
 	// ABNT2, the Brazilian keyboard: the c-cedilla has its own key after L, and
-	// the accented vowels, dead keys there, come from holding the vowel.
+	// the accented vowels, dead keys there, come from holding the vowel. The
+	// European Portuguese keyboard puts the cedilla in the same place, so the
+	// one layout serves both spellings of the language.
 	[KB_LAYOUT_PORTUGUESE] = {"Portugu\xc3\xaas",
 							  {"qwertyuiop", "asdfghjkl\xc3\xa7", "zxcvbnm"},
 							  {"QWERTYUIOP", "ASDFGHJKL\xc3\x87", "ZXCVBNM"},
@@ -377,10 +379,20 @@ static uint8_t parse_list(const char *saved, uint8_t *out, bool *placed) {
 
 // The layout the interface language asks for, which is the one a player that
 // has never been told otherwise types in.
+//
+// The language name can carry a region ("Português BR", "Português PT") while
+// the layout is named for the language itself, so what is compared is the part
+// before the space. Both Portuguese spellings share the alphabet with the
+// cedilla on the row where a keyboard has it.
+static bool language_matches(const char *layout_language, const char *now) {
+	size_t len = strcspn(layout_language, " ");
+	return strncmp(layout_language, now, len) == 0 && (now[len] == '\0' || now[len] == ' ');
+}
+
 static kblayout_t layout_for_language(void) {
 	const char *now = lang_current();
 	for (int i = 0; i < KB_LAYOUT_COUNT && now; i++) {
-		if (strcmp(layouts[i].language, now) == 0) {
+		if (language_matches(layouts[i].language, now)) {
 			return (kblayout_t)i;
 		}
 	}

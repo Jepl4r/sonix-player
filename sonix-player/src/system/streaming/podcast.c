@@ -69,6 +69,7 @@ static const char *interface_language_code(void) {
 		{"Russian", "ru"},
 		{"Chinese", "zh,zh-cn"},
 		{"Portugu\xC3\xAAs BR", "pt,pt-br"},
+		{"Portugu\xC3\xAAs PT", "pt,pt-pt"},
 		{"\xC4\x8C"
 		 "e\xC5\xA1tina",
 		 "cs"},
