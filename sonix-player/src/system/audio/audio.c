@@ -580,6 +580,12 @@ static void report_position(double seconds) {
 // itself entirely at that factor.
 static double playback_speed = 1.0;
 
+// True while a book or an episode plays. Those are one long file, so a deep
+// output buffer is not protecting them from the stall of a track change: it is
+// only delay between a new speed and hearing it. Set at each track change,
+// before the PCM opens; read by open_pcm_device_now().
+static bool long_form_output;
+
 // What speed.c pulls its input through.
 typedef struct {
 	decoder_t *dec;
@@ -903,6 +909,11 @@ bool audio_get_bit_perfect(void) { return bit_perfect; }
 // cannot meet is settled downwards rather than refused.
 #define PERIOD_TARGET_MS 90
 #define PERIOD_FRAMES_MAX 32768
+
+// The buffer a book or an episode asks for, in the stock player's time-based
+// sizing. The whole point is that it is short enough that a speed change is
+// heard at once; the deep buffer is the fallback when a driver refuses it.
+#define LONG_FORM_BUFFER_MS 300
 
 // The smallest period the two limits below will go down to: 23 ms at 44.1 kHz,
 // the size the stock player runs with.
@@ -1541,6 +1552,13 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 		}
 	}
 
+	// A book or an episode is one long file. The deep buffer below is there for
+	// the stall a track change can cause, and these do not change track: what it
+	// buys them is nothing, and what it costs is the delay between moving the
+	// speed and hearing it -- 0.75 s at 44.1 kHz, and a second and a half at the
+	// 22.05 kHz most audiobooks are cut at. They ask for 300 ms instead, in the
+	// time-based way the stock player sizes its buffer; see below.
+
 	// A USB DAC is the exception, up to 192 kHz. Its buffer is not memory the
 	// card was given at boot, as the built-in DAC's is: snd-usb-audio allocates
 	// it at every open, together with the transfer buffers, and frees it at every
@@ -1580,6 +1598,10 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	// The emulator asks for a much shorter buffer of its own and overrides both:
 	// see pcm_forced_buffer_ms.
 	int buffer_time_ms = pcm_forced_buffer_ms > 0 ? pcm_forced_buffer_ms : (int)config_get_int("audio", "buffer_time_ms", 0);
+	bool long_form = __atomic_load_n(&long_form_output, __ATOMIC_ACQUIRE);
+	if (long_form && buffer_time_ms <= 0) {
+		buffer_time_ms = LONG_FORM_BUFFER_MS;
+	}
 	if (buffer_time_ms > 0) {
 		unsigned int buffer_time = (unsigned int)buffer_time_ms * 1000u;   // microseconds
 		unsigned int period_time = buffer_time / 4;
@@ -1593,6 +1615,23 @@ static snd_pcm_t *open_pcm_device_now(int channels, int sample_rate, int bits_pe
 	}
 
 	err = snd_pcm_hw_params(pcm_handle, hw_params);
+
+	// A short buffer on a book is an optimisation, never a requirement. If this
+	// driver refuses the configuration -- or the kernel has no memory for it --
+	// the deep buffer the rest of the player uses is always the fallback: the
+	// book still plays, and only the speed change goes back to waiting for the
+	// buffer to drain.
+	if (err < 0 && long_form) {
+		fprintf(stderr, "audio: short buffer refused (%s), falling back to the deep one\n", snd_strerror(err));
+		buffer_time_ms = 0;
+		long_form = false;
+		periods = 8;
+		period_size = 4096;
+		snd_pcm_hw_params_copy(hw_params, unsized);
+		snd_pcm_hw_params_set_periods_near(pcm_handle, hw_params, &periods, &dir);
+		snd_pcm_hw_params_set_period_size_near(pcm_handle, hw_params, &period_size, &dir);
+		err = snd_pcm_hw_params(pcm_handle, hw_params);
+	}
 
 	// Out of memory is not a refusal of the format. The driver is asking the
 	// kernel for the buffer this very moment, and after hours of reading the
@@ -4489,6 +4528,12 @@ void audio_set_speed(double factor) {
 	playback_speed = factor;
 	pthread_mutex_unlock(&audio_mutex);
 }
+
+// A book or an episode is one long file: the deep buffer exists for a stall at
+// a track change, which these do not have, and every millisecond of it sits
+// between a new speed and hearing it. Set before the PCM opens, from the same
+// place as the speed itself; see apply_track_speed() and open_pcm_device_now().
+void audio_set_long_form(bool on) { __atomic_store_n(&long_form_output, on, __ATOMIC_RELEASE); }
 
 double audio_get_speed(void) {
 	pthread_mutex_lock(&audio_mutex);

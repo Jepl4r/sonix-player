@@ -477,9 +477,14 @@ void device_state_note_storage_gone(void) {
 // anything else at 1.0. Set at every track change and not only from the
 // pop-over, so a song that follows a book at 1.5x is not also played at 1.5x.
 static void apply_track_speed(void) {
-	if (audiobook_is_playing()) {
+	bool book = audiobook_is_playing();
+	bool episode = podcastcache_is_episode(current_metadata_file);
+	// The output sizes its buffer from this: one long file gets a short one, so
+	// a speed change is heard at once instead of after the deep buffer drains.
+	audio_set_long_form(book || episode);
+	if (book) {
 		audio_set_speed(audiobook_speed());
-	} else if (podcastcache_is_episode(current_metadata_file)) {
+	} else if (episode) {
 		audio_set_speed(podcast_speed());
 	} else {
 		audio_set_speed(1.0);
