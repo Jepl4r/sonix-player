@@ -106,7 +106,7 @@ static int32_t text_width(lv_obj_t *label, const char *text) {
 
 #define FADE_EDGE_PX 24
 #define FADE_CACHE_MAX 8
-#define FADE_LABELS_MAX 16
+#define FADE_LABELS_MAX 24
 #define FADE_POLL_MS 80
 
 // One size, and the two masks for it: `both` while the text moves, `tail` while

@@ -66,6 +66,84 @@ static void clear_locked(void) {
 	current_book[0] = '\0';
 }
 
+// ---------------------------------------------------------------------------
+// A chapter's own length, written into its name
+// ---------------------------------------------------------------------------
+//
+// Some tools that cut a book into chapters write the length into the name --
+// "Chapter 2 - 23:41" -- and some folder books arrive with files named that
+// way. The progress row already shows that number beside the name and the
+// chapter list has a clock of its own, so the suffix is taken off here, once,
+// where both read the name from.
+//
+// Only a trailing " - M:SS" or " - H:MM:SS" (a dash with spaces around it, as
+// a person writes it) is removed. Anything else is left exactly as it is: a
+// name with a year or a part number after the dash is not a clock.
+
+static bool clock_suffix(const char *text) {
+	const char *p = text;
+	if (*p < '0' || *p > '9') {
+		return false;
+	}
+	while (*p >= '0' && *p <= '9') {
+		p++;
+	}
+	if (*p++ != ':') {
+		return false;
+	}
+	for (int i = 0; i < 2; i++) {
+		if (p[i] < '0' || p[i] > '9') {
+			return false;
+		}
+	}
+	p += 2;
+	if (*p == ':') {
+		p++;
+		for (int i = 0; i < 2; i++) {
+			if (p[i] < '0' || p[i] > '9') {
+				return false;
+			}
+		}
+		p += 2;
+	}
+	return *p == '\0';
+}
+
+static void strip_trailing_clock(char *text) {
+	if (!text || !text[0]) {
+		return;
+	}
+	size_t len = strlen(text);
+	while (len > 0 && (text[len - 1] == ' ' || text[len - 1] == '\t')) {
+		text[--len] = '\0';
+	}
+
+	char *cut = NULL;
+	char *rest = NULL;
+	for (char *p = text; *p; p++) {
+		if (p[0] != ' ') {
+			continue;
+		}
+		if (p[1] == '-' && p[2] == ' ') {
+			cut = p;
+			rest = p + 3;
+		} else if ((unsigned char)p[1] == 0xE2 && p[2] && (unsigned char)p[2] == 0x80 && p[3] &&
+				   ((unsigned char)p[3] == 0x93 || (unsigned char)p[3] == 0x94) && p[4] == ' ') {
+			// The en and em dashes, in UTF-8, as a word processor writes them.
+			cut = p;
+			rest = p + 5;
+		}
+	}
+	if (!cut || cut == text || !rest || !clock_suffix(rest)) {
+		return;
+	}
+
+	*cut = '\0';
+	while (cut > text && cut[-1] == ' ') {
+		*--cut = '\0';
+	}
+}
+
 // Called with `lock` held, from audiobook_track_changed().
 static bool add_part(const char *path, const char *title, void *user) {
 	(void)user;
@@ -80,6 +158,7 @@ static bool add_part(const char *path, const char *title, void *user) {
 	}
 	snprintf(parts[part_count].path, sizeof(parts[0].path), "%s", path);
 	snprintf(parts[part_count].title, sizeof(parts[0].title), "%s", title);
+	strip_trailing_clock(parts[part_count].title);
 	part_count++;
 	return true;
 }
@@ -90,6 +169,7 @@ static bool add_part(const char *path, const char *title, void *user) {
 static void name_chapter(char *out, size_t size, const char *title, int index) {
 	if (title && title[0]) {
 		snprintf(out, size, "%s", title);
+		strip_trailing_clock(out);
 		return;
 	}
 	snprintf(out, size, tr("chapter_n"), index + 1);
