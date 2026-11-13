@@ -518,6 +518,17 @@ static void apply_audiobook_mode(bool book, bool podcast) {
 	int back = podcast && !book ? podcast_skip_back() : audiobook_skip_back();
 	int forward = podcast && !book ? podcast_skip_forward() : audiobook_skip_forward();
 
+	// The middle of the progress row carries the chapter name on a book, and a
+	// chapter name wants the size of the clocks beside it. On anything else it
+	// carries the queue position, a step smaller. Written before the state
+	// guard below and compared first, so a label made after the first call
+	// still picks the right size, while a poll that changes nothing writes
+	// nothing.
+	const lv_font_t *chapter_font = book ? &font_ui_22 : &font_ui_18;
+	if (queue_position_label && lv_obj_get_style_text_font(queue_position_label, 0) != chapter_font) {
+		lv_obj_set_style_text_font(queue_position_label, chapter_font, 0);
+	}
+
 	if (audiobook_mode_valid && book == audiobook_mode && podcast == podcast_mode &&
 		chapters == audiobook_has_chapters && back == audiobook_skip_shown_back &&
 		forward == audiobook_skip_shown_forward) {
@@ -583,14 +594,6 @@ static void apply_audiobook_mode(bool book, bool podcast) {
 		} else {
 			lv_obj_set_hidden(speed_btn_obj, true);
 		}
-	}
-
-	// The middle of the progress row carries the chapter name on a book, and a
-	// chapter name wants the size of the clocks beside it. On anything else it
-	// carries the queue position, a step smaller. The label is made later in
-	// player_init(), so it may not be there yet.
-	if (queue_position_label) {
-		lv_obj_set_style_text_font(queue_position_label, book ? &font_ui_22 : &font_ui_18, 0);
 	}
 
 	// A book with no artwork gets the book and an episode the microphone, not
@@ -3579,6 +3582,12 @@ static void refresh_now_playing(void) {
 	apply_audiobook_mode(!state.live && audiobook_is_playing(),
 						 !state.live && podcastcache_is_episode(state.current_file));
 
+	// The clocks above were deliberately wound back to zero, but the chapter
+	// name is not a clock: it has to name where playback actually is, or a
+	// refresh in the middle of a book would show the first chapter until the
+	// next poll.
+	update_queue_position(state.progress_current_secs);
+
 	if (state.live) {
 		// The station on top, what it says is on air underneath -- the same
 		// two lines as a track, carrying the two things a radio knows.
@@ -4213,6 +4222,15 @@ static void update_progress(void) {
 	progress_running = state.status == AUDIO_STATUS_PLAYING && state.progress_total_secs > 0;
 	smooth_timer_sync();
 
+	// Asked every poll rather than only on a track change: the answer comes
+	// from the audiobook index, which a scan finishing can change under a
+	// track that is already playing. Both answers come from the path every
+	// time -- a flag raised at start would have to be cleared on every route
+	// by which the track can change, and the first one forgotten leaves the
+	// player dressed as a podcast over a song. Before the progress row is
+	// written, which asks the same question about the chapter name.
+	apply_audiobook_mode(!state.live && audiobook_is_playing(), !state.live && podcastcache_is_episode(state.current_file));
+
 	set_progress_label(state.progress_current_secs, current_total_length);
 	wave_refresh(cover_shown_path, state.progress_current_secs);
 	if (state.status == AUDIO_STATUS_PLAYING && !state.live) {
@@ -4221,14 +4239,6 @@ static void update_progress(void) {
 	lyrics_request(&state);
 	lyrics_follow(state.progress_current_secs);
 	apply_playback_status(state.status);
-	// Asked every poll rather than only on a track change: the answer comes
-	// from the audiobook index, which a scan finishing can change under a
-	// track that is already playing. Both answers come from the path every
-	// time -- a flag raised at start would have to be cleared on every route
-	// by which the track can change, and the first one forgotten leaves the
-	// player dressed as a podcast over a song.
-	apply_audiobook_mode(!state.live && audiobook_is_playing(),
-						 !state.live && podcastcache_is_episode(state.current_file));
 	update_format_label(&state); // the rate/bits settle shortly after the start
 
 	// The status LED follows playback promptly from here (the battery poll
