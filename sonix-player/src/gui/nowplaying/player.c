@@ -585,6 +585,14 @@ static void apply_audiobook_mode(bool book, bool podcast) {
 		}
 	}
 
+	// The middle of the progress row carries the chapter name on a book, and a
+	// chapter name wants the size of the clocks beside it. On anything else it
+	// carries the queue position, a step smaller. The label is made later in
+	// player_init(), so it may not be there yet.
+	if (queue_position_label) {
+		lv_obj_set_style_text_font(queue_position_label, book ? &font_ui_22 : &font_ui_18, 0);
+	}
+
 	// A book with no artwork gets the book and an episode the microphone, not
 	// a musical note -- each the glyph its own page uses, drawn at the size
 	// this one is, which is why the podcast row's 40 px copy is not the one
@@ -796,18 +804,29 @@ bool player_queue_position(int *position, int *count) {
 	return true;
 }
 
-static void update_queue_position(void) {
+static void update_queue_position(double current_secs) {
 	if (!queue_position_label) {
+		return;
+	}
+
+	// On a book the middle of the row carries where in the book this is: the
+	// chapter being played, or the part of a folder book.
+	if (audiobook_mode) {
+		char title[192];
+		audiobook_place_label(current_secs, title, sizeof(title));
+		scrolltext_set(queue_position_label, title);
 		return;
 	}
 
 	if (live_mode) {
 		int index;
 		int count;
+		char text[32];
 		if (live_custom_nav && radio_list_position(&index, &count)) {
-			lv_label_set_text_fmt(queue_position_label, "%d/%d", index + 1, count);
+			snprintf(text, sizeof(text), "%d/%d", index + 1, count);
+			scrolltext_set(queue_position_label, text);
 		} else {
-			lv_label_set_text(queue_position_label, "");
+			scrolltext_set(queue_position_label, "");
 		}
 		return;
 	}
@@ -817,10 +836,12 @@ static void update_queue_position(void) {
 	bool worth_saying = count > 1 && index >= 0 && !audiobook_mode && !dlna_owns_playback();
 
 	if (!worth_saying) {
-		lv_label_set_text(queue_position_label, "");
+		scrolltext_set(queue_position_label, "");
 		return;
 	}
-	lv_label_set_text_fmt(queue_position_label, "%d/%d", (int)playlist_current_entry() + 1, count);
+	char text[32];
+	snprintf(text, sizeof(text), "%d/%d", (int)playlist_current_entry() + 1, count);
+	scrolltext_set(queue_position_label, text);
 }
 
 // Works out view_start and view_length for playback at `position` in a file
@@ -889,7 +910,7 @@ static void set_progress_label(double current_secs, double total_secs) {
 
 	// Written from here because this is the one place that runs on every poll
 	// and on every track change, which is exactly when the answer can move.
-	update_queue_position();
+	update_queue_position(current_secs);
 }
 
 // True while a decode is in flight at the worker.
@@ -5327,11 +5348,15 @@ void player_init(gui_config_t *cfg) {
 	queue_position_label = lv_label_create(below_slider_group);
 	lv_label_set_text(queue_position_label, "");
 	lv_obj_add_style(queue_position_label, &theme_style_text_dim, 0);
-	// A step below the clocks either side of it, as well as dimmer: it is a
-	// bearing and they are the reading, and at the same size the three read as
-	// one row of equals.
+	// A step below the clocks while it carries the queue position; a book's
+	// chapter name is set at their size by apply_audiobook_mode().
 	lv_obj_set_style_text_font(queue_position_label, &font_ui_18, 0);
 	lv_obj_set_align(queue_position_label, LV_ALIGN_CENTER);
+	// As wide as its words, so a short one stays centred, but never so wide
+	// that it reaches the clocks -- a long chapter name scrolls inside this.
+	lv_obj_set_width(queue_position_label, LV_SIZE_CONTENT);
+	lv_obj_set_style_max_width(queue_position_label, lv_pct(58), 0);
+	scrolltext_apply(queue_position_label);
 
 	// Transport: prev, play/pause, next -- with the repeat toggle parked on
 	// the left, out of the way of the transport controls.

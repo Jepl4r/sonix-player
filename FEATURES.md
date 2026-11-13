@@ -131,6 +131,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Stop at the end of the chapter**.
 - **Bookmarks** (up to 64 per book) and the **summary** from the tags.
 - The progress bar shows the whole book or just the current chapter.
+- The current chapter's name appears in the progress row while a book plays.
 
 ## E-books
 
