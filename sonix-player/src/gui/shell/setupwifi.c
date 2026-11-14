@@ -72,6 +72,8 @@ static void finish(bool joined) {
 		poll_timer = NULL;
 	}
 	keyboard_set_visible(pw_keyboard, false);
+	keyboard_show_caret(manual_ssid_field, false);
+	keyboard_show_caret(manual_pw_field, false);
 	lv_obj_set_hidden(pw_panel, true);
 	lv_obj_set_hidden(manual_panel, true);
 	lv_obj_set_hidden(manual_btn, true);
@@ -140,6 +142,10 @@ static void ask_password(const char *ssid) {
 // ---------------------------------------------------------------------------
 
 static void manual_close(void) {
+	// Both carets out before the panel goes: a live one would be drawn over
+	// the page underneath, at coordinates that belong to these fields.
+	keyboard_show_caret(manual_ssid_field, false);
+	keyboard_show_caret(manual_pw_field, false);
 	keyboard_set_visible(manual_keyboard, false);
 	lv_obj_set_hidden(manual_panel, true);
 	lv_obj_set_hidden(manual_btn, false);
@@ -150,11 +156,19 @@ static void manual_back_cb(lv_event_t *e) {
 	manual_close();
 }
 
-// One keyboard, two fields: the one tapped is the one typed into.
-static void manual_field_tapped_cb(lv_event_t *e) {
-	lv_obj_t *field = lv_event_get_current_target(e);
+// One keyboard, two fields: the one tapped is the one typed into. The caret
+// follows the field as well -- every textarea blinks one from creation, so
+// the other has to be turned off or both blink together.
+static void manual_focus_field(lv_obj_t *field) {
+	lv_obj_t *other = field == manual_ssid_field ? manual_pw_field : manual_ssid_field;
 	keyboard_set_field(manual_keyboard, field);
+	lv_obj_add_state(field, LV_STATE_FOCUSED);
+	lv_obj_remove_state(other, LV_STATE_FOCUSED);
+	keyboard_show_caret(field, true);
+	keyboard_show_caret(other, false);
 }
+
+static void manual_field_tapped_cb(lv_event_t *e) { manual_focus_field(lv_event_get_current_target(e)); }
 
 static void manual_accept_cb(lv_event_t *e) {
 	(void)e;
@@ -177,9 +191,11 @@ static void manual_accept_cb(lv_event_t *e) {
 static void manual_show(void) {
 	lv_textarea_set_text(manual_ssid_field, "");
 	lv_textarea_set_text(manual_pw_field, "");
-	keyboard_set_field(manual_keyboard, manual_ssid_field);
 	keyboard_reset(manual_keyboard);
 	keyboard_set_visible(manual_keyboard, true);
+	// The name first: it is the field the page exists for, and the only one
+	// with the caret showing.
+	manual_focus_field(manual_ssid_field);
 	lv_obj_set_hidden(manual_panel, false);
 	lv_obj_set_hidden(manual_btn, true);
 	lv_obj_move_foreground(manual_panel);

@@ -128,11 +128,26 @@ static void manual_eye_cb(lv_event_t *e) {
 
 // Two fields, one keyboard: the one tapped is the one typed into. LVGL moves
 // the focus itself, but the keyboard types into whatever field it was told
-// about, and that is not the same thing.
-static void manual_field_tapped_cb(lv_event_t *e) {
-	lv_obj_t *field = lv_event_get_current_target(e);
+// about, and that is not the same thing. The caret follows the same field:
+// every textarea blinks one from creation, so the other field's has to be
+// turned off by hand or both of them blink at once.
+static void manual_focus_field(lv_obj_t *field) {
+	lv_obj_t *other = field == manual_ssid_field ? manual_pw_field : manual_ssid_field;
 	keyboard_set_field(manual_keyboard, field);
+	lv_obj_add_state(field, LV_STATE_FOCUSED);
+	lv_obj_remove_state(other, LV_STATE_FOCUSED);
+	keyboard_show_caret(field, true);
+	keyboard_show_caret(other, false);
 }
+
+// Leaving the page with a caret still on leaves it blinking over whatever is
+// drawn next, at coordinates that belong to these fields.
+static void manual_carets_off(void) {
+	keyboard_show_caret(manual_ssid_field, false);
+	keyboard_show_caret(manual_pw_field, false);
+}
+
+static void manual_field_tapped_cb(lv_event_t *e) { manual_focus_field(lv_event_get_current_target(e)); }
 
 static void manual_accept_cb(lv_event_t *e) {
 	(void)e;
@@ -153,6 +168,7 @@ static void manual_accept_cb(lv_event_t *e) {
 
 	lv_textarea_set_text(manual_ssid_field, "");
 	lv_textarea_set_text(manual_pw_field, "");
+	manual_carets_off();
 	switch_screen(wifisettings_screen);
 }
 
@@ -162,11 +178,20 @@ static void manual_open_cb(lv_event_t *e) {
 	lv_textarea_set_text(manual_pw_field, "");
 	lv_textarea_set_password_mode(manual_pw_field, true);
 	manual_eye_refresh();
-	// The name first: it is the field the page exists for.
-	keyboard_set_field(manual_keyboard, manual_ssid_field);
+	// The name first: it is the field the page exists for, and the caret has
+	// to say so -- the passphrase waits with its own turned off.
 	keyboard_reset(manual_keyboard);
 	keyboard_set_visible(manual_keyboard, true);
+	manual_focus_field(manual_ssid_field);
 	switch_screen(manual_screen);
+}
+
+// The back gesture pops the page without going through manual_accept_cb, so
+// the carets are put out here as well: one left blinking would be drawn over
+// the page underneath.
+static void manual_unloaded_cb(lv_event_t *e) {
+	(void)e;
+	manual_carets_off();
 }
 
 // The details page: everything about the link that does not belong on the
@@ -940,6 +965,7 @@ static void build_manual_page(gui_config_t *cfg) {
 	// does with an empty one: the page needs no switch of its own.
 	manual_keyboard = keyboard_create(manual_screen, cfg->screen_width, keyboard_h, manual_ssid_field, NULL, "ok", manual_accept_cb, NULL);
 
+	lv_obj_add_event_cb(manual_screen, manual_unloaded_cb, LV_EVENT_SCREEN_UNLOADED, NULL);
 	switcher_attach_back_gesture(manual_screen);
 }
 
