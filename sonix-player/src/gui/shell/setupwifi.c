@@ -34,6 +34,15 @@ static lv_obj_t *pw_title;
 static lv_obj_t *pw_field;
 static keyboard_t *pw_keyboard;
 
+// The manual entry: for a router whose SSID is not in any scan. The button
+// lives on the layer, not in the page's column, so the column keeps the layout
+// it has; it is shown and hidden with the pages that own the screen.
+static lv_obj_t *manual_btn;
+static lv_obj_t *manual_panel;
+static lv_obj_t *manual_ssid_field;
+static lv_obj_t *manual_pw_field;
+static keyboard_t *manual_keyboard;
+
 static bool radio_was_on;	  // the switch before the page turned it on
 static bool joining;		  // a connect asked for from here is under way
 static uint32_t drawn_serial; // the network list the rows show
@@ -63,7 +72,11 @@ static void finish(bool joined) {
 		poll_timer = NULL;
 	}
 	keyboard_set_visible(pw_keyboard, false);
+	keyboard_show_caret(manual_ssid_field, false);
+	keyboard_show_caret(manual_pw_field, false);
 	lv_obj_set_hidden(pw_panel, true);
+	lv_obj_set_hidden(manual_panel, true);
+	lv_obj_set_hidden(manual_btn, true);
 	lv_obj_set_hidden(panel, true);
 	if (!joined && !radio_was_on) {
 		wifi_set_enabled(false);
@@ -85,6 +98,7 @@ static void skip_cb(lv_event_t *e) {
 static void pw_close(void) {
 	keyboard_set_visible(pw_keyboard, false);
 	lv_obj_set_hidden(pw_panel, true);
+	lv_obj_set_hidden(manual_btn, false);
 }
 
 static void pw_back_cb(lv_event_t *e) {
@@ -92,8 +106,8 @@ static void pw_back_cb(lv_event_t *e) {
 	pw_close();
 }
 
-static void join(const char *ssid, const char *psk) {
-	wifi_connect(ssid, psk);
+static void join(const char *ssid, const char *psk, bool hidden) {
+	wifi_connect(ssid, psk, hidden);
 	joining = true;
 	char text[160];
 	snprintf(text, sizeof(text), tr("setupwifi_connecting"), ssid);
@@ -107,7 +121,7 @@ static void pw_accept_cb(lv_event_t *e) {
 		return;
 	}
 	pw_close();
-	join(pending_ssid, psk);
+	join(pending_ssid, psk, false);
 }
 
 static void ask_password(const char *ssid) {
@@ -119,7 +133,77 @@ static void ask_password(const char *ssid) {
 	keyboard_reset(pw_keyboard);
 	keyboard_set_visible(pw_keyboard, true);
 	lv_obj_set_hidden(pw_panel, false);
+	lv_obj_set_hidden(manual_btn, true);
 	lv_obj_move_foreground(pw_panel);
+}
+
+// ---------------------------------------------------------------------------
+// The manual entry
+// ---------------------------------------------------------------------------
+
+static void manual_close(void) {
+	// Both carets out before the panel goes: a live one would be drawn over
+	// the page underneath, at coordinates that belong to these fields.
+	keyboard_show_caret(manual_ssid_field, false);
+	keyboard_show_caret(manual_pw_field, false);
+	keyboard_set_visible(manual_keyboard, false);
+	lv_obj_set_hidden(manual_panel, true);
+	lv_obj_set_hidden(manual_btn, false);
+}
+
+static void manual_back_cb(lv_event_t *e) {
+	(void)e;
+	manual_close();
+}
+
+// One keyboard, two fields: the one tapped is the one typed into. The caret
+// follows the field as well -- every textarea blinks one from creation, so
+// the other has to be turned off or both blink together.
+static void manual_focus_field(lv_obj_t *field) {
+	lv_obj_t *other = field == manual_ssid_field ? manual_pw_field : manual_ssid_field;
+	keyboard_set_field(manual_keyboard, field);
+	lv_obj_add_state(field, LV_STATE_FOCUSED);
+	lv_obj_remove_state(other, LV_STATE_FOCUSED);
+	keyboard_show_caret(field, true);
+	keyboard_show_caret(other, false);
+}
+
+static void manual_field_tapped_cb(lv_event_t *e) { manual_focus_field(lv_event_get_current_target(e)); }
+
+static void manual_accept_cb(lv_event_t *e) {
+	(void)e;
+	const char *ssid = lv_textarea_get_text(manual_ssid_field);
+	const char *psk = lv_textarea_get_text(manual_pw_field);
+
+	// A name is the one thing there is no asking for. Leaving the page on an
+	// empty field would look like a network had been asked for.
+	if (!ssid || !ssid[0]) {
+		return;
+	}
+
+	snprintf(pending_ssid, sizeof(pending_ssid), "%s", ssid);
+	manual_close();
+	// Hidden: this page exists for the name the scan never heard. An empty
+	// passphrase is an open network, which the connect already understands.
+	join(ssid, psk, true);
+}
+
+static void manual_show(void) {
+	lv_textarea_set_text(manual_ssid_field, "");
+	lv_textarea_set_text(manual_pw_field, "");
+	keyboard_reset(manual_keyboard);
+	keyboard_set_visible(manual_keyboard, true);
+	// The name first: it is the field the page exists for, and the only one
+	// with the caret showing.
+	manual_focus_field(manual_ssid_field);
+	lv_obj_set_hidden(manual_panel, false);
+	lv_obj_set_hidden(manual_btn, true);
+	lv_obj_move_foreground(manual_panel);
+}
+
+static void manual_open_cb(lv_event_t *e) {
+	(void)e;
+	manual_show();
 }
 
 // ---------------------------------------------------------------------------
@@ -138,7 +222,7 @@ static void row_clicked_cb(lv_event_t *e) {
 	if (ask) {
 		ask_password(ssid);
 	} else {
-		join(ssid, NULL);
+		join(ssid, NULL, false);
 	}
 }
 
@@ -269,6 +353,10 @@ void setupwifi_show(void) {
 
 	lv_obj_set_hidden(panel, false);
 	lv_obj_move_foreground(panel);
+	// The plus goes in front of the page, and stays behind the two panels that
+	// cover it: each moves itself to the foreground when it opens.
+	lv_obj_set_hidden(manual_btn, false);
+	lv_obj_move_foreground(manual_btn);
 	power_hold_screen_on(true);
 
 	if (!poll_timer) {
@@ -338,6 +426,83 @@ static void build_password_panel(gui_config_t *cfg) {
 	pw_keyboard = keyboard_create(pw_panel, cfg->screen_width, PASSWORD_KEYBOARD_H, pw_field, NULL, "ok", pw_accept_cb, NULL);
 }
 
+static void build_manual_panel(gui_config_t *cfg) {
+	manual_panel = top_panel(cfg);
+	lv_obj_set_style_pad_all(manual_panel, 0, 0);
+
+	lv_obj_t *back = lv_btn_create(manual_panel);
+	lv_obj_set_size(back, HEADER_BTN, HEADER_BTN);
+	lv_obj_align(back, LV_ALIGN_TOP_LEFT, cfg->padding, cfg->padding);
+	lv_obj_set_style_bg_opa(back, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_border_width(back, 0, 0);
+	lv_obj_set_style_shadow_width(back, 0, 0);
+	lv_obj_set_style_pad_all(back, 0, 0);
+	lv_obj_add_event_cb(back, manual_back_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *back_icon = lv_image_create(back);
+	lv_image_set_src(back_icon, &icon_chevron_left);
+	lv_obj_add_style(back_icon, &theme_style_icon, 0);
+	lv_obj_center(back_icon);
+
+	lv_obj_t *title = lv_label_create(manual_panel);
+	lv_label_set_text(title, tr("wifi_add_network"));
+	lv_label_set_long_mode(title, LV_LABEL_LONG_DOT);
+	lv_obj_set_width(title, cfg->screen_width - 2 * cfg->padding - HEADER_BTN - 14);
+	lv_obj_add_style(title, &theme_style_text, 0);
+	lv_obj_set_style_text_font(title, &font_ui_32, 0);
+	lv_obj_align(title, LV_ALIGN_TOP_LEFT, cfg->padding + HEADER_BTN + 14, cfg->padding + (HEADER_BTN - lv_font_get_line_height(&font_ui_32)) / 2);
+
+	int top = cfg->padding + HEADER_BTN + cfg->padding;
+
+	lv_obj_t *ssid_hint = lv_label_create(manual_panel);
+	lv_label_set_text(ssid_hint, tr("wifi_network_name"));
+	lv_obj_add_style(ssid_hint, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(ssid_hint, &font_ui_22, 0);
+	lv_obj_align(ssid_hint, LV_ALIGN_TOP_LEFT, cfg->padding, top);
+
+	manual_ssid_field = lv_textarea_create(manual_panel);
+	lv_textarea_set_one_line(manual_ssid_field, true);
+	// 32 bytes is all 802.11 carries in an SSID.
+	lv_textarea_set_max_length(manual_ssid_field, 32);
+	lv_textarea_set_placeholder_text(manual_ssid_field, tr("wifi_network_name"));
+	lv_obj_set_size(manual_ssid_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_scrollbar_mode(manual_ssid_field, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_align(manual_ssid_field, LV_ALIGN_TOP_LEFT, cfg->padding, top + 36);
+	lv_obj_add_style(manual_ssid_field, &theme_style_card, 0);
+	lv_obj_set_style_radius(manual_ssid_field, 12, 0);
+	lv_obj_set_style_border_width(manual_ssid_field, 0, 0);
+	lv_obj_set_style_shadow_width(manual_ssid_field, 0, 0);
+	lv_obj_set_style_pad_all(manual_ssid_field, 14, 0);
+	lv_obj_set_style_text_font(manual_ssid_field, &font_ui_24, 0);
+	keyboard_style_caret(manual_ssid_field);
+	lv_obj_add_event_cb(manual_ssid_field, manual_field_tapped_cb, LV_EVENT_CLICKED, NULL);
+
+	int pw_top = top + 36 + 62 + 12;
+
+	lv_obj_t *pw_hint = lv_label_create(manual_panel);
+	lv_label_set_text(pw_hint, tr("wifi_network_password"));
+	lv_obj_add_style(pw_hint, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(pw_hint, &font_ui_22, 0);
+	lv_obj_align(pw_hint, LV_ALIGN_TOP_LEFT, cfg->padding, pw_top);
+
+	manual_pw_field = lv_textarea_create(manual_panel);
+	lv_textarea_set_one_line(manual_pw_field, true);
+	lv_textarea_set_placeholder_text(manual_pw_field, tr("password"));
+	lv_obj_set_size(manual_pw_field, cfg->screen_width - 2 * cfg->padding, 62);
+	lv_obj_set_scrollbar_mode(manual_pw_field, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_align(manual_pw_field, LV_ALIGN_TOP_LEFT, cfg->padding, pw_top + 36);
+	lv_obj_add_style(manual_pw_field, &theme_style_card, 0);
+	lv_obj_set_style_radius(manual_pw_field, 12, 0);
+	lv_obj_set_style_border_width(manual_pw_field, 0, 0);
+	lv_obj_set_style_shadow_width(manual_pw_field, 0, 0);
+	lv_obj_set_style_pad_all(manual_pw_field, 14, 0);
+	lv_obj_set_style_text_font(manual_pw_field, &font_ui_24, 0);
+	keyboard_style_caret(manual_pw_field);
+	keyboard_style_password(manual_pw_field, 0);
+	lv_obj_add_event_cb(manual_pw_field, manual_field_tapped_cb, LV_EVENT_CLICKED, NULL);
+
+	manual_keyboard = keyboard_create(manual_panel, cfg->screen_width, PASSWORD_KEYBOARD_H, manual_ssid_field, NULL, "ok", manual_accept_cb, NULL);
+}
+
 void setupwifi_init(gui_config_t *cfg) {
 	panel = top_panel(cfg);
 	lv_obj_set_style_pad_all(panel, cfg->padding, 0);
@@ -393,4 +558,22 @@ void setupwifi_init(gui_config_t *cfg) {
 	lv_obj_center(skip_label);
 
 	build_password_panel(cfg);
+	build_manual_panel(cfg);
+
+	// The button that opens the manual entry. On the layer rather than in the
+	// page's column, which is laid out by flex and would put it wherever the
+	// column ends; hidden until the page is shown.
+	manual_btn = lv_btn_create(lv_layer_top());
+	lv_obj_set_size(manual_btn, HEADER_BTN, HEADER_BTN);
+	lv_obj_align(manual_btn, LV_ALIGN_TOP_RIGHT, -cfg->padding, cfg->padding);
+	lv_obj_set_style_bg_opa(manual_btn, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_border_width(manual_btn, 0, 0);
+	lv_obj_set_style_shadow_width(manual_btn, 0, 0);
+	lv_obj_set_style_pad_all(manual_btn, 0, 0);
+	lv_obj_add_event_cb(manual_btn, manual_open_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_t *plus = lv_image_create(manual_btn);
+	lv_image_set_src(plus, &icon_plus);
+	lv_obj_add_style(plus, &theme_style_icon, 0);
+	lv_obj_center(plus);
+	lv_obj_set_hidden(manual_btn, true);
 }

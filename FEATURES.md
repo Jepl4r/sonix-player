@@ -153,7 +153,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 
 ## Wireless
 
-- **Wi-Fi** - see the networks around you, connect, forget, and see the details of the one you are on.
+- **Wi-Fi** - see the networks around you, connect, forget, and see the details of the one you are on. A network that does not broadcast its name is joined by typing the name and the password on the same page.
 - **Bluetooth headphones and speakers** - pair, connect and forget. The best codec your device supports is chosen by itself, and you can see the list. The volume can be synced with the headphones, and you can rename your paired devices.
 - **AirPods** - battery for each earbud and the case, and noise control (off, noise cancellation, transparency, adaptive). You choose which modes the stem switches between.
 - **Bluetooth receiver** - a phone or a computer connects to the player and plays through it, like a speaker. The codec and the quality of what comes in are shown.
