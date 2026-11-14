@@ -411,9 +411,18 @@ static bool read_declared_name(const char *name, char *out, size_t size);
 // The order the list is shown in. The key is the file name, not the name the
 // file declares: a declared name stays in its own script (CJK, Cyrillic) and
 // has no place in an A-Z list, while the file names are the English names the
-// set is organised by. Latin accents fold to the letter under them, so the
-// Czech name with a caron sorts with C and the Spanish one with a tilde with
-// E; anything outside Latin keeps code-point order and follows the Latin names.
+// set is organised by.
+//
+// A Latin letter written with a mark, a stroke or a ligature folds to the plain
+// letter a reader looks for it under: the Czech name with a caron sorts with C,
+// the Spanish one with a tilde with E, the Vietnamese one with a dot below with
+// E, the OE ligature with O. The table below covers every Latin block a name can
+// be written in -- the Supplement, the two Extended blocks and the Additional
+// block the Vietnamese letters live in -- and leaves out only the code points
+// that stand for two letters at once and so have no single letter to fold to
+// (the clicks, "oi", "ou", "hv", the glottal stop, the multiplication and
+// division signs). Those, and every script outside Latin, keep their code point
+// and therefore follow the Latin names.
 static uint32_t utf8_next(const char **p) {
 	const unsigned char *s = (const unsigned char *)*p;
 	uint32_t cp;
@@ -437,115 +446,187 @@ static uint32_t utf8_next(const char **p) {
 	return cp;
 }
 
+// One entry per run of code points that fold to the same letter. The blocks lay
+// each letter out as a capital and a small form, with its marks in between, so
+// a run usually covers a whole letter and stops where the next one starts.
+static const struct {
+	uint32_t first;
+	uint32_t last;
+	char base;
+} latin_folds[] = {
+	// Latin-1 Supplement, U+00C0-U+00FF.
+	{0x00C0, 0x00C6, 'a'}, // A grave .. AE ligature
+	{0x00C7, 0x00C7, 'c'},
+	{0x00C8, 0x00CB, 'e'},
+	{0x00CC, 0x00CF, 'i'},
+	{0x00D0, 0x00D0, 'd'}, // ETH
+	{0x00D1, 0x00D1, 'n'},
+	{0x00D2, 0x00D6, 'o'},
+	{0x00D8, 0x00D8, 'o'}, // O stroke; U+00D7 is the multiplication sign
+	{0x00D9, 0x00DC, 'u'},
+	{0x00DD, 0x00DD, 'y'},
+	{0x00DE, 0x00DE, 't'}, // THORN
+	{0x00DF, 0x00DF, 's'}, // sharp s
+	{0x00E0, 0x00E6, 'a'},
+	{0x00E7, 0x00E7, 'c'},
+	{0x00E8, 0x00EB, 'e'},
+	{0x00EC, 0x00EF, 'i'},
+	{0x00F0, 0x00F0, 'd'},
+	{0x00F1, 0x00F1, 'n'},
+	{0x00F2, 0x00F6, 'o'},
+	{0x00F8, 0x00F8, 'o'}, // O stroke; U+00F7 is the division sign
+	{0x00F9, 0x00FC, 'u'},
+	{0x00FD, 0x00FD, 'y'},
+	{0x00FE, 0x00FE, 't'},
+	{0x00FF, 0x00FF, 'y'},
+
+	// Latin Extended-A, U+0100-U+017F. The strokes and the IJ ligature have no
+	// decomposition to the letter under them and are listed with the rest.
+	{0x0100, 0x0105, 'a'},
+	{0x0106, 0x010D, 'c'},
+	{0x010E, 0x0111, 'd'}, // .. D stroke
+	{0x0112, 0x011B, 'e'},
+	{0x011C, 0x0123, 'g'},
+	{0x0124, 0x0127, 'h'}, // .. H stroke
+	{0x0128, 0x0133, 'i'}, // .. dotless I, IJ ligature
+	{0x0134, 0x0135, 'j'},
+	{0x0136, 0x0138, 'k'}, // .. kra
+	{0x0139, 0x0142, 'l'}, // .. L and l with stroke
+	{0x0143, 0x014B, 'n'}, // .. apostrophe N, eng
+	{0x014C, 0x0153, 'o'}, // .. OE ligature
+	{0x0154, 0x0159, 'r'},
+	{0x015A, 0x0161, 's'},
+	{0x0162, 0x0167, 't'}, // .. T stroke
+	{0x0168, 0x0173, 'u'},
+	{0x0174, 0x0175, 'w'},
+	{0x0176, 0x0178, 'y'},
+	{0x0179, 0x017E, 'z'},
+	{0x017F, 0x017F, 's'}, // long s
+
+	// Latin Extended-B, U+0180-U+024F. This block is mostly the phonetic
+	// letters of the International Phonetic Alphabet; the ones that are a base
+	// letter with a hook, a bar or a stroke rather than a shape of their own are
+	// folded with it.
+	{0x0184, 0x0185, 'b'},
+	{0x0186, 0x0186, 'o'}, // open O
+	{0x018E, 0x0190, 'e'}, // reversed E, schwa, open E
+	{0x0196, 0x0197, 'i'}, // iota, barred I
+	{0x019C, 0x019C, 'm'},
+	{0x019D, 0x019E, 'n'},
+	{0x01A0, 0x01A1, 'o'}, // O with horn
+	{0x01A6, 0x01A6, 'r'},
+	{0x01A9, 0x01A9, 's'}, // esh
+	{0x01AF, 0x01B1, 'u'}, // U with horn, upsilon
+	{0x01B2, 0x01B2, 'v'},
+	{0x01B7, 0x01BA, 'z'}, // ezh
+	{0x01BF, 0x01BF, 'w'}, // wynn
+	{0x01C4, 0x01C6, 'd'}, // DZ ligature
+	{0x01C7, 0x01C9, 'l'}, // LJ ligature
+	{0x01CA, 0x01CC, 'n'}, // NJ ligature
+	{0x01CD, 0x01CE, 'a'},
+	{0x01CF, 0x01D0, 'i'},
+	{0x01D1, 0x01D2, 'o'},
+	{0x01D3, 0x01DC, 'u'},
+	{0x01DD, 0x01DD, 'e'}, // turned e
+	{0x01DE, 0x01E3, 'a'}, // .. AE with macron
+	{0x01E4, 0x01E7, 'g'}, // G stroke, G caron
+	{0x01E8, 0x01E9, 'k'},
+	{0x01EA, 0x01ED, 'o'},
+	{0x01EE, 0x01EF, 'z'}, // ezh with caron
+	{0x01F0, 0x01F0, 'j'},
+	{0x01F1, 0x01F3, 'd'}, // DZ ligature
+	{0x01F4, 0x01F5, 'g'},
+	{0x01F7, 0x01F7, 'w'}, // wynn
+	{0x01F8, 0x01F9, 'n'},
+	{0x01FA, 0x01FD, 'a'}, // .. AE with acute
+	{0x01FE, 0x01FF, 'o'}, // O stroke with acute
+	{0x0200, 0x0203, 'a'},
+	{0x0204, 0x0207, 'e'},
+	{0x0208, 0x020B, 'i'},
+	{0x020C, 0x020F, 'o'},
+	{0x0210, 0x0213, 'r'},
+	{0x0214, 0x0217, 'u'},
+	{0x0218, 0x0219, 's'}, // S with comma below
+	{0x021A, 0x021B, 't'}, // T with comma below
+	{0x021E, 0x021F, 'h'},
+	{0x0220, 0x0220, 'n'},
+	{0x0221, 0x0221, 'd'},
+	{0x0226, 0x0227, 'a'},
+	{0x0228, 0x0229, 'e'},
+	{0x022A, 0x0231, 'o'},
+	{0x0232, 0x0233, 'y'},
+	{0x0234, 0x0234, 'l'},
+	{0x0235, 0x0235, 'n'},
+	{0x0236, 0x0236, 't'},
+	{0x0237, 0x0237, 'j'}, // dotless j
+	{0x023A, 0x023A, 'a'},
+	{0x023B, 0x023C, 'c'}, // C with stroke
+	{0x023D, 0x023D, 'l'},
+	{0x023E, 0x023E, 't'},
+	{0x023F, 0x023F, 's'},
+	{0x0240, 0x0240, 'z'},
+	{0x0243, 0x0243, 'b'}, // B with stroke
+	{0x0244, 0x0244, 'u'},
+	{0x0245, 0x0245, 'v'}, // turned V
+	{0x0246, 0x0247, 'e'}, // E with stroke
+	{0x0248, 0x0249, 'j'},
+	{0x024A, 0x024B, 'q'},
+	{0x024C, 0x024D, 'r'},
+	{0x024E, 0x024F, 'y'},
+
+	// Latin Extended Additional, U+1E00-U+1EFF. The runs from U+1EA0 on are the
+	// Vietnamese letters: a base letter, a tone mark and a vowel mark together.
+	{0x1E00, 0x1E01, 'a'},
+	{0x1E02, 0x1E07, 'b'},
+	{0x1E08, 0x1E09, 'c'},
+	{0x1E0A, 0x1E13, 'd'},
+	{0x1E14, 0x1E1D, 'e'},
+	{0x1E1E, 0x1E1F, 'f'},
+	{0x1E20, 0x1E21, 'g'},
+	{0x1E22, 0x1E2B, 'h'},
+	{0x1E2C, 0x1E2F, 'i'},
+	{0x1E30, 0x1E35, 'k'},
+	{0x1E36, 0x1E3D, 'l'},
+	{0x1E3E, 0x1E43, 'm'},
+	{0x1E44, 0x1E4B, 'n'},
+	{0x1E4C, 0x1E53, 'o'},
+	{0x1E54, 0x1E57, 'p'},
+	{0x1E58, 0x1E5F, 'r'},
+	{0x1E60, 0x1E69, 's'},
+	{0x1E6A, 0x1E71, 't'},
+	{0x1E72, 0x1E7B, 'u'},
+	{0x1E7C, 0x1E7F, 'v'},
+	{0x1E80, 0x1E89, 'w'},
+	{0x1E8A, 0x1E8D, 'x'},
+	{0x1E8E, 0x1E8F, 'y'},
+	{0x1E90, 0x1E95, 'z'},
+	{0x1E96, 0x1E96, 'h'},
+	{0x1E97, 0x1E97, 't'},
+	{0x1E98, 0x1E98, 'w'},
+	{0x1E99, 0x1E99, 'y'},
+	{0x1E9A, 0x1E9A, 'a'},
+	{0x1E9B, 0x1E9E, 's'}, // long s with dot or stroke, sharp S
+	{0x1E9F, 0x1E9F, 'd'}, // delta
+	{0x1EA0, 0x1EB7, 'a'},
+	{0x1EB8, 0x1EC7, 'e'},
+	{0x1EC8, 0x1ECB, 'i'},
+	{0x1ECC, 0x1EE3, 'o'},
+	{0x1EE4, 0x1EF1, 'u'},
+	{0x1EF2, 0x1EF9, 'y'},
+	{0x1EFA, 0x1EFB, 'l'}, // middle-Welsh LL
+	{0x1EFE, 0x1EFF, 'y'}, // Y with loop; U+1EFC/1EFD is middle-Welsh V
+};
+
 static uint32_t folded_letter(uint32_t cp) {
 	if (cp >= 'A' && cp <= 'Z') {
 		return cp + ('a' - 'A');
 	}
-
-	// Latin-1 Supplement.
-	if (cp >= 0x00C0 && cp <= 0x00C5) {
-		return 'a';
+	for (size_t i = 0; i < sizeof(latin_folds) / sizeof(latin_folds[0]); i++) {
+		if (cp >= latin_folds[i].first && cp <= latin_folds[i].last) {
+			return (uint32_t)latin_folds[i].base;
+		}
 	}
-	if (cp == 0x00C6 || cp == 0x00E6) {
-		return 'a'; // ae
-	}
-	if (cp == 0x00C7 || cp == 0x00E7) {
-		return 'c';
-	}
-	if (cp >= 0x00C8 && cp <= 0x00CB) {
-		return 'e';
-	}
-	if (cp >= 0x00E8 && cp <= 0x00EB) {
-		return 'e';
-	}
-	if (cp >= 0x00CC && cp <= 0x00CF) {
-		return 'i';
-	}
-	if (cp >= 0x00EC && cp <= 0x00EF) {
-		return 'i';
-	}
-	if (cp == 0x00D0 || cp == 0x00F0) {
-		return 'd';
-	}
-	if (cp == 0x00D1 || cp == 0x00F1) {
-		return 'n';
-	}
-	if ((cp >= 0x00D2 && cp <= 0x00D6) || cp == 0x00D8) {
-		return 'o';
-	}
-	if ((cp >= 0x00F2 && cp <= 0x00F6) || cp == 0x00F8) {
-		return 'o';
-	}
-	if (cp >= 0x00D9 && cp <= 0x00DC) {
-		return 'u';
-	}
-	if (cp >= 0x00F9 && cp <= 0x00FC) {
-		return 'u';
-	}
-	if (cp == 0x00DD || cp == 0x00FD || cp == 0x00FF) {
-		return 'y';
-	}
-	if (cp == 0x00DF) {
-		return 's';
-	}
-	if (cp >= 0x00E0 && cp <= 0x00E5) {
-		return 'a';
-	}
-
-	// Latin Extended-A, for the caron, acute, ogonek and stroke letters a
-	// language name is likely to use.
-	switch (cp) {
-	case 0x0104:
-	case 0x0105:
-		return 'a';
-	case 0x0106:
-	case 0x0107:
-	case 0x010C:
-	case 0x010D:
-		return 'c';
-	case 0x0118:
-	case 0x0119:
-	case 0x011A:
-	case 0x011B:
-		return 'e';
-	case 0x0141:
-	case 0x0142:
-		return 'l';
-	case 0x0143:
-	case 0x0144:
-	case 0x0147:
-	case 0x0148:
-		return 'n';
-	case 0x0154:
-	case 0x0155:
-	case 0x0158:
-	case 0x0159:
-		return 'r';
-	case 0x015A:
-	case 0x015B:
-	case 0x0160:
-	case 0x0161:
-		return 's';
-	case 0x0162:
-	case 0x0163:
-	case 0x0164:
-	case 0x0165:
-		return 't';
-	case 0x016E:
-	case 0x016F:
-	case 0x0170:
-	case 0x0171:
-		return 'u';
-	case 0x0179:
-	case 0x017A:
-	case 0x017B:
-	case 0x017C:
-	case 0x017D:
-	case 0x017E:
-		return 'z';
-	default:
-		return cp;
-	}
+	return cp;
 }
 
 static int name_order(const char *a, const char *b) {
