@@ -67,6 +67,7 @@ static const char *interface_language_code(void) {
 		{"Nederlands", "nl"},
 		{"Polski", "pl"},
 		{"Russian", "ru"},
+		{"Ukrainian", "uk"},
 		{"Chinese", "zh,zh-cn"},
 		{"Portugu\xC3\xAAs BR", "pt,pt-br"},
 		{"\xC4\x8C"
