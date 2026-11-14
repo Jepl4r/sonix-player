@@ -103,6 +103,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Radio** - thousands of stations by country, language or genre, plus search, favourites and recently played. MP3, AAC and FLAC stations.
   > **My stations** - write your own list in a `radio.txt` file in the root of the card, one station per line: `name, address`.
 - **Last.fm** - scrobbles what you listen to. Without Wi-Fi the plays are kept and sent the next time the player connects.
+- **Navidrome and Subsonic servers** - your own server: Navidrome, Airsonic, Gonic or any other that speaks the Subsonic API. Sign in with the address, the user and the password, then browse artists, albums and songs. A song is fetched to the card while it plays, so a track already heard starts at once. HTTPS needs a CA bundle at `.local/cacert.pem` on the card, or `[network] ca_bundle`.
 
 ## Podcasts
 
