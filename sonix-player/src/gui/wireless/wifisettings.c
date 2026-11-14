@@ -938,8 +938,7 @@ static void build_manual_page(gui_config_t *cfg) {
 
 	// An empty passphrase is an open network, which is what the connect already
 	// does with an empty one: the page needs no switch of its own.
-	manual_keyboard = keyboard_create(manual_screen, cfg->screen_width, keyboard_h, manual_ssid_field, NULL, "ok",
-									  manual_accept_cb, NULL);
+	manual_keyboard = keyboard_create(manual_screen, cfg->screen_width, keyboard_h, manual_ssid_field, NULL, "ok", manual_accept_cb, NULL);
 
 	switcher_attach_back_gesture(manual_screen);
 }
@@ -1026,8 +1025,7 @@ void wifisettings_init(gui_config_t *cfg) {
 	// about the list goes furthest from the thumb.
 	lv_obj_t *manual_btn = corner_button(wifisettings_screen, cfg, &icon_plus, NULL);
 	lv_obj_add_event_cb(manual_btn, manual_open_cb, LV_EVENT_CLICKED, NULL);
-	lv_obj_align(scan_btn, LV_ALIGN_TOP_RIGHT, -(int)cfg->padding - CORNER_BTN_SIZE - 12,
-				 cfg->padding + cfg->top_bar_height);
+	lv_obj_align(scan_btn, LV_ALIGN_TOP_RIGHT, -(int)cfg->padding - CORNER_BTN_SIZE - 12, cfg->padding + cfg->top_bar_height);
 
 	build_password_page(cfg);
 	build_manual_page(cfg);

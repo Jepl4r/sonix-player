@@ -433,8 +433,7 @@ static void build_manual_panel(gui_config_t *cfg) {
 	lv_obj_set_width(title, cfg->screen_width - 2 * cfg->padding - HEADER_BTN - 14);
 	lv_obj_add_style(title, &theme_style_text, 0);
 	lv_obj_set_style_text_font(title, &font_ui_32, 0);
-	lv_obj_align(title, LV_ALIGN_TOP_LEFT, cfg->padding + HEADER_BTN + 14,
-				 cfg->padding + (HEADER_BTN - lv_font_get_line_height(&font_ui_32)) / 2);
+	lv_obj_align(title, LV_ALIGN_TOP_LEFT, cfg->padding + HEADER_BTN + 14, cfg->padding + (HEADER_BTN - lv_font_get_line_height(&font_ui_32)) / 2);
 
 	int top = cfg->padding + HEADER_BTN + cfg->padding;
 
@@ -485,8 +484,7 @@ static void build_manual_panel(gui_config_t *cfg) {
 	keyboard_style_password(manual_pw_field, 0);
 	lv_obj_add_event_cb(manual_pw_field, manual_field_tapped_cb, LV_EVENT_CLICKED, NULL);
 
-	manual_keyboard = keyboard_create(manual_panel, cfg->screen_width, PASSWORD_KEYBOARD_H, manual_ssid_field, NULL, "ok",
-									  manual_accept_cb, NULL);
+	manual_keyboard = keyboard_create(manual_panel, cfg->screen_width, PASSWORD_KEYBOARD_H, manual_ssid_field, NULL, "ok", manual_accept_cb, NULL);
 }
 
 void setupwifi_init(gui_config_t *cfg) {

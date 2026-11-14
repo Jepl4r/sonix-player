@@ -1019,8 +1019,7 @@ static void do_connect(const char *ssid, const char *psk, bool hidden) {
 
 	// The length is worth having in the log next to the name: a name that came
 	// out short is the whole story, and quotes alone do not show it.
-	printf("wifi: joining \"%s\" (%d characters, %s%s)\n", ssid, (int)strlen(ssid),
-		   has_psk ? "with a passphrase" : "open", hidden ? ", hidden" : "");
+	printf("wifi: joining \"%s\" (%d characters, %s%s)\n", ssid, (int)strlen(ssid), has_psk ? "with a passphrase" : "open", hidden ? ", hidden" : "");
 
 	// wpa_cli first, sys_server second, which is the other way round from every
 	// other request in this file -- and deliberately.
