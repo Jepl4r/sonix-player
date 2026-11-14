@@ -24,7 +24,7 @@ void streaming_init(gui_config_t *cfg) {
 		{"qobuz", &icon_menu_qobuz, &qobuz_screen, NULL},
 		{"radio", &icon_menu_radio, &radiopage_screen, NULL},
 		{"podcasts", &icon_menu_podcast, &podcast_screen, NULL},
-		{"subsonic", &icon_menu_navidrome, &subsonic_screen, NULL},
+		{"subsonic", &icon_menu_streaming, &subsonic_screen, NULL},
 	};
 
 	// Two columns and three rows of tile, exactly like Music and Wireless, so a
