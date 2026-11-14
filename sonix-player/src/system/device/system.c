@@ -474,6 +474,18 @@ static const char *pick_sd_device(const storage_config_t *storage_cfg) {
 static const char *pick_sd_root(const storage_config_t *storage_cfg) {
 	size_t count = sizeof(SD_ROOT_CANDIDATES) / sizeof(SD_ROOT_CANDIDATES[0]);
 
+#ifdef HOST_BUILD
+	// The simulator has no card slot and no /mnt to mount into, so the folder
+	// it was told to use stands in for the card, exactly as it does for the
+	// file browser (host_card_root in main.c). Without this the player picks
+	// /mnt/sd_0 because it is only a name, and everything that writes to the
+	// card -- a screenshot as much as a playlist -- lands nowhere.
+	const char *forced = getenv("SONIX_SD_ROOT");
+	if (forced && forced[0]) {
+		return forced;
+	}
+#endif
+
 	if (storage_cfg->mount_point && is_mounted(storage_cfg->mount_point)) {
 		return storage_cfg->mount_point;
 	}

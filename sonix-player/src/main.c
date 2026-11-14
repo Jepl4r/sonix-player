@@ -20,6 +20,9 @@
 #include "src/system/audio/waveform.h"
 #include "src/gui/fonts/fonts.h"
 #include "src/gui/shell/gui.h"
+#include "src/gui/shell/switcher.h"
+#include "src/gui/streaming/streaming.h"
+#include "src/gui/streaming/subsonicpage.h"
 #include "src/gui/nowplaying/player.h"
 #include "src/gui/settings/powersettings.h"
 #include "src/gui/settings/settings.h"
@@ -84,6 +87,17 @@ static void host_shot_poll_cb(lv_timer_t *timer) {
 	if (access("/tmp/sonix/shot", F_OK) == 0) {
 		remove("/tmp/sonix/shot");
 		screenshot_request();
+	}
+}
+
+// Local debug: open a page directly, so a headless run can photograph it.
+static void host_open_page_cb(lv_timer_t *timer) {
+	(void)timer;
+	const char *page = getenv("SONIX_HOST_PAGE");
+	if (page && strcmp(page, "streaming") == 0) {
+		switch_screen(streaming_screen);
+	} else if (page && strcmp(page, "subsonic") == 0) {
+		switch_screen(subsonic_screen);
 	}
 }
 #endif
@@ -2290,6 +2304,10 @@ int main(int argc, char **argv) {
 
 #ifdef HOST_BUILD
 	lv_timer_create(host_shot_poll_cb, 200, NULL); // see host_shot_poll_cb
+	if (getenv("SONIX_HOST_PAGE")) {
+		lv_timer_t *t = lv_timer_create(host_open_page_cb, 1500, NULL);
+		lv_timer_set_repeat_count(t, 1);
+	}
 #endif
 
 	// The media player bluez shows to the headphones. After gui_init, because
