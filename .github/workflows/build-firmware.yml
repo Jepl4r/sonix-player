@@ -1,0 +1,79 @@
+name: Build firmware images
+
+on:
+  workflow_dispatch:
+    inputs:
+      branch:
+        description: 'Branch to build'
+        required: true
+        default: 'main'
+        type: string
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+      - name: Install host dependencies
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y \
+            build-essential git pkg-config \
+            libsdl2-dev libfreetype6-dev \
+            libopusfile-dev libwavpack-dev libasound2-dev \
+            p7zip-full squashfs-tools genisoimage \
+            wget texinfo bison flex \
+            libgmp-dev libmpfr-dev libmpc-dev
+
+      - name: Check out code
+        uses: actions/checkout@v4
+        with:
+          ref: ${{ github.event.inputs.branch }}
+          submodules: recursive
+
+      - name: Cache Rockbox toolchain
+        uses: actions/cache@v4
+        with:
+          path: sonix-player/rockbox-toolchain
+          key: rockbox-toolchain-${{ runner.os }}-${{ hashFiles('sonix-player/rockboxdev/rockboxdev.sh') }}
+
+      - name: Cache target libraries
+        uses: actions/cache@v4
+        with:
+          path: |
+            sonix-player/freetype-target
+            sonix-player/audio-target
+          key: target-libs-${{ runner.os }}-${{ hashFiles('sonix-player/Makefile') }}
+
+      - name: Build target binary
+        working-directory: sonix-player
+        run: |
+          export PATH="$(pwd)/../sonix-packer:$PATH"
+          make target -j$(nproc)
+
+      - name: Fetch stock firmware for R1
+        working-directory: sonix-packer
+        run: |
+          curl -L --fail -o r1_original.upt \
+            "https://oss.hiby.com/HiBy%20R1/en-us/2.0/17918591029925z1p5n0e9d5j4r1m4n6.upt"
+
+      - name: Fetch stock firmware for R3 Pro II
+        working-directory: sonix-packer
+        run: |
+          curl -L --fail -o r3proii_original.upt \
+            "https://oss.hiby.com/HiBy%20R3PROII/en-us/1.4/17697548205466c8s6a6n4y5c9k3m7g7.upt"
+
+      - name: Build firmware images
+        working-directory: sonix-packer
+        run: |
+          cp ../sonix-player/sonix_player .
+          ./sonix_firmware_packer.sh
+          ls -lh *.upt
+          md5sum *.upt
+
+      - name: Upload firmware images
+        uses: actions/upload-artifact@v4
+        with:
+          name: sonix-firmware-${{ github.event.inputs.branch }}
+          path: sonix-packer/*.upt
+          if-no-files-found: error
