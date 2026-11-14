@@ -125,7 +125,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Library, Series, Authors and Continue**, each sortable. Continue shows the books you started, with the finished ones one tap away.
 - **A book can be one file or a whole folder** - an `.m4b`, an `.mp3` or any other file with chapters, or a folder of files (with `CD 1`, `Disc 2` subfolders too).
 - **Chapters** are read from the file, and the position is remembered for every book.
-- **Speed** from 0.5x to 2.0x without changing the pitch.
+- **Speed** from 0.25x to 4.00x in 0.05 steps, without changing the pitch.
 - **Skip buttons** - choose how far back and forward they jump: 10, 30 or 60 seconds.
 - **Rewind after pause** by a few seconds, so you don't lose the thread.
 - **Stop at the end of the chapter**.

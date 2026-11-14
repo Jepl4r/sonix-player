@@ -325,7 +325,7 @@ static lv_obj_t *make_card(lv_obj_t *parent, const char *name, lv_obj_t **value_
 // Every stepped slider this file has built, so a theme change can repaint
 // their knob rings: the ring colour depends on the theme, and these pages are
 // built once at startup.
-#define SETTINGSROW_MAX_SLIDERS 16
+#define SETTINGSROW_MAX_SLIDERS 24
 static lv_obj_t *built_sliders[SETTINGSROW_MAX_SLIDERS];
 static int built_slider_count;
 

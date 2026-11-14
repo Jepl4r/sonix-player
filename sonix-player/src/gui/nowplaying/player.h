@@ -33,6 +33,12 @@ void player_lyrics_reload(const char *path);
 // where the screen shows nothing -- one track, a book, DLNA, a stream.
 bool player_queue_position(int *position, int *count);
 
+// Playback speed of what is playing: a podcast episode keeps its own setting,
+// apart from the audiobooks'. Stored in thousandths; 1000 is normal.
+bool player_speed_is_podcast(void);
+int player_speed_permille(void);
+void player_speed_set_permille(int permille);
+
 // ---------------------------------------------------------------------------
 // The three arrangements of the now-playing page
 //
