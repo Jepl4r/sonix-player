@@ -123,7 +123,12 @@ int wifi_get_networks(wifi_network_t *out, int max);
 
 // Joins a network. `psk` is ignored (and may be NULL) for an open one. A
 // network wpa_supplicant already knows is re-selected rather than added again.
-void wifi_connect(const char *ssid, const char *psk);
+//
+// `hidden` is for an SSID that does not answer scans: wpa_supplicant is then
+// told to probe for it by name (scan_ssid 1). Only the direct wpa_cli route
+// can carry that; the sys_server fallback cannot, and the log says so rather
+// than leaving the page waiting for an association that will not come.
+void wifi_connect(const char *ssid, const char *psk, bool hidden);
 
 // Leaves the current network without forgetting it.
 void wifi_disconnect(void);

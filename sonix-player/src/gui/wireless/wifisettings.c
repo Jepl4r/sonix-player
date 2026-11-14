@@ -216,7 +216,7 @@ static void details_action(void *user) {
 
 static void connect_action(void *user) {
 	(void)user;
-	wifi_connect(menu_ssid, NULL);
+	wifi_connect(menu_ssid, NULL, false);
 }
 
 static void disconnect_action(void *user) {
@@ -232,7 +232,7 @@ static void forget_action(void *user) {
 static void password_accept_cb(lv_event_t *e) {
 	(void)e;
 	const char *psk = lv_textarea_get_text(password_field);
-	wifi_connect(pending_ssid, psk);
+	wifi_connect(pending_ssid, psk, false);
 	lv_textarea_set_text(password_field, "");
 	switch_screen(wifisettings_screen);
 }
@@ -301,7 +301,7 @@ static void row_clicked_cb(lv_event_t *e) {
 		return;
 	}
 	if (saved || !secured) {
-		wifi_connect(ssid, NULL);
+		wifi_connect(ssid, NULL, false);
 		return;
 	}
 	ask_for_password(ssid);

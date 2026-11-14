@@ -93,7 +93,7 @@ static void pw_back_cb(lv_event_t *e) {
 }
 
 static void join(const char *ssid, const char *psk) {
-	wifi_connect(ssid, psk);
+	wifi_connect(ssid, psk, false);
 	joining = true;
 	char text[160];
 	snprintf(text, sizeof(text), tr("setupwifi_connecting"), ssid);
