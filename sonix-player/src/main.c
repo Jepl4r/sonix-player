@@ -42,6 +42,7 @@
 #include "src/system/audio/headset.h"
 #include "src/system/input/keymap.h"
 #include "src/system/streaming/qobuz.h"
+#include "src/system/streaming/subsonic.h"
 #include "src/system/streaming/tidal.h"
 #include "src/system/remote/dlna.h"
 #include "src/system/gearboy/gbdb.h"
@@ -49,6 +50,7 @@
 #include "src/system/remote/sonixlink.h"
 #include "src/system/core/panel.h"
 #include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/subsoniccache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastsubs.h"
 #include "src/system/streaming/podcaststate.h"
@@ -1959,6 +1961,7 @@ int main(int argc, char **argv) {
 	streamkeys_init();
 	qobuz_init();
 	tidal_init();
+	subsonic_init();
 	lastfm_init();
 
 	lv_init();
@@ -2174,6 +2177,7 @@ int main(int argc, char **argv) {
 	// cache and the code that cleans it must agree on one root.
 	const char *card_root = storage_sd_root();
 	qobuzcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
+	subsoniccache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	tidalcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastcache_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
 	podcastsubs_set_root(card_root && card_root[0] ? card_root : gui_cfg.sd_root_path);
