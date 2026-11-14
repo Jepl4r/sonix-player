@@ -29,10 +29,17 @@
 #include "src/system/library/cue.h"
 #include "src/system/library/folderorder.h"
 #include "src/system/playback/device_state.h"
+#include "src/system/streaming/subsonic.h"
+#include "src/system/streaming/subsoniccache.h"
+#include "src/system/device/system.h"
 #include "src/gui/shell/toast.h"
 #include "src/system/playback/playlist.h"
 #include "src/system/core/lang.h"
 #include "src/system/core/utils.h"
+
+// forward declarations for virtual (Navidrome/Subsonic) helpers, defined later
+static bool is_virtual_path(const char *path);
+static void virtual_path_ids(const char *path, char *artist, size_t asz, char *album, size_t bsz);
 
 // ---------------------------------------------------------------------------
 // A windowed list.
@@ -127,6 +134,9 @@ typedef struct {
 	uint32_t file_offset; // what gets appended to the folder path
 	folder_place_t place; // where a track sits on its record
 	uint8_t is_dir;
+	uint8_t is_virtual; // remote (Navidrome/Subsonic) entry, not on the card
+	char virtual_id[64]; // Subsonic id, valid when is_virtual
+	char virtual_suffix[8]; // file extension, valid when is_virtual and !is_dir
 } entry_t;
 
 typedef struct {
@@ -192,7 +202,8 @@ static bool listing_reserve(listing_t *list, size_t needed_entries, size_t neede
 
 // `file` may be NULL, which means "the same as the name" -- every entry that
 // is a real thing on the card.
-static bool listing_add(listing_t *list, const char *name, const char *file, bool is_dir) {
+static bool listing_add(listing_t *list, const char *name, const char *file, bool is_dir,
+                       bool is_virtual, const char *virtual_id, const char *virtual_suffix) {
 	size_t name_len = strlen(name) + 1;
 	size_t file_len = file ? strlen(file) + 1 : 0;
 
@@ -212,6 +223,17 @@ static bool listing_add(listing_t *list, const char *name, const char *file, boo
 	}
 
 	list->entries[list->count].is_dir = is_dir ? 1 : 0;
+	list->entries[list->count].is_virtual = is_virtual ? 1 : 0;
+	if (is_virtual && virtual_id) {
+		snprintf(list->entries[list->count].virtual_id, sizeof(list->entries[list->count].virtual_id), "%s", virtual_id);
+	} else {
+		list->entries[list->count].virtual_id[0] = '\0';
+	}
+	if (is_virtual && virtual_suffix) {
+		snprintf(list->entries[list->count].virtual_suffix, sizeof(list->entries[list->count].virtual_suffix), "%s", virtual_suffix);
+	} else {
+		list->entries[list->count].virtual_suffix[0] = '\0';
+	}
 	memset(&list->entries[list->count].place, 0, sizeof(list->entries[list->count].place));
 	list->count++;
 
@@ -337,7 +359,11 @@ static void row_update_playmark(row_t *row) {
 	bool playing = false;
 	if (row->index >= 0 && (size_t)row->index < shown.count && np_path[0]) {
 		char full[sizeof(current_path) + 256 + 1];
-		snprintf(full, sizeof(full), "%s/%s", current_path, entry_file((size_t)row->index));
+		if (shown.entries[row->index].is_virtual) {
+			snprintf(full, sizeof(full), "%s", entry_file((size_t)row->index));
+		} else {
+			snprintf(full, sizeof(full), "%s/%s", current_path, entry_file((size_t)row->index));
+		}
 		if (shown.entries[row->index].is_dir) {
 			// A folder carries the mark when the track is somewhere under it,
 			// at any depth: walking down to what is playing should not pass
@@ -483,8 +509,8 @@ static void thumbs_update(void) {
 
 		// Folders keep their folder icon: reading artwork for every album just
 		// to scroll past it is memory spent on a row that already says
-		// "folder".
-		if (shown.entries[row->index].is_dir) {
+		// "folder". Virtual (remote) rows never have local artwork either.
+		if (shown.entries[row->index].is_dir || shown.entries[row->index].is_virtual) {
 			row->thumb_settled = true;
 			continue;
 		}
@@ -746,6 +772,9 @@ static bool gather_add(gather_t *g, const char *path) {
 // Everything playable under `dir`, in the order the browser lists it: its
 // folders first, each walked in turn, then its own tracks.
 static bool gather_walk(gather_t *g, const char *dir, int depth) {
+	if (is_virtual_path(dir)) {
+		return true; // don't export remote tracks through the gather/send path
+	}
 	if (depth > GATHER_MAX_DEPTH) {
 		return true;
 	}
@@ -883,6 +912,64 @@ static void screen_unloaded_cb(lv_event_t *e) {
 	selection_stop();
 }
 
+// Plays a remote (Navidrome/Subsonic) track from the cache, fetching it first.
+// Mirrors subsonicpage's do_play: queue every song of the current list, fetch
+// the tapped one, then hand the queue to the device state.
+static void virtual_play(int index) {
+	subsoniccache_set_root(storage_sd_root());
+	if (!subsoniccache_ready()) {
+		fprintf(stderr, "browser: no storage card for virtual play\\n");
+		return;
+	}
+
+	// Build the queue from every (virtual, non-dir) row currently shown.
+	// Use dynamic arrays sized to shown.count.
+	int count = 0;
+	int start = -1;
+	// First pass: count
+	for (size_t i = 0; i < shown.count; i++) {
+		if (shown.entries[i].is_virtual && !shown.entries[i].is_dir) count++;
+	}
+	if (count == 0) return;
+
+	// Allocate queue
+	char (*queue)[512] = calloc((size_t)count, 512);
+	const char **ptrs = calloc((size_t)count, sizeof(char *));
+	if (!queue || !ptrs) { free(queue); free(ptrs); return; }
+
+	int qi = 0;
+	for (size_t i = 0; i < shown.count; i++) {
+		if (!(shown.entries[i].is_virtual && !shown.entries[i].is_dir)) continue;
+		char cache[512];
+		const char *suf = shown.entries[i].virtual_suffix[0] ? shown.entries[i].virtual_suffix : "bin";
+		subsoniccache_path(shown.entries[i].virtual_id, suf, cache, sizeof(cache));
+		snprintf(queue[qi], 512, "%s", cache);
+		ptrs[qi] = queue[qi];
+		if ((int)i == index) start = qi;
+		qi++;
+	}
+	if (start < 0) start = 0;
+
+	// Fetch the tapped song synchronously.
+	const char *suf = shown.entries[index].virtual_suffix[0] ? shown.entries[index].virtual_suffix : "bin";
+	if (!subsoniccache_has(shown.entries[index].virtual_id)) {
+		subsoniccache_set_network_wanted(true);
+		bool ok = subsoniccache_fetch(shown.entries[index].virtual_id, suf);
+		subsoniccache_set_network_wanted(false);
+		if (!ok) {
+			fprintf(stderr, "browser: fetch failed: %s\n", subsonic_last_error());
+			free(queue); free(ptrs);
+			return;
+		}
+	}
+
+	device_state_play_list(ptrs, count, start);
+	switch_screen(player_screen);
+
+	free(queue);
+	free(ptrs);
+}
+
 static void entry_clicked_cb(lv_event_t *e) {
 	if (player_sheet_drag_active() || switcher_back_drag_active()) {
 		return; // a swipe across the row, not a tap on it
@@ -900,7 +987,11 @@ static void entry_clicked_cb(lv_event_t *e) {
 	}
 
 	char full_path[sizeof(current_path) + 256 + 1];
-	snprintf(full_path, sizeof(full_path), "%s/%s", current_path, entry_file((size_t)index));
+	if (shown.entries[index].is_virtual) {
+		snprintf(full_path, sizeof(full_path), "%s", entry_file((size_t)index));
+	} else {
+		snprintf(full_path, sizeof(full_path), "%s/%s", current_path, entry_file((size_t)index));
+	}
 
 	if (shown.entries[index].is_dir) {
 		// Remember where this level was scrolled to for the way back up.
@@ -909,6 +1000,10 @@ static void entry_clicked_cb(lv_event_t *e) {
 		}
 		pending_scroll = -1;
 		browser_open_dir(full_path);
+	} else if (shown.entries[index].is_virtual) {
+		// Remote (Navidrome/Subsonic) track: fetch it to the cache, then play
+		// the whole album's queued cache paths, the way the subsonic page does.
+		virtual_play(index);
 	} else {
 		player_play_file(full_path);
 		switch_screen(player_screen);
@@ -989,9 +1084,13 @@ static void shuffle_button_cb(lv_event_t *e) {
 			continue;
 		}
 		if (seen++ == wanted) {
-			name = entry_file(i);
-			break;
+		if (shown.entries[i].is_virtual) {
+			virtual_play((int)i);
+			return;
 		}
+		name = entry_file(i);
+		break;
+	}
 	}
 	if (!name) {
 		return;
@@ -1000,7 +1099,11 @@ static void shuffle_button_cb(lv_event_t *e) {
 	playlist_set_mode(musicsettings_endless_shuffle() ? PLAYBACK_MODE_SHUFFLE_REPEAT : PLAYBACK_MODE_SHUFFLE);
 
 	char full_path[1024];
-	snprintf(full_path, sizeof(full_path), "%s/%s", current_path, name);
+	if (is_virtual_path(current_path)) {
+		snprintf(full_path, sizeof(full_path), "%s", name);
+	} else {
+		snprintf(full_path, sizeof(full_path), "%s/%s", current_path, name);
+	}
 	player_play_file(full_path);
 	switch_screen(player_screen);
 }
@@ -1016,9 +1119,40 @@ void browser_refresh(void) {
 // Whether the chevron/swipe would walk up a folder rather than leave the
 // page. The swipe-back drag asks, because "up a folder" has no ready-made
 // previous page to show underneath.
-bool browser_can_go_up(void) { return current_path[0] && strcmp(current_path, root_path) != 0; }
+bool browser_can_go_up(void) {
+	if (is_virtual_path(current_path)) {
+		// virtual root has no parent inside the scheme
+		char a[SUBSONIC_ID_MAX], b[SUBSONIC_ID_MAX];
+		virtual_path_ids(current_path, a, sizeof(a), b, sizeof(b));
+		return a[0] != '\0'; // artists level -> can go up to root? no; deeper -> up
+	}
+	return current_path[0] && strcmp(current_path, root_path) != 0;
+}
 
 bool browser_go_up(void) {
+	if (is_virtual_path(current_path)) {
+		char a[SUBSONIC_ID_MAX], b[SUBSONIC_ID_MAX];
+		virtual_path_ids(current_path, a, sizeof(a), b, sizeof(b));
+		if (b[0] != '\0') {
+			// songs -> albums
+			char parent[512];
+			snprintf(parent, sizeof(parent), "subsonic:/%s", a);
+			pending_scroll = scroll_stack_len > 0 ? scroll_stack[--scroll_stack_len] : -1;
+			browser_open_dir(parent);
+			return true;
+		}
+		if (a[0] != '\0') {
+			// albums -> artists (virtual root)
+			pending_scroll = scroll_stack_len > 0 ? scroll_stack[--scroll_stack_len] : -1;
+			browser_open_dir("subsonic:");
+			return true;
+		}
+		// at virtual root: leave to SD root
+		pending_scroll = scroll_stack_len > 0 ? scroll_stack[--scroll_stack_len] : -1;
+		browser_open_dir(root_path);
+		return true;
+	}
+
 	if (strcmp(current_path, root_path) == 0) {
 		return false; // already at root: the caller leaves the browser instead
 	}
@@ -1135,9 +1269,87 @@ static void listing_place_tracks(const char *path, listing_t *list) {
 // in it, as the browser lists them. `sheets` is a buffer for parsing its cue
 // sheets (NULL leaves them unsplit) and `claims` room for CUE_CLAIM_MAX names.
 // False when the folder cannot be opened. Off the UI thread.
+// ---------------------------------------------------------------------------
+// Virtual entries: the Navidrome/Subsonic catalog, shown inside the native
+// browser as a "Navidrome" folder. Paths use the "subsonic:" scheme:
+//   "subsonic:"            -> artists
+//   "subsonic:/<artist>"   -> albums of that artist
+//   "subsonic:/<a>/<album>"-> songs of that album
+// ---------------------------------------------------------------------------
+static bool is_virtual_path(const char *path) {
+	return path && strncmp(path, "subsonic", 8) == 0;
+}
+
+static void virtual_path_ids(const char *path, char *artist, size_t asz, char *album, size_t bsz) {
+	artist[0] = '\0';
+	album[0] = '\0';
+	if (!path) return;
+	const char *p = path + strlen("subsonic");
+	if (*p == ':') p++;
+	if (*p == '/') p++;
+	if (!*p) return;
+	// first segment = artist id
+	char buf[256];
+	snprintf(buf, sizeof(buf), "%s", p);
+	char *slash = strchr(buf, '/');
+	if (slash) { *slash = '\0'; snprintf(artist, asz, "%s", buf); snprintf(album, bsz, "%s", slash + 1); }
+	else { snprintf(artist, asz, "%s", buf); }
+}
+
+static bool list_virtual_directory(const char *path, listing_t *out) {
+	out->count = 0;
+	out->pool_used = 0;
+
+	if (!subsonic_configured()) return false;
+
+	subsoniccache_set_root(storage_sd_root());
+
+	char artist[SUBSONIC_ID_MAX] = {0};
+	char album[SUBSONIC_ID_MAX] = {0};
+	virtual_path_ids(path, artist, sizeof(artist), album, sizeof(album));
+
+	if (artist[0] == '\0') {
+		// artists
+		subsonic_artist_t arr[256];
+		int n = subsonic_get_artists(arr, 256);
+		for (int i = 0; i < n; i++) {
+			char child[512];
+			snprintf(child, sizeof(child), "subsonic:/%s", arr[i].id);
+			listing_add(out, arr[i].name, child, true, true, arr[i].id, "");
+		}
+		return true;
+	}
+	if (album[0] == '\0') {
+		// albums of artist
+		subsonic_album_t arr[256];
+		int n = subsonic_get_albums(artist, arr, 256);
+		for (int i = 0; i < n; i++) {
+			char child[512];
+			snprintf(child, sizeof(child), "subsonic:/%s/%s", artist, arr[i].id);
+			listing_add(out, arr[i].name, child, true, true, arr[i].id, "");
+		}
+		return true;
+	}
+	// songs of album
+	subsonic_song_t arr[512];
+	int n = subsonic_get_songs(album, arr, 512);
+	for (int i = 0; i < n; i++) {
+		char cache[512];
+		subsoniccache_path(arr[i].id, arr[i].suffix[0] ? arr[i].suffix : "bin", cache, sizeof(cache));
+		char suf[8];
+		snprintf(suf, sizeof(suf), "%s", arr[i].suffix[0] ? arr[i].suffix : "bin");
+		listing_add(out, arr[i].title, cache, false, true, arr[i].id, suf);
+	}
+	return true;
+}
+
 static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets, char (*claims)[512]) {
 	out->count = 0;
 	out->pool_used = 0;
+
+	if (is_virtual_path(path)) {
+		return list_virtual_directory(path, out);
+	}
 
 	DIR *dir = opendir(path);
 	if (!dir) {
@@ -1183,7 +1395,7 @@ static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets
 					snprintf(label, sizeof(label), "%d", sheets->tracks[t].number);
 				}
 
-				if (out->count >= MAX_ENTRIES || !listing_add(out, label, file, false)) {
+				if (out->count >= MAX_ENTRIES || !listing_add(out, label, file, false, false, NULL, NULL)) {
 					break;
 				}
 			}
@@ -1253,7 +1465,7 @@ static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets
 			continue;
 		}
 
-		if (!listing_add(out, de->d_name, NULL, is_dir)) {
+		if (!listing_add(out, de->d_name, NULL, is_dir, false, NULL, NULL)) {
 			fprintf(stderr, "browser: out of memory at %zu entries\n", out->count);
 			break;
 		}
@@ -1277,6 +1489,14 @@ static bool list_directory(const char *path, listing_t *out, cue_sheet_t *sheets
 
 	sort_pool = out->pool;
 	qsort(out->entries, out->count, sizeof(*out->entries), entry_cmp);
+
+	// Virtual entry: when at the SD root and a Subsonic/Navidrome server is
+	// configured, offer the remote catalog as a folder. It is not on the card,
+	// so it sorts after the real folders via is_dir (it is a dir) and the name.
+	if (root_path[0] && strcmp(path, root_path) == 0 && subsonic_configured()) {
+		listing_add(out, "Navidrome", "subsonic:", true, true, "", "");
+	}
+
 	return true;
 }
 
