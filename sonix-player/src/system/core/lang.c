@@ -638,9 +638,17 @@ static int name_order(const char *a, const char *b) {
 			return ca < cb ? -1 : 1;
 		}
 		if (!ca) {
-			return 0;
+			break;
 		}
 	}
+	// Two names can fold to the same key: "Espanol" and its tilde spelling are
+	// both "espanol" letter by letter. Left at that they would come out in
+	// whatever order readdir() handed them over -- the order of the folder, not
+	// of anything a reader can see, and different after a copy of the files. The
+	// bytes of the file names settle it, so the list is the same every time the
+	// page is opened.
+	int by_bytes = strcmp(a, b);
+	return (by_bytes > 0) - (by_bytes < 0);
 }
 
 int lang_list(const char **names, int max) {
