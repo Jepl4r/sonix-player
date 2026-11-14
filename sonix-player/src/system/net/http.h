@@ -170,6 +170,17 @@ typedef struct {
 // fails, or the status is not 200.
 bool http_stream_open(http_stream_t *st, const char *url, int timeout_secs);
 
+// The same request as a POST with `body` already form-encoded, and no ICY
+// metadata (a file server has none). Subsonic puts its credentials in the
+// body so they never reach an access log; a song body is far too big for
+// http_get(), which keeps the whole response in memory.
+//
+// A redirect is followed with the body dropped, and the request becomes a GET
+// -- what a browser does, and what a server that answers 301 expects. If the
+// credentials lived in that body the redirected request fails on its own; the
+// error says so rather than looping.
+bool http_stream_open_post(http_stream_t *st, const char *url, const char *body, int timeout_secs);
+
 // Reads up to `len` bytes of *audio* into buf: any ICY metadata blocks in the
 // way are consumed and parsed out, never handed to the caller. Returns the
 // number of bytes read, 0 at end of stream, -1 on error.

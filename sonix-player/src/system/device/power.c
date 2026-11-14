@@ -25,6 +25,7 @@
 #include "src/system/remote/dlna.h"
 #include "src/system/remote/sonixlink.h"
 #include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/subsoniccache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/podcastdl.h"
 #include "src/system/streaming/tidalcache.h"
@@ -625,8 +626,8 @@ static bool streaming_playback_active(void) {
 
 // Whether the network is the point rather than an idle drain: an AirPlay
 // receiver waiting to be found, a DLNA server, a browser halfway through an
-// upload, a station streaming, a Qobuz/Tidal/podcast fetch or a Last.fm request
-// in flight.
+// upload, a station streaming, a Qobuz/Tidal/podcast/Subsonic fetch or a
+// Last.fm request in flight.
 //
 // The *_network_wanted() halves matter as much as the downloading ones: between
 // the end of one track and the first bytes of the next there is an HTTPS request
@@ -641,6 +642,7 @@ static bool wifi_in_use(void) {
 		   wifitransfer_get_enabled() || qobuzcache_downloading_id() > 0 ||
 		   qobuzcache_network_wanted() || tidalcache_downloading_id() > 0 || tidalcache_network_wanted() ||
 		   podcastcache_downloading_id() > 0 || podcastcache_network_wanted() || podcastdl_busy() ||
+		   subsoniccache_fetching() || subsoniccache_network_wanted() ||
 		   lastfm_network_wanted() || ota_busy();
 }
 
@@ -698,6 +700,7 @@ static bool player_is_busy(bool playing, uint32_t input_idle) {
 		   audiobookdb_scan_running() || wifitransfer_running() || dlna_running() || airplay_running() ||
 		   sonixlink_is_connected() || // a phone driving the player, not a switch left on
 		   qobuzcache_downloading_id() > 0 || tidalcache_downloading_id() > 0 || podcastcache_downloading_id() > 0 ||
+		   subsoniccache_fetching() ||
 		   ota_busy(); // a firmware update being fetched
 }
 

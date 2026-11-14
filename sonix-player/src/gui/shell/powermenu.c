@@ -18,6 +18,7 @@
 #include "src/system/device/power.h"
 #include "src/system/device/system.h"
 #include "src/system/streaming/qobuzcache.h"
+#include "src/system/streaming/subsoniccache.h"
 #include "src/system/streaming/podcastcache.h"
 #include "src/system/streaming/tidalcache.h"
 #include "src/system/remote/dlna.h"
@@ -107,6 +108,7 @@ static void do_reboot(void) {
 	clock_shutdown();
 	radio_store_close();
 	qobuzcache_clear_on_exit();
+	subsoniccache_clear_on_exit();
 	tidalcache_clear_on_exit();
 	podcastcache_clear_on_exit();
 	dlna_clear_on_exit();
