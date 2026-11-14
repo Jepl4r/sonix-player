@@ -408,6 +408,160 @@ const char *lang_current(void) { return current; }
 
 static bool read_declared_name(const char *name, char *out, size_t size);
 
+// The order the list is shown in. The key is the file name, not the name the
+// file declares: a declared name stays in its own script (CJK, Cyrillic) and
+// has no place in an A-Z list, while the file names are the English names the
+// set is organised by. Latin accents fold to the letter under them, so the
+// Czech name with a caron sorts with C and the Spanish one with a tilde with
+// E; anything outside Latin keeps code-point order and follows the Latin names.
+static uint32_t utf8_next(const char **p) {
+	const unsigned char *s = (const unsigned char *)*p;
+	uint32_t cp;
+
+	if (s[0] < 0x80) {
+		cp = s[0];
+		*p += 1;
+	} else if ((s[0] & 0xE0) == 0xC0 && s[1]) {
+		cp = ((uint32_t)(s[0] & 0x1F) << 6) | (s[1] & 0x3F);
+		*p += 2;
+	} else if ((s[0] & 0xF0) == 0xE0 && s[1] && s[2]) {
+		cp = ((uint32_t)(s[0] & 0x0F) << 12) | ((uint32_t)(s[1] & 0x3F) << 6) | (s[2] & 0x3F);
+		*p += 3;
+	} else if ((s[0] & 0xF8) == 0xF0 && s[1] && s[2] && s[3]) {
+		cp = ((uint32_t)(s[0] & 0x07) << 18) | ((uint32_t)(s[1] & 0x3F) << 12) | ((uint32_t)(s[2] & 0x3F) << 6) | (s[3] & 0x3F);
+		*p += 4;
+	} else {
+		cp = s[0];
+		*p += 1;
+	}
+	return cp;
+}
+
+static uint32_t folded_letter(uint32_t cp) {
+	if (cp >= 'A' && cp <= 'Z') {
+		return cp + ('a' - 'A');
+	}
+
+	// Latin-1 Supplement.
+	if (cp >= 0x00C0 && cp <= 0x00C5) {
+		return 'a';
+	}
+	if (cp == 0x00C6 || cp == 0x00E6) {
+		return 'a'; // ae
+	}
+	if (cp == 0x00C7 || cp == 0x00E7) {
+		return 'c';
+	}
+	if (cp >= 0x00C8 && cp <= 0x00CB) {
+		return 'e';
+	}
+	if (cp >= 0x00E8 && cp <= 0x00EB) {
+		return 'e';
+	}
+	if (cp >= 0x00CC && cp <= 0x00CF) {
+		return 'i';
+	}
+	if (cp >= 0x00EC && cp <= 0x00EF) {
+		return 'i';
+	}
+	if (cp == 0x00D0 || cp == 0x00F0) {
+		return 'd';
+	}
+	if (cp == 0x00D1 || cp == 0x00F1) {
+		return 'n';
+	}
+	if ((cp >= 0x00D2 && cp <= 0x00D6) || cp == 0x00D8) {
+		return 'o';
+	}
+	if ((cp >= 0x00F2 && cp <= 0x00F6) || cp == 0x00F8) {
+		return 'o';
+	}
+	if (cp >= 0x00D9 && cp <= 0x00DC) {
+		return 'u';
+	}
+	if (cp >= 0x00F9 && cp <= 0x00FC) {
+		return 'u';
+	}
+	if (cp == 0x00DD || cp == 0x00FD || cp == 0x00FF) {
+		return 'y';
+	}
+	if (cp == 0x00DF) {
+		return 's';
+	}
+	if (cp >= 0x00E0 && cp <= 0x00E5) {
+		return 'a';
+	}
+
+	// Latin Extended-A, for the caron, acute, ogonek and stroke letters a
+	// language name is likely to use.
+	switch (cp) {
+	case 0x0104:
+	case 0x0105:
+		return 'a';
+	case 0x0106:
+	case 0x0107:
+	case 0x010C:
+	case 0x010D:
+		return 'c';
+	case 0x0118:
+	case 0x0119:
+	case 0x011A:
+	case 0x011B:
+		return 'e';
+	case 0x0141:
+	case 0x0142:
+		return 'l';
+	case 0x0143:
+	case 0x0144:
+	case 0x0147:
+	case 0x0148:
+		return 'n';
+	case 0x0154:
+	case 0x0155:
+	case 0x0158:
+	case 0x0159:
+		return 'r';
+	case 0x015A:
+	case 0x015B:
+	case 0x0160:
+	case 0x0161:
+		return 's';
+	case 0x0162:
+	case 0x0163:
+	case 0x0164:
+	case 0x0165:
+		return 't';
+	case 0x016E:
+	case 0x016F:
+	case 0x0170:
+	case 0x0171:
+		return 'u';
+	case 0x0179:
+	case 0x017A:
+	case 0x017B:
+	case 0x017C:
+	case 0x017D:
+	case 0x017E:
+		return 'z';
+	default:
+		return cp;
+	}
+}
+
+static int name_order(const char *a, const char *b) {
+	const char *pa = a, *pb = b;
+	for (;;) {
+		uint32_t ca = folded_letter(utf8_next(&pa));
+		uint32_t cb = folded_letter(utf8_next(&pb));
+		if (ca != cb) {
+			return ca < cb ? -1 : 1;
+		}
+		if (!ca) {
+			return 0;
+		}
+	}
+}
+
 int lang_list(const char **names, int max) {
 	// Whatever .ini files are in the folder, and nothing else. Dropping a new
 	// one in is all it takes to add a language: the list is the directory.
@@ -446,8 +600,8 @@ int lang_list(const char **names, int max) {
 		bool already = false;
 		for (int i = 0; i < count; i++) {
 			char other[64];
-			if (!read_declared_name(names[i], other, sizeof(other))) {
-				snprintf(other, sizeof(other), "%s", names[i]);
+			if (!read_declared_name(found[i], other, sizeof(other))) {
+				snprintf(other, sizeof(other), "%.*s", (int)sizeof(other) - 1, found[i]);
 			}
 			if (strcmp(other, label) == 0) {
 				already = true;
@@ -458,10 +612,26 @@ int lang_list(const char **names, int max) {
 			continue;
 		}
 		snprintf(found[count], sizeof(found[0]), "%s", name);
-		names[count] = found[count];
 		count++;
 	}
 	closedir(d);
+
+	// readdir() returns the folder in whatever order it likes. The list is
+	// for a reader, so the names are put in alphabetical order before they
+	// leave this function.
+	for (int i = 1; i < count; i++) {
+		char key[64];
+		memcpy(key, found[i], sizeof(key));
+		int j = i - 1;
+		while (j >= 0 && name_order(found[j], key) > 0) {
+			memcpy(found[j + 1], found[j], sizeof(found[0]));
+			j--;
+		}
+		memcpy(found[j + 1], key, sizeof(key));
+	}
+	for (int i = 0; i < count; i++) {
+		names[i] = found[i];
+	}
 	return count;
 }
 
