@@ -176,7 +176,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 - **Double click** - two quick presses of a button do the action you choose.
 - **In-line remote** - on wired headphones: one click play/pause, two clicks next, three clicks previous. USB-C headphones with buttons work too.
 - **Lock the buttons** with the screen off: volume down + power. The power button and the remote always work.
-- **Keyboard** - eleven layouts (English, Italian, German, Spanish, French, Dutch, Polish, Brazilian Portuguese, Czech, Russian, Japanese), as a full keyboard or as a phone keypad (T9). Japanese types romaji as hiragana or katakana, has a ten-key kana pad (tap a key again, or flick it, for the next kana of its row) and offers kanji candidates for the hiragana before the caret.
+- **Keyboard** - eleven layouts (English, Italian, German, Spanish, French, Dutch, Polish, Portuguese, Czech, Russian, Japanese), as a full keyboard or as a phone keypad (T9). Japanese types romaji as hiragana or katakana, has a ten-key kana pad (tap a key again, or flick it, for the next kana of its row) and offers kanji candidates for the hiragana before the caret.
 - **Screenshots** - turn them on in Settings > More, then press volume up + power to save the screen to the card.
 
 ## Screen and appearance
@@ -201,7 +201,7 @@ This is everything Sonix Player can do today, on both the **R1** and the **R3 Pr
 ## System
 
 - **Date and time** - automatic over Wi-Fi (the time zone is found by itself) or set by hand, with 24-hour or AM/PM clock and daylight saving time.
-- **Languages** - English, Italiano, Deutsch, Español, Français, Nederlands, Polski, Português BR, Čeština, Russian, Chinese and Japanese. Titles in Korean, Thai and Arabic are shown too.
+- **Languages** - English, Italiano, Deutsch, Español, Français, Nederlands, Polski, Português BR, Português PT, Čeština, Russian, Chinese and Japanese. Titles in Korean, Thai and Arabic are shown too.
 - **Firmware update** - over the internet with the full list of changes, or from a `.upt` file on the card.
 - **About** - device, serial number, card space and version.
 - **Factory reset** - settings, Wi-Fi networks and Bluetooth devices are erased. The music on the card is not touched.

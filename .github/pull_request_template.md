@@ -36,7 +36,7 @@ with "N/A" and a reason.
 - [ ] It works on **both** the R1 and the R3 Pro II, with files under both `sonix-packer/assets/R1/` and `sonix-packer/assets/R3PII/`, or it is hidden on the model it doesn't apply to.
 
 ### Translations
-- [ ] Every user-visible string is in **all 22 language files**: the 11 languages, in both `sonix-packer/assets/R1/usr/resource/sonix/language/` and `sonix-packer/assets/R3PII/usr/resource/sonix/language/`. No hard-coded text in C.
+- [ ] Every user-visible string is in **all 26 language files**: the 13 languages, in both `sonix-packer/assets/R1/usr/resource/sonix/language/` and `sonix-packer/assets/R3PII/usr/resource/sonix/language/`. No hard-coded text in C.
 
 ### Binaries and third-party code
 - [ ] **No prebuilt binaries** (`.so`, executables, `.ko`) built on your machine. Third-party programs and libraries are built by `sonix-player/tools/system-libs/build.sh`, with a pinned source, linked against the device's glibc 2.22, and checked by `abicheck.py`.
