@@ -95,6 +95,80 @@ static void password_eye_cb(lv_event_t *e) {
 	password_eye_refresh();
 }
 
+// ---------------------------------------------------------------------------
+// the manual network page
+// ---------------------------------------------------------------------------
+//
+// The list is what the scan heard, and a router with a hidden SSID is never in
+// it. This is the other road: the name typed in, and scan_ssid handed to the
+// supplicant so it goes looking instead of waiting.
+
+static lv_obj_t *manual_screen;
+static lv_obj_t *manual_ssid_field;
+static lv_obj_t *manual_pw_field;
+static lv_obj_t *manual_eye_btn;
+static lv_obj_t *manual_eye_icon;
+static keyboard_t *manual_keyboard;
+
+static void manual_eye_refresh(void) {
+	if (!manual_eye_icon || !manual_pw_field) {
+		return;
+	}
+	bool hidden = lv_textarea_get_password_mode(manual_pw_field);
+	lv_image_set_src(manual_eye_icon, hidden ? &icon_eye : &icon_eye_off);
+	keyboard_refresh_password(manual_pw_field);
+}
+
+static void manual_eye_cb(lv_event_t *e) {
+	(void)e;
+	bool hidden = lv_textarea_get_password_mode(manual_pw_field);
+	lv_textarea_set_password_mode(manual_pw_field, !hidden);
+	manual_eye_refresh();
+}
+
+// Two fields, one keyboard: the one tapped is the one typed into. LVGL moves
+// the focus itself, but the keyboard types into whatever field it was told
+// about, and that is not the same thing.
+static void manual_field_tapped_cb(lv_event_t *e) {
+	lv_obj_t *field = lv_event_get_current_target(e);
+	keyboard_set_field(manual_keyboard, field);
+}
+
+static void manual_accept_cb(lv_event_t *e) {
+	(void)e;
+	const char *ssid = lv_textarea_get_text(manual_ssid_field);
+	const char *psk = lv_textarea_get_text(manual_pw_field);
+
+	// A name is the one thing there is no asking wpa_supplicant for. An empty
+	// field is a keypress that meant nothing, and leaving the page on it would
+	// look like a network had been asked for.
+	if (!ssid || !ssid[0]) {
+		return;
+	}
+
+	// The name is capped at 32 bytes by the field, the most 802.11 carries.
+	// The passphrase is judged by the connect itself, where its refusal turns
+	// into the usual "incorrect password" instead of a second opinion here.
+	wifi_connect(ssid, psk, true);
+
+	lv_textarea_set_text(manual_ssid_field, "");
+	lv_textarea_set_text(manual_pw_field, "");
+	switch_screen(wifisettings_screen);
+}
+
+static void manual_open_cb(lv_event_t *e) {
+	(void)e;
+	lv_textarea_set_text(manual_ssid_field, "");
+	lv_textarea_set_text(manual_pw_field, "");
+	lv_textarea_set_password_mode(manual_pw_field, true);
+	manual_eye_refresh();
+	// The name first: it is the field the page exists for.
+	keyboard_set_field(manual_keyboard, manual_ssid_field);
+	keyboard_reset(manual_keyboard);
+	keyboard_set_visible(manual_keyboard, true);
+	switch_screen(manual_screen);
+}
+
 // The details page: everything about the link that does not belong on the
 // list. Built once, filled in when it is opened.
 static lv_obj_t *details_wifi_screen;
@@ -786,6 +860,90 @@ static void build_password_page(gui_config_t *cfg) {
 	switcher_attach_back_gesture(password_screen);
 }
 
+static void build_manual_page(gui_config_t *cfg) {
+	manual_screen = lv_obj_create(NULL);
+	lv_obj_add_style(manual_screen, &theme_style_screen, 0);
+
+	settingsrow_title(manual_screen, cfg, tr("wifi_add_network"));
+
+	int top = settingsrow_content_top(cfg);
+	int keyboard_h = 316; // the same keyboard the search page uses
+	int field_h = 62;
+	int hint_gap = 36;
+	int field_gap = 12;
+	int pw_top = top + hint_gap + field_h + field_gap;
+	int field_w = cfg->screen_width - 2 * cfg->padding;
+
+	lv_obj_t *ssid_hint = lv_label_create(manual_screen);
+	lv_label_set_text(ssid_hint, tr("wifi_network_name"));
+	lv_obj_add_style(ssid_hint, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(ssid_hint, &font_ui_22, 0);
+	lv_obj_align(ssid_hint, LV_ALIGN_TOP_LEFT, cfg->padding, top);
+
+	manual_ssid_field = lv_textarea_create(manual_screen);
+	lv_textarea_set_one_line(manual_ssid_field, true);
+	// 32 bytes is all 802.11 carries in an SSID; a longer name would be cut by
+	// the supplicant instead, after the page had already moved on.
+	lv_textarea_set_max_length(manual_ssid_field, 32);
+	lv_obj_set_size(manual_ssid_field, field_w, field_h);
+	lv_obj_set_scrollbar_mode(manual_ssid_field, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_align(manual_ssid_field, LV_ALIGN_TOP_LEFT, cfg->padding, top + hint_gap);
+	lv_obj_add_style(manual_ssid_field, &theme_style_card, 0);
+	lv_obj_set_style_radius(manual_ssid_field, 12, 0);
+	lv_obj_set_style_border_width(manual_ssid_field, 0, 0);
+	lv_obj_set_style_shadow_width(manual_ssid_field, 0, 0);
+	lv_obj_set_style_pad_all(manual_ssid_field, 14, 0);
+	lv_obj_set_style_text_font(manual_ssid_field, &font_ui_24, 0);
+	keyboard_style_caret(manual_ssid_field);
+	lv_obj_add_event_cb(manual_ssid_field, manual_field_tapped_cb, LV_EVENT_CLICKED, NULL);
+
+	lv_obj_t *pw_hint = lv_label_create(manual_screen);
+	lv_label_set_text(pw_hint, tr("wifi_network_password"));
+	lv_obj_add_style(pw_hint, &theme_style_text_dim, 0);
+	lv_obj_set_style_text_font(pw_hint, &font_ui_22, 0);
+	lv_obj_align(pw_hint, LV_ALIGN_TOP_LEFT, cfg->padding, pw_top);
+
+	manual_pw_field = lv_textarea_create(manual_screen);
+	lv_textarea_set_one_line(manual_pw_field, true);
+	lv_textarea_set_placeholder_text(manual_pw_field, tr("password"));
+	lv_obj_set_size(manual_pw_field, field_w, field_h);
+	lv_obj_set_scrollbar_mode(manual_pw_field, LV_SCROLLBAR_MODE_OFF);
+	lv_obj_align(manual_pw_field, LV_ALIGN_TOP_LEFT, cfg->padding, pw_top + hint_gap);
+	lv_obj_add_style(manual_pw_field, &theme_style_card, 0);
+	lv_obj_set_style_radius(manual_pw_field, 12, 0);
+	lv_obj_set_style_border_width(manual_pw_field, 0, 0);
+	lv_obj_set_style_shadow_width(manual_pw_field, 0, 0);
+	lv_obj_set_style_pad_all(manual_pw_field, 14, 0);
+	lv_obj_set_style_text_font(manual_pw_field, &font_ui_24, 0);
+	keyboard_style_caret(manual_pw_field);
+	keyboard_style_password(manual_pw_field, PASSWORD_SHOW_MS);
+	// Room for the eye, otherwise a long password runs underneath it.
+	lv_obj_set_style_pad_right(manual_pw_field, 60, 0);
+	lv_obj_add_event_cb(manual_pw_field, manual_field_tapped_cb, LV_EVENT_CLICKED, NULL);
+
+	manual_eye_btn = lv_btn_create(manual_screen);
+	lv_obj_set_size(manual_eye_btn, 56, 56);
+	lv_obj_align(manual_eye_btn, LV_ALIGN_TOP_LEFT, cfg->padding + field_w - 60, pw_top + hint_gap + (field_h - 56) / 2);
+	lv_obj_set_style_bg_opa(manual_eye_btn, LV_OPA_TRANSP, 0);
+	lv_obj_set_style_shadow_width(manual_eye_btn, 0, 0);
+	lv_obj_set_style_border_width(manual_eye_btn, 0, 0);
+	lv_obj_set_style_pad_all(manual_eye_btn, 0, 0);
+	lv_obj_add_event_cb(manual_eye_btn, manual_eye_cb, LV_EVENT_CLICKED, NULL);
+
+	manual_eye_icon = lv_image_create(manual_eye_btn);
+	lv_obj_add_style(manual_eye_icon, &theme_style_icon, 0);
+	lv_obj_set_style_image_opa(manual_eye_icon, LV_OPA_70, 0);
+	lv_obj_center(manual_eye_icon);
+	manual_eye_refresh();
+
+	// An empty passphrase is an open network, which is what the connect already
+	// does with an empty one: the page needs no switch of its own.
+	manual_keyboard = keyboard_create(manual_screen, cfg->screen_width, keyboard_h, manual_ssid_field, NULL, "ok",
+									  manual_accept_cb, NULL);
+
+	switcher_attach_back_gesture(manual_screen);
+}
+
 // ---------------------------------------------------------------------------
 // the details page
 // ---------------------------------------------------------------------------
@@ -863,7 +1021,16 @@ void wifisettings_init(gui_config_t *cfg) {
 	lv_obj_add_state(scan_btn, LV_STATE_DISABLED); // until the radio answers
 	lv_obj_set_style_image_opa(scan_icon, LV_OPA_20, 0);
 
+	// The manual entry shares the corner with the scan, which moves left to
+	// make room. Both are the page's only two actions, and the one that is not
+	// about the list goes furthest from the thumb.
+	lv_obj_t *manual_btn = corner_button(wifisettings_screen, cfg, &icon_plus, NULL);
+	lv_obj_add_event_cb(manual_btn, manual_open_cb, LV_EVENT_CLICKED, NULL);
+	lv_obj_align(scan_btn, LV_ALIGN_TOP_RIGHT, -(int)cfg->padding - CORNER_BTN_SIZE - 12,
+				 cfg->padding + cfg->top_bar_height);
+
 	build_password_page(cfg);
+	build_manual_page(cfg);
 	build_details_page(cfg);
 
 	poll_timer = lv_timer_create(poll_cb, WIFI_PAGE_POLL_MS, NULL);
